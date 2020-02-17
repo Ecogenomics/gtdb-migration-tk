@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+###############################################################################
+#                                                                             #
+#    This program is free software: you can redistribute it and/or modify     #
+#    it under the terms of the GNU General Public License as published by     #
+#    the Free Software Foundation, either version 3 of the License, or        #
+#    (at your option) any later version.                                      #
+#                                                                             #
+#    This program is distributed in the hope that it will be useful,          #
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of           #
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the            #r
+#    GNU General Public License for more details.                             #
+#                                                                             #
+#    You should have received a copy of the GNU General Public License        #
+#    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
+#                                                                             #
+###############################################################################
+
+__author__ = "Pierre Chaumeil"
+__copyright__ = "Copyright 2019"
+__credits__ = ["Donovan Parks", "Pierre Chaumeil", "Aaron Mussig"]
+__license__ = "GPL3"
+__maintainer__ = "Pierre Chaumeil"
+__email__ = "uqpchaum@uq.edu.au"
+__status__ = "Development"
+
+import os
+import sys
+import ntpath
+import logging
+import argparse
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
+from gtdb_migration_tk.main import OptionsParser
+
+from biolib.logger import logger_setup
+from biolib.misc.custom_help_formatter import CustomHelpFormatter
+from biolib.common import make_sure_path_exists
+
+
+def version():
+    """Read program version from file."""
+    import gtdb_migration_tk
+    version_file = open(os.path.join(gtdb_migration_tk.__path__[0], 'VERSION'))
+    return version_file.readline().strip()
+
+
+def print_help():
+    """Help menu."""
+
+    print('')
+    print('                ...::: GTDB Migration Toolkit v' +
+          version() + ' :::...''')
+    print('''\
+
+    
+    Information from Nomenclatural resources:
+      lpsn     -> Process steps for LPSN. [In Dev]
+      bacdive  -> Process steps for BacDive. [In Dev]
+      strains  -> Set of tools to combined information from LPSN,DSMZ and Straininfo.
+      
+    Test suite for data validation:
+      overview -> Compare the Metadata file from the previous version with the new one.
+      
+    
+  Use: gtdb_migration_tk <command> -h for command specific help.
+
+  Feature requests or bug reports can be sent to Donovan Parks (donovan.parks@gmail.com)
+    or posted on GitHub (https://github.com/Ecogenomics/gtdb_migration_tk).
+    ''')
+
+
+if __name__ == '__main__':
+
+    # initialize the options parser
+    parser = argparse.ArgumentParser(add_help=False)
+    subparsers = parser.add_subparsers(help="--", dest='subparser_name')
+
+    # Steps to update LPSN Metadata
+    lpsn_parser = subparsers.add_parser('lpsn',
+                                        formatter_class=CustomHelpFormatter,
+                                        description='Steps to update LPSN Metadata.')
+
+    lpsn_subparser = lpsn_parser.add_subparsers(help='Command to process LPSN metadata',
+                                                dest='lpsn_subparser_name')
+
+    lpsn_parser_lpsn_wf = lpsn_subparser.add_parser('lpsn_wf',
+                                                    add_help=False,
+                                                    formatter_class=CustomHelpFormatter,
+                                                    help='Full Pipeline Pull HTML -> Parse HTML')
+    lpsn_parser_lpsn_wf.add_argument(
+        'output_dir', help='Output directory.')
+    lpsn_parser_lpsn_wf.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    lpsn_parser_pull = lpsn_subparser.add_parser('pull_html',
+                                                 add_help=False,
+                                                 formatter_class=CustomHelpFormatter,
+                                                 help='Get 4 files from LPSN listing all genera.')
+    lpsn_parser_pull.add_argument(
+        'output_dir', help='Output directory.')
+    lpsn_parser_pull.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    lpsn_parser_parse_html = lpsn_subparser.add_parser('parse_html',
+                                                       add_help=False,
+                                                       formatter_class=CustomHelpFormatter,
+                                                       help='Parse HTML files.')
+
+    lpsn_parser_parse_html.add_argument(
+        'input directory', help='Directory containing all genus HTML files.')
+    lpsn_parser_parse_html.add_argument(
+        'output_dir', help='Output directory.')
+    lpsn_parser_parse_html.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    # Steps to update BadDive Metadata
+    bacdive_parser = subparsers.add_parser('bacdive',
+                                           formatter_class=CustomHelpFormatter,
+                                           description='Steps to update Bacdive Metadata.')
+
+    bacdive_subparser = bacdive_parser.add_subparsers(help='Command to process Bacdive metadata',
+                                                      dest='bacdive_subparser_name')
+
+    bacdive_parser_dl_strains = bacdive_subparser.add_parser('download_strains',
+                                                             add_help=False,
+                                                             formatter_class=CustomHelpFormatter,
+                                                             help='Produce metadata files describing type genera, species, and strains according to DSMZ.')
+    bacdive_parser_dl_strains.add_argument(
+        '--username', help='Username to log to Bacdive API.', required=True)
+    bacdive_parser_dl_strains.add_argument(
+        '-p', '--pwd', dest='pwd', help='Username to log to Bacdive API.', required=True)
+    bacdive_parser_dl_strains.add_argument(
+        'output_dir', help='Output directory.')
+    bacdive_parser_dl_strains.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    # Tools to combine Medata from different databases.
+    strains_parser = subparsers.add_parser('strains',
+                                           formatter_class=CustomHelpFormatter,
+                                           description='Tools to combine Medata from different databases.')
+    strains_subparser = strains_parser.add_subparsers(help='Tools to combine Medata from different databases.',
+                                                      dest='strains_subparser_name')
+
+    strains_parser_date = strains_subparser.add_parser('date_table',
+                                                       add_help=False,
+                                                       formatter_class=CustomHelpFormatter,
+                                                       help='Generate a tab delimited file listing all reference dates from LPSN,DSMZ,Straininfo for each species name.')
+    strains_parser_date.add_argument(
+        '--lpsn_species_info', help='LPSN species file created by LPSN website parsing.', required=True)
+    strains_parser_date.add_argument(
+        '--dsmz_species_info', help='DSMZ species file created by DSMZ website parsing.', required=True)
+    strains_parser_date.add_argument(
+        '--straininfo_species_info', help='Straininfo strain file created by Straininfo website parsing.', required=True)
+    strains_parser_date.add_argument('--output_file',
+                                     help='Output file.')
+    strains_parser_date.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    strains_parser_type = strains_subparser.add_parser('type_table',
+                                                       add_help=False,
+                                                       formatter_class=CustomHelpFormatter,
+                                                       help='Generate a tab delimited file listing all reference dates from LPSN,DSMZ,Straininfo for each species name.')
+
+    strains_parser_type.add_argument('--lpsn_dir',
+                                     help='Directory including the 3 LPSN result files (lpsn_genera.tsv, lpsn_species.tsv and lpsn_strains.tsv ).')
+    strains_parser_type.add_argument('--dsmz_dir',
+                                     help='Directory including the 3 DSMZ result files (dsmz_strains.tsv, dsmz_species.tsv and dsmz_genera.tsv ).')
+    strains_parser_type.add_argument('--straininfo_dir',
+                                     help='Directory including the straininfo result file (straininfo_strains.tsv).')
+    strains_parser_type.add_argument('--year_table',
+                                     help='Date table generated by generate_date_table.py.')
+    strains_parser_type.add_argument('--metadata_file',
+                                     help='Metadata file generated by GTDB')
+    strains_parser_type.add_argument(
+        '--ncbi_names', help='NCBI names.dmp file')
+    strains_parser_type.add_argument(
+        '--ncbi_nodes', help='NCBI nodes.dmp file')
+    strains_parser_type.add_argument('--cpus', help='Number of threads.',
+                                     type=int, default=1)
+    strains_parser_type.add_argument(
+        '--output_dir', help='Output directory.', default='.')
+    strains_parser_type.add_argument('--source_strain', choices=['all', 'lpsn', 'dsmz', 'straininfo'], default='all',
+                                     help='select LPSN,Straininfo,DSMZ to parse')
+    strains_parser_type.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    overview_parser = subparsers.add_parser('overview',
+                                            formatter_class=CustomHelpFormatter,
+                                            description='Compare the Metadata file from the previous version with the new one.')
+    overview_parser.add_argument(
+        '--previous_metadata_file', help='file indicating metadata of each genome in previous GTDB version.')
+    overview_parser.add_argument(
+        '--new_metadata_file', help='file indicating metadata of each genome in latest GTDB version.')
+    overview_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    # get and check options
+    args = None
+    if(len(sys.argv) == 1 or sys.argv[1] == '-h' or sys.argv == '--help'):
+        print_help()
+        sys.exit(0)
+    else:
+        args = parser.parse_args()
+
+    try:
+        logger_setup(args.output_dir,
+                     'gtdb_migration_tk.log',
+                     'GTDB Migration Tk',
+                     version(),
+                     args.silent)
+    except:
+        logger_setup(None,
+                     'gtdb_migration_tk.log',
+                     'GTDB Migration Tk',
+                     version(),
+                     args.silent)
+
+    # do what we came here to do
+    try:
+        parser = OptionsParser()
+        if(False):
+            import cProfile
+            cProfile.run('parser.parse_options(args)', 'prof')
+        elif False:
+            import pdb
+            pdb.run(parser.parse_options(args))
+        else:
+            parser.parse_options(args)
+    except SystemExit:
+        print("\n  Controlled exit resulting from an unrecoverable error or warning.")
+    except:
+        print("\nUnexpected error:", sys.exc_info()[0])
+        raise
