@@ -57,12 +57,13 @@ def print_help():
 
     
     Information from Nomenclatural resources:
-      lpsn     -> Process steps for LPSN. [In Dev]
+      lpsn     -> Process steps for LPSN.
       bacdive  -> Process steps for BacDive. [In Dev]
       strains  -> Set of tools to combined information from LPSN,DSMZ and Straininfo.
       
     Test suite for data validation:
-      overview -> Compare the Metadata file from the previous version with the new one.
+      overview      -> Compare the Metadata file from the previous version with the new one.
+      compare_field -> Compare a specific metadata field between to metadata files. 
       
     
   Use: gtdb_migration_tk <command> -h for command specific help.
@@ -89,7 +90,7 @@ if __name__ == '__main__':
     lpsn_parser_lpsn_wf = lpsn_subparser.add_parser('lpsn_wf',
                                                     add_help=False,
                                                     formatter_class=CustomHelpFormatter,
-                                                    help='Full Pipeline Pull HTML -> Parse HTML')
+                                                    help='Full Pipeline Pull HTML and Parse HTML')
     lpsn_parser_lpsn_wf.add_argument(
         'output_dir', help='Output directory.')
     lpsn_parser_lpsn_wf.add_argument(
@@ -110,7 +111,7 @@ if __name__ == '__main__':
                                                        help='Parse HTML files.')
 
     lpsn_parser_parse_html.add_argument(
-        'input directory', help='Directory containing all genus HTML files.')
+        'input_dir', help='Directory containing all genus HTML files.')
     lpsn_parser_parse_html.add_argument(
         'output_dir', help='Output directory.')
     lpsn_parser_parse_html.add_argument(
@@ -189,12 +190,30 @@ if __name__ == '__main__':
 
     overview_parser = subparsers.add_parser('overview',
                                             formatter_class=CustomHelpFormatter,
-                                            description='Compare the Metadata file from the previous version with the new one.')
+                                            help='Compare the Metadata file from the previous version with the new one.')
     overview_parser.add_argument(
-        '--previous_metadata_file', help='file indicating metadata of each genome in previous GTDB version.')
+        '--previous_metadata_file', help='file indicating metadata of each genome in previous GTDB version.',required=True)
     overview_parser.add_argument(
-        '--new_metadata_file', help='file indicating metadata of each genome in latest GTDB version.')
+        '--new_metadata_file', help='file indicating metadata of each genome in latest GTDB version.',required=True)
     overview_parser.add_argument(
+        '--only_ncbi', help='Output file.', action='store_true')
+    overview_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+        
+    metafield_parser = subparsers.add_parser('compare_field',
+                                            formatter_class=CustomHelpFormatter,
+                                            help='Compare a specific metadata field between to metadata files.')
+    metafield_parser.add_argument(
+        '--previous_metadata_file', help='file indicating metadata of each genome in previous GTDB version.',required=True)
+    metafield_parser.add_argument(
+        '--new_metadata_file', help='file indicating metadata of each genome in latest GTDB version.',required=True)
+    metafield_parser.add_argument(
+        '--field_of_interest', help='common field to compare between files.',required=True)
+    metafield_parser.add_argument(
+        '--output_file', help='Output file.',required=True)
+    metafield_parser.add_argument(
+        '--only_ncbi', help='Output file.', action='store_true')
+    metafield_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
     # get and check options

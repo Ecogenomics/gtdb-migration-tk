@@ -148,13 +148,13 @@ class LPSN(object):
 
         # Download pages listing all genus in LPSN
         print('Beginning file download lpsn ...')
-        url = 'http://www.bacterio.net/-ac.html'
+        url = 'http://www.bacterio.net/archive/-ac.html'
         urllib.request.urlretrieve(url, os.path.join(self.outdir, 'ac.html'))
-        url = 'http://www.bacterio.net/-dl.html'
+        url = 'http://www.bacterio.net/archive/-dl.html'
         urllib.request.urlretrieve(url, os.path.join(self.outdir, 'dl.html'))
-        url = 'http://www.bacterio.net/-mr.html'
+        url = 'http://www.bacterio.net/archive/-mr.html'
         urllib.request.urlretrieve(url, os.path.join(self.outdir, 'mr.html'))
-        url = 'http://www.bacterio.net/-sz.html'
+        url = 'http://www.bacterio.net/archive/-sz.html'
         urllib.request.urlretrieve(url, os.path.join(self.outdir, 'sz.html'))
 
         # Parse html pages lising all genus
@@ -187,9 +187,9 @@ class LPSN(object):
             for line in gsl:
                 genus = line.strip()
                 try:
-                    print(os.path.join('http://www.bacterio.net', genus))
+                    print(os.path.join('http://www.bacterio.net/archive/', genus))
                     urllib.request.urlretrieve(os.path.join(
-                        'http://www.bacterio.net', genus), os.path.join(self.outdir, 'genus_html', genus))
+                        'http://www.bacterio.net/archive/', genus), os.path.join(self.outdir, 'genus_html', genus))
                 except:
                     failed_html_file.write('{}\n'.format(genus))
         failed_html_file.close()

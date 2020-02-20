@@ -46,7 +46,7 @@ class OptionsParser():
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(options.output_dir)
-        p.pull_html()
+        p.download_lpsn_html()
 
     def parse_html(self, options):
         """Parse all html files."""
@@ -80,7 +80,15 @@ class OptionsParser():
     def compare_metadata(self, options):
         p = Tools()
         p.compare_metadata(options.previous_metadata_file,
-                           options.new_metadata_file)
+                           options.new_metadata_file,
+                           options.only_ncbi)
+
+    def compare_selected_data(self, options):
+        p = Tools()
+        p.compare_selected_data(options.previous_metadata_file,
+                                options.new_metadata_file,
+                                options.field_of_interest,
+                                options.output_file, options.only_ncbi)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
@@ -104,6 +112,8 @@ class OptionsParser():
                 self.generate_type_table(options)
         elif options.subparser_name == 'overview':
             self.compare_metadata(options)
+        elif options.subparser_name == 'compare_field':
+            self.compare_selected_data(options)
         else:
             self.logger.error('Unknown command: ' +
                               options.subparser_name + '\n')

@@ -22,6 +22,7 @@ import requests
 import io
 import re
 import logging
+import time
 
 from requests.auth import HTTPBasicAuth
 from unidecode import unidecode
@@ -52,8 +53,21 @@ class BacDive(object):
             response = requests.get(
                 'https://bacdive.dsmz.de/api/pnu/genus/', headers=self.headers, auth=self.credentials)
         else:
-            response = requests.get(
-                urlreq, headers=self.headers, auth=self.credentials)
+            while True:
+                try:
+                    print(urlreq)
+                    response = requests.get(
+                        urlreq, headers=self.headers, auth=self.credentials)
+                except requests.exceptions.ConnectionError:
+                    print('Max retries for {}'.format(urlreq))
+                    time.sleep(10)
+                    continue
+                except Exception:
+                    print(e)
+                    print('Max retries for {}'.format(urlreq))
+                    time.sleep(10)
+                    continue
+                break
 
         if response.status_code == 200:
             results = response.json()
@@ -87,8 +101,21 @@ class BacDive(object):
             response = requests.get(
                 'https://bacdive.dsmz.de/api/pnu/species/', headers=self.headers, auth=self.credentials)
         else:
-            response = requests.get(
-                urlreq, headers=self.headers, auth=self.credentials)
+            while True:
+                try:
+                    print(urlreq)
+                    response = requests.get(
+                        urlreq, headers=self.headers, auth=self.credentials)
+                except requests.exceptions.ConnectionError:
+                    print('Max retries for {}'.format(urlreq))
+                    time.sleep(10)
+                    continue
+                except Exception:
+                    print(e)
+                    print('Max retries for {}'.format(urlreq))
+                    time.sleep(10)
+                    continue
+                break
 
         if response.status_code == 200:
             results = response.json()

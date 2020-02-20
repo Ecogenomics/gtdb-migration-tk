@@ -48,44 +48,38 @@ class Tools(object):
         """Initialization."""
         self.logger = logging.getLogger()
 
-    def compare_metadata(self, old_meta_file, new_meta_file):
-
-        old_delimiter = None
+    def select_delimiter(self, metafile):
         # Parse TSV or CSV file
-        for line in open(old_meta_file):
+        for line in open(metafile):
             if len(line.split('\t')) >= len(line.split(',')):
-                old_delimiter = '\t'
-                break
+                return '\t'
             else:
-                old_delimiter = ','
-                break
+                return ','
+
+    def compare_metadata(self, old_meta_file, new_meta_file, only_ncbi=False):
+
+        old_delimiter = self.select_delimiter(old_meta_file)
 
         old_nested_dict = {}
         with open(old_meta_file, 'r') as omf:
             old_headers = omf.readline().split(old_delimiter)
             if old_delimiter == ',':
                 for line in csv.reader(omf):
-                    old_nested_dict[line[0]] = {}
-                    for i, j in enumerate(line):
-                        old_nested_dict[line[0]][old_headers[i]] = str(j)
+                    if (only_ncbi and not line[0].startswith('U_')) or not only_ncbi:
+                        old_nested_dict[line[0]] = {}
+                        for i, j in enumerate(line):
+                            old_nested_dict[line[0]][old_headers[i]] = str(j)
             else:
                 for raw_line in omf:
                     line = raw_line.strip('\n').split('\t')
-                    old_nested_dict[line[0]] = {}
-                    for i, j in enumerate(line):
-                        old_nested_dict[line[0]][old_headers[i]] = str(j)
+                    if (only_ncbi and not line[0].startswith('U_')) or not only_ncbi:
+                        old_nested_dict[line[0]] = {}
+                        for i, j in enumerate(line):
+                            old_nested_dict[line[0]][old_headers[i]] = str(j)
 
         self.logger.info('{} parsed'.format(old_meta_file))
 
-        new_delimiter = None
-        # Parse TSV or CSV file
-        for line in open(old_meta_file):
-            if len(line.split('\t')) >= len(line.split(',')):
-                new_delimiter = '\t'
-                break
-            else:
-                new_delimiter = ','
-                break
+        new_delimiter = self.select_delimiter(new_meta_file)
 
         header_summary = {}
         new_nested_dict = {}
@@ -93,11 +87,26 @@ class Tools(object):
         # we check if the genome id exists, and the columns names exist
         # for each common column name we compare the value for each common
         # genomes and add 1 if they are different
+        number_of_genomes = 0
         with open(new_meta_file, 'r') as nmf:
             new_headers = nmf.readline().split(new_delimiter)
             if new_delimiter == ',':
                 for line in csv.reader(nmf):
+
                     if line[0] in old_nested_dict:
+                        number_of_genomes += 1
+                        for i, j in enumerate(line):
+                            if new_headers[i] in old_headers:
+                                if str(j) != old_nested_dict.get(line[0]).get(new_headers[i]):
+                                    header_summary.setdefault(
+                                        new_headers[i], []).append(1)
+                                else:
+                                    header_summary.setdefault(
+                                        new_headers[i], []).append(0)
+                for raw_line in nmf:
+                    line = raw_line.strip('\n').split('\t')
+                    if line[0] in old_nested_dict:
+                        number_of_genomes += 1
                         for i, j in enumerate(line):
                             if new_headers[i] in old_headers:
                                 if str(j) != old_nested_dict.get(line[0]).get(new_headers[i]):
@@ -124,6 +133,8 @@ class Tools(object):
             set(new_headers)
         new_columns = set(new_headers) - set(old_headers)
 
+        print("Based on {} common genomes.".format(number_of_genomes))
+
         print("Deprecated columns:")
         for removed_column in removed_columns:
             print("\t- {}".format(removed_column))
@@ -131,3 +142,54 @@ class Tools(object):
         print("New columns:")
         for new_column in new_columns:
             print("\t- {}".format(new_column))
+
+    def compare_selected_data(self, old_meta_file, new_meta_file, metafield, output_file, only_ncbi=False):
+        old_delimiter = self.select_delimiter(old_meta_file)
+        old_nested_dict = {}
+        with open(old_meta_file, 'r') as omf:
+            old_headers = omf.readline().split(old_delimiter)
+            if metafield not in old_headers:
+                self.logger.error(f'{metafield} is not in {old_meta_file}')
+                sys.exit()
+
+            if old_delimiter == ',':
+                for line in csv.reader(omf):
+                    if (only_ncbi and not line[0].startswith('U_')) or not only_ncbi:
+                        old_nested_dict[line[0]] = str(
+                            line[old_headers.index(metafield)])
+            else:
+                for raw_line in omf:
+                    line = raw_line.strip('\n').split('\t')
+                    if (only_ncbi and not line[0].startswith('U_')) or not only_ncbi:
+                        old_nested_dict[line[0]] = str(
+                            line[old_headers.index(metafield)])
+
+        new_delimiter = self.select_delimiter(new_meta_file)
+        new_nested_dict = {}
+        with open(new_meta_file, 'r') as nmf:
+            new_headers = nmf.readline().split(new_delimiter)
+            if metafield not in new_headers:
+                self.logger.error(f'{metafield} is not in {old_meta_file}')
+                sys.exit()
+            if new_delimiter == ',':
+                for line in csv.reader(nmf):
+                    if line[0] in old_nested_dict:
+                        new_nested_dict[line[0]] = str(
+                            line[new_headers.index(metafield)])
+            else:
+                for raw_line in omf:
+                    line = raw_line.strip('\n').split('\t')
+                    new_nested_dict[line[0]] = str(
+                        line[new_headers.index(metafield)])
+
+        results = []
+        outf = open(output_file, 'w')
+        outf.write('genome_id\told_value\tnew_value\tsimilarity\n')
+        for k, v in old_nested_dict.items():
+            similarity = 'Identical'
+            if v != new_nested_dict.get(k):
+                similarity = "Different"
+            outf.write('{}\n'.format(
+                '\t'.join([k, str(v), str(new_nested_dict.get(k)), similarity])))
+
+        self.logger.info('{} parsed'.format(old_meta_file))
