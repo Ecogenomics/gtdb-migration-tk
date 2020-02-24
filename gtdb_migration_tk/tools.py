@@ -177,19 +177,20 @@ class Tools(object):
                         new_nested_dict[line[0]] = str(
                             line[new_headers.index(metafield)])
             else:
-                for raw_line in omf:
+                for raw_line in nmf:
                     line = raw_line.strip('\n').split('\t')
-                    new_nested_dict[line[0]] = str(
-                        line[new_headers.index(metafield)])
+                    if line[0] in old_nested_dict:
+                        new_nested_dict[line[0]] = str(
+                            line[new_headers.index(metafield)])
 
         results = []
         outf = open(output_file, 'w')
         outf.write('genome_id\told_value\tnew_value\tsimilarity\n')
-        for k, v in old_nested_dict.items():
+        for k, v in new_nested_dict.items():
             similarity = 'Identical'
-            if v != new_nested_dict.get(k):
+            if v != old_nested_dict.get(k):
                 similarity = "Different"
             outf.write('{}\n'.format(
-                '\t'.join([k, str(v), str(new_nested_dict.get(k)), similarity])))
+                '\t'.join([k, str(old_nested_dict.get(k)), str(v), similarity])))
 
         self.logger.info('{} parsed'.format(old_meta_file))
