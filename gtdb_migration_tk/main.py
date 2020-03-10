@@ -28,6 +28,8 @@ from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.bacdive import BacDive
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.tools import Tools
+from gtdb_migration_tk.genome_manager import DirectoryManager
+from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 
 
 class OptionsParser():
@@ -90,9 +92,32 @@ class OptionsParser():
                                 options.field_of_interest,
                                 options.output_file, options.only_ncbi)
 
+    def parse_genome_directory(self, options):
+        p = DirectoryManager()
+        p.run(options.genome_dir, options.output_file)
+
+    def update_refseq_from_ftp_files(self, options):
+        p = RefSeqManager(options.output_dir, options.cpus)
+        p.runComparison(
+            options.ftp_refseq, options.output_dir, options.ftp_genome_dirs, options.old_genome_dirs, options.arc_assembly_summary, options.bac_assembly_summary)
+
+    def update_genbank_from_ftp_files(self, options):
+
+        p = GenBankManager(options.output_dir, options.cpus)
+        p.runComparison(
+            options.ftp_genbank, options.output_dir, options.ftp_genbank_genome_dirs,
+            options.old_genbank_genome_dirs, options.new_refseq_genome_dirs,
+            options.arc_assembly_summary, options.bac_assembly_summary)
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
-        if options.subparser_name == 'lpsn':
+        if options.subparser_name == 'list_genomes':
+            self.parse_genome_directory(options)
+        elif options.subparser_name == 'update_refseq':
+            self.update_refseq_from_ftp_files(options)
+        elif options.subparser_name == 'update_genbank':
+            self.update_genbank_from_ftp_files(options)
+        elif options.subparser_name == 'lpsn':
             if options.lpsn_subparser_name == 'lpsn_wf':
                 self.full_lpsn_wf(options)
             elif options.lpsn_subparser_name == 'parse_html':
