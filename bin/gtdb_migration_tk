@@ -24,27 +24,17 @@ __maintainer__ = "Pierre Chaumeil"
 __email__ = "uqpchaum@uq.edu.au"
 __status__ = "Development"
 
+import argparse
 import os
 import sys
-import ntpath
-import logging
-import argparse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 
 from gtdb_migration_tk.main import OptionsParser
 
 from biolib.logger import logger_setup
 from biolib.misc.custom_help_formatter import CustomHelpFormatter
-from biolib.common import make_sure_path_exists
-
-
-def version():
-    """Read program version from file."""
-    import gtdb_migration_tk
-    version_file = open(os.path.join(gtdb_migration_tk.__path__[0], 'VERSION'))
-    return version_file.readline().strip()
+from gtdb_migration_tk import __version__
 
 
 def print_help():
@@ -52,7 +42,7 @@ def print_help():
 
     print('')
     print('                ...::: GTDB Migration Toolkit v' +
-          version() + ' :::...''')
+          __version__ + ' :::...''')
     print('''\
 
     NCBI folder to GTDB folder:
@@ -274,7 +264,7 @@ if __name__ == '__main__':
 
     # get and check options
     args = None
-    if(len(sys.argv) == 1 or sys.argv[1] == '-h' or sys.argv == '--help'):
+    if len(sys.argv) == 1 or sys.argv[1] in {'-h', '--help'}:
         print_help()
         sys.exit(0)
     else:
@@ -284,13 +274,13 @@ if __name__ == '__main__':
         logger_setup(args.output_dir,
                      'gtdb_migration_tk.log',
                      'GTDB Migration Tk',
-                     version(),
+                     __version__,
                      args.silent)
     except:
         logger_setup(None,
                      'gtdb_migration_tk.log',
                      'GTDB Migration Tk',
-                     version(),
+                     __version__,
                      args.silent)
 
     # do what we came here to do
