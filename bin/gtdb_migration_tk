@@ -59,6 +59,15 @@ def print_help():
       update_refseq  -> Update Refseq genomes.  
       update_genbank -> Update Genbank genomes.
       
+    Call genes:
+      call_genes_wf -> Full call genes workflow
+                       (prodigal -> hmmsearch -> top_hit )
+      prodigal       -> Call genes using Prodigal
+      prodigal_check -> Check if table used by Prodigal is the same as the 
+                        one indicated in NCBI.
+      hmmsearch      -> Search Tigrfam/Pfam markers genes
+      top_hit        -> generate tophits file
+      
     Information from Nomenclatural resources:
       lpsn     -> Process steps for LPSN.
       bacdive  -> Process steps for BacDive. [In Dev]
@@ -84,6 +93,28 @@ if __name__ == '__main__':
     # initialize the options parser
     parser = argparse.ArgumentParser(add_help=False)
     subparsers = parser.add_subparsers(help="--", dest='subparser_name')
+
+    # Call genes
+    prodigal_parser = subparsers.add_parser(
+        'prodigal', formatter_class=CustomHelpFormatter, description='Call genes using Prodigal.')
+    prodigal_parser.add_argument('-g',
+                                 '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    prodigal_parser.add_argument(
+        '--tmp_dir', help='temporary directory for storing intermediate results', default='/tmp')
+    prodigal_parser.add_argument('-c', '--cpus', type=int,
+                                 help='number of threads', default=1)
+    prodigal_parser.add_argument(
+        '--all', dest='all_genomes', help="re run all genomes", action='store_true')
+    prodigal_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    # Call genes
+    prodigal_check_parser = subparsers.add_parser(
+        'prodigal_check', formatter_class=CustomHelpFormatter, description='Check if table used by Prodigal is the same as the one indicated in NCBI.')
+    prodigal_check_parser.add_argument('-g',
+                                       '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    prodigal_check_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
 
     # Misc commands
     genome_dir_parser = subparsers.add_parser(

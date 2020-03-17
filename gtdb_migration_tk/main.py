@@ -30,6 +30,7 @@ from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.tools import Tools
 from gtdb_migration_tk.genome_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
+from gtdb_migration_tk.prodigal_manager import ProdigalManager
 
 
 class OptionsParser():
@@ -109,10 +110,22 @@ class OptionsParser():
             options.old_genbank_genome_dirs, options.new_refseq_genome_dirs,
             options.arc_assembly_summary, options.bac_assembly_summary)
 
+    def run_prodigal(self, options):
+        p = ProdigalManager(options.tmp_dir, options.cpus)
+        p.run(options.gtdb_genome_path_file, options.all_genomes)
+
+    def run_prodigal_check(self, options):
+        p = ProdigalManager()
+        p.run_prodigal_check(options.gtdb_genome_path_file)
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
             self.parse_genome_directory(options)
+        if options.subparser_name == 'prodigal':
+            self.run_prodigal(options)
+        elif options.subparser_name == 'prodigal_check':
+            self.run_prodigal_check(options)
         elif options.subparser_name == 'update_refseq':
             self.update_refseq_from_ftp_files(options)
         elif options.subparser_name == 'update_genbank':

@@ -56,6 +56,12 @@ class Tools(object):
             else:
                 return ','
 
+    def file_len(self, fname):
+        with open(fname) as f:
+            for i, l in enumerate(f):
+                pass
+        return i + 1
+
     def compare_metadata(self, old_meta_file, new_meta_file, only_ncbi=False):
 
         old_delimiter = self.select_delimiter(old_meta_file)
