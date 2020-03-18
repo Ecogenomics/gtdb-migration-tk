@@ -31,6 +31,7 @@ from gtdb_migration_tk.tools import Tools
 from gtdb_migration_tk.genome_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
+from gtdb_migration_tk.marker_manager import MarkerManager
 
 
 class OptionsParser():
@@ -118,6 +119,10 @@ class OptionsParser():
         p = ProdigalManager()
         p.run_prodigal_check(options.gtdb_genome_path_file)
 
+    def run_hmmsearch(self, options):
+        p = MarkerManager(options.tmp_dir, options.cpus)
+        p.run_hmmsearch(options.gtdb_genome_path_file, options.report)
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
@@ -126,6 +131,8 @@ class OptionsParser():
             self.run_prodigal(options)
         elif options.subparser_name == 'prodigal_check':
             self.run_prodigal_check(options)
+        elif options.subparser_name == 'hmmsearch':
+            self.run_hmmsearch(options)
         elif options.subparser_name == 'update_refseq':
             self.update_refseq_from_ftp_files(options)
         elif options.subparser_name == 'update_genbank':
