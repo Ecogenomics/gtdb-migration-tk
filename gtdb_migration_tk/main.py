@@ -32,6 +32,9 @@ from gtdb_migration_tk.genome_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.marker_manager import MarkerManager
+from gtdb_migration_tk.metadata_manager import MetadataManager
+from gtdb_migration_tk.rna_manager import RnaManager
+from gtdb_migration_tk.trnascan_manager import tRNAScan
 
 
 class OptionsParser():
@@ -121,7 +124,24 @@ class OptionsParser():
 
     def run_hmmsearch(self, options):
         p = MarkerManager(options.tmp_dir, options.cpus)
-        p.run_hmmsearch(options.gtdb_genome_path_file, options.report)
+        p.run_hmmsearch(options.gtdb_genome_path_file,
+                        options.report, options.db)
+
+    def run_tophit(self, options):
+        p = MarkerManager('/tmp', options.cpus)
+        p.run_tophit(options.gtdb_genome_path_file, options.db)
+
+    def generate_metadata(self, options):
+        p = MetadataManager(options.cpus)
+        p.generate_metadata(options.gtdb_genome_path_file)
+
+    def generate_rna_silva(self,options):
+        p = RnaManager(options.cpus,options.version,options.rnapath,options.rna_gene)
+        p.generate_rna_silva(options.gtdb_genome_path_file)
+
+    def generate_trnascan_data(self,options):
+        p = tRNAScan(options.gbk_arc_assembly_file, options.gbk_bac_assembly_file, options.rfq_arc_assembly_file, options.rfq_bac_assembly_file,options.cpus)
+        p.run(options.gtdb_genome_path_file)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
@@ -133,6 +153,14 @@ class OptionsParser():
             self.run_prodigal_check(options)
         elif options.subparser_name == 'hmmsearch':
             self.run_hmmsearch(options)
+        elif options.subparser_name == 'top_hit':
+            self.run_tophit(options)
+        elif options.subparser_name == 'metadata':
+            self.generate_metadata(options)
+        elif options.subparser_name == 'rna_silva':
+            self.generate_rna_silva(options)
+        elif options.subparser_name == 'trnascan':
+            self.generate_trnascan_data(options)
         elif options.subparser_name == 'update_refseq':
             self.update_refseq_from_ftp_files(options)
         elif options.subparser_name == 'update_genbank':
