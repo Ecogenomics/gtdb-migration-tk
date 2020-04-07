@@ -51,14 +51,19 @@ class RnaManager(object):
 
         root_path = os.path.join(rna_path,str(self.rna_version))
 
-
-        self.silva_ssu_ref_file = os.path.join(root_path,f'SILVA_{rna_version}_SSURef_NR99_tax_silva.fasta')
-        #self.silva_lsu_ref_file = os.path.join(root_path,f'SILVA_{rna_version}_LSURef_tax_silva.fasta')
-
         self.silva_ssu_taxonomy_file = os.path.join(root_path,'silva_taxonomy.ssu.tsv')
-        #self.silva_lsu_taxonomy_file = os.path.join(root_path,'silva_taxonomy.lsu.tsv')
+        self.silva_ssu_ref_file = os.path.join(root_path,f'SILVA_{rna_version}_SSURef_Nr99_tax_silva.fasta')
 
-        for item in [self.silva_ssu_ref_file,self.silva_ssu_taxonomy_file]:
+
+        file_to_check= [self.silva_ssu_taxonomy_file,self.silva_ssu_ref_file]
+
+        if rna_gene != 'ssu':
+            self.silva_lsu_ref_file = os.path.join(root_path,f'SILVA_{rna_version}_LSURef_tax_silva.fasta')
+            self.silva_lsu_taxonomy_file = os.path.join(root_path,'silva_taxonomy.lsu.tsv')
+            file_to_check.append(self.silva_lsu_ref_file)
+            file_to_check.append(self.silva_lsu_taxonomy_file)
+
+        for item in file_to_check:
             if not os.path.exists(item):
                 print('{} does not exist'.format(item))
                 sys.exit(-1)
@@ -102,6 +107,8 @@ class RnaManager(object):
             self.db = self.silva_lsu_ref_file
             self.taxonomy = self.silva_lsu_taxonomy_file
         elif self.rna_gene == 'lsu_5S':
+            self.db = None
+            self.taxonomy = None
             print('We currently do not curate against a 5S database, but do identify these sequences for quality assessment purposes.')
         self.output_dir = self.silva_output_dir
 
@@ -124,13 +131,12 @@ class RnaManager(object):
 
             genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
 
-            # hmm_results_file = os.path.join(
-            #                         gpath, self.output_dir, self.rna_gene + '.hmm_summary.tsv')
-            # if os.path.exists(hmm_results_file):
-            #                         continue
+            canary_file = os.path.join(
+                                    gpath, self.output_dir, self.rna_gene + '.canary.txt')
+            #if os.path.exists(canary_file):
+            #                        continue
 
             input_files.append(genome_file)
-
 
 
         # process each genome
@@ -161,9 +167,8 @@ class RnaManager(object):
         ar_model, bac_model, euk_model = rna_models[self.rna_gene]
 
         # run each of the rRNA models
-        rna = RNA(self.cpus,self.min_len)
+        rna = RNA(self.cpus,self.rna_gene,self.min_len)
         rna.run(genome_file,
-                    self.rna_gene,
                     os.path.join(hmm_dir, ar_model + '.hmm'),
                     os.path.join(hmm_dir, bac_model + '.hmm'),
                     os.path.join(hmm_dir, euk_model + '.hmm'),

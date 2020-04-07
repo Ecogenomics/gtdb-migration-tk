@@ -34,7 +34,10 @@ from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.marker_manager import MarkerManager
 from gtdb_migration_tk.metadata_manager import MetadataManager
 from gtdb_migration_tk.rna_manager import RnaManager
+from gtdb_migration_tk.rna_ltp_manager import RnaLTPManager
 from gtdb_migration_tk.trnascan_manager import tRNAScan
+from gtdb_migration_tk.checkm_manager import CheckMManager
+
 
 
 class OptionsParser():
@@ -139,6 +142,14 @@ class OptionsParser():
         p = RnaManager(options.cpus,options.version,options.rnapath,options.rna_gene)
         p.generate_rna_silva(options.gtdb_genome_path_file)
 
+    def generate_rna_ltp(self,options):
+        p = RnaLTPManager(options.cpus,options.ltp_version,options.ssu_version,options.rnapath)
+        p.generate_rna_ltp(options.gtdb_genome_path_file)
+
+    def generate_checkm_data(self,options):
+        p = CheckMManager(options.cpus)
+        p.run_checkm(options.gtdb_genome_path_file,options.report,options.output_dir,options.all_genomes)
+
     def generate_trnascan_data(self,options):
         p = tRNAScan(options.gbk_arc_assembly_file, options.gbk_bac_assembly_file, options.rfq_arc_assembly_file, options.rfq_bac_assembly_file,options.cpus)
         p.run(options.gtdb_genome_path_file)
@@ -159,8 +170,12 @@ class OptionsParser():
             self.generate_metadata(options)
         elif options.subparser_name == 'rna_silva':
             self.generate_rna_silva(options)
+        elif options.subparser_name == 'rna_ltp':
+            self.generate_rna_ltp(options)
         elif options.subparser_name == 'trnascan':
             self.generate_trnascan_data(options)
+        elif options.subparser_name == 'checkm':
+            self.generate_checkm_data(options)
         elif options.subparser_name == 'update_refseq':
             self.update_refseq_from_ftp_files(options)
         elif options.subparser_name == 'update_genbank':

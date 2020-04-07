@@ -59,7 +59,9 @@ def print_help():
       top_hit        -> generate tophits file
       metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
       rna_silva      -> Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes against SILVA
+      rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
       trnascan       -> Identifies tRNAs in genomes.
+      checkm         -> Estimates the quality of the new genomes
 
     Information from Nomenclatural resources:
       lpsn     -> Process steps for LPSN.
@@ -145,6 +147,23 @@ if __name__ == '__main__':
     rna_silva_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
+
+    rna_ltp_parser = subparsers.add_parser(
+        'rna_ltp', formatter_class=CustomHelpFormatter, description='Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes against SILVA')
+    rna_ltp_parser.add_argument('-g',
+                                  '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    rna_ltp_parser.add_argument('-c', '--cpus', type=int,
+                                  help='number of threads', default=1)
+    rna_ltp_parser.add_argument('--ltp_version', type=int,
+                                  help='rna Silva version', default=0)
+    rna_ltp_parser.add_argument('--ssu_version', type=int,
+                                      help='rna Silva version', default=0)
+    rna_ltp_parser.add_argument('-p', '--rnapath',
+                                  help='path to rna Silva file', default='/srv/whitlam/bio/db/silva/')
+    rna_ltp_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+
     trnascan_parser = subparsers.add_parser(
         'trnascan', formatter_class=CustomHelpFormatter, description='Identifies tRNAs in genomes')
     trnascan_parser.add_argument('-g',
@@ -162,6 +181,18 @@ if __name__ == '__main__':
     trnascan_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
+    checkm_parser = subparsers.add_parser('checkm',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    checkm_parser.add_argument('-g',
+                                  '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    checkm_parser.add_argument('--report', help='report log indicating new, modified, unmodified, ..., genomes')
+    checkm_parser.add_argument('-o','--output_dir', help='output directory')
+    checkm_parser.add_argument(
+        '--all', dest='all_genomes', help="re run all genomes", action='store_true')
+    checkm_parser.add_argument('-c', '--cpus', type=int,
+                                  help='number of threads', default=1)
+    checkm_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
 
 
     # Search Pfam Tigrfam markers
