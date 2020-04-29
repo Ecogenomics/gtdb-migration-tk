@@ -32,12 +32,13 @@ from gtdb_migration_tk.genome_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.marker_manager import MarkerManager
-from gtdb_migration_tk.metadata_manager import MetadataManager
+from gtdb_migration_tk.metadata_manager import MetadataManager,MetadataTable
+from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta
 from gtdb_migration_tk.rna_manager import RnaManager
 from gtdb_migration_tk.rna_ltp_manager import RnaLTPManager
 from gtdb_migration_tk.trnascan_manager import tRNAScan
 from gtdb_migration_tk.checkm_manager import CheckMManager
-
+from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 
 
 class OptionsParser():
@@ -138,6 +139,16 @@ class OptionsParser():
         p = MetadataManager(options.cpus)
         p.generate_metadata(options.gtdb_genome_path_file)
 
+    def create_metadata_tables(self, options):
+        p = MetadataTable()
+        p.create_metadata_tables(options.gtdb_genome_path_file,options.output_dir)
+
+    def parse_assemblies(self,options):
+        p = NCBIMeta()
+        p.parse_assemblies(options.rb,
+              options.ra,
+              options.gb,
+              options.ga, options.genome_list, options.output_file)
     def generate_rna_silva(self,options):
         p = RnaManager(options.cpus,options.version,options.rnapath,options.rna_gene)
         p.generate_rna_silva(options.gtdb_genome_path_file)
@@ -154,6 +165,17 @@ class OptionsParser():
         p = tRNAScan(options.gbk_arc_assembly_file, options.gbk_bac_assembly_file, options.rfq_arc_assembly_file, options.rfq_bac_assembly_file,options.cpus)
         p.run(options.gtdb_genome_path_file)
 
+    def parse_ncbi_dir(self,options):
+        p = NCBIMeta()
+        p.parse_ncbi_dir(options.gtdb_genome_path_file,options.output_file)
+
+    def parse_ncbi_taxonomy(self,options):
+        p = TaxonomyNCBI()
+        p.parse_ncbi_taxonomy(options.taxonomy_dir,
+              options.ra,options.rb,options.ga,options.gb,
+              options.output_prefix)
+
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
@@ -168,6 +190,12 @@ class OptionsParser():
             self.run_tophit(options)
         elif options.subparser_name == 'metadata':
             self.generate_metadata(options)
+        elif options.subparser_name == 'create_tables':
+            self.create_metadata_tables(options)
+        elif options.subparser_name == 'parse_assemblies':
+            self.parse_assemblies(options)
+        elif options.subparser_name == 'parse_ncbi_taxonomy':
+            self.parse_ncbi_taxonomy(options)
         elif options.subparser_name == 'rna_silva':
             self.generate_rna_silva(options)
         elif options.subparser_name == 'rna_ltp':

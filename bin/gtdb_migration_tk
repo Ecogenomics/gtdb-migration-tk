@@ -63,6 +63,14 @@ def print_help():
       trnascan       -> Identifies tRNAs in genomes.
       checkm         -> Estimates the quality of the new genomes
 
+    Metadata:
+      create_tables     -> Create tables with metadata for all genomes (currently only NCBI)
+      parse_assemblies  -> Create tables with metadata for all NCBI genomes from assembly summaries
+      parse_ncbi_dir    -> Create tables with metadata for all NCBI genomes from directories
+
+    NCBI Taxonomy:
+      parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file.
+
     Information from Nomenclatural resources:
       lpsn     -> Process steps for LPSN.
       bacdive  -> Process steps for BacDive. [In Dev]
@@ -212,6 +220,46 @@ if __name__ == '__main__':
     hmmsearch_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
+    # Create metadata tables
+    create_tables_parser = subparsers.add_parser('create_tables', formatter_class=CustomHelpFormatter,
+                                                    description='Create tables with metadata for all NCBI genomes.')
+    create_tables_parser.add_argument('-g',
+                                      '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    create_tables_parser.add_argument('-o',
+                                          '--output_dir', help='Output directory.', required=True)
+    create_tables_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    # Create metadata tables for NCBI
+    create_ncbi_tables_parser = subparsers.add_parser('parse_assemblies', formatter_class=CustomHelpFormatter,
+                                                    description='Parse assembly summary file to generate metadata.')
+    create_ncbi_tables_parser.add_argument('--rb',help='RefSeq assembly summary file (assembly_summary_refseq.txt) for Bacteria', required=True)
+    create_ncbi_tables_parser.add_argument('--ra',help='RefSeq assembly summary file (assembly_summary_refseq.txt) for Archaea', required=True)
+    create_ncbi_tables_parser.add_argument('--gb',help='GenBank assembly summary file (assembly_summary_refseq.txt) for Bacteria', required=True)
+    create_ncbi_tables_parser.add_argument('--ga',help='GenBank assembly summary file (assembly_summary_refseq.txt) for Archaea', required=True)
+    create_ncbi_tables_parser.add_argument('-l','--genome_list',help='genome identifiers for genomes in GTDB')
+    create_ncbi_tables_parser.add_argument('-o','--output_file')
+    create_ncbi_tables_parser.add_argument('--silent', help="suppress output", action='store_true')
+
+    # Create metadata tables for NCBI
+    parse_ncbi_dir_parser = subparsers.add_parser('parse_ncbi_dir', formatter_class=CustomHelpFormatter,
+                                                    description='Parse NCBI directories.')
+    parse_ncbi_dir_parser.add_argument('-g',
+                                      '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    parse_ncbi_dir_parser.add_argument('-o',
+                                              '--output_dir', help='Output directory.', required=True)
+
+    # Parse NCBI Taxonomy files
+    parse_ncbi_tax_parser = subparsers.add_parser('parse_ncbi_taxonomy', formatter_class=CustomHelpFormatter,
+                                                description='Parse assembly summary file to generate taxonomy files.')
+    parse_ncbi_tax_parser.add_argument('-t','--taxonomy_dir', help='directory containing NCBI taxonomy files')
+    parse_ncbi_tax_parser.add_argument('--rb',help='RefSeq assembly summary file (assembly_summary_refseq.txt) for Bacteria', required=True)
+    parse_ncbi_tax_parser.add_argument('--ra',help='RefSeq assembly summary file (assembly_summary_refseq.txt) for Archaea', required=True)
+    parse_ncbi_tax_parser.add_argument('--gb',help='GenBank assembly summary file (assembly_summary_refseq.txt) for Bacteria', required=True)
+    parse_ncbi_tax_parser.add_argument('--ga',help='GenBank assembly summary file (assembly_summary_refseq.txt) for Archaea', required=True)
+    parse_ncbi_tax_parser.add_argument('-p','--output_prefix', help='output prefix')
+    parse_ncbi_tax_parser.add_argument('--silent', help="suppress output", action='store_true')
+
     # Misc commands
     genome_dir_parser = subparsers.add_parser(
         'list_genomes', formatter_class=CustomHelpFormatter, description='Produce file indicating the directory of each genome.')
@@ -261,6 +309,9 @@ if __name__ == '__main__':
                                    help='Number of cpus')
     update_gbk_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
+
+
+
 
     # Steps to update LPSN Metadata
     lpsn_parser = subparsers.add_parser('lpsn',
