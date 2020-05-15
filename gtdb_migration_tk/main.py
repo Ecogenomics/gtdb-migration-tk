@@ -40,6 +40,7 @@ from gtdb_migration_tk.trnascan_manager import tRNAScan
 from gtdb_migration_tk.checkm_manager import CheckMManager
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 from gtdb_migration_tk.database_manager import DatabaseManager
+from gtdb_migration_tk.curation_lists import CurationLists
 
 
 class OptionsParser():
@@ -190,6 +191,19 @@ class OptionsParser():
         p.parse_ncbi_taxonomy(options.taxonomy_dir,
                               options.ra, options.rb, options.ga, options.gb,
                               options.output_prefix)
+                              
+    def curation_lists(self, options):
+        check_file_exists(options.gtdb_init_taxonomy)
+        check_file_exists(options.gtdb_sp_clusters)
+        check_file_exists(options.gtdb_prev_sp_clusters)
+        check_file_exists(options.gtdb_decorate_table)
+        make_sure_path_exists(options.output_dir)
+        
+        p = CurationLists(options.domain, options.output_dir)
+        p.run(options.gtdb_init_taxonomy,
+                options.gtdb_sp_clusters,
+                options.gtdb_prev_sp_clusters,
+                options.gtdb_decorate_table)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
@@ -247,6 +261,8 @@ class OptionsParser():
             self.compare_metadata(options)
         elif options.subparser_name == 'compare_field':
             self.compare_selected_data(options)
+        elif options.subparser_name == 'curation_lists':
+            self.curation_lists(options)
         else:
             self.logger.error('Unknown command: ' +
                               options.subparser_name + '\n')

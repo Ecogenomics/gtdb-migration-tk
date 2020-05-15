@@ -78,6 +78,9 @@ def print_help():
       lpsn     -> Process steps for LPSN.
       bacdive  -> Process steps for BacDive. [In Dev]
       strains  -> Set of tools to combined information from LPSN,DSMZ and Straininfo.
+      
+    Curation files
+      curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names
 
     Miscellaneous commands:
       list_genomes -> Produce file indicating the directory of each genome.
@@ -476,6 +479,19 @@ if __name__ == '__main__':
         '--only_ncbi', help='Output file.', action='store_true')
     metafield_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
+        
+        
+    # Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names
+    curation_lists_parser = subparsers.add_parser('curation_lists', 
+                                                formatter_class=CustomHelpFormatter, 
+                                                description='Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names.')
+    curation_lists_parser.add_argument('--gtdb_init_taxonomy', help='initial taxonomy for latest release')
+    curation_lists_parser.add_argument('--gtdb_sp_clusters', help='species clusters for latest release')
+    curation_lists_parser.add_argument('--gtdb_prev_sp_clusters', help='species clusters for previous release')
+    curation_lists_parser.add_argument('--gtdb_decorate_table', help='decoration table produced by PhyloRank decorate')
+    curation_lists_parser.add_argument('--domain', help='domain to append to output files', choices=['bac', 'ar'])
+    curation_lists_parser.add_argument('--output_dir', help='output directory')
+    curation_lists_parser.add_argument('--silent', help="suppress output", action='store_true')
 
     # get and check options
     args = None
