@@ -62,6 +62,9 @@ def print_help():
       rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
       trnascan       -> Identifies tRNAs in genomes.
       checkm         -> Estimates the quality of the new genomes
+      
+     Access to Database:
+     update_db       -> Update the gtdb database
 
     Metadata:
       create_tables     -> Create tables with metadata for all genomes (currently only NCBI)
@@ -201,7 +204,31 @@ if __name__ == '__main__':
                                   help='number of threads', default=1)
     checkm_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
-
+        
+    # Commands to Update database
+    update_db_parser = subparsers.add_parser(
+        'update_db', formatter_class=CustomHelpFormatter, description='Ypdate the Postgres database.')
+    update_db_parser.add_argument('--hostname', required=True)
+    update_db_parser.add_argument('-u', '--user', 
+                                  help='psql user',  required=True)
+    update_db_parser.add_argument('-p', '--password', 
+                                  help='password for psql user',  required=True)
+    update_db_parser.add_argument('-d', '--db',
+                                  help='database.',  required=True)
+    update_db_parser.add_argument('--path_to_log',
+                                  help='Path to log file.',dest='output_dir',  required=True)
+    update_db_parser.add_argument('-c',
+                                  '--checkm_profile_new_genomes', required=True)
+    update_db_parser.add_argument('-g', '--genome_dirs_file', 
+                                  help='file listing all paths to NCBI genomes',  required=True)
+    update_db_parser.add_argument('-f', '--ftp_download_date',
+                                  help='Date when data was downloaded.')
+    update_db_parser.add_argument('-r', '--repository',
+                                  help='NCBI repo.',choices=['refseq','genbank'])
+    update_db_parser.add_argument('--cpus', type=int,
+                                  help='number of threads', default=1)
+    update_db_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
 
     # Search Pfam Tigrfam markers
     hmmsearch_parser = subparsers.add_parser(

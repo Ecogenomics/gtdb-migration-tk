@@ -32,13 +32,14 @@ from gtdb_migration_tk.genome_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.marker_manager import MarkerManager
-from gtdb_migration_tk.metadata_manager import MetadataManager,MetadataTable
+from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta
 from gtdb_migration_tk.rna_manager import RnaManager
 from gtdb_migration_tk.rna_ltp_manager import RnaLTPManager
 from gtdb_migration_tk.trnascan_manager import tRNAScan
 from gtdb_migration_tk.checkm_manager import CheckMManager
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
+from gtdb_migration_tk.database_manager import DatabaseManager
 
 
 class OptionsParser():
@@ -141,40 +142,54 @@ class OptionsParser():
 
     def create_metadata_tables(self, options):
         p = MetadataTable()
-        p.create_metadata_tables(options.gtdb_genome_path_file,options.output_dir)
+        p.create_metadata_tables(
+            options.gtdb_genome_path_file, options.output_dir)
 
-    def parse_assemblies(self,options):
+    def parse_assemblies(self, options):
         p = NCBIMeta()
         p.parse_assemblies(options.rb,
-              options.ra,
-              options.gb,
-              options.ga, options.genome_list, options.output_file)
-    def generate_rna_silva(self,options):
-        p = RnaManager(options.cpus,options.version,options.rnapath,options.rna_gene)
+                           options.ra,
+                           options.gb,
+                           options.ga, options.genome_list, options.output_file)
+
+    def generate_rna_silva(self, options):
+        p = RnaManager(options.cpus, options.version,
+                       options.rnapath, options.rna_gene)
         p.generate_rna_silva(options.gtdb_genome_path_file)
 
-    def generate_rna_ltp(self,options):
-        p = RnaLTPManager(options.cpus,options.ltp_version,options.ssu_version,options.rnapath)
+    def generate_rna_ltp(self, options):
+        p = RnaLTPManager(options.cpus, options.ltp_version,
+                          options.ssu_version, options.rnapath)
         p.generate_rna_ltp(options.gtdb_genome_path_file)
 
-    def generate_checkm_data(self,options):
+    def generate_checkm_data(self, options):
         p = CheckMManager(options.cpus)
-        p.run_checkm(options.gtdb_genome_path_file,options.report,options.output_dir,options.all_genomes)
+        p.run_checkm(options.gtdb_genome_path_file, options.report,
+                     options.output_dir, options.all_genomes)
 
-    def generate_trnascan_data(self,options):
-        p = tRNAScan(options.gbk_arc_assembly_file, options.gbk_bac_assembly_file, options.rfq_arc_assembly_file, options.rfq_bac_assembly_file,options.cpus)
+    def update_db(self, options):
+        p = DatabaseManager(options.user, options.hostname,
+                            options.db, options.password,
+                            options.password,
+                            options.repository,
+                            options.output_dir, options.cpus)
+        p.runUpdate(options.checkm_profile_new_genomes,
+                    options.genome_dirs_file, options.ftp_download_date,)
+
+    def generate_trnascan_data(self, options):
+        p = tRNAScan(options.gbk_arc_assembly_file, options.gbk_bac_assembly_file,
+                     options.rfq_arc_assembly_file, options.rfq_bac_assembly_file, options.cpus)
         p.run(options.gtdb_genome_path_file)
 
-    def parse_ncbi_dir(self,options):
+    def parse_ncbi_dir(self, options):
         p = NCBIMeta()
-        p.parse_ncbi_dir(options.gtdb_genome_path_file,options.output_file)
+        p.parse_ncbi_dir(options.gtdb_genome_path_file, options.output_file)
 
-    def parse_ncbi_taxonomy(self,options):
+    def parse_ncbi_taxonomy(self, options):
         p = TaxonomyNCBI()
         p.parse_ncbi_taxonomy(options.taxonomy_dir,
-              options.ra,options.rb,options.ga,options.gb,
-              options.output_prefix)
-
+                              options.ra, options.rb, options.ga, options.gb,
+                              options.output_prefix)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
@@ -204,6 +219,8 @@ class OptionsParser():
             self.generate_trnascan_data(options)
         elif options.subparser_name == 'checkm':
             self.generate_checkm_data(options)
+        elif options.subparser_name == 'update_db':
+            self.update_db(options)
         elif options.subparser_name == 'update_refseq':
             self.update_refseq_from_ftp_files(options)
         elif options.subparser_name == 'update_genbank':
