@@ -32,7 +32,7 @@ from gtdb_migration_tk.ftp_manager_tools import FTPTools
 
 class RefSeqManager(object):
 
-    def __init__(self, new_refseq_folder, cpus):
+    def __init__(self, new_refseq_folder, dry_run=False, cpus=1):
 
         self.domains = ["archaea", "bacteria"]
         self.genome_domain_dict = {}
@@ -53,6 +53,8 @@ class RefSeqManager(object):
                         "_assembly_stats.txt", "_hashes.txt")
         self.allExts = self.fastaExts + self.extensions + self.reports
         self.allbutFasta = self.extensions + self.reports
+
+        self.dry_run = dry_run
 
         self.report_gcf = open(os.path.join(
             new_refseq_folder, "report_gcf.log"), "w", 1)
@@ -115,7 +117,7 @@ class RefSeqManager(object):
             str(datetime.now()), len(new_dict)))
 
         ftptools = FTPTools(
-            self.report, self.genomes_to_review, self.genome_domain_dict)
+            self.report_gcf, self.genomes_to_review, self.genome_domain_dict)
 
         # delete genomes from the Database
         removed_dict = {removed_key: old_dict[removed_key] for removed_key in list(
@@ -125,8 +127,8 @@ class RefSeqManager(object):
         # new genomes in FTP
         added_dict = {added_key: new_dict[added_key] for added_key in list(
             set(new_dict.keys()) - set(old_dict.keys()))}
-        ftptools.addGenomes(added_dict, ftp_refseq, new_refseq,
-                            self.report_gcf, self.genome_domain_dict)
+        ftptools.addGenomes(added_dict, ftp_refseq,
+                            new_refseq, self.genome_domain_dict)
 
         # delete genomes from the Database
         removed_dict = {removed_key: old_dict[removed_key] for removed_key in list(
@@ -138,7 +140,7 @@ class RefSeqManager(object):
             set(old_dict.keys()).intersection(set(new_dict.keys())))
         print("{}:Intersection list:{} genomes".format(
             str(datetime.now()), len(intersect_list)))
-        self.compareGenomes(
+        ftptools.compareGenomes(
             intersect_list, old_dict, new_dict, ftp_refseq, new_refseq, self.threads)
         self.report_gcf.close()
         self.genomes_to_review.close()
@@ -146,7 +148,7 @@ class RefSeqManager(object):
 
 class GenBankManager(object):
 
-    def __init__(self, new_genbank_folder, cpus):
+    def __init__(self, new_genbank_folder, dry_run=False, cpus=1):
         self.domains = ["archaea", "bacteria"]
         self.genome_domain_dict = {}
 
@@ -166,6 +168,8 @@ class GenBankManager(object):
         self.allbutFasta = self.extensions + self.reports
 
         self.threads = cpus
+
+        self.dry_run = dry_run
 
         self.logger = logging.getLogger('timestamp')
 
@@ -229,7 +233,8 @@ class GenBankManager(object):
         added_dict = {added_key: new_dict[added_key] for added_key in list(
             set(new_dict.keys()) - set(old_dict.keys()))}
         self.logger.info("{0} genomes to add".format(len(added_dict)))
-        ftptools.addGenomes(added_dict, ftp_genbank, new_genbank)
+        ftptools.addGenomes(added_dict, ftp_genbank,
+                            new_genbank, self.genome_domain_dict)
 
         self.logger.info(
             "{}:Generating intersection list.....".format(str(datetime.now())))

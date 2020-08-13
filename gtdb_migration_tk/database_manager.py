@@ -44,10 +44,16 @@ import multiprocessing as mp
 import time
 import logging
 
+from atpbar import atpbar
+from atpbar import flush
+import threading
+
 
 from biolib.common import remove_extension
 from dateutil.parser import parse
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
+
+from atpbar import register_reporter, find_reporter, flush
 
 
 class DatabaseManager(object):
@@ -108,10 +114,12 @@ class DatabaseManager(object):
         self.report_database_update.close()
 
     def _updateExistingGenomes(self):
+
         workerQueue = mp.Queue()
-        writerQueue = mp.Queue()
+        writerQueue = mp.JoinableQueue()
         reportlist = mp.Manager().list()
         shortcheckmlist = mp.Manager().list()
+        tasklist = mp.Manager().list()
 
         for record in self.list_checkm_records:
             workerQueue.put(record)
@@ -121,12 +129,11 @@ class DatabaseManager(object):
 
         try:
             workerProc = [mp.Process(target=self.worker_updateExistingGenomes, args=(
-                workerQueue, i, reportlist, shortcheckmlist, writerQueue)) for i in range(self.cpus)]
+                workerQueue, i, tasklist, reportlist, shortcheckmlist, writerQueue)) for i in range(self.cpus)]
             writeProc = mp.Process(target=self.__progress, args=(
                 len(self.list_checkm_records), writerQueue))
 
             writeProc.start()
-
             for p in workerProc:
                 #print('starting', p.name, '=', p.is_alive())
                 p.start()
@@ -137,6 +144,16 @@ class DatabaseManager(object):
 
             writerQueue.put(None)
             writeProc.join()
+
+            taskProc = []
+            for i, list_sql in enumerate(tasklist):
+                subproc = threading.Thread(
+                    target=self.task_sql_command, args=(list_sql, i))
+                subproc.start()
+                taskProc.append(subproc)
+            for tp in taskProc:
+                tp.join()
+            flush()
         except:
             for p in workerProc:
                 p.terminate()
@@ -151,11 +168,25 @@ class DatabaseManager(object):
             result.append(it)
         return result
 
-    def worker_updateExistingGenomes(self, queue_in, process_idx, list_report, list_shortcheckm, queue_out):
+    def task_sql_command(self, list_sql, process_idx):
+        thread_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
+            self.hostname, self.user, self.password, self.db)
+        thread_con.MakePostgresConnection()
+        thread_cur = thread_con.cursor()
+
+        list_subcommands = list(self.chunks(list_sql, 10))
+
+        for subsql in atpbar(list_subcommands, name="Process-{}".format(process_idx)):
+            big_sql_command = ';'.join(subsql)
+            thread_cur.execute(big_sql_command)
+        thread_con.commit()
+
+    def worker_updateExistingGenomes(self, queue_in, process_idx, tasklist, list_report, list_shortcheckm, queue_out):
         list_sql = []
         while True:
             checkm_record = queue_in.get(block=True, timeout=None)
             if checkm_record == None:
+                queue_out.task_done
                 break
             if (checkm_record in self.dict_existing_records) and (checkm_record in self.genome_dirs_dict):
                 list_report.append("{0}\t{1}\tupdate protein file\n".format(
@@ -204,29 +235,14 @@ class DatabaseManager(object):
                 list_shortcheckm.append(checkm_record)
             queue_out.put(checkm_record)
 
-        thread_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            self.hostname, self.user, self.password, self.db)
-        thread_con.MakePostgresConnection()
-        thread_cur = thread_con.cursor()
-
-        list_subcommands = list(self.chunks(list_sql, 50))
-
-        chun_idx = 0
-        for subsql in list_subcommands:
-            chun_idx += 1
-            print("{}/{} : {} SQL command for process {}.                   ".format(
-                chun_idx, len(list_subcommands), len(subsql), process_idx))
-            big_sql_command = ';'.join(subsql)
-            thread_cur.execute(big_sql_command)
-        thread_con.commit()
-        print("We are commiting command for process {}.                     ".format(
-            process_idx))
+        tasklist.append(list_sql)
 
     def _checkPathorRemoveRecord(self):
 
         workerQueue = mp.Queue()
         writerQueue = mp.Queue()
         reportlist = mp.Manager().list()
+        tasklist = mp.Manager().list()
 
         for record in self.dict_existing_records:
             workerQueue.put(record)
@@ -234,33 +250,46 @@ class DatabaseManager(object):
         for _ in range(self.cpus):
             workerQueue.put(None)
 
-        try:
-            workerProc = [mp.Process(target=self.worker_checkPathorRemoveRecord, args=(
-                workerQueue, i, reportlist, writerQueue)) for i in range(self.cpus)]
-            writeProc = mp.Process(target=self.__progress, args=(
-                len(self.dict_existing_records), writerQueue))
+        # try:
+        workerProc = [mp.Process(target=self.worker_checkPathorRemoveRecord, args=(
+            workerQueue, i, tasklist, reportlist, writerQueue)) for i in range(self.cpus)]
+        writeProc = mp.Process(target=self.__progress, args=(
+            len(self.dict_existing_records), writerQueue))
 
-            writeProc.start()
+        writeProc.start()
 
-            for p in workerProc:
-                p.start()
+        for p in workerProc:
+            p.start()
 
-            for p in workerProc:
-                p.join()
+        for p in workerProc:
+            p.join()
 
-            writerQueue.put(None)
-            writeProc.join()
-        except:
-            for p in workerProc:
-                p.terminate()
+        writerQueue.put(None)
+        writeProc.join()
 
-            writeProc.terminate
+        taskProc = []
+        for i, list_sql in enumerate(tasklist):
+            subproc = threading.Thread(
+                target=self.task_sql_command, args=(list_sql, i))
+            subproc.start()
+            taskProc.append(subproc)
+        for tp in taskProc:
+            tp.join()
+        flush()
+
+#=========================================================================
+#         except:
+#             for p in workerProc:
+#                 p.terminate()
+#
+#             writeProc.terminate
+#=========================================================================
 
         self.logger.info('We write a report')
         for reportlist_item in reportlist:
             self.report_database_update.write(reportlist_item)
 
-    def worker_checkPathorRemoveRecord(self, queue_in, process_idx, list_report, queue_out):
+    def worker_checkPathorRemoveRecord(self, queue_in, process_idx, tasklist, list_report, queue_out):
         """Process each data item in parallel."""
         list_sql = []
         while True:
@@ -278,24 +307,7 @@ class DatabaseManager(object):
                         record, list_sql, list_report, self.dict_existing_records[record], self.genome_dirs_dict[record])
             # allow results to be processed or written to file
             queue_out.put(record)
-
-        thread_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            self.hostname, self.user, self.password, self.db)
-        thread_con.MakePostgresConnection()
-        thread_cur = thread_con.cursor()
-
-        list_subcommands = list(self.chunks(list_sql, 50))
-        chun_idx = 0
-        for subsql in list_subcommands:
-            chun_idx += 1
-            print("{}/{} : {} SQL command for process {}.                   ".format(
-                chun_idx, len(list_subcommands), len(subsql), process_idx))
-            big_sql_command = ';'.join(subsql)
-
-            thread_cur.execute(big_sql_command)
-        thread_con.commit()
-        print("We are commiting command for process {}.                     ".format(
-            process_idx))
+        tasklist.append(list_sql)
 
     def __progress(self, num_items, queue_out):
         """Store or write results of worker threads in a single thread."""
@@ -310,13 +322,13 @@ class DatabaseManager(object):
                 processed_items, num_items, float(processed_items) * 100 / num_items)
             print(statusStr, end='\r')
 
-    def _removeRecord(self, record, list_report, list_sql):
+    def _removeRecord(self, record, list_report, tasklist):
         list_report.append(
             "{0}\t{1}\tremoved\n".format(self.repository, record))
         query_delete = (
             "DELETE FROM genomes WHERE name LIKE '{0}'".format(record))
-        list_sql.append(query_delete)
-        return list_sql
+        tasklist.append(query_delete)
+        return tasklist
 
     def _checkPathRecord(self, record, list_sql, list_report, path_in_db, path_in_folder):
         if path_in_db not in path_in_folder:
@@ -341,6 +353,7 @@ class DatabaseManager(object):
         workerQueue = mp.Queue()
         writerQueue = mp.Queue()
         reportlist = mp.Manager().list()
+        tasklist = mp.Manager().list()
 
         for record in self.list_checkm_records:
             workerQueue.put(record)
@@ -350,7 +363,7 @@ class DatabaseManager(object):
 
         try:
             workerProc = [mp.Process(target=self.worker_addOrVersionNewGenomes, args=(
-                workerQueue, i, reportlist, writerQueue)) for i in range(self.cpus)]
+                workerQueue, i, tasklist, reportlist, writerQueue)) for i in range(self.cpus)]
             writeProc = mp.Process(target=self.__progress, args=(
                 len(self.list_checkm_records), writerQueue))
 
@@ -364,6 +377,17 @@ class DatabaseManager(object):
 
             writerQueue.put(None)
             writeProc.join()
+
+            taskProc = []
+            for i, list_sql in enumerate(tasklist):
+                subproc = threading.Thread(
+                    target=self.task_sql_command, args=(list_sql, i))
+                subproc.start()
+                taskProc.append(subproc)
+            for tp in taskProc:
+                tp.join()
+            flush()
+
         except:
             for p in workerProc:
                 p.terminate()
@@ -374,7 +398,7 @@ class DatabaseManager(object):
         for reportlist_item in reportlist:
             self.report_database_update.write(reportlist_item)
 
-    def worker_addOrVersionNewGenomes(self, queue_in, process_idx, list_report, queue_out):
+    def worker_addOrVersionNewGenomes(self, queue_in, process_idx, tasklist, list_report, queue_out):
         list_sql = []
         thread_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
             self.hostname, self.user, self.password, self.db)
@@ -397,22 +421,7 @@ class DatabaseManager(object):
                     list_sql = self._addNewGenomes(
                         checkm_record, list_report, list_sql, id_record)
             queue_out.put(checkm_record)
-
-        thread_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            self.hostname, self.user, self.password, self.db)
-        thread_con.MakePostgresConnection()
-        thread_cur = thread_con.cursor()
-
-        list_subcommands = list(self.chunks(list_sql, 50))
-        for chun_idx, subsql in enumerate(list_subcommands):
-            print("{}/{} : {} SQL command for process {}.                   ".format(
-                chun_idx + 1, len(list_subcommands), len(subsql), process_idx))
-            big_sql_command = ';'.join(subsql)
-
-            thread_cur.execute(big_sql_command)
-        thread_con.commit()
-        print("We are commiting command for process {}.                     ".format(
-            process_idx))
+        tasklist.append(list_sql)
 
     def _addNewGenomes(self, checkm_record, list_report, list_sql, id_record=None):
         list_genome_details = [checkm_record]

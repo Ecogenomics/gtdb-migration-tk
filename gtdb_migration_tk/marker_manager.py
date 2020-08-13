@@ -24,7 +24,7 @@ import multiprocessing as mp
 
 from collections import defaultdict
 
-from biolib.common import remove_extension
+from biolib.common import remove_extension, make_sure_path_exists
 from biolib.external.execute import check_dependencies
 from biolib.checksum import sha256
 
@@ -45,9 +45,8 @@ class MarkerManager(object):
         check_dependencies(['prodigal', 'hmmsearch', 'pfam_search.pl'])
 
         self.tigrfam_hmms = '/srv/whitlam/bio/db/tigrfam/15.0/TIGRFAMs_15.0_HMM/tigrfam.hmm'
-        self.tigrfam_ext = '_tigrfam.tsv'
 
-        self.pfam_hmm_dir = '/srv/db/pfam/27/'
+        self.pfam_hmm_dir = '/srv/db/pfam/33.1/'
         self.protein_file_ext = '_protein.faa'
 
         self.logger = logging.getLogger('timestamp')
@@ -57,11 +56,16 @@ class MarkerManager(object):
         name = ""
         worker = None
         if db == 'pfam':
-            extension = '_pfam.tsv'
+            pfam_version = 'pfam_33.1'
+            full_extension = '_pfam_33.1.tsv'
+            symlink_extension = '_pfam.tsv'
             name = 'Pfam'
             worker = self.__pfam_worker
         elif db == 'tigrfam':
-            extension = '_tigrfam.tsv'
+            marker_folder = 'tigrfam_15.0'
+            full_extension = '_tigrfam_15.0.tsv'
+            symlink_extension = '_tigrfam.tsv'
+            #extension = '_tigrfam_15.0.tsv'
             name = 'Tigrfam'
             worker = self.__tigrfam_worker
         genomes_to_consider = set()
@@ -93,13 +97,13 @@ class MarkerManager(object):
             assembly_id = os.path.basename(os.path.normpath(gpath))
 
             prodigal_dir = os.path.join(gpath, 'prodigal')
-            pfam_file = os.path.join(
-                prodigal_dir, gid + extension)
-            if os.path.exists(pfam_file):
+            marker_file = os.path.join(
+                prodigal_dir, marker_folder, gid + full_extension)
+            if os.path.exists(marker_file):
                 # verify checksum
-                checksum_file = pfam_file + '.sha256'
+                checksum_file = marker_file + '.sha256'
                 if os.path.exists(checksum_file):
-                    checksum = sha256(pfam_file)
+                    checksum = sha256(marker_file)
                     cur_checksum = open(
                         checksum_file).readline().strip()
                     if checksum == cur_checksum:
@@ -165,11 +169,13 @@ class MarkerManager(object):
         extension = ""
         name = ""
         if db == 'pfam':
-            extension = '_pfam.tsv'
-            tophit_out= '_pfam_tophit.tsv'
+            marker_version = 'pfam_33.1'
+            extension = f'_{marker_version}.tsv'
+            tophit_out = f'_{marker_version}_tophit.tsv'
         elif db == 'tigrfam':
-            extension = '_tigrfam.tsv'
-            tophit_out = '_tigrfam_tophit.tsv'
+            marker_version = 'tigrfam_15.0'
+            extension = f'_{marker_version}.tsv'
+            tophit_out = f'_{marker_version}_tophit.tsv'
 
         countr = 0
         for line in open(gtdb_genome_path_file):
@@ -186,7 +192,7 @@ class MarkerManager(object):
 
             prodigal_dir = os.path.join(gpath, 'prodigal')
             output_file = os.path.join(
-                prodigal_dir, gid + extension)
+                prodigal_dir, marker_version, gid + extension)
 
             gene_file = os.path.join(
                 prodigal_dir, gid + self.protein_file_ext)
@@ -197,10 +203,10 @@ class MarkerManager(object):
                 else:
                     assembly_dir, filename = os.path.split(gene_file)
 
-                    output_hit_file = os.path.join(assembly_dir, filename.replace(
+                    output_hit_file = os.path.join(assembly_dir, marker_version, filename.replace(
                         self.protein_file_ext, extension))
                     # determine top hits
-                    tophit_file = os.path.join(assembly_dir, filename.replace(
+                    tophit_file = os.path.join(assembly_dir, marker_version, filename.replace(
                         self.protein_file_ext, tophit_out))
                     if db == 'pfam':
                         self._pfam_top_hit(output_hit_file, tophit_file)
@@ -225,18 +231,28 @@ class MarkerManager(object):
 
     def __pfam_worker(self, queue_in, queue_out):
         """Process each data item in parallel."""
+
+        pfam_version = 'pfam_33.1'
+        pfam_extension = f'_{pfam_version}.tsv'
+        pfam_tophit_extension = f'_{pfam_version}_tophit.tsv'
+
+        symlink_pfam_extension = '_pfam.tsv'
+        symlink_pfam_tophit_extension = '_pfam_tophit.tsv'
+
         while True:
             gene_file = queue_in.get(block=True, timeout=None)
             if gene_file == None:
                 break
 
             assembly_dir, filename = os.path.split(gene_file)
+            make_sure_path_exists(os.path.join(assembly_dir, pfam_version))
 
             output_hit_file = os.path.join(
-                assembly_dir, filename.replace(self.protein_file_ext, '_pfam.tsv'))
+                assembly_dir, pfam_version, filename.replace(self.protein_file_ext, pfam_extension))
             cmd = 'pfam_search.pl -outfile %s -cpu 1 -fasta %s -dir %s' % (
                 output_hit_file, gene_file, self.pfam_hmm_dir)
             os.system(cmd)
+            # print(cmd)
 
             # calculate checksum
             checksum = sha256(output_hit_file)
@@ -245,9 +261,23 @@ class MarkerManager(object):
             fout.close()
 
             # determine top hits
-            pfam_tophit_file = os.path.join(assembly_dir, filename.replace(
-                self.protein_file_ext, '_pfam_tophit.tsv'))
+            pfam_tophit_file = os.path.join(assembly_dir, pfam_version, filename.replace(
+                self.protein_file_ext, pfam_tophit_extension))
             self._pfam_top_hit(output_hit_file, pfam_tophit_file)
+
+            # create symlink in prodigal_folder
+            new_hit_link = os.path.join(assembly_dir, filename.replace(
+                self.protein_file_ext, symlink_pfam_extension))
+            new_tophit_link = os.path.join(assembly_dir, filename.replace(
+                self.protein_file_ext, symlink_pfam_tophit_extension))
+
+            #==================================================================
+            # print(f'{new_hit_link} will point to {output_hit_file}')
+            # print(f'{new_tophit_link} will point to {pfam_tophit_file}')
+            #==================================================================
+
+            os.symlink(output_hit_file, new_hit_link)
+            os.symlink(pfam_tophit_file, new_tophit_link)
 
             # allow results to be processed or written to file
             queue_out.put(gene_file)
@@ -323,20 +353,29 @@ class MarkerManager(object):
 
     def __tigrfam_worker(self, queue_in, queue_out):
         """Process each data item in parallel."""
+        tigrfam_version = 'tigrfam_15.0'
+        tigrfam_extension = f'_{tigrfam_version}.tsv'
+        tigrfam_tophit_extension = f'_{tigrfam_version}_tophit.tsv'
+
+        symlink_tigrfam_extension = '_tigrfam.tsv'
+        symlink_tigrfam_tophit_extension = '_tigrfam_tophit.tsv'
+
         while True:
             gene_file = queue_in.get(block=True, timeout=None)
             if gene_file == None:
                 break
 
             assembly_dir, filename = os.path.split(gene_file)
+            make_sure_path_exists(os.path.join(assembly_dir, tigrfam_version))
 
-            output_hit_file = os.path.join(assembly_dir, filename.replace(
-                self.protein_file_ext, '_tigrfam.tsv'))
-            hmmsearch_out = os.path.join(assembly_dir, filename.replace(
-                self.protein_file_ext, '_tigrfam.out'))
+            output_hit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
+                self.protein_file_ext, tigrfam_extension))
+            hmmsearch_out = os.path.join(assembly_dir, tigrfam_version. filename.replace(
+                self.protein_file_ext, f'_{tigrfam_version}.out'))
             cmd = 'hmmsearch -o %s --tblout %s --noali --notextw --cut_nc --cpu 1 %s %s' % (
                 hmmsearch_out, output_hit_file, self.tigrfam_hmms, gene_file)
             os.system(cmd)
+            # print(cmd)
 
             # calculate checksum
             checksum = sha256(output_hit_file)
@@ -345,9 +384,23 @@ class MarkerManager(object):
             fout.close()
 
             # determine top hits
-            tigrfam_tophit_file = os.path.join(assembly_dir, filename.replace(
-                self.protein_file_ext, '_tigrfam_tophit.tsv'))
+            tigrfam_tophit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
+                self.protein_file_ext, tigrfam_tophit_extension))
             self._tigr_top_hit(output_hit_file, tigrfam_tophit_file)
+
+            # create symlink in prodigal_folder
+            new_hit_link = os.path.join(assembly_dir, filename.replace(
+                self.protein_file_ext, symlink_tigrfam_extension))
+            new_tophit_link = os.path.join(assembly_dir, filename.replace(
+                self.protein_file_ext, symlink_tigrfam_tophit_extension))
+
+            #==================================================================
+            # print(f'{new_hit_link} will point to {output_hit_file}')
+            # print(f'{new_tophit_link} will point to {tigrfam_tophit_file}')
+            #==================================================================
+
+            os.symlink(output_hit_file, new_hit_link)
+            os.symlink(tigrfam_tophit_file, new_tophit_link)
 
             # allow results to be processed or written to file
             queue_out.put(gene_file)

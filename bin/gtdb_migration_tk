@@ -78,6 +78,7 @@ def print_help():
       lpsn     -> Process steps for LPSN.
       bacdive  -> Process steps for BacDive. [In Dev]
       strains  -> Set of tools to combined information from LPSN,DSMZ and Straininfo.
+      ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find all strain ids
       
     Curation files
       curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names
@@ -102,6 +103,23 @@ if __name__ == '__main__':
     # initialize the options parser
     parser = argparse.ArgumentParser(add_help=False)
     subparsers = parser.add_subparsers(help="--", dest='subparser_name')
+    
+    # Clean FTP server
+    clean_ftp_parser = subparsers.add_parser(
+        'clean_ftp', formatter_class=CustomHelpFormatter, description='Clean the FTP directory.')
+    clean_ftp_parser.add_argument('-n',
+                                 '--new_list_genomes', help='files indicating the Gid present in the new release (comma separated).', required=True)
+    clean_ftp_parser.add_argument('-f',
+                                 '--ftp_genome_dir_file', help='Genome directory file for the FTP server.', required=True)
+    clean_ftp_parser.add_argument('-d',
+                                 '--ftp_genome_dir', help='FTP Genome directory.', required=True)
+    clean_ftp_parser.add_argument('-r',
+                                 '--report_dir', help='output directory to list reports.', required=True)
+    clean_ftp_parser.add_argument('-t',
+                                 '--taxonomy_file', help='Standardised taxonomy file from NCBI.')
+                                                                  
+    clean_ftp_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')                                 
 
     # Call genes with prodigal
     prodigal_parser = subparsers.add_parser(
@@ -232,6 +250,8 @@ if __name__ == '__main__':
                                   help='number of threads', default=1)
     update_db_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
+        
+
 
     # Search Pfam Tigrfam markers
     hmmsearch_parser = subparsers.add_parser(
@@ -316,6 +336,8 @@ if __name__ == '__main__':
                                    help='metadata file downloaded from ncbi.')
     update_rfq_parser.add_argument('--cpus', type=int, default=1,
                                    help='Number of cpus')
+    update_rfq_parser.add_argument('--dry_run',action='store_true',
+                                   help='Run the pipeline without copying the files')
     update_rfq_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
@@ -337,6 +359,8 @@ if __name__ == '__main__':
                                    help='Genbank metadata file downloaded from ncbi.')
     update_gbk_parser.add_argument('--cpus', type=int, default=1,
                                    help='Number of cpus')
+    update_gbk_parser.add_argument('--dry_run',action='store_true',
+                                   help='Run the pipeline without copying the files')
     update_gbk_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
@@ -401,7 +425,26 @@ if __name__ == '__main__':
         'output_dir', help='Output directory.')
     bacdive_parser_dl_strains.add_argument(
         '--silent', help="suppress output", action='store_true')
+        
 
+	# NCBI Strain Parser 
+    ncbi_strains_parser = subparsers.add_parser(
+        'ncbi_strains', formatter_class=CustomHelpFormatter, description='NCBI Strain Parser.')
+    ncbi_strains_parser.add_argument('--genome_dir_file',
+                        help='file indicating path to all genomes directories')
+    ncbi_strains_parser.add_argument('--assembly_summary_bacteria_genbank',
+                        help='assembly_summary_genbank.txt downloaded from NCBI',required=True)
+    ncbi_strains_parser.add_argument('--assembly_summary_archaea_genbank',
+                        help='assembly_summary_genbank.txt downloaded from NCBI',required=True)
+    ncbi_strains_parser.add_argument('--assembly_summary_bacteria_refseq',
+                        help='assembly_summary_bacteria_refseq.txt downloaded from NCBI',required=True)
+    ncbi_strains_parser.add_argument('--assembly_summary_archaea_refseq',
+                        help='assembly_summary_archaea_refseq.txt downloaded from NCBI',required=True)
+
+    ncbi_strains_parser.add_argument('--out_dir', help='output directory')
+    ncbi_strains_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+        
     # Tools to combine Medata from different databases.
     strains_parser = subparsers.add_parser('strains',
                                            formatter_class=CustomHelpFormatter,

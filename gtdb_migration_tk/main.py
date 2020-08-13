@@ -27,6 +27,7 @@ from biolib.common import check_file_exists, make_sure_path_exists, check_dir_ex
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.bacdive import BacDive
 from gtdb_migration_tk.strains import Strains
+from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.tools import Tools
 from gtdb_migration_tk.genome_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
@@ -79,6 +80,12 @@ class OptionsParser():
                               options.straininfo_species_info,
                               options.output_file)
 
+    def generate_ncbi_strains_summary(self, options):
+        p = NCBIStrainParser(options.assembly_summary_bacteria_genbank, options.assembly_summary_archaea_genbank,
+                             options.assembly_summary_bacteria_refseq, options.assembly_summary_archaea_refseq)
+        p.generate_ncbi_strains_summary(
+            options.genome_dir_file, options.out_dir)
+
     def generate_type_table(self, options):
         p = Strains(options.output_dir, options.cpus)
         p.generate_type_strain_table(options.metadata_file,
@@ -103,18 +110,24 @@ class OptionsParser():
                                 options.field_of_interest,
                                 options.output_file, options.only_ncbi)
 
+    def clean_ftp(self, options):
+        p = DirectoryManager()
+        p.clean_ftp(options.new_list_genomes,
+                    options.ftp_genome_dir_file, options.ftp_genome_dir,
+                    options.report_dir,
+                    options.taxonomy_file)
+
     def parse_genome_directory(self, options):
         p = DirectoryManager()
         p.run(options.genome_dir, options.output_file)
 
     def update_refseq_from_ftp_files(self, options):
-        p = RefSeqManager(options.output_dir, options.cpus)
+        p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
         p.runComparison(
             options.ftp_refseq, options.output_dir, options.ftp_genome_dirs, options.old_genome_dirs, options.arc_assembly_summary, options.bac_assembly_summary)
 
     def update_genbank_from_ftp_files(self, options):
-
-        p = GenBankManager(options.output_dir, options.cpus)
+        p = GenBankManager(options.output_dir, options.dry_run, options.cpus)
         p.runComparison(
             options.ftp_genbank, options.output_dir, options.ftp_genbank_genome_dirs,
             options.old_genbank_genome_dirs, options.new_refseq_genome_dirs,
@@ -209,8 +222,10 @@ class OptionsParser():
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
             self.parse_genome_directory(options)
-        if options.subparser_name == 'prodigal':
+        elif options.subparser_name == 'prodigal':
             self.run_prodigal(options)
+        elif options.subparser_name == 'clean_ftp':
+            self.clean_ftp(options)
         elif options.subparser_name == 'prodigal_check':
             self.run_prodigal_check(options)
         elif options.subparser_name == 'hmmsearch':
@@ -252,6 +267,8 @@ class OptionsParser():
         elif options.subparser_name == 'bacdive':
             if options.bacdive_subparser_name == 'download_strains':
                 self.download_strains(options)
+        elif options.subparser_name == 'ncbi_strains':
+            self.generate_ncbi_strains_summary(options)
         elif options.subparser_name == 'strains':
             if options.strains_subparser_name == 'date_table':
                 self.generate_date_table(options)

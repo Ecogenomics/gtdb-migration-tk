@@ -49,6 +49,7 @@ class FTPTools(object):
         self.report = report
         self.genomes_to_review = genomes_to_review
         self.genome_domain_dict = genome_domain_dict
+        self.dry_run = True
 
     def rreplace(self, s, old, new, occurrence):
         '''
@@ -163,7 +164,7 @@ class FTPTools(object):
             target_dir = os.path.join(
                 new_directory, added_dict[gcf_record].replace(ftp_dir, ''))
             shutil.copytree(added_dict[
-                            gcf_record], target_dir, ignore=shutil.ignore_patterns("*_assembly_structure"))
+                gcf_record], target_dir, ignore=shutil.ignore_patterns("*_assembly_structure"))
             self.report.write(
                 "{0}\t{1}\tnew\n".format(genome_domain_dict.get(gcf_record).upper(), gcf_record))
             for compressed_file in glob.glob(target_dir + "/*.gz"):
@@ -309,9 +310,9 @@ class FTPTools(object):
                         print(target_files)
                         print(ftp_dir)
                         print(ftp_files)
-                        print("IT SHOULDN'T HAPPEN")
+                        print(f"IT SHOULDN'T HAPPEN ({target_dir},{ftp_dir}) ")
                         print("########")
-                        sys.exit()
+                        status.append("to_curate")
         status_record = "{0}\t{1}\t{2}\n".format(self.genome_domain_dict.get(
             genome_record).upper(), genome_record, ';'.join([x for x in set(status)]))
         shutil.rmtree(tmp_ftp_dir)
