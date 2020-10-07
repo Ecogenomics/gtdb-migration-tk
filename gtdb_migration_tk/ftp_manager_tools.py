@@ -248,6 +248,8 @@ class FTPTools(object):
             # use the ftp record over the previous gtdb one , we then need to
             # re run the metadata generation
             if ftp_folder:
+                if os.path.exists(target_dir):
+                    shutil.rmtree(target_dir)
                 shutil.copytree(
                     tmp_target, target_dir, symlinks=True,
                     ignore=shutil.ignore_patterns("*_assembly_structure"))
@@ -256,6 +258,8 @@ class FTPTools(object):
             else:
                 # The 2 main fasta files haven't changed so we can copy the old
                 # gtdb folder over
+                if os.path.exists(target_dir):
+                    shutil.rmtree(target_dir)
                 shutil.copytree(
                     gtdb_dir, target_dir, symlinks=True,
                     ignore=shutil.ignore_patterns("*_assembly_structure"))

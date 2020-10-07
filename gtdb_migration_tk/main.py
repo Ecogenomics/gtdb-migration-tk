@@ -60,7 +60,10 @@ class OptionsParser():
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(options.output_dir)
-        p.download_lpsn_html()
+        p.download_family_lpsn_html()
+        p.download_genus_lpsn_html()
+        p.download_species_lpsn_html()
+        p.download_subspecies_lpsn_html()
 
     def parse_html(self, options):
         """Parse all html files."""
@@ -145,6 +148,7 @@ class OptionsParser():
         p = MarkerManager(options.tmp_dir, options.cpus)
         p.run_hmmsearch(options.gtdb_genome_path_file,
                         options.report, options.db)
+        self.logger.info('Done.')
 
     def run_tophit(self, options):
         p = MarkerManager('/tmp', options.cpus)
@@ -156,6 +160,8 @@ class OptionsParser():
 
     def create_metadata_tables(self, options):
         p = MetadataTable()
+        print("TODO")
+        sys.exit(-1)
         p.create_metadata_tables(
             options.gtdb_genome_path_file, options.output_dir)
 
@@ -204,19 +210,19 @@ class OptionsParser():
         p.parse_ncbi_taxonomy(options.taxonomy_dir,
                               options.ra, options.rb, options.ga, options.gb,
                               options.output_prefix)
-                              
+
     def curation_lists(self, options):
         check_file_exists(options.gtdb_init_taxonomy)
         check_file_exists(options.gtdb_sp_clusters)
         check_file_exists(options.gtdb_prev_sp_clusters)
         check_file_exists(options.gtdb_decorate_table)
         make_sure_path_exists(options.output_dir)
-        
+
         p = CurationLists(options.domain, options.output_dir)
         p.run(options.gtdb_init_taxonomy,
-                options.gtdb_sp_clusters,
-                options.gtdb_prev_sp_clusters,
-                options.gtdb_decorate_table)
+              options.gtdb_sp_clusters,
+              options.gtdb_prev_sp_clusters,
+              options.gtdb_decorate_table)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""

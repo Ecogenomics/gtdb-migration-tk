@@ -25,23 +25,22 @@ from biolib.taxonomy import Taxonomy
 from biolib.common import check_file_exists, make_sure_path_exists
 
 
-
 class RNA(object):
     """Identify, extract, and classify rRNA genes."""
 
-    def __init__(self, cpus,rna_name,min_len = None):
+    def __init__(self, cpus, rna_name, min_len=None):
         """Initialization."""
 
         self.logger = logging.getLogger('timestamp')
 
         self.cpus = cpus
 
-        #E-value threshold for defining valid hits.
+        # E-value threshold for defining valid hits.
         self.evalue = 1e-6
-        #Minmum length of rRNA gene.
-        self.min_len=min_len
-        #Concatenate hits within the specified number of base pairs.
-        self.concatenate=300
+        # Minmum length of rRNA gene.
+        self.min_len = min_len
+        # Concatenate hits within the specified number of base pairs.
+        self.concatenate = 300
 
         self.rna_name = rna_name
 
@@ -66,13 +65,16 @@ class RNA(object):
         output_prefix = os.path.join(output_dir, self.rna_name)
 
         #self.logger.info('Identifying bacterial %s rRNA genes.' % self.rna_name)
-        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.bac.txt -E %s %s -' % (self.cpus, output_prefix, str(evalue), self.bac_model))
+        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.bac.txt -E %s %s -' %
+                  (self.cpus, output_prefix, str(evalue), self.bac_model))
 
         #self.logger.info('Identifying archaeal %s rRNA genes.' % self.rna_name)
-        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.ar.txt -E %s %s -' % (self.cpus, output_prefix, str(evalue), self.ar_model))
+        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.ar.txt -E %s %s -' %
+                  (self.cpus, output_prefix, str(evalue), self.ar_model))
 
         #self.logger.info('Identifying eukaryotic %s rRNA genes.' % self.rna_name)
-        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.euk.txt -E %s %s -' % (self.cpus, output_prefix, str(evalue), self.euk_model))
+        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.euk.txt -E %s %s -' %
+                  (self.cpus, output_prefix, str(evalue), self.euk_model))
 
     def _read_hits(self, results_file, domain, evalue_threshold):
         """Parse hits from nhmmer output.
@@ -120,7 +122,8 @@ class RNA(object):
                     align_len = int(ali_to) - int(ali_from)
 
                     if float(iEvalue) <= evalue_threshold:
-                        seq_info[seq_id] = seq_info.get(seq_id, []) + [[domain, iEvalue, str(ali_from), str(ali_to), str(align_len), str(rev_comp)]]
+                        seq_info[seq_id] = seq_info.get(
+                            seq_id, []) + [[domain, iEvalue, str(ali_from), str(ali_to), str(align_len), str(rev_comp)]]
 
         return seq_info
 
@@ -279,7 +282,7 @@ class RNA(object):
         hits_per_domain = {}
         for domain in ['ar', 'bac', 'euk']:
             seq_info = self._read_hits(os.path.join(output_dir, self.rna_name + '.' + domain + '.txt'),
-                                        domain, evalue_threshold)
+                                       domain, evalue_threshold)
 
             hits = {}
             if len(seq_info) > 0:
@@ -325,9 +328,11 @@ class RNA(object):
         """
 
         # write summary file and putative SSU rRNAs to file
-        summary_file = os.path.join(output_dir, '%s.hmm_summary.tsv' % self.rna_name)
+        summary_file = os.path.join(
+            output_dir, '%s.hmm_summary.tsv' % self.rna_name)
         summary_out = open(summary_file, 'w')
-        summary_out.write('Sequence Id\tHMM\ti-Evalue\tStart hit\tEnd hit\tSSU gene length\tReverse Complement\tSequence length\n')
+        summary_out.write(
+            'Sequence Id\tHMM\ti-Evalue\tStart hit\tEnd hit\tSSU gene length\tReverse Complement\tSequence length\n')
 
         ssu_seq_file = os.path.join(output_dir, '%s.fna' % self.rna_name)
         seq_out = open(ssu_seq_file, 'w')
@@ -341,17 +346,19 @@ class RNA(object):
 
             seq_info = [orig_seq_id] + best_hits[orig_seq_id]
             seq = seqs[seq_id]
-            summary_out.write('\t'.join(seq_info) + '\t' + str(len(seq)) + '\n')
+            summary_out.write('\t'.join(seq_info) +
+                              '\t' + str(len(seq)) + '\n')
 
             seq_out.write('>' + seq_info[0] + '\n')
-            seq_out.write(seq[int(seq_info[3]) + 1:int(seq_info[4]) + 1] + '\n')
+            seq_out.write(
+                seq[int(seq_info[3]) + 1:int(seq_info[4]) + 1] + '\n')
 
         summary_out.close()
         seq_out.close()
 
         return ssu_seq_file
 
-    def classify(self, seq_file, db, taxonomy_file, evalue_threshold, output_dir):
+    def _classify(self, seq_file, db, taxonomy_file, evalue_threshold, output_dir):
         """Classify rRNA genes.
 
         Parameters
@@ -371,15 +378,18 @@ class RNA(object):
         # blast sequences against rRNA database
         blast = Blast(self.cpus)
         blast_file = os.path.join(output_dir, '%s.blastn.tsv' % self.rna_name)
-        blast.blastn(seq_file, db, blast_file, evalue=evalue_threshold, max_matches=5, output_fmt='custom')
+        blast.blastn(seq_file, db, blast_file, evalue=evalue_threshold,
+                     max_matches=5, output_fmt='custom')
 
         # read taxonomy file
         taxonomy = Taxonomy().read(taxonomy_file)
 
         # write out classification file
-        classification_file = os.path.join(output_dir, '%s.taxonomy.tsv' % self.rna_name)
+        classification_file = os.path.join(
+            output_dir, '%s.taxonomy.tsv' % self.rna_name)
         fout = open(classification_file, 'w')
-        fout.write('query_id\ttaxonomy\tlength\tblast_subject_id\tblast_evalue\tblast_bitscore\tblast_align_len\tblast_perc_identity\n')
+        fout.write(
+            'query_id\ttaxonomy\tlength\tblast_subject_id\tblast_evalue\tblast_bitscore\tblast_align_len\tblast_perc_identity\n')
 
         processed_query_ids = set()
         for line in open(blast_file):
@@ -402,17 +412,18 @@ class RNA(object):
 
             taxonomy_str = ';'.join(taxonomy[subject_id])
 
-            fout.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (query_id, taxonomy_str, query_len, subject_id, evalue, bitscore, align_len, perc_identity))
+            fout.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (query_id, taxonomy_str,
+                                                             query_len, subject_id, evalue, bitscore, align_len, perc_identity))
 
         fout.close()
 
     def run(self, genome_file,
-                    ar_model,
-                    bac_model,
-                    euk_model,
-                    db,
-                    taxonomy_file,
-                    output_dir):
+            ar_model,
+            bac_model,
+            euk_model,
+            db,
+            taxonomy_file,
+            output_dir):
         """Identify and extract rRNA gene.
 
         Parameters
@@ -439,26 +450,25 @@ class RNA(object):
         self.bac_model = bac_model
         self.euk_model = euk_model
 
-
         make_sure_path_exists(output_dir)
-        #print(output_dir)
-
+        # print(output_dir)
 
         seq_file = None
         #self.logger.info('Identifying %s rRNA genes on sequences.' % rna_name)
-        best_hits = self._identify(genome_file, self.evalue, self.min_len, self.concatenate, output_dir)
+        best_hits = self._identify(
+            genome_file, self.evalue, self.min_len, self.concatenate, output_dir)
         #self.logger.info('Identified ' + str(len(best_hits)) + ' putative %s genes.' % rna_name)
 
         if len(best_hits):
             #self.logger.info('Extracting rRNA genes.')
             seq_file = self._extract(genome_file, best_hits, output_dir)
 
-
         if db is not None and seq_file:
             #self.logger.info('Classifying rRNA sequences.')
-            self._classify(seq_file, db, taxonomy_file, self.evalue, output_dir)
+            self._classify(seq_file, db, taxonomy_file,
+                           self.evalue, output_dir)
 
         canary_file = os.path.join(output_dir, self.rna_name + '.canary.txt')
-        #print(canary_file)
+        # print(canary_file)
         with open(canary_file, 'w') as filehandle:
             filehandle.write('done.\n')

@@ -165,6 +165,7 @@ class ProdigalManager(object):
                         'Unable to determine translation table for: %s' % gff_file)
 
             else:
+                translation_table[canonical_gid] = None
                 self.logger.warning('GFF appears to be missing: %s' % gff_file)
 
         # run Prodigal on each genome

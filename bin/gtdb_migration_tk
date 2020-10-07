@@ -170,7 +170,7 @@ if __name__ == '__main__':
                                   '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
     rna_silva_parser.add_argument('-c', '--cpus', type=int,
                                   help='number of threads', default=1)
-    rna_silva_parser.add_argument('-v', '--version', type=int,
+    rna_silva_parser.add_argument('-v', '--version',
                                   help='rna Silva version', default=0)
     rna_silva_parser.add_argument('-p', '--rnapath',
                                   help='path to rna Silva file', default='/srv/whitlam/bio/db/silva/')
@@ -387,7 +387,7 @@ if __name__ == '__main__':
     lpsn_parser_pull = lpsn_subparser.add_parser('pull_html',
                                                  add_help=False,
                                                  formatter_class=CustomHelpFormatter,
-                                                 help='Get 4 files from LPSN listing all genera.')
+                                                 help='Get files from LPSN listing all genera and species.')
     lpsn_parser_pull.add_argument(
         'output_dir', help='Output directory.')
     lpsn_parser_pull.add_argument(
@@ -397,7 +397,7 @@ if __name__ == '__main__':
                                                        add_help=False,
                                                        formatter_class=CustomHelpFormatter,
                                                        help='Parse HTML files.')
-
+                                                       
     lpsn_parser_parse_html.add_argument(
         'input_dir', help='Directory containing all genus HTML files.')
     lpsn_parser_parse_html.add_argument(

@@ -56,7 +56,7 @@ class MarkerManager(object):
         name = ""
         worker = None
         if db == 'pfam':
-            pfam_version = 'pfam_33.1'
+            marker_folder = 'pfam_33.1'
             full_extension = '_pfam_33.1.tsv'
             symlink_extension = '_pfam.tsv'
             name = 'Pfam'
@@ -100,6 +100,7 @@ class MarkerManager(object):
             marker_file = os.path.join(
                 prodigal_dir, marker_folder, gid + full_extension)
             if os.path.exists(marker_file):
+                #print("File exists: {}".format(marker_file))
                 # verify checksum
                 checksum_file = marker_file + '.sha256'
                 if os.path.exists(checksum_file):
@@ -370,12 +371,14 @@ class MarkerManager(object):
 
             output_hit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
                 self.protein_file_ext, tigrfam_extension))
-            hmmsearch_out = os.path.join(assembly_dir, tigrfam_version. filename.replace(
+            hmmsearch_out = os.path.join(assembly_dir, tigrfam_version, filename.replace(
                 self.protein_file_ext, f'_{tigrfam_version}.out'))
             cmd = 'hmmsearch -o %s --tblout %s --noali --notextw --cut_nc --cpu 1 %s %s' % (
                 hmmsearch_out, output_hit_file, self.tigrfam_hmms, gene_file)
             os.system(cmd)
+            #==================================================================
             # print(cmd)
+            #==================================================================
 
             # calculate checksum
             checksum = sha256(output_hit_file)

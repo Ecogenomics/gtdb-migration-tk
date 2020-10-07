@@ -30,16 +30,14 @@ from biolib.parallel import Parallel
 from gtdb_migration_tk.genometk_lite.rna import RNA
 
 
-
 class RnaManager(object):
     """Identify, extract, and taxonomically classify rRNA genes in genomes."""
 
-    def __init__(self,cpus,rna_version,rna_path,rna_gene):
+    def __init__(self, cpus, rna_version, rna_path, rna_gene):
         self.cpus = cpus
         self.rna_version = rna_version
         self.rna_path = rna_path
         self.logger = logging.getLogger('timestamp')
-
 
         self.rna_gene = rna_gene
         if rna_gene == 'lsu_5S':
@@ -49,17 +47,18 @@ class RnaManager(object):
 
         self.silva_output_dir = 'rna_silva_{}'.format(self.rna_version)
 
-        root_path = os.path.join(rna_path,str(self.rna_version))
+        root_path = os.path.join(rna_path, str(self.rna_version))
 
-        self.silva_ssu_taxonomy_file = os.path.join(root_path,'silva_taxonomy.ssu.tsv')
-        self.silva_ssu_ref_file = os.path.join(root_path,f'SILVA_{rna_version}_SSURef_Nr99_tax_silva.fasta')
+        self.silva_ssu_taxonomy_file = os.path.join(
+            root_path, 'silva_taxonomy.ssu.tsv')
+        self.silva_ssu_ref_file = os.path.join(root_path, f'SILVA_{rna_version}_SSURef_NR99_tax_silva.fasta')
 
-
-        file_to_check= [self.silva_ssu_taxonomy_file,self.silva_ssu_ref_file]
+        file_to_check = [self.silva_ssu_taxonomy_file, self.silva_ssu_ref_file]
 
         if rna_gene != 'ssu':
-            self.silva_lsu_ref_file = os.path.join(root_path,f'SILVA_{rna_version}_LSURef_tax_silva.fasta')
-            self.silva_lsu_taxonomy_file = os.path.join(root_path,'silva_taxonomy.lsu.tsv')
+            self.silva_lsu_ref_file = os.path.join(root_path, f'SILVA_{rna_version}_LSURef_tax_silva.fasta')
+            self.silva_lsu_taxonomy_file = os.path.join(
+                root_path, 'silva_taxonomy.lsu.tsv')
             file_to_check.append(self.silva_lsu_ref_file)
             file_to_check.append(self.silva_lsu_taxonomy_file)
 
@@ -68,7 +67,6 @@ class RnaManager(object):
                 print('{} does not exist'.format(item))
                 sys.exit(-1)
 
-
     def _producer(self, genome_file):
         """Process each genome."""
 
@@ -76,7 +74,7 @@ class RnaManager(object):
 
         output_dir = os.path.join(full_genome_dir, self.silva_output_dir)
 
-        rna_runner = self.rna(genome_file,output_dir)
+        rna_runner = self.rna(genome_file, output_dir)
 
         # if self.rna_gene == 'lsu_5S':
         #     cmd_to_run = ['genometk', 'rna', '--silent', '--cpus', '1',
@@ -91,11 +89,11 @@ class RnaManager(object):
     def _progress(self, processed_items, total_items):
         current_time_utc = datetime.datetime.utcnow().replace(microsecond=0)
         if processed_items > 0:
-            time_left= (current_time_utc - self.starttime) * (total_items-processed_items)/ processed_items
+            time_left = (current_time_utc - self.starttime) * \
+                (total_items - processed_items) / processed_items
             return 'Processed {} of {} ({}%) genomes. (ETA {})           '.format(processed_items,
-                                                               total_items,
-                                                               round(processed_items * 100.0 / total_items,2),time_left)
-
+                                                                                  total_items,
+                                                                                  round(processed_items * 100.0 / total_items, 2), time_left)
 
     def generate_rna_silva(self, gtdb_genome_path_file):
         """Create metadata by parsing assembly stats files."""
@@ -132,12 +130,11 @@ class RnaManager(object):
             genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
 
             canary_file = os.path.join(
-                                    gpath, self.output_dir, self.rna_gene + '.canary.txt')
-            #if os.path.exists(canary_file):
+                gpath, self.output_dir, self.rna_gene + '.canary.txt')
+            # if os.path.exists(canary_file):
             #                        continue
 
             input_files.append(genome_file)
-
 
         # process each genome
         print('Generating metadata for each genome:')
@@ -147,12 +144,13 @@ class RnaManager(object):
                      input_files,
                      self._progress)
 
-    def rna(self, genome_file,output_dir):
+    def rna(self, genome_file, output_dir):
         #self.logger.info('Identifying, extracting, and classifying rRNA genes.')
 
         # sanity check length
         if self.rna_gene == 'lsu_5S' and self.min_len > 120:
-            self.logger.error('Minimum length was set to %d, but LSU 5S genes are ~120 bp.' % options.min_len)
+            self.logger.error(
+                'Minimum length was set to %d, but LSU 5S genes are ~120 bp.' % options.min_len)
             sys.exit(-1)
 
         # get HMM directory and HMM models
@@ -167,11 +165,11 @@ class RnaManager(object):
         ar_model, bac_model, euk_model = rna_models[self.rna_gene]
 
         # run each of the rRNA models
-        rna = RNA(self.cpus,self.rna_gene,self.min_len)
+        rna = RNA(self.cpus, self.rna_gene, self.min_len)
         rna.run(genome_file,
-                    os.path.join(hmm_dir, ar_model + '.hmm'),
-                    os.path.join(hmm_dir, bac_model + '.hmm'),
-                    os.path.join(hmm_dir, euk_model + '.hmm'),
-                    self.db,
-                    self.taxonomy,
-                    output_dir)
+                os.path.join(hmm_dir, ar_model + '.hmm'),
+                os.path.join(hmm_dir, bac_model + '.hmm'),
+                os.path.join(hmm_dir, euk_model + '.hmm'),
+                self.db,
+                self.taxonomy,
+                output_dir)

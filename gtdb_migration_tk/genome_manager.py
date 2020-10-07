@@ -119,7 +119,9 @@ class DirectoryManager(object):
         print('{} genomes have been added in the release'.format(
             len(added_genomes)))
 
-        for deleted_genome in deleted_genomes:
+        for idx, deleted_genome in enumerate(deleted_genomes):
+            print("{}/{} genomes deleted".format(idx,
+                                                 len(deleted_genomes)), end="\r")
             deleted_genome_file.write('{}\n'.format(deleted_genome))
             #print('we delete {}'.format(current_ftp_genomes.get(deleted_genome)))
             shutil.rmtree(current_ftp_genomes.get(deleted_genome))
@@ -129,4 +131,3 @@ class DirectoryManager(object):
         for added_genome in added_genomes:
             added_genome_file.write('{}\t{}\n'.format(
                 added_genome, taxonomy.get(added_genome, ['N/A'] * 7)[6]))
-        # print(deleted_genomes)
