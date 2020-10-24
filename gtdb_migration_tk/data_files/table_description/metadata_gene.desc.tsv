@@ -1,0 +1,11 @@
+checkm_completeness	Estimated completeness of genome.	FLOAT	metadata_genes
+checkm_contamination	Estimated contamination of genome.	FLOAT	metadata_genes
+checkm_strain_heterogeneity	Estimated strain heterogeneity of genome.	FLOAT	metadata_genes
+checkm_strain_heterogeneity_100	Estimated strain heterogeneity of genome at 100%.	FLOAT	metadata_genes
+checkm_marker_lineage	Lineage or taxonomic group used to determine marker genes	TEXT	metadata_genes
+checkm_genome_count	Number of genomes used to determine marker genes.	INT	metadata_genes
+checkm_marker_count	Number of marker genes used to estimate genome quality.	INT	metadata_genes
+checkm_marker_set_count	Number of marker sets used to estimate genome quality.	INT	metadata_genes
+coding_bases	Number of coding bases in genome.	INT	metadata_genes
+coding_density	Percentage of coding bases in genome.	FLOAT	metadata_genes
+protein_count	Number of protein coding genes.	INT	metadata_genes

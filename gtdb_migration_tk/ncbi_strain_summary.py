@@ -72,7 +72,7 @@ class NCBIStrainParser(object):
         return assembly_summary_dict
 
     def generate_ncbi_strains_summary(self, genome_dir_file, out_dir):
-        outf = open(os.path.join(out_dir, "strain_summary_file.txt"), "w")
+        outf = open(os.path.join(out_dir, "strain_summary_file.tsv"), "w")
         outf.write(
             "genome_id\tOrganism name\tncbi_strain_identifiers\tncbi_type_material_designation\n")
         pattern_strain = re.compile('^\s+\/strain=".+')
@@ -119,15 +119,15 @@ class NCBIStrainParser(object):
                             if gline.startswith('# Infraspecific name:'):
                                 strline = gline.replace(
                                     "# Infraspecific name:", "")
-                                strainline = strline.replace(
+                                strain_string = strline.replace(
                                     "strain=", "").strip()
-                                strains = strin
+                                strains.extend([x.strip() for x in re.split(';|,|=|\/', strain_string)])
                             elif gline.startswith('# Isolate:'):
                                 isoline = gline.replace(
                                     "# Isolate:", "")
                                 isolate = isoline.replace(
                                     "strain=", "").strip()
-                            if isolate != '' and strain != '':
+                            if isolate != '' and len(strains)>0:
                                 break
 
                 wgsmaster_file = os.path.join(
@@ -158,9 +158,10 @@ class NCBIStrainParser(object):
                                     "/isolate=", '').replace('"', '').rstrip().lstrip()
                                 gisolates.append(gisolate)
 
-                if 'substr.' in strain:
-                    print("{1} strain {0}".format(strain, genome_id))
-                    strain = strain.split("substr.")[0].rstrip()
+                for idx,potential_train in enumerate(strains):
+                    if 'substr.' in potential_train:
+                        print("{1} strain {0}".format(potential_train, genome_id))
+                        strains[idx] = potential_train.split("substr.")[0].rstrip()
                 if 'substr.' in gstrain:
                     print("{1} gstrain {0}".format(gstrain, genome_id))
                     gstrain = gstrain.split("substr.")[0].rstrip()
@@ -169,7 +170,7 @@ class NCBIStrainParser(object):
                     wstrain = wstrain.split("substr.")[0].rstrip()
 
                 combined_strain = []
-                combined_strain.extend(self.standardise_strain([strain]))
+                combined_strain.extend(self.standardise_strain(strains))
                 combined_strain.extend(self.standardise_strain([isolate]))
                 combined_strain.extend(self.standardise_strain([wstrain]))
                 combined_strain.extend(self.standardise_strain([wsisolate]))

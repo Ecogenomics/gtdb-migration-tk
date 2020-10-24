@@ -358,7 +358,7 @@ class RNA(object):
 
         return ssu_seq_file
 
-    def _classify(self, seq_file, db, taxonomy_file, evalue_threshold, output_dir):
+    def classify(self, seq_file, db, taxonomy_file, evalue_threshold, output_dir):
         """Classify rRNA genes.
 
         Parameters
@@ -465,7 +465,7 @@ class RNA(object):
 
         if db is not None and seq_file:
             #self.logger.info('Classifying rRNA sequences.')
-            self._classify(seq_file, db, taxonomy_file,
+            self.classify(seq_file, db, taxonomy_file,
                            self.evalue, output_dir)
 
         canary_file = os.path.join(output_dir, self.rna_name + '.canary.txt')

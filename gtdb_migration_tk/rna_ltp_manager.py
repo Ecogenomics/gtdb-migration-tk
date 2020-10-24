@@ -1,4 +1,3 @@
-
 ###############################################################################
 #                                                                             #
 #    This program is free software: you can redistribute it and/or modify     #
@@ -15,23 +14,18 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
-
+import glob
 import os
+import shutil
 import sys
 import logging
 import ntpath
-import argparse
-import subprocess
-import multiprocessing as mp
+
 import datetime
 
-
-from collections import defaultdict
-
-from biolib.parallel import Parallel
-from biolib.external.execute import check_dependencies
+from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.genometk_lite.rna import RNA
-from biolib.common import check_file_exists, make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 
 
 
@@ -76,13 +70,19 @@ class RnaLTPManager(object):
         output_dir = os.path.join(full_genome_dir, self.ltp_output_dir)
 
         rna = RNA(self.cpus,'ssu')
-        # print(ssu_file)
-        # print(self.ltp_ssu_file)
-        # print(self.ltp_taxonomy_file)
-        # print(self.evalue)
-        # print(output_dir)
         make_sure_path_exists(output_dir)
+        # we clean the directory
+        filelist = glob.glob(os.path.join(output_dir, "*"))
+        for f in filelist:
+            os.remove(f)
+
         rna.classify(ssu_file,self.ltp_ssu_file,self.ltp_taxonomy_file,self.evalue, output_dir)
+        canary_file = os.path.join(full_genome_dir, self.ltp_output_dir, 'ltp.canary.txt')
+        # print(canary_file)
+        with open(canary_file, 'w') as filehandle:
+            filehandle.write(f'Silva version:{self.rna_ssu_version}.\n')
+            filehandle.write(f'LTP version:{self.rna_ltp_version}.\n')
+            filehandle.write('done.\n')
         return output_dir
 
     def _progress(self, processed_items, total_items):
@@ -94,7 +94,7 @@ class RnaLTPManager(object):
                                                                round(processed_items * 100.0 / total_items,2),time_left)
 
 
-    def generate_rna_ltp(self, gtdb_genome_path_file):
+    def generate_rna_ltp(self, gtdb_genome_path_file,all_genomes=False):
         """Create metadata by parsing assembly stats files."""
 
         input_files = []
@@ -104,8 +104,8 @@ class RnaLTPManager(object):
         countr = 0
         for line in open(gtdb_genome_path_file):
             countr += 1
-            statusStr = '{} lines read.'.format(countr)
-            sys.stdout.write('%s\r' % statusStr)
+            status_str = '{} lines read.'.format(countr)
+            sys.stdout.write('%s\r' % status_str)
             sys.stdout.flush()
 
             line_split = line.strip().split('\t')
@@ -117,15 +117,13 @@ class RnaLTPManager(object):
             ssu_file = os.path.join(
                                     gpath, self.silva_output_dir, 'ssu.fna')
             if os.path.exists(ssu_file):
+                canary_file = os.path.join(gpath, self.ltp_output_dir, 'ltp.canary.txt')
+                if not all_genomes and os.path.exists(canary_file):
+                    continue
                 genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
                 input_files.append((genome_file, ssu_file))
 
-
-            #canary_file = os.path.join(
-            #                        gpath, self.output_dir, self.rna_gene + '.canary.txt')
-            #if os.path.exists(canary_file):
-            #                        continue
-
+        self.logger.info(f'{len(input_files)} ssu files to analyse.')
         # process each genome
         print('Generating metadata for each genome:')
         parallel = Parallel(cpus=self.cpus)

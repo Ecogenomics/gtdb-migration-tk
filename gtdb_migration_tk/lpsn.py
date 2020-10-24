@@ -44,7 +44,10 @@ class LPSN(object):
             os.makedirs(self.outdir)
 
     def full_lpsn_wf(self):
-        # self.download_lpsn_html()
+        self.download_family_lpsn_html()
+        self.download_genus_lpsn_html()
+        self.download_species_lpsn_html()
+        self.download_subspecies_lpsn_html()
         self.parse_html(os.path.join(self.outdir, 'genus_html'))
 
     def summarise_parsing(self, lpsn_scrape_file):
@@ -452,7 +455,6 @@ class LPSN(object):
             r'<b>Name:</b> \"?<I>Candidatus</I> ([a-zA-Z]+)')
         full_list_type_species = []
         for letter in list(string.ascii_uppercase):
-            break
             for file in glob.glob(os.path.join(os.path.join(input_dir, 'all_genera'), letter, "*")):
                 genus_name = ''
                 genus_reference = ''

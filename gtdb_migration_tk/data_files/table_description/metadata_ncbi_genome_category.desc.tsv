@@ -1,0 +1,1 @@
+ncbi_genome_category	Indicates if a genome is identified as a SAG or MAG at NCBI.	TEXT	metadata_ncbi

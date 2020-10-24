@@ -1,0 +1,3 @@
+ssu_count	Number of 16S rRNA genes identified in genome.	INT	metadata_genes
+lsu_23s_count	Number of 23S rRNA genes identified in genome.	INT	metadata_genes
+lsu_5s_count	Number of 5S rRNA genes identified in genome.	INT	metadata_genes

@@ -192,7 +192,7 @@ class DatabaseManager(object):
                 list_report.append("{0}\t{1}\tupdate protein file\n".format(
                     self.repository, checkm_record))
                 path_gtdb = re.sub(
-                    r"(^.+\/)(genbank\/|refseq\/)", r"\g<2>", self.genome_dirs_dict[checkm_record])
+                    r"(^.+\/)(GCA\/|GCF\/)", r"\g<2>", self.genome_dirs_dict[checkm_record])
                 path_gtdb += "/" + os.path.basename(path_gtdb)
                 path_database = re.sub(
                     r"(.+)(_genomic.fna)", r"\g<1>", self.dict_existing_records[checkm_record])
@@ -333,7 +333,7 @@ class DatabaseManager(object):
     def _checkPathRecord(self, record, list_sql, list_report, path_in_db, path_in_folder):
         if path_in_db not in path_in_folder:
             path_in_folder = re.sub(
-                r"(^.+\/)(genbank\/|refseq\/)", r"\g<2>", path_in_folder)
+                r"(^.+\/)(GCA\/|GCF\/)", r"\g<2>", path_in_folder)
             path_in_folder += "/" + os.path.basename(path_in_folder)
             path_in_db = re.sub(r"(.+)(_genomic.fna)", r"\g<1>", path_in_db)
             query = "update genomes set fasta_file_location = replace(fasta_file_location, '{0}', '{1}') where id_at_source like '{2}'".format(
@@ -431,7 +431,7 @@ class DatabaseManager(object):
         fasta_file_path = os.path.join(self.genome_dirs_dict[checkm_record],
                                        os.path.basename(self.genome_dirs_dict[checkm_record]) + "_genomic.fna")
         fasta_file_path_shorten = re.sub(
-            r"(.+/)(genbank\/|refseq\/)", r"\g<2>", fasta_file_path)
+            r"(.+/)(GCA\/|GCF\/)", r"\g<2>", fasta_file_path)
         list_genome_details.append(fasta_file_path_shorten)
         list_genome_details.append(self.sha256Calculator(fasta_file_path))
         list_genome_details.append(self.id_database)
@@ -445,7 +445,7 @@ class DatabaseManager(object):
         gene_file_path = os.path.join(
             self.genome_dirs_dict[checkm_record], "prodigal", genome_id + "_protein.faa")
         gene_file_path_shorten = re.sub(
-            r"(.+/)(genbank\/|refseq\/)", r"\g<2>", gene_file_path)
+            r"(.+/)(GCA\/|GCF\/)", r"\g<2>", gene_file_path)
         list_genome_details.append(gene_file_path_shorten)
         list_genome_details.append(self.sha256Calculator(gene_file_path))
         list_genome_details.append(self.normaliseID(checkm_record))

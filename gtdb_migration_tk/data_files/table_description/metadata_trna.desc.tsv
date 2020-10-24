@@ -1,0 +1,3 @@
+trna_count	Total identified tRNAs.	INT	metadata_nucleotide
+trna_aa_count	Number of standard 20 amino acids encoded by tRNAs.	INT	metadata_nucleotide
+trna_selenocysteine_count	Number of tRNAs encoding for selenocysteine.	INT	metadata_nucleotide

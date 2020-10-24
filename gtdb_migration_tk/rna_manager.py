@@ -17,16 +17,13 @@
 
 import os
 import sys
-import argparse
 import logging
 import ntpath
-import multiprocessing as mp
 import datetime
 
 from collections import defaultdict
 
-from biolib.common import check_file_exists, make_sure_path_exists, check_dir_exists
-from biolib.parallel import Parallel
+from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.genometk_lite.rna import RNA
 
 
@@ -75,15 +72,6 @@ class RnaManager(object):
         output_dir = os.path.join(full_genome_dir, self.silva_output_dir)
 
         rna_runner = self.rna(genome_file, output_dir)
-
-        # if self.rna_gene == 'lsu_5S':
-        #     cmd_to_run = ['genometk', 'rna', '--silent', '--cpus', '1',
-        #                   '--min_len', '80', genome_file, self.rna_gene, output_dir]
-        # else:
-        #     cmd_to_run = ['genometk', 'rna', '--silent', '--cpus', '1', '--db', self.db,
-        #                   '--taxonomy_file', self.taxonomy, genome_file, self.rna_gene, output_dir]
-        # print(cmd_to_run)
-
         return output_dir
 
     def _progress(self, processed_items, total_items):
@@ -131,10 +119,12 @@ class RnaManager(object):
 
             canary_file = os.path.join(
                 gpath, self.output_dir, self.rna_gene + '.canary.txt')
-            # if os.path.exists(canary_file):
-            #                        continue
+            if os.path.exists(canary_file):
+                #print(f"{canary_file} exists.")
+                continue
 
             input_files.append(genome_file)
+
 
         # process each genome
         print('Generating metadata for each genome:')
@@ -173,3 +163,24 @@ class RnaManager(object):
                 self.db,
                 self.taxonomy,
                 output_dir)
+
+    def update_silva(self,ssu_ref_file,lsu_ref_file,output_dir):
+        fout = open(os.path.join(output_dir,'silva_taxonomy.ssu.tsv'), 'w')
+        for line in open(ssu_ref_file):
+            if line[0] == '>':
+                line_split = line[1:].strip().split(' ', 1)
+
+                seq_id = line_split[0]
+                taxonomy = line_split[1]
+                fout.write(f'{seq_id}\t{taxonomy}\n')
+        fout.close()
+
+        fout = open(os.path.join(output_dir,'silva_taxonomy.lsu.tsv'), 'w')
+        for line in open(lsu_ref_file):
+            if line[0] == '>':
+                line_split = line[1:].strip().split(' ', 1)
+
+                seq_id = line_split[0]
+                taxonomy = line_split[1]
+                fout.write(f'{seq_id}\t{taxonomy}\n')
+        fout.close()

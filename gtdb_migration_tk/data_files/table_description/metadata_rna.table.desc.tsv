@@ -1,0 +1,29 @@
+ssu_gg_query_id	Query id.	TEXT	metadata_rna
+ssu_gg_taxonomy	Greengenes taxonomy string.	TEXT	metadata_rna
+ssu_gg_length	Length of query sequence.	INT	metadata_rna
+ssu_gg_blast_subject_id	Sequence identifier of BLAST hit.	TEXT	metadata_rna
+ssu_gg_blast_evalue	E-value of BLAST hit.	FLOAT	metadata_rna
+ssu_gg_blast_bitscore	Bitscore of BLAST hit.	FLOAT	metadata_rna
+ssu_gg_blast_align_len	Alignment length of BLAST hit.	INT	metadata_rna
+ssu_gg_blast_perc_identity	Percent identity of BLAST hit.	FLOAT	metadata_rna
+lsu_23s_contig_len	Contig length.	INT	metadata_rna
+ssu_contig_len	SSU Silva Contig Length.	INT	metadata_rna
+lsu_silva_23s_blast_bitscore	Bitscore of BLAST hit for 23S Sequences.	FLOAT	metadata_rna
+lsu_silva_23s_taxonomy	Greengenes taxonomy string mapped to SILVA database for 23S Sequences.	TEXT	metadata_rna
+lsu_silva_23s_blast_subject_id	Sequence identifier of BLAST hit for 23S Sequences.	TEXT	metadata_rna
+lsu_23s_query_id	Query id for 23S Sequences.	TEXT	metadata_rna
+lsu_silva_23s_blast_align_len	Alignment length of BLAST hit for 23S Sequences.	INT	metadata_rna
+lsu_23s_length	Length of query sequence for 23S Sequences.	INT	metadata_rna
+lsu_silva_23s_blast_evalue	E-value of BLAST hit for 23S Sequences.	FLOAT	metadata_rna
+lsu_silva_23s_blast_perc_identity	Percent identity of BLAST hit for 23S Sequences.	FLOAT	metadata_rna
+ssu_silva_blast_bitscore	Bitscore of BLAST hit.	FLOAT	metadata_rna
+ssu_silva_taxonomy	Greengenes taxonomy string mapped to SILVA database.	TEXT	metadata_rna
+ssu_silva_blast_subject_id	Sequence identifier of BLAST hit.	TEXT	metadata_rna
+ssu_query_id	Query id.	TEXT	metadata_rna
+ssu_silva_blast_align_len	Alignment length of BLAST hit.	INT	metadata_rna
+ssu_length	Length of query sequence.	INT	metadata_rna
+ssu_silva_blast_evalue	E-value of BLAST hit.	FLOAT	metadata_rna
+ssu_silva_blast_perc_identity	Percent identity of BLAST hit.	FLOAT	metadata_rna
+lsu_5s_query_id	Query id.	TEXT	metadata_rna
+lsu_5s_length	Length of query sequence.	INT	metadata_rna
+lsu_5s_contig_len	Length of contig containing 5S LSU sequence.	INT	metadata_rna

@@ -43,7 +43,7 @@ class BacDive(object):
         self.output_dir = output_dir
         self.logger = logging.getLogger('timestamp')
 
-    def getGenera(self, outfile, urlreq=None):
+    def getGenera(self, outfile,full_list_of_genera, urlreq=None):
         # to get all genera , but only for the first page.
         # to consider the other pages, you have to change the url to
         # 'https://bacdive.dsmz.de/api/pnu/genus/?page=2' etc.
@@ -73,6 +73,7 @@ class BacDive(object):
             results = response.json()
             listgenus = results.get("results")
             urlreq = results.get("next")
+            full_list_of_genera.extend(listgenus)
             for item in listgenus:
                 if item.get("label") is not None and item.get('authors') is not None and item.get('taxon') is not None:
                     outfile.write('g__{0}\t\t{1}\n'.format(
@@ -84,16 +85,66 @@ class BacDive(object):
                     genus_type_species_dict[item.get(
                         'type_species')] = item.get('label')
             if results.get("next") is not None:
-                temp_dict = self.getGenera(outfile, urlreq)
+                temp_dict,full_list_of_genera = self.getGenera(outfile,full_list_of_genera, urlreq)
                 for k, v in temp_dict.items():
                     genus_type_species_dict[k] = v
 #             OUTPUT:
 #             object of type 'dict' with the fields 'count', 'previous', 'results', 'next'
 # the different genera in field 'results' are separated by ',' e.g.
 # {genus1},{genus2},{genus3},
-            return genus_type_species_dict
+            return (genus_type_species_dict,full_list_of_genera)
 
-    def getSpecies(self, outfile_species, outfile_strains, dictgenus, urlreq=None):
+    def write_all_metadata(self,full_list_of_entities,filename):
+        list_keys = []
+        for entity in full_list_of_entities:
+            for k,v in entity.items():
+                list_keys.append(k)
+        list_metadata = self.unique_item(list_keys)
+        list_metadata.insert(0, list_metadata.pop(list_metadata.index('label')))
+        filout = open(os.path.join(self.output_dir,filename),'w')
+        filout.write("{}\n".format("\t".join(list_metadata)))
+        for entity in full_list_of_entities:
+            entity_infos = []
+            for key in list_metadata:
+                if key in entity:
+                    if isinstance(entity.get(key),list):
+                        if key == 'literature':
+                            reflist =[item.get('reference') for item in entity.get(key)]
+                            element = "||".join(reflist)
+                        elif key == 'species':
+                            speclist = [item[1] for item in entity.get(key)]
+                            element = "||".join(speclist)
+                        elif key == 'type_strain':
+                            type_strain_list = entity.get(key)
+                            element = "||".join(type_strain_list)
+                        elif key == 'synonyms':
+                            synonymslist = []
+                            for syn in entity.get(key):
+                                allinfos = []
+                                for k,v in syn.items():
+                                    allinfos.append(f"{k}:{v}")
+                                synonymslist.append(";".join(allinfos))
+                            element = "||".join(synonymslist)
+                        elif key == 'correct_name':
+                            element = entity.get(key)[1]
+                        else:
+                            print('other_ref')
+                        entity_infos.append(element)
+                    else:
+                        entity_infos.append(entity.get(key))
+                else:
+                    entity_infos.append("None")
+            filout.write("\t".join([str(x).replace("<i>","").replace("</i>","") for x in entity_infos])+"\n")
+        filout.close()
+        print("done")
+
+
+    def unique_item(self,seq):
+        seen = set()
+        seen_add = seen.add
+        return [x for x in seq if not (x in seen or seen_add(x))]
+
+    def getSpecies(self, outfile_species,full_list_of_species, outfile_strains, dictgenus, urlreq=None):
         # to get a list of all species , but only for the first page.
         # to consider the other pages, you have to change the url to
         # 'https://bacdive.dsmz.de/api/pnu/species/?page=2' etc.
@@ -120,6 +171,7 @@ class BacDive(object):
         if response.status_code == 200:
             results = response.json()
             listspe = results.get("results")
+            full_list_of_species.extend(listspe)
             urlreq = results.get("next")
             for item in listspe:
                 # if 'subsp.' in item.get("label"):
@@ -163,15 +215,17 @@ class BacDive(object):
                     type_spe = 'g__' + dictgenus.get(item.get('label'))
                 outfile_species.write('{0}\t{1}\t{2}\n'.format(
                     label, type_spe, species_authority))
+            # if urlreq == 'https://bacdive.dsmz.de/api/pnu/species/?page=10':
+            #     return full_list_of_species
             if results.get("next") is not None:
-                self.getSpecies(outfile_species,
+                full_list_of_species = self.getSpecies(outfile_species,full_list_of_species,
                                 outfile_strains, dictgenus, urlreq)
 
 #             OUTPUT:
 #             object of type 'dict' with the fields 'count', 'previous', 'results', 'next'
 # the species in field 'results' are separated by ',' e.g.
 # {species1},{species2},{species3},etc
-            return results
+            return full_list_of_species
 
     def download_strains(self):
 
@@ -187,7 +241,9 @@ class BacDive(object):
         outfile_genera.write(
             "dsmz_genus\tdsmz_type_genus\tdsmz_genus_authority\n")
         self.logger.info('Parsing genera....')
-        dictgenus = self.getGenera(outfile_genera)
+        full_list_of_genera = []
+        dictgenus,full_list_of_genera = self.getGenera(outfile_genera,full_list_of_genera)
+        self.write_all_metadata(full_list_of_genera,"metadata_genera.tsv")
         outfile_genera.close()
         self.logger.info('Parsing genera: done.')
 
@@ -199,7 +255,10 @@ class BacDive(object):
             self.output_dir, 'dsmz_strains.tsv'), 'w')
         outfile_strains.write("dsmz_species\tdsmz_strains\n")
         self.logger.info('Parsing species...')
-        self.getSpecies(outfile_species, outfile_strains, dictgenus)
+        full_list_of_species = []
+        full_list_of_species = self.getSpecies(outfile_species,full_list_of_species, outfile_strains, dictgenus)
+        self.write_all_metadata(full_list_of_species,"metadata_species.tsv")
+
         outfile_species.close()
         outfile_strains.close()
         self.logger.info('Parsing species: done.')

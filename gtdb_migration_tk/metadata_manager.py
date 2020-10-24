@@ -38,26 +38,27 @@ class MetadataTable(object):
     derived metadata.
     """
 
-    def __init__(self):
+    def __init__(self,silva_version):
+        silva_folder = f'rna_silva_{silva_version}'
         self.metadata_nt_file = 'metadata.genome_nt.tsv'
         self.metadata_gene_file = 'metadata.genome_gene.tsv'
         self.ssu_gg_taxonomy_file = os.path.join('ssu_gg', 'ssu.taxonomy.tsv')
         self.ssu_gg_fna_file = os.path.join('ssu_gg', 'ssu.fna')
         self.ssu_silva_taxonomy_file = os.path.join(
-            'rna_silva_132', 'ssu.taxonomy.tsv')
-        self.ssu_silva_fna_file = os.path.join('rna_silva_132', 'ssu.fna')
+            silva_folder, 'ssu.taxonomy.tsv')
+        self.ssu_silva_fna_file = os.path.join(silva_folder, 'ssu.fna')
         self.ssu_silva_summary_file = os.path.join(
-            'rna_silva_132', 'ssu.hmm_summary.tsv')
+            silva_folder, 'ssu.hmm_summary.tsv')
         self.lsu_silva_23s_taxonomy_file = os.path.join(
-            'rna_silva_132', 'lsu_23S.taxonomy.tsv')
+            silva_folder, 'lsu_23S.taxonomy.tsv')
         self.lsu_silva_23s_fna_file = os.path.join(
-            'rna_silva_132', 'lsu_23S.fna')
+            silva_folder, 'lsu_23S.fna')
         self.lsu_silva_23s_summary_file = os.path.join(
-            'rna_silva_132', 'lsu_23S.hmm_summary.tsv')
+            silva_folder, 'lsu_23S.hmm_summary.tsv')
 
-        self.lsu_5S_fna_file = os.path.join('rna_silva_132', 'lsu_5S.fna')
+        self.lsu_5S_fna_file = os.path.join(silva_folder, 'lsu_5S.fna')
         self.lsu_5S_summary_file = os.path.join(
-            'rna_silva_132', 'lsu_5S.hmm_summary.tsv')
+            silva_folder, 'lsu_5S.hmm_summary.tsv')
 
         self.write_nt_header = True
         self.write_gene_header = True

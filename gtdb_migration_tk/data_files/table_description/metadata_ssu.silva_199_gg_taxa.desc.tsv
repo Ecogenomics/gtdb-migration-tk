@@ -1,0 +1,8 @@
+ssu_silva_199_gg_taxa_query_id	Query id.	TEXT	metadata_taxonomy
+ssu_silva_199_gg_taxa_taxonomy	Greengenes taxonomy string mapped to SILVA database.	TEXT	metadata_taxonomy
+ssu_silva_199_gg_taxa_length	Length of query sequence.	INT	metadata_taxonomy
+ssu_silva_199_gg_taxa_blast_subject_id	Sequence identifier of BLAST hit.	TEXT	metadata_taxonomy
+ssu_silva_199_gg_taxa_blast_evalue	E-value of BLAST hit.	FLOAT	metadata_taxonomy
+ssu_silva_199_gg_taxa_blast_bitscore	Bitscore of BLAST hit.	FLOAT	metadata_taxonomy
+ssu_silva_199_gg_taxa_blast_align_len	Alignment length of BLAST hit.	INT	metadata_taxonomy
+ssu_silva_199_gg_taxa_blast_perc_identity	Percent identity of BLAST hit.	FLOAT	metadata_taxonomy

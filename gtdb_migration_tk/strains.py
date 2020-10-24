@@ -37,7 +37,7 @@ import multiprocessing as mp
 
 
 class Strains(object):
-    def __init__(self, output_dir, cpus):
+    def __init__(self, output_dir=None, cpus=1):
         """Initialization."""
         self.year = datetime.datetime.now().year
 
@@ -93,18 +93,17 @@ class Strains(object):
         return datedict
 
     def load_year_dict(self, year_table):
-        """Load year of priority for species as identified at LPSN, DSMZ, and StrainInfo."""
+        """Load year of priority for species as identified at LPSN, DSMZ."""
 
         dict_date = {}
         with open(year_table) as yt:
             for line in yt:
                 infos = line.rstrip('\n').split('\t')
                 dict_date[infos[0]] = {'lpsn': infos[1],
-                                       'dsmz': infos[2],
-                                       'straininfo': infos[3]}
+                                       'dsmz': infos[2]}
         return dict_date
 
-    def _standardize_strain_id(self, strain_id):
+    def standardize_strain_id(self, strain_id):
         """Convert strain ID into standard format."""
 
         pattern = re.compile('[\W_]+')
@@ -113,7 +112,7 @@ class Strains(object):
 
         return standardized_id
 
-    def _fix_common_strain_id_errors(self, strain_ids):
+    def fix_common_strain_id_errors(self, strain_ids):
         """Fix common erros associated with NCBI strain IDs."""
 
         # NCBI strain IDs sometimes contain a 'T' at the end that
@@ -181,9 +180,9 @@ class Strains(object):
                 cur_taxid = int(tokens[0])
 
                 if tokens[3] == 'type material':
-                    for sid in self._fix_common_strain_id_errors([tokens[1]]):
+                    for sid in self.fix_common_strain_id_errors([tokens[1]]):
                         type_material[cur_taxid].add(
-                            self._standardize_strain_id(sid))
+                            self.standardize_strain_id(sid))
 
                 if cur_taxid in taxids_of_interest:
                     if tokens[3] == 'authority':
@@ -246,16 +245,16 @@ class Strains(object):
                         pattern = re.compile('[\W_]+')
                         created_list = [
                             sid.strip() for sid in infos[gtdb_strain_identifiers_index].split(';')]
-                        created_list = self._fix_common_strain_id_errors(
+                        created_list = self.fix_common_strain_id_errors(
                             created_list)
-                        standard_strain_ids = [self._standardize_strain_id(sid)
+                        standard_strain_ids = [self.standardize_strain_id(sid)
                                                for sid in created_list
                                                if (sid != '' and sid != 'none')]
 
+
                     metadata[infos[gtdb_accession_index]] = {
                         'ncbi_organism_name': infos[gtdb_ncbi_organism_name_index],
-                        'taxonomy_species_name': infos[gtdb_taxonomy_species_name_index].split(';')[6].replace('s__',
-                                                                                                               ''),
+                        'taxonomy_species_name': infos[gtdb_taxonomy_species_name_index].split(';')[6].replace('s__',''),
                         'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
                         'ncbi_standardized_strain_ids': set(standard_strain_ids),
                         'ncbi_type_material_designation': infos[gtdb_ncbi_type_material_designation_index],
@@ -265,45 +264,6 @@ class Strains(object):
                     taxids.add(int(infos[gtdb_ncbi_taxid_index]))
 
         return metadata, taxids
-
-    def load_straininfo_strains_dictionary(self, straininfo_dir):
-        # We load the dictionary of strains from Straininfo
-        straininfo_strains_dic = {}
-        pattern = re.compile('[\W_]+')
-        p = re.compile('(\w+)\s\(now\s(\w+)\)\s(\d+)', re.IGNORECASE)
-        with open(os.path.join(straininfo_dir, 'straininfo_strains.tsv'), encoding='utf-8') as ststr:
-            ststr.readline()
-            for line in ststr:
-                infos = line.rstrip('\n').split('\t')
-                if len(infos) < 2:
-                    print("len(infos) < 2 ")
-                    print(infos)
-                else:
-                    new_ls = []
-                    list_strains = infos[1].split("=")
-                    for ite in list_strains:
-                        new_ls.append(ite)
-                        matches = p.search(ite)
-                        # if the strain is similar to "IFO (now NBC) 12345"
-                        # we store the strains IFO12345, IFO 12345, NBC 12345, NCB12345
-                        # straininfo is the only souces where we have this format
-                        # dsmz and lpsn are already processed
-                        if matches:
-                            new_ls.append("{} {}".format(
-                                matches.group(1), matches.group(3)))
-                            new_ls.append("{}{}".format(
-                                matches.group(1), matches.group(3)))
-                            new_ls.append("{} {}".format(
-                                matches.group(2), matches.group(3)))
-                            new_ls.append("{}{}".format(
-                                matches.group(2), matches.group(3)))
-
-                        standard_list_strains = [pattern.sub('', a.strip()).upper(
-                        ) for a in new_ls if (a != '' and a != 'none')]
-
-                        straininfo_strains_dic[infos[0]] = "=".join(
-                            set(standard_list_strains))
-        return straininfo_strains_dic
 
     def load_dsmz_strains_dictionary(self, dsmz_dir):
         # We load the dictionary of strains from DSMZ
@@ -332,9 +292,14 @@ class Strains(object):
             for line in lpstr:
                 infos = line.rstrip('\n').split('\t')
 
-                if len(infos) < 3:
-                    print("len(infos) < 3 ")
+                if len(infos) ==1 :
+                    print("len(infos) < 2 ")
                     print(infos)
+                elif len(infos) == 2:
+                    list_strains = [pattern.sub('', a.strip()).upper(
+                    ) for a in infos[1].split('=') if (a != '' and a != 'none')]
+                    if len(list_strains) > 0:
+                        lpsn_strains_dic[infos[0]] = {'strains': '='.join(set(list_strains)), 'neotypes': ''}
                 else:
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
@@ -545,17 +510,19 @@ class Strains(object):
         # challenging to parse strain information from these entries.
         match = None
         gtdb_types = set()
+        repository_strain_ids = []
         for standard_name, raw_names in standard_names.items():
             if standard_name not in strain_dictionary:
                 continue
 
             if sourcest == 'lpsn':
+
                 # lpsn has information for both strains and neotype strains
                 repository_strain_ids = strain_dictionary.get(
                     standard_name).get('strains')
+
             else:
                 repository_strain_ids = strain_dictionary.get(standard_name)
-
             matched_strain_id, category, istype, year_date = self.strains_iterate(gid,
                                                                                   standard_name,
                                                                                   repository_strain_ids,
@@ -899,7 +866,6 @@ class Strains(object):
                            ncbi_authority,
                            lpsn_summary_file,
                            dsmz_summary_file,
-                           straininfo_summary_file,
                            lpsn_type_species_of_genus,
                            dsmz_type_species_of_genus,
                            summary_table_file):
@@ -908,7 +874,6 @@ class Strains(object):
         # parse strain repository files
         lpsn = self._parse_strain_summary(lpsn_summary_file)
         dsmz = self._parse_strain_summary(dsmz_summary_file)
-        straininfo = self._parse_strain_summary(straininfo_summary_file)
 
         # write out type strain information for each genome
         fout = open(summary_table_file, 'w')
@@ -917,9 +882,9 @@ class Strains(object):
         fout.write("\tncbi_taxon_authority\tncbi_type_designation")
         fout.write("\tgtdb_type_designation\tgtdb_type_designation_sources")
         fout.write(
-            "\tlpsn_type_designation\tdsmz_type_designation\tstraininfo_type_designation")
+            "\tlpsn_type_designation\tdsmz_type_designation")
         fout.write(
-            '\tlpsn_priority_year\tdsmz_priority_year\tstraininfo_priority_year')
+            '\tlpsn_priority_year\tdsmz_priority_year')
         fout.write("\tgtdb_type_species_of_genus\n")
 
         missing_type_at_ncbi = 0
@@ -941,7 +906,7 @@ class Strains(object):
 
             # GTDB sets the type material designation in a specific priority order
             highest_priority_designation = self.NOT_TYPE_MATERIAL
-            for sr in [lpsn, dsmz, straininfo]:
+            for sr in [lpsn, dsmz]:
                 if gid in sr and self.type_priority.index(sr[gid].type_designation) < self.type_priority.index(highest_priority_designation):
                     highest_priority_designation = sr[gid].type_designation
             fout.write('\t{}'.format(highest_priority_designation))
@@ -955,17 +920,15 @@ class Strains(object):
                 num_type_species_of_genus += 1
 
             gtdb_type_sources = []
-            for sr_id, sr in [('LPSN', lpsn), ('DSMZ', dsmz), ('StrainInfo', straininfo)]:
+            for sr_id, sr in [('LPSN', lpsn), ('DSMZ', dsmz)]:
                 if gid in sr and sr[gid].type_designation == highest_priority_designation:
                     gtdb_type_sources.append(sr_id)
             fout.write('\t{}'.format('; '.join(gtdb_type_sources)))
 
-            fout.write('\t{}\t{}\t{}'.format(lpsn[gid].type_designation if gid in lpsn else self.NOT_TYPE_MATERIAL,
-                                         dsmz[gid].type_designation if gid in dsmz else self.NOT_TYPE_MATERIAL,
-                                         straininfo[gid].type_designation if gid in straininfo else self.NOT_TYPE_MATERIAL))
-            fout.write('\t{}\t{}\t{}'.format(lpsn[gid].priority_year if gid in lpsn else '',
-                                         dsmz[gid].priority_year if gid in dsmz else '',
-                                         straininfo[gid].priority_year if gid in straininfo else ''))
+            fout.write('\t{}\t{}'.format(lpsn[gid].type_designation if gid in lpsn else self.NOT_TYPE_MATERIAL,
+                                         dsmz[gid].type_designation if gid in dsmz else self.NOT_TYPE_MATERIAL))
+            fout.write('\t{}\t{}'.format(lpsn[gid].priority_year if gid in lpsn else '',
+                                         dsmz[gid].priority_year if gid in dsmz else ''))
             fout.write('\t{}\n'.format(type_species_of_genus))
 
             if metadata['ncbi_type_material_designation'] == 'none' and highest_priority_designation == self.TYPE_SPECIES:
@@ -996,7 +959,7 @@ class Strains(object):
 
         fout.close()
 
-    def _expand_ncbi_strain_ids(self, ncbi_coidentical_strain_ids, ncbi_species_of_taxid):
+    def expand_ncbi_strain_ids(self, ncbi_coidentical_strain_ids, ncbi_species_of_taxid):
         """Expand set of NCBI co-identical strain IDs associated with each genome."""
 
         for gid, genome_metadata in self.metadata.items():
@@ -1032,7 +995,6 @@ class Strains(object):
                                    ncbi_nodes_file,
                                    lpsn_dir,
                                    dsmz_dir,
-                                   straininfo_dir,
                                    year_table,
                                    sourcest):
         """Parse multiple sources to identify genomes assembled from type material."""
@@ -1057,7 +1019,7 @@ class Strains(object):
         # genome
         self.logger.info(
             'Expanding co-indetical strain IDs associated with each genome.')
-        self._expand_ncbi_strain_ids(
+        self.expand_ncbi_strain_ids(
             ncbi_coidentical_strain_ids, ncbi_species_of_taxid)
 
         # identify genomes assembled from type material
@@ -1083,17 +1045,7 @@ class Strains(object):
                                self.dsmz_strains_dic,
                                dsmz_summary_file)
 
-        if sourcest == 'straininfo' or sourcest == 'all':
-            self.logger.info('Parsing information in StrainInfo directory.')
-            self.straininfo_strains_dic = self.load_straininfo_strains_dictionary(
-                straininfo_dir)
 
-            self.logger.info('Processing StrainInfo data.')
-            straininfo_summary_file = os.path.join(
-                self.output_dir, 'straininfo_summary.tsv')
-            self.parse_strains('straininfo',
-                               self.straininfo_strains_dic,
-                               straininfo_summary_file)
 
         # generate global summary file if information was generated from all
         # sources
@@ -1127,22 +1079,18 @@ class Strains(object):
             self.type_summary_table(ncbi_authority,
                                     lpsn_summary_file,
                                     dsmz_summary_file,
-                                    straininfo_summary_file,
                                     lpsn_type_species_of_genus,
                                     dsmz_type_species_of_genus,
                                     summary_table_file)
 
         self.logger.info('Done.')
 
-    def generate_date_table(self, lpsn_species_info, dsmz_species_info, straininfo_species_info, output_file):
+    def generate_date_table(self, lpsn_species_info, dsmz_species_info, output_file):
         output_file = open(output_file, 'w')
         lpsn_date_dict = self.load_date_dict(lpsn_species_info)
         dsmz_date_dict = self.load_date_dict(dsmz_species_info)
-        straininfo_date_dict = self.load_date_dict(
-            straininfo_species_info)
         all_species = list(lpsn_date_dict.keys())
         all_species.extend(list(dsmz_date_dict.keys()))
-        all_species.extend(list(straininfo_date_dict.keys()))
         for spe in set(all_species):
             list_date = [''] * 4
             list_date[0] = spe
@@ -1150,7 +1098,5 @@ class Strains(object):
                 list_date[1] = str(lpsn_date_dict.get(spe))
             if spe in dsmz_date_dict:
                 list_date[2] = str(dsmz_date_dict.get(spe))
-            if spe in straininfo_date_dict:
-                list_date[3] = str(straininfo_date_dict.get(spe))
             output_file.write('{}\n'.format('\t'.join(list_date)))
         output_file.close()

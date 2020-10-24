@@ -1,0 +1,36 @@
+ncbi_contig_n50	Contig length at which 50% of total bases in assembly are in contigs of that length or greater.	INT	metadata_ncbi
+ncbi_contig_count	Number of contigs.	INT	metadata_ncbi
+ncbi_molecule_count	Number of chromosomes and plasmids in full assembly.	INT	metadata_ncbi
+ncbi_region_count	Number of genomic regions defined in full assembly.	INT	metadata_ncbi
+ncbi_scaffold_l50	"Number of scaffolds that are longer than, or equal to, the N50 length."	INT	metadata_ncbi
+ncbi_scaffold_n50	Scaffold length at which 50% of total bases in assembly are in scaffolds of that length or greater.	INT	metadata_ncbi
+ncbi_scaffold_n75	Scaffold length at which 75% of total bases in assembly are in contigs of that length or greater.	INT	metadata_ncbi
+ncbi_scaffold_n90	scaffold length at which 90% of total bases in assembly are in contigs of that length or greater.	INT	metadata_ncbi
+ncbi_scaffold_count	Number of scaffolds.	INT	metadata_ncbi
+ncbi_spanned_gaps	Number of spanned gaps (i.e. gaps within a scaffold).	INT	metadata_ncbi
+ncbi_top_level_count	"Number of chromosomes or plasmids, unplaced/unlocalized scaffolds, alt_loci scaffolds, and patch scaffolds."	INT	metadata_ncbi
+ncbi_total_gap_length	Total length of gaps.	INT	metadata_ncbi
+ncbi_total_length	Total sequence length including bases and gaps.	INT	metadata_ncbi
+ncbi_ungapped_length	Total length excluding gaps.	INT	metadata_ncbi
+ncbi_unspanned_gaps	"Number of unspanned gaps (i.e., gaps between scaffolds)."	INT	metadata_ncbi
+ncbi_assembly_name	Name of assembly specified by submitter.	TEXT	metadata_ncbi
+ncbi_organism_name	Name of organism specified by submitter.	TEXT	metadata_ncbi
+ncbi_taxid	NCBI taxonomy identifier.	INT	metadata_ncbi
+ncbi_submitter	"Individual, institution, or consortium that submitted the assembly."	TEXT	metadata_ncbi
+ncbi_date	"Date assembly was released in the INSDC (DDBJ, ENA, or GenBank) databases."	TEXT	metadata_ncbi
+ncbi_biosample	BioSample identifier.	TEXT	metadata_ncbi
+ncbi_assembly_type	Ploidy information for genome.	TEXT	metadata_ncbi
+ncbi_release_type	"Specifies if current assembly was a major, minor, or patch release."	TEXT	metadata_ncbi
+ncbi_assembly_level	"Highest level of assembly for any object in the assembly (complete genome, scaffold, or contig)."	TEXT	metadata_ncbi
+ncbi_genome_representation	Flag indicating if the goal of the assembly was to represent the complete genome (full) or only part of it (partial).	TEXT	metadata_ncbi
+ncbi_genbank_assembly_accession	GenBank assembly accesion.	TEXT	metadata_ncbi
+ncbi_refseq_assembly_and_genbank_assemblies_identical	Flag indicating if RefSeq and GenBank assemblies are identical.	TEXT	metadata_ncbi
+ncbi_cds_count	Number of coding regions in genome.	INT	metadata_ncbi
+ncbi_trna_count	Number of tRNA genes identified in genome.	INT	metadata_ncbi
+ncbi_ncrna_count	Number of ncRNA genes identified in genome.	INT	metadata_ncbi
+ncbi_rrna_count	Number of rRNA genes identified in genome.	INT	metadata_ncbi
+ncbi_ssu_count	Number of 16S rRNA genes identified in genome.	INT	metadata_ncbi
+ncbi_translation_table	Specifies the genetic code used for translation.	INT	metadata_ncbi
+ncbi_taxonomy	NCBI taxonomy string.	TEXT	metadata_taxonomy
+ncbi_type_strain	NCBI type material.	TEXT	metadata_taxonomy
+ncbi_strain_identifiers	NCBI strain information for the assembly report	TEXT	metadata_ncbi

@@ -306,7 +306,7 @@ class NCBIMetaDir(object):
                            ('\t'.join(map(str, gff_stats))))
 
                 genbank_file = os.path.join(
-                    gpath, gid + '_genomic.gbff')
+                    gpath, assembly_id + '_genomic.gbff')
                 gbff_stats = self._parse_gbff(genbank_file)
                 fout.write('\t%s' %
                            ('\t'.join(map(str, gbff_stats))))

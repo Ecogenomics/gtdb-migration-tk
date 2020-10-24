@@ -1,0 +1,3 @@
+ssu_sequence	16S SSU sequence.	TEXT	metadata_rrna_sequences
+lsu_23s_sequence	23S LSU sequence.	TEXT	metadata_rrna_sequences
+lsu_5s_sequence	5S LSU sequence.	TEXT	metadata_rrna_sequences

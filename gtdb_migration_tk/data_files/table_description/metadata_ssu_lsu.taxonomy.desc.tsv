@@ -1,0 +1,24 @@
+ssu_gg_query_id	Query id.	TEXT	metadata_taxonomy
+ssu_gg_taxonomy	Greengenes taxonomy string.	TEXT	metadata_taxonomy
+ssu_gg_length	Length of query sequence.	INT	metadata_taxonomy
+ssu_gg_blast_subject_id	Sequence identifier of BLAST hit.	TEXT	metadata_taxonomy
+ssu_gg_blast_evalue	E-value of BLAST hit.	FLOAT	metadata_taxonomy
+ssu_gg_blast_bitscore	Bitscore of BLAST hit.	FLOAT	metadata_taxonomy
+ssu_gg_blast_align_len	Alignment length of BLAST hit.	INT	metadata_taxonomy
+ssu_gg_blast_perc_identity	Percent identity of BLAST hit.	FLOAT	metadata_taxonomy
+lsu_silva_blast_bitscore	Bitscore of BLAST hit for 23S Sequences.	FLOAT	metadata_taxonomy
+lsu_silva_taxonomy	Greengenes taxonomy string mapped to SILVA database for 23S Sequences.	TEXT	metadata_taxonomy
+lsu_silva_blast_subject_id	Sequence identifier of BLAST hit for 23S Sequences.	TEXT	metadata_taxonomy
+lsu_silva_query_id	Query id for 23S Sequences.	TEXT	metadata_taxonomy
+lsu_silva_blast_align_len	Alignment length of BLAST hit for 23S Sequences.	INT	metadata_taxonomy
+lsu_silva_length	Length of query sequence for 23S Sequences.	INT	metadata_taxonomy
+lsu_silva_blast_evalue	E-value of BLAST hit for 23S Sequences.	FLOAT	metadata_taxonomy
+lsu_silva_blast_perc_identity	Percent identity of BLAST hit for 23S Sequences.	FLOAT	metadata_taxonomy
+ssu_silva_blast_bitscore	Bitscore of BLAST hit.	FLOAT	metadata_taxonomy
+ssu_silva_taxonomy	Greengenes taxonomy string mapped to SILVA database.	TEXT	metadata_taxonomy
+ssu_silva_blast_subject_id	Sequence identifier of BLAST hit.	TEXT	metadata_taxonomy
+ssu_silva_query_id	Query id.	TEXT	metadata_taxonomy
+ssu_silva_blast_align_len	Alignment length of BLAST hit.	INT	metadata_taxonomy
+ssu_silva_length	Length of query sequence.	INT	metadata_taxonomy
+ssu_silva_blast_evalue	E-value of BLAST hit.	FLOAT	metadata_taxonomy
+ssu_silva_blast_perc_identity	Percent identity of BLAST hit.	FLOAT	metadata_taxonomy

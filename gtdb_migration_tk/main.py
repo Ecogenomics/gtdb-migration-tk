@@ -26,6 +26,7 @@ from biolib.common import check_file_exists, make_sure_path_exists, check_dir_ex
 
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.bacdive import BacDive
+from gtdb_migration_tk.propagate_taxonomy import Propagate
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.tools import Tools
@@ -34,7 +35,7 @@ from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.marker_manager import MarkerManager
 from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
-from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta
+from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.rna_manager import RnaManager
 from gtdb_migration_tk.rna_ltp_manager import RnaLTPManager
 from gtdb_migration_tk.trnascan_manager import tRNAScan
@@ -42,6 +43,9 @@ from gtdb_migration_tk.checkm_manager import CheckMManager
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.curation_lists import CurationLists
+from gtdb_migration_tk.checkm_database_manager import CheckMDatabaseManager
+from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
+from ncbi_genome_category import GenomeType
 
 
 class OptionsParser():
@@ -80,7 +84,6 @@ class OptionsParser():
         p = Strains()
         p.generate_date_table(options.lpsn_species_info,
                               options.dsmz_species_info,
-                              options.straininfo_species_info,
                               options.output_file)
 
     def generate_ncbi_strains_summary(self, options):
@@ -96,7 +99,6 @@ class OptionsParser():
                                      options.ncbi_nodes,
                                      options.lpsn_dir,
                                      options.dsmz_dir,
-                                     options.straininfo_dir,
                                      options.year_table,
                                      options.source_strain)
 
@@ -127,7 +129,8 @@ class OptionsParser():
     def update_refseq_from_ftp_files(self, options):
         p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
         p.runComparison(
-            options.ftp_refseq, options.output_dir, options.ftp_genome_dirs, options.old_genome_dirs, options.arc_assembly_summary, options.bac_assembly_summary)
+            options.ftp_refseq, options.output_dir, options.ftp_genome_dirs, options.old_genome_dirs,
+            options.arc_assembly_summary, options.bac_assembly_summary)
 
     def update_genbank_from_ftp_files(self, options):
         p = GenBankManager(options.output_dir, options.dry_run, options.cpus)
@@ -159,9 +162,7 @@ class OptionsParser():
         p.generate_metadata(options.gtdb_genome_path_file)
 
     def create_metadata_tables(self, options):
-        p = MetadataTable()
-        print("TODO")
-        sys.exit(-1)
+        p = MetadataTable(options.silva_version)
         p.create_metadata_tables(
             options.gtdb_genome_path_file, options.output_dir)
 
@@ -177,24 +178,68 @@ class OptionsParser():
                        options.rnapath, options.rna_gene)
         p.generate_rna_silva(options.gtdb_genome_path_file)
 
+    def update_silva(self, options):
+        p = RnaManager(1, None, None, None)
+        p.update_silva(options.ssu_ref, options.lsu_ref, options.out_dir)
+
     def generate_rna_ltp(self, options):
         p = RnaLTPManager(options.cpus, options.ltp_version,
                           options.ssu_version, options.rnapath)
-        p.generate_rna_ltp(options.gtdb_genome_path_file)
+        p.generate_rna_ltp(options.gtdb_genome_path_file, options.all_genomes)
 
     def generate_checkm_data(self, options):
         p = CheckMManager(options.cpus)
         p.run_checkm(options.gtdb_genome_path_file, options.report,
                      options.output_dir, options.all_genomes)
 
+    def join_checkm_files(self, options):
+        p = CheckMManager()
+        p.join_checkm_files_releases(options.checkm_files, options.output_file)
+
     def update_db(self, options):
         p = DatabaseManager(options.user, options.hostname,
                             options.db, options.password,
-                            options.password,
+                            options.ftp_download_date,
                             options.repository,
                             options.output_dir, options.cpus)
         p.runUpdate(options.checkm_profile_new_genomes,
-                    options.genome_dirs_file, options.ftp_download_date,)
+                    options.genome_dirs_file, options.ftp_download_date)
+
+    def update_checkm_db(self, options):
+        p = CheckMDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p.add_checkm_to_db(options.checkm_profiles, options.check_qa, options.metadata)
+
+    def update_metadata_db(self, options):
+        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p.process_metadata_files(options.genome_list, do_not_null_field=options.do_not_null_field,
+                                 table_folder=options.input_folder, table_file=options.metadata_table,
+                                 table_file_desc=options.metadata_table_desc)
+
+    def update_ncbitax_db(self, options):
+        p = NCBITaxDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p.update_ncbitax_db(options.organism_name_file, options.filtered, options.unfiltered, options.genome_list,
+                            options.do_not_null_field)
+
+    def propagate_gtdb_taxonomy(self, options):
+        p = Propagate()
+        p.propagate_taxonomy(options.gtdb_metadata_prev, options.gtdb_metadata_cur, options.taxonomy_file,
+                             options.rep_file)
+
+    def update_propagated_tax(self, options):
+        p = Propagate(options.hostname, options.user, options.password, options.db)
+        p.add_propagated_taxonomy(options.taxonomy_file, options.metadata_file, options.genome_list,
+                                  options.truncate_taxonomy, options.rep_id_file)
+
+    def set_gtdb_domain(self, options):
+        p = Propagate(options.hostname, options.user, options.password, options.db)
+        p.set_gtdb_domain()
+
+    def ncbi_genome_category(self, options):
+        p = GenomeType()
+        p.run(options.genbank_assembly_summary,
+              options.refseq_assembly_summary,
+              options.genome_file,
+              options.output_file)
 
     def generate_trnascan_data(self, options):
         p = tRNAScan(options.gbk_arc_assembly_file, options.gbk_bac_assembly_file,
@@ -202,7 +247,7 @@ class OptionsParser():
         p.run(options.gtdb_genome_path_file)
 
     def parse_ncbi_dir(self, options):
-        p = NCBIMeta()
+        p = NCBIMetaDir()
         p.parse_ncbi_dir(options.gtdb_genome_path_file, options.output_file)
 
     def parse_ncbi_taxonomy(self, options):
@@ -224,6 +269,13 @@ class OptionsParser():
               options.gtdb_prev_sp_clusters,
               options.gtdb_decorate_table)
 
+    def check_unique_strains(self, options):
+        check_file_exists(options.node)
+        check_file_exists(options.name)
+        check_file_exists(options.metadata_file)
+        p = Tools()
+        p.parse_ncbi_names_and_nodes(options.name, options.node, options.metadata_file, options.output_file)
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
@@ -244,18 +296,38 @@ class OptionsParser():
             self.create_metadata_tables(options)
         elif options.subparser_name == 'parse_assemblies':
             self.parse_assemblies(options)
+        elif options.subparser_name == "parse_ncbi_dir":
+            self.parse_ncbi_dir(options)
         elif options.subparser_name == 'parse_ncbi_taxonomy':
             self.parse_ncbi_taxonomy(options)
         elif options.subparser_name == 'rna_silva':
             self.generate_rna_silva(options)
+        elif options.subparser_name == 'update_silva':
+            self.update_silva(options)
         elif options.subparser_name == 'rna_ltp':
             self.generate_rna_ltp(options)
         elif options.subparser_name == 'trnascan':
             self.generate_trnascan_data(options)
+        elif options.subparser_name == 'join_checkm':
+            self.join_checkm_files(options)
         elif options.subparser_name == 'checkm':
             self.generate_checkm_data(options)
+        elif options.subparser_name == 'update_checkm_db':
+            self.update_checkm_db(options)
         elif options.subparser_name == 'update_db':
             self.update_db(options)
+        elif options.subparser_name == 'propagate_gtdb_taxonomy':
+            self.propagate_gtdb_taxonomy(options)
+        elif options.subparser_name == 'update_propagated_tax':
+            self.update_propagated_tax(options)
+        elif options.subparser_name == 'set_gtdb_domain':
+            self.set_gtdb_domain(options)
+        elif options.subparser_name == 'ncbi_genome_category':
+            self.ncbi_genome_category(options)
+        elif options.subparser_name == 'update_metadata_db':
+            self.update_metadata_db(options)
+        elif options.subparser_name == 'update_ncbitax_db':
+            self.update_ncbitax_db(options)
         elif options.subparser_name == 'update_refseq':
             self.update_refseq_from_ftp_files(options)
         elif options.subparser_name == 'update_genbank':
@@ -286,6 +358,8 @@ class OptionsParser():
             self.compare_selected_data(options)
         elif options.subparser_name == 'curation_lists':
             self.curation_lists(options)
+        elif options.subparser_name == 'check_unique_strains':
+            self.check_unique_strains(options)
         else:
             self.logger.error('Unknown command: ' +
                               options.subparser_name + '\n')

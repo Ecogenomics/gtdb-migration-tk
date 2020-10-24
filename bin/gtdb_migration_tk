@@ -61,10 +61,13 @@ def print_help():
       rna_silva      -> Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes against SILVA
       rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
       trnascan       -> Identifies tRNAs in genomes.
+      join_checkm    -> Join CheckM output files for different releases
       checkm         -> Estimates the quality of the new genomes
       
      Access to Database:
-     update_db       -> Update the gtdb database
+     update_db          -> Update the gtdb database
+     update_checkm_db   -> Import CheckM estimates
+     update_metadata_db -> Update metadata in database
 
     Metadata:
       create_tables     -> Create tables with metadata for all genomes (currently only NCBI)
@@ -73,6 +76,10 @@ def print_help():
 
     NCBI Taxonomy:
       parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file.
+      
+    GTDB Taxonomy:
+      propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release 
+      update_propagate_tax    -> Push propagated taxonomy to new DB
 
     Information from Nomenclatural resources:
       lpsn     -> Process steps for LPSN.
@@ -87,8 +94,9 @@ def print_help():
       list_genomes -> Produce file indicating the directory of each genome.
 
     Test suite for data validation:
-      overview      -> Compare the Metadata file from the previous version with the new one.
-      compare_field -> Compare a specific metadata field between to metadata files.
+      overview             -> Compare the Metadata file from the previous version with the new one.
+      compare_field        -> Compare a specific metadata field between to metadata files.
+      check_unique_strains -> Check if a genomes has to different strains from a same collection.
 
 
   Use: gtdb_migration_tk <command> -h for command specific help.
@@ -130,6 +138,8 @@ if __name__ == '__main__':
         '--tmp_dir', help='temporary directory for storing intermediate results', default='/tmp')
     prodigal_parser.add_argument('-c', '--cpus', type=int,
                                  help='number of threads', default=1)
+    prodigal_parser.add_argument('-l', '--log', required=True,
+                                  help='Log file.')
     prodigal_parser.add_argument(
         '--all', dest='all_genomes', help="re run all genomes", action='store_true')
     prodigal_parser.add_argument(
@@ -152,6 +162,8 @@ if __name__ == '__main__':
                                   help='number of threads', default=1)
     hmmsearch_parser.add_argument('-d', '--db',
                                   help='pfam or tigrfam.', choices=['pfam', 'tigrfam'])
+    hmmsearch_parser.add_argument('-l', '--log', required=True,
+                                  help='Log file.')
     hmmsearch_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
@@ -161,8 +173,20 @@ if __name__ == '__main__':
                                  '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
     metadata_parser.add_argument('-c', '--cpus', type=int,
                                  help='number of threads', default=1)
+    metadata_parser.add_argument('-l', '--log', required=True,
+                                  help='Log file.')
     metadata_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
+
+    update_silva_parser = subparsers.add_parser("update_silva",description="Update the Taxonomy files and Blast database based on the latest Silva release")
+    update_silva_parser.add_argument('--ssu_ref', help='SILVA_xxx_SSURef_NR99_tax_silva.fasta file downloaded from Silva.', required=True)
+    update_silva_parser.add_argument('--lsu_ref', help='SILVA_xxx_LSURef_tax_silva.fasta file downloaded from Silva.', required=True)
+    update_silva_parser.add_argument('-o', '--out_dir',
+                                    help = 'Output directory.', required = True)
+    update_silva_parser.add_argument('-l','--log', required=True,help="log file")
+    update_silva_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
 
     rna_silva_parser = subparsers.add_parser(
         'rna_silva', formatter_class=CustomHelpFormatter, description='Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes against SILVA')
@@ -176,6 +200,7 @@ if __name__ == '__main__':
                                   help='path to rna Silva file', default='/srv/whitlam/bio/db/silva/')
     rna_silva_parser.add_argument('-r','--rna_gene', choices=[
                         'ssu', 'lsu_23S', 'lsu_5S'], help="rRNA gene to process")
+    rna_silva_parser.add_argument('-l','--log', required=True,help="log file")
     rna_silva_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
@@ -192,6 +217,9 @@ if __name__ == '__main__':
                                       help='rna Silva version', default=0)
     rna_ltp_parser.add_argument('-p', '--rnapath',
                                   help='path to rna Silva file', default='/srv/whitlam/bio/db/silva/')
+    rna_ltp_parser.add_argument('-l','--log', required=True,help="log file")
+    rna_ltp_parser.add_argument(
+        '--all', dest='all_genomes', help="re run all genomes", action='store_true')
     rna_ltp_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
@@ -210,7 +238,20 @@ if __name__ == '__main__':
                         help='Assembly summary file downloaded from NCBI')
     trnascan_parser.add_argument('--rfq_bac_assembly_file',
                         help='Assembly summary file downloaded from NCBI')
+    trnascan_parser.add_argument('-l', '--log', required=True,
+                                  help='Log file.')
     trnascan_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    join_checkm_parser = subparsers.add_parser('join_checkm',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    join_checkm_parser.add_argument('-f',
+                                  '--checkm_files', help='Output CheckM files from differents releases.',nargs="+", required=True)
+    join_checkm_parser.add_argument('-o',
+                                  '--output_file', help='Output file merging the different releases.', required=True)
+    join_checkm_parser.add_argument('-l', '--log', required=True,
+                                  help='Log file.')
+    join_checkm_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
     checkm_parser = subparsers.add_parser('checkm',
@@ -223,6 +264,8 @@ if __name__ == '__main__':
         '--all', dest='all_genomes', help="re run all genomes", action='store_true')
     checkm_parser.add_argument('-c', '--cpus', type=int,
                                   help='number of threads', default=1)
+    checkm_parser.add_argument('-l', '--log', required=True,
+                                  help='Log file.')
     checkm_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
         
@@ -246,11 +289,72 @@ if __name__ == '__main__':
                                   help='Date when data was downloaded.')
     update_db_parser.add_argument('-r', '--repository',
                                   help='NCBI repo.',choices=['refseq','genbank'])
+    update_db_parser.add_argument('-l', '--log', required=True, help="Log file")
     update_db_parser.add_argument('--cpus', type=int,
                                   help='number of threads', default=1)
     update_db_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
-        
+
+    # Commands to Update CheckM value in DB
+    update_checkm_db_parser = subparsers.add_parser(
+        'update_checkm_db', formatter_class=CustomHelpFormatter, description='Update the CheckM value in Postgres database.')
+    update_checkm_db_parser.add_argument('--hostname', required=True)
+    update_checkm_db_parser.add_argument('-u', '--user',
+                                  help='psql user', required=True)
+    update_checkm_db_parser.add_argument('-p', '--password',
+                                  help='password for psql user', required=True)
+    update_checkm_db_parser.add_argument('-d', '--db',
+                                  help='database.', required=True)
+    update_checkm_db_parser.add_argument('--checkm_profiles',
+                                  help='CheckM profile file for all genomes of interest',  required=True)
+    update_checkm_db_parser.add_argument('-q', '--check_qa',
+                                  help='CheckM QA file for 100%% strain heterogeneity for all genomes of interest')
+    update_checkm_db_parser.add_argument('-m', '--metadata',
+                                  help='Metadata file generated from "gdb metadata export".')
+    update_checkm_db_parser.add_argument('-l', '--log', required=True, help="Log file")
+    update_checkm_db_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+
+    update_metadata_db_parser = subparsers.add_parser(
+        'update_metadata_db', formatter_class=CustomHelpFormatter, description='Update information inf the database.')
+    update_metadata_db_parser.add_argument('--hostname', required=True)
+    update_metadata_db_parser.add_argument('-u', '--user',
+                                  help='psql user', required=True)
+    update_metadata_db_parser.add_argument('-p', '--password',
+                                  help='password for psql user', required=True)
+    update_metadata_db_parser.add_argument('-d', '--db',
+                                  help='database.', required=True)
+    update_metadata_db_parser.add_argument('-i', '--input_folder',
+                                  help='Directory folder with all the tables created by metadata.')
+    update_metadata_db_parser.add_argument('-f', '--metadata_table',
+                                  help='Specific metadata table.')
+    update_metadata_db_parser.add_argument('--metadata_table_desc',
+                                  help='Specific metadata table description file.')
+    update_metadata_db_parser.add_argument('--genome_list', help='only process genomes in this list', default=None)
+    update_metadata_db_parser.add_argument('--do_not_null_field',help='Do not set fields to NULL for all genomes before updating values',
+                        action='store_true')
+    update_metadata_db_parser.add_argument('-l', '--log', required=True, help="Log file")
+    update_metadata_db_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    update_ncbitax_db_parser = subparsers.add_parser(
+        'update_ncbitax_db', formatter_class=CustomHelpFormatter, description='Update Organism name in the database.')
+    update_ncbitax_db_parser.add_argument('--hostname', required=True)
+    update_ncbitax_db_parser.add_argument('-u', '--user',
+                                  help='psql user', required=True)
+    update_ncbitax_db_parser.add_argument('-p', '--password',
+                                  help='password for psql user', required=True)
+    update_ncbitax_db_parser.add_argument('-d', '--db',
+                                  help='database.', required=True)
+    update_ncbitax_db_parser.add_argument('-o','--organism_name_file', help='NCBI Organism name file.', required=True)
+    update_ncbitax_db_parser.add_argument('--filtered', help='Filtered taxonomy file.', required=True)
+    update_ncbitax_db_parser.add_argument('--unfiltered', help='Unfiltered taxonomy file.', required=True)
+    update_ncbitax_db_parser.add_argument('--genome_list', help='only process genomes in this list', default=None)
+    update_ncbitax_db_parser.add_argument('--do_not_null_field',help='Do not set fields to NULL for all genomes before updating values',
+                        action='store_true')
+    update_ncbitax_db_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
 
 
     # Search Pfam Tigrfam markers
@@ -277,6 +381,8 @@ if __name__ == '__main__':
                                       '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
     create_tables_parser.add_argument('-o',
                                           '--output_dir', help='Output directory.', required=True)
+    create_tables_parser.add_argument('-s',
+                                          '--silva_version', help='Silva version.', required=True)
     create_tables_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
@@ -297,7 +403,9 @@ if __name__ == '__main__':
     parse_ncbi_dir_parser.add_argument('-g',
                                       '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
     parse_ncbi_dir_parser.add_argument('-o',
-                                              '--output_dir', help='Output directory.', required=True)
+                                              '--output_file', help='Output directory.', required=True)
+    parse_ncbi_dir_parser.add_argument('--silent', help="suppress output", action='store_true')
+
 
     # Parse NCBI Taxonomy files
     parse_ncbi_tax_parser = subparsers.add_parser('parse_ncbi_taxonomy', formatter_class=CustomHelpFormatter,
@@ -364,7 +472,69 @@ if __name__ == '__main__':
     update_gbk_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
+    # Steps to propagate GTDB Taxonomy
+    propagate_gtdb_parser = subparsers.add_parser(
+        'propagate_gtdb_taxonomy', formatter_class=CustomHelpFormatter, description='Propagating GTDB taxonomy to new release.')
+    propagate_gtdb_parser.add_argument('--gtdb_metadata_prev', required=True,
+                                   help='GTDB metadata for previous NCBI release.')
+    propagate_gtdb_parser.add_argument('--gtdb_metadata_cur', required=True,
+                                   help='GTDB metadata for current NCBI release.')
+    propagate_gtdb_parser.add_argument('--taxonomy_file', required=True,
+                                   help='Propagated GTDB taxonomy file.')
+    propagate_gtdb_parser.add_argument('--rep_file', required=True,
+                                   help='GTDB representatives file.')
+    propagate_gtdb_parser.add_argument('-l', '--log', required=True, help="Log file")
 
+    propagate_gtdb_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    # Steps to propagate GTDB Taxonomy
+    update_propagated_tax_parser = subparsers.add_parser(
+        'update_propagated_tax', formatter_class=CustomHelpFormatter,
+        description='Push changed from prpagated taxonomy to new database.')
+    update_propagated_tax_parser.add_argument('--hostname', required=True)
+    update_propagated_tax_parser.add_argument('-u', '--user',
+                                  help='psql user', required=True)
+    update_propagated_tax_parser.add_argument('-p', '--password',
+                                  help='password for psql user', required=True)
+    update_propagated_tax_parser.add_argument('-d', '--db',
+                                  help='database.', required=True)
+    update_propagated_tax_parser.add_argument('--taxonomy_file', help='taxonomy file with genome tree taxonomy strings')
+    update_propagated_tax_parser.add_argument('--metadata_file', help='metadata file for all genomes in GTDB')
+    update_propagated_tax_parser.add_argument('--genome_list', help='only process genomes in this list')
+    update_propagated_tax_parser.add_argument('--truncate_taxonomy',
+                        help='truncate current taxonomy strings to just the domain before updating taxonomy',
+                        action='store_true')
+    update_propagated_tax_parser.add_argument('--rep_id_file', required=True,
+                                       help='GTDB representatives file.')
+    update_propagated_tax_parser.add_argument('-l', '--log', required=True, help="Log file")
+
+    update_propagated_tax_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    set_gtdb_domain_parser = subparsers.add_parser(
+        'set_gtdb_domain', formatter_class=CustomHelpFormatter,
+        description='Set missing GTDB domain information to reflect NCBI domain.')
+    set_gtdb_domain_parser.add_argument('--hostname', required=True)
+    set_gtdb_domain_parser.add_argument('-u', '--user',
+                                  help='psql user', required=True)
+    set_gtdb_domain_parser.add_argument('-p', '--password',
+                                  help='password for psql user', required=True)
+    set_gtdb_domain_parser.add_argument('-d', '--db',
+                                  help='database.', required=True)
+    set_gtdb_domain_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    ncbi_genome_category_parser = subparsers.add_parser('ncbi_genome_category', formatter_class=CustomHelpFormatter,
+        description='Identify genomes marked by NCBI as being a MAG or SAG.')
+    ncbi_genome_category_parser.add_argument('-g','--genbank_assembly_summary',
+        help='file from NCBI indicating metadata for genome assemblies in GenBank (ftp://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt)')
+    ncbi_genome_category_parser.add_argument('-r','--refseq_assembly_summary',
+        help='file from NCBI indicating metadata for genome assemblies in RefSeq (ftp://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_refseq.txt)')
+    ncbi_genome_category_parser.add_argument('-p','--genome_file', help='file indicating path to GTDB genome files')
+    ncbi_genome_category_parser.add_argument('-o','--output_file', help='output file')
+    ncbi_genome_category_parser.add_argument('-l', '--log', required=True, help="Log file")
+    ncbi_genome_category_parser.add_argument('--silent', help="suppress output", action='store_true')
 
 
     # Steps to update LPSN Metadata
@@ -440,6 +610,7 @@ if __name__ == '__main__':
                         help='assembly_summary_bacteria_refseq.txt downloaded from NCBI',required=True)
     ncbi_strains_parser.add_argument('--assembly_summary_archaea_refseq',
                         help='assembly_summary_archaea_refseq.txt downloaded from NCBI',required=True)
+    ncbi_strains_parser.add_argument('-l', '--log', required=True, help="Log file")
 
     ncbi_strains_parser.add_argument('--out_dir', help='output directory')
     ncbi_strains_parser.add_argument(
@@ -460,8 +631,6 @@ if __name__ == '__main__':
         '--lpsn_species_info', help='LPSN species file created by LPSN website parsing.', required=True)
     strains_parser_date.add_argument(
         '--dsmz_species_info', help='DSMZ species file created by DSMZ website parsing.', required=True)
-    strains_parser_date.add_argument(
-        '--straininfo_species_info', help='Straininfo strain file created by Straininfo website parsing.', required=True)
     strains_parser_date.add_argument('--output_file',
                                      help='Output file.')
     strains_parser_date.add_argument(
@@ -476,8 +645,6 @@ if __name__ == '__main__':
                                      help='Directory including the 3 LPSN result files (lpsn_genera.tsv, lpsn_species.tsv and lpsn_strains.tsv ).')
     strains_parser_type.add_argument('--dsmz_dir',
                                      help='Directory including the 3 DSMZ result files (dsmz_strains.tsv, dsmz_species.tsv and dsmz_genera.tsv ).')
-    strains_parser_type.add_argument('--straininfo_dir',
-                                     help='Directory including the straininfo result file (straininfo_strains.tsv).')
     strains_parser_type.add_argument('--year_table',
                                      help='Date table generated by generate_date_table.py.')
     strains_parser_type.add_argument('--metadata_file',
@@ -536,6 +703,15 @@ if __name__ == '__main__':
     curation_lists_parser.add_argument('--output_dir', help='output directory')
     curation_lists_parser.add_argument('--silent', help="suppress output", action='store_true')
 
+    check_unique_strains_parser = subparsers.add_parser('check_unique_strains',
+                                                  formatter_class=CustomHelpFormatter,
+                                                  description='Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names.')
+
+    check_unique_strains_parser.add_argument('--node', help='initial taxonomy for latest release')
+    check_unique_strains_parser.add_argument('--name', help='species clusters for latest release')
+    check_unique_strains_parser.add_argument('-m','--metadata_file', help='species clusters for latest release')
+    check_unique_strains_parser.add_argument('-o', '--output_file', help='Output file.')
+
     # get and check options
     args = None
     if len(sys.argv) == 1 or sys.argv[1] in {'-h', '--help'}:
@@ -545,8 +721,8 @@ if __name__ == '__main__':
         args = parser.parse_args()
 
     try:
-        logger_setup(args.output_dir,
-                     'gtdb_migration_tk.log',
+        logger_setup(os.path.dirname(args.log),
+                     os.path.basename(args.log),
                      'GTDB Migration Tk',
                      __version__,
                      args.silent)

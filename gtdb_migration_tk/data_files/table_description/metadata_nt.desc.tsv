@@ -1,0 +1,15 @@
+ambiguous_bases	Number of ambiguous bases in contigs.	INT	metadata_nucleotide
+contig_count	Number of contigs in genome.	INT	metadata_nucleotide
+gc_count	Number of G or C bases in genome.	INT	metadata_nucleotide
+gc_percentage	GC content of genome.	FLOAT	metadata_nucleotide
+genome_size	"Total base pairs in genome including nucleotide bases, ambiguous bases, and gaps."	INT	metadata_nucleotide
+l50_contigs	"Number of contigs longer than, or equal to, the contig N50 length."	INT	metadata_nucleotide
+l50_scaffolds	"Number of scaffolds longer than, or equal to, the scaffold N50 length."	INT	metadata_nucleotide
+longest_contig	Number of bases in longest contig.	INT	metadata_nucleotide
+longest_scaffold	Number of bases in longest scaffold.	INT	metadata_nucleotide
+mean_contig_length	Mean length of contigs in base pairs.	INT	metadata_nucleotide
+mean_scaffold_length	Mean length of scaffolds in base pairs.	INT	metadata_nucleotide
+n50_contigs	Contig length at which 50% of total bases in assembly are in contigs of that length or greater.	INT	metadata_nucleotide
+n50_scaffolds	Scaffold length at which 50% of total bases in assembly are in scaffolds of that length or greater.	INT	metadata_nucleotide
+scaffold_count	Number of scaffolds in genome.	INT	metadata_nucleotide
+total_gap_length	Number of ambiguous bases comprising gaps in scaffolds.	INT	metadata_nucleotide

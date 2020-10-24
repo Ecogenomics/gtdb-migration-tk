@@ -25,8 +25,6 @@ import logging
 
 from collections import defaultdict
 
-
-
 class CheckMManager(object):
     """Apply CheckM to a large set of genomes.
 
@@ -42,7 +40,7 @@ class CheckMManager(object):
     This is the directory structure which results from extract_ncbi.py.
     """
 
-    def __init__(self,cpus):
+    def __init__(self,cpus=1):
         """Initialization."""
         self.cpus = cpus
         self.logger = logging.getLogger('timestamp')
@@ -253,3 +251,29 @@ class CheckMManager(object):
                 logger = logging.getLogger()
                 logger.error("   [Error] Error restoring stdout ", outFile)
                 sys.exit(1)
+
+    def uniq(self,seq):
+        seen = set()
+        seen_add = seen.add
+
+        return [x for x in seq if not (x in seen or seen_add(x))]
+
+    def join_checkm_files_releases(self,releasefiles,output_file):
+        outf = open(output_file,'w')
+        lines = {}
+        order_keys = []
+        for idx,releasefile in enumerate(releasefiles):
+            with open(releasefile,'r') as rf:
+                if idx > 0 :
+                    rf.readline()
+                for line in rf:
+                    infos = line.split("\t")
+                    lines[infos[0]] = line
+                    order_keys.append(infos[0])
+        order_keys.reverse()
+        reverse_list = self.uniq(order_keys)
+        reverse_list.reverse()
+        for key in reverse_list:
+            outf.write(lines.get(key))
+        outf.close()
+

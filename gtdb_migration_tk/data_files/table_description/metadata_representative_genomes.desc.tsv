@@ -1,0 +1,2 @@
+gtdb_genome_representative	Indicates representative of a genome. Representative genomes represent themselves.	TEXT	metadata_taxonomy
+gtdb_representative	Indicates if a genome is a representative.	BOOLEAN	metadata_taxonomy

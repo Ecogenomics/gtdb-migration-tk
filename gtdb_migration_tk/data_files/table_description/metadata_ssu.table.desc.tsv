@@ -1,0 +1,9 @@
+ssu_gg_2013_08_query_id	Query id.	TEXT	metadata_ssu
+ssu_gg_2013_08_taxonomy	Greengenes taxonomy string.	TEXT	metadata_ssu
+ssu_gg_2013_08_length	Length of query sequence.	INT	metadata_ssu
+ssu_gg_2013_08_blast_subject_id	Sequence identifier of BLAST hit.	TEXT	metadata_ssu
+ssu_gg_2013_08_blast_evalue	E-value of BLAST hit.	FLOAT	metadata_ssu
+ssu_gg_2013_08_blast_bitscore	Bitscore of BLAST hit.	FLOAT	metadata_ssu
+ssu_gg_2013_08_blast_align_len	Alignment length of BLAST hit.	INT	metadata_ssu
+ssu_gg_2013_08_blast_perc_identity	Percent identity of BLAST hit.	FLOAT	metadata_ssu
+ssu_gg_2013_08_sequence	SSU Sequence.	TEXT	metadata_ssu

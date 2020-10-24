@@ -1,0 +1,12 @@
+ncbi_bioproject	BioProject identifier.	TEXT	metadata_ncbi
+ncbi_wgs_master	WGS identifier.	TEXT	metadata_ncbi
+ncbi_wgs_formatted	WGS identifier formatted.	TEXT	metadata_ncbi
+ncbi_refseq_category	Indicates if genome is a RefSeq reference genome or RefSeq representative genome.	TEXT	metadata_ncbi
+ncbi_species_taxid	NCBI species taxonomy identifier.	TEXT	metadata_ncbi
+ncbi_isolate	Isolate information from NCBI.	TEXT	metadata_ncbi
+ncbi_version_status	Version information for genome (latest, replaced, or suppressed).	TEXT	metadata_ncbi
+ncbi_seq_rel_date	Date assembly was released in the INSDC databases (DDBJ, ENA or GenBank).	TEXT	metadata_ncbi
+ncbi_asm_name	Assembly name.	TEXT	metadata_ncbi	
+ncbi_gbrs_paired_asm	Paired assembly identifier in GenBank/RefSeq.	TEXT	metadata_ncbi
+ncbi_paired_asm_comp	Indicates if GenBank and RefSeq assemblies are identifical.	TEXT	metadata_ncbi
+ncbi_type_material_designation	Indicates if genome was assembled from type, neotype, proxytype, or synonym type material.	TEXT	metadata_taxonomy
