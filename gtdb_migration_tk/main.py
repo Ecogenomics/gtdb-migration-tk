@@ -15,14 +15,10 @@
 #                                                                             #
 ###############################################################################
 
-import os
 import sys
-import csv
-import re
 import logging
-from collections import defaultdict
 
-from biolib.common import check_file_exists, make_sure_path_exists, check_dir_exists
+from biolib.common import check_file_exists, make_sure_path_exists
 
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.bacdive import BacDive
@@ -45,7 +41,7 @@ from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk.checkm_database_manager import CheckMDatabaseManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
-from ncbi_genome_category import GenomeType
+from gtdb_migration_tk.ncbi_genome_category import GenomeType
 
 
 class OptionsParser():
