@@ -316,7 +316,7 @@ class Strains(object):
         type_species_of_genus = {}
         genus_type_species = {}
         multiple_types = set()
-        with open(species_file) as lpstr:
+        with open(species_file, encoding='utf-8') as lpstr:
             lpstr.readline()
 
             for line in lpstr:
@@ -332,7 +332,7 @@ class Strains(object):
                     sp = sp.replace('s__', '')
                     type_species_of_genus[sp] = genus
 
-                    if genus in genus_type_species:
+                    if genus in genus_type_species and genus_type_species[genus] != sp:
                         self.logger.warning('Identified multiple type species for {} in {}. Type species for this genus will be ignored.'.format(genus, species_file))
                         multiple_types.add(genus)
                     else:
@@ -771,7 +771,7 @@ class Strains(object):
     def _writer(self, sourcest, outfile, writer_queue):
         """Report type material status for each genome."""
 
-        fout = open(outfile, 'w')
+        fout = open(outfile, 'w', encoding='utf-8')
         fout.write(
             'genome\tncbi_organism_name\tncbi_species_name\tncbi_type_designation\tgtdb_type_designation')
         fout.write(
@@ -844,7 +844,7 @@ class Strains(object):
         StrainInfo = namedtuple('StrainInfo', 'type_designation priority_year')
 
         strain_info = {}
-        with open(strain_summary_file) as f:
+        with open(strain_summary_file, encoding='utf-8') as f:
             header = f.readline().rstrip().split('\t')
 
             gid_index = header.index('genome')
@@ -1044,8 +1044,6 @@ class Strains(object):
             self.parse_strains('dsmz',
                                self.dsmz_strains_dic,
                                dsmz_summary_file)
-
-
 
         # generate global summary file if information was generated from all
         # sources
