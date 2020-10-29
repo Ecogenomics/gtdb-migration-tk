@@ -67,7 +67,7 @@ class Tools(object):
                 pass
         return i + 1
 
-    def compare_metadata(self, old_meta_file, new_meta_file, only_ncbi=False):
+    def compare_metadata(self, old_meta_file, new_meta_file, only_ncbi=False, use_formatted_id = False):
 
         old_delimiter = self.select_delimiter(old_meta_file)
 
@@ -77,9 +77,12 @@ class Tools(object):
             if old_delimiter == ',':
                 for line in csv.reader(omf):
                     if (only_ncbi and not line[0].startswith('U_')) or not only_ncbi:
-                        old_nested_dict[line[0]] = {}
+                        id_to_add = line[0]
+                        if use_formatted_id:
+                            id_to_add = 'G' + id_to_add[7:16]
+                        old_nested_dict[id_to_add] = {}
                         for i, j in enumerate(line):
-                            old_nested_dict[line[0]][old_headers[i]] = str(j)
+                            old_nested_dict[id_to_add][old_headers[i]] = str(j)
             else:
                 count = 0
                 for raw_line in omf:
@@ -87,7 +90,10 @@ class Tools(object):
                     count +=1
                     print(count,end='\r')
                     if (only_ncbi and not line[0].startswith('U_')) or not only_ncbi:
-                        old_nested_dict[line[0]] = {}
+                        id_to_add = line[0]
+                        if use_formatted_id:
+                            id_to_add = 'G' + id_to_add[7:16]
+                        old_nested_dict[id_to_add] = {}
                         for i, j in enumerate(line):
                             if j in ['n/a', 'na']:
                                 j = 'n/a'
@@ -97,7 +103,7 @@ class Tools(object):
                                 j=round(float(j),5)
                             if old_headers[i] == 'ncbi_date' and j !='none':
                                 j = datetime.strftime(datetime.strptime(j, '%Y-%m-%d'), '%Y-%m-%d')
-                            old_nested_dict[line[0]][old_headers[i]] = str(j)
+                            old_nested_dict[id_to_add][old_headers[i]] = str(j)
 
         self.logger.info('{} parsed'.format(old_meta_file))
 
@@ -114,12 +120,14 @@ class Tools(object):
             new_headers = nmf.readline().split(new_delimiter)
             if new_delimiter == ',':
                 for line in csv.reader(nmf):
-
-                    if line[0] in old_nested_dict:
+                    id_to_add = line[0]
+                    if use_formatted_id:
+                        id_to_add = 'G' + id_to_add[7:16]
+                    if id_to_add in old_nested_dict:
                         number_of_genomes += 1
                         for i, j in enumerate(line):
                             if new_headers[i] in old_headers:
-                                if str(j) != old_nested_dict.get(line[0]).get(new_headers[i]):
+                                if str(j) != old_nested_dict.get(id_to_add).get(new_headers[i]):
                                     header_summary.setdefault(
                                         new_headers[i], []).append(1)
                                 else:
@@ -131,7 +139,10 @@ class Tools(object):
                     count +=1
                     print(count,end='\r')
                     line = raw_line.strip('\n').split('\t')
-                    if line[0] in old_nested_dict:
+                    id_to_add = line[0]
+                    if use_formatted_id:
+                        id_to_add = 'G' + id_to_add[7:16]
+                    if id_to_add in old_nested_dict:
                         number_of_genomes += 1
                         for i, j in enumerate(line):
                             if new_headers[i] in old_headers:
@@ -143,7 +154,7 @@ class Tools(object):
                                     j = round(float(j), 5)
                                 if new_headers[i] == 'ncbi_date' and j !='none':
                                     j = datetime.strftime(datetime.strptime(j, '%Y-%m-%d'),'%Y-%m-%d')
-                                if str(j) != old_nested_dict.get(line[0]).get(new_headers[i]):
+                                if str(j) != old_nested_dict.get(id_to_add).get(new_headers[i]):
                                     header_summary.setdefault(
                                         new_headers[i], []).append(1)
                                 else:

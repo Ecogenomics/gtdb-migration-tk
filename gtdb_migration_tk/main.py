@@ -102,7 +102,8 @@ class OptionsParser():
         p = Tools()
         p.compare_metadata(options.previous_metadata_file,
                            options.new_metadata_file,
-                           options.only_ncbi)
+                           options.only_ncbi,
+                           options.use_formatted_id)
 
     def compare_selected_data(self, options):
         p = Tools()

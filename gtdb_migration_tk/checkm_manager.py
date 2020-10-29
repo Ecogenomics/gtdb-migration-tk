@@ -61,11 +61,13 @@ class CheckMManager(object):
                 for line in open(genome_report):
                     line_split = line.strip().split('\t')
                     genome_id = line_split[1]
-
                     attributes = line_split[2].split(';')
-                    for attribute in attributes:
-                        if all_genomes or attribute == 'new' or all_genomes == 'modified':
-                            genomes_to_consider.add(genome_id)
+                    if 'removed' in attributes:
+                        continue
+                    else:
+                        for attribute in attributes:
+                            if all_genomes or attribute == 'new' or attribute == 'modified':
+                                genomes_to_consider.add(genome_id)
 
                 self.logger.info('Identified {} genomes as new or modified.'.format(len(genomes_to_consider)))
 

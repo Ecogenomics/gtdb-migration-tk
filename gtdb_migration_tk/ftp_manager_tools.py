@@ -81,8 +81,10 @@ class FTPTools(object):
             ftp_dir = new_dict.get(gca_record)
             target_dir = os.path.join(
                 new_directory, ftp_dir.replace(ftp_directory, ''))
+
             workerQueue.put((gtdb_dir, ftp_dir, target_dir,
                              gca_record))
+
 
         for _ in range(threads):
             workerQueue.put((None, None, None, None))
@@ -263,7 +265,10 @@ class FTPTools(object):
                 shutil.copytree(
                     gtdb_dir, target_dir, symlinks=True,
                     ignore=shutil.ignore_patterns("*_assembly_structure"))
-                status.append("unmodified")
+                if not os.path.isdir(os.path.join(target_dir,'prodigal')):
+                    status.append("unmodified")
+
+
 
                 # We check if all other file of this folder are the same.
                 checksum_changed = False

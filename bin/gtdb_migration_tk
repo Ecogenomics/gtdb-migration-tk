@@ -672,6 +672,8 @@ if __name__ == '__main__':
     overview_parser.add_argument(
         '--only_ncbi', help='Output file.', action='store_true')
     overview_parser.add_argument(
+        '--use_formatted_id', help='Output file.', action='store_true')
+    overview_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
     metafield_parser = subparsers.add_parser('compare_field',

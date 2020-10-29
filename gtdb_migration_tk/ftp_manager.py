@@ -124,16 +124,13 @@ class RefSeqManager(object):
             set(old_dict.keys()) - set(new_dict.keys()))}
         ftptools.removeGenomes(removed_dict, old_dict_domain)
 
-        # new genomes in FTP
+        #new genomes in FTP
         added_dict = {added_key: new_dict[added_key] for added_key in list(
             set(new_dict.keys()) - set(old_dict.keys()))}
         ftptools.addGenomes(added_dict, ftp_refseq,
-                            new_refseq, self.genome_domain_dict)
+                             new_refseq, self.genome_domain_dict)
 
-        # delete genomes from the Database
-        removed_dict = {removed_key: old_dict[removed_key] for removed_key in list(
-            set(old_dict.keys()) - set(new_dict.keys()))}
-        ftptools.removeGenomes(removed_dict, old_dict_domain)
+
 
         print("{}:Generating intersection list.....".format(str(datetime.now())))
         intersect_list = list(
@@ -141,7 +138,7 @@ class RefSeqManager(object):
         print("{}:Intersection list:{} genomes".format(
             str(datetime.now()), len(intersect_list)))
         ftptools.compareGenomes(
-            intersect_list, old_dict, new_dict, ftp_refseq, new_refseq, self.threads)
+             intersect_list, old_dict, new_dict, ftp_refseq, new_refseq, self.threads)
         self.report_gcf.close()
         self.genomes_to_review.close()
 
@@ -234,7 +231,7 @@ class GenBankManager(object):
             set(new_dict.keys()) - set(old_dict.keys()))}
         self.logger.info("{0} genomes to add".format(len(added_dict)))
         ftptools.addGenomes(added_dict, ftp_genbank,
-                            new_genbank, self.genome_domain_dict)
+                           new_genbank, self.genome_domain_dict)
 
         self.logger.info(
             "{}:Generating intersection list.....".format(str(datetime.now())))
@@ -243,7 +240,7 @@ class GenBankManager(object):
         self.logger.info("{}:Intersection list:{} genomes".format(
             str(datetime.now()), len(intersect_list)))
         ftptools.compareGenomes(
-            intersect_list, old_dict, new_dict, ftp_genbank, new_genbank, self.threads)
+             intersect_list, old_dict, new_dict, ftp_genbank, new_genbank, self.threads)
         self.select_gca.close()
         self.report.close()
         self.genomes_to_review.close()
