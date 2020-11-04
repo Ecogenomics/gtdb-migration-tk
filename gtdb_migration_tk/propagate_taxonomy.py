@@ -23,6 +23,8 @@ class Propagate(object):
 
         self.logger = logging.getLogger('timestamp')
 
+        self.DEFAULT_DOMAIN_THRESHOLD = 10.0
+
 
         if db is not None:
             self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
@@ -266,22 +268,61 @@ class Propagate(object):
 
         self.logger.info('Identifying NCBI genomes with missing domain information.')
 
+        # get concatenated alignments for all representatives
+        self.temp_cur.execute(
+            "SELECT count(*) from marker_set_contents where set_id = 1;")
+        len_bac_marker = self.temp_cur.fetchone()[0]
 
-        q = ("SELECT id, ncbi_taxonomy FROM metadata_taxonomy "
+        self.temp_cur.execute(
+            "SELECT count(*) from marker_set_contents where set_id = 2;")
+        len_arc_marker = self.temp_cur.fetchone()[0]
+
+
+
+        q = ("SELECT id,name, ncbi_taxonomy FROM metadata_taxonomy "
+            + "LEFT JOIN genomes USING(id) "
              + "WHERE (gtdb_domain IS NULL or gtdb_domain = 'd__') and ncbi_taxonomy IS NOT NULL")
         self.temp_cur.execute(q)
 
+
+
         missing_domain_info = []
-        for id, ncbi_taxonomy in self.temp_cur:
+        for genome_id,name, ncbi_taxonomy in self.temp_cur.fetchall():
             ncbi_domain = list(map(str.strip, ncbi_taxonomy.split(';')))[0]
             if ncbi_domain[0:3] != 'd__':
                 self.logger.error('NCBI domain has the incorrect prefix: %s' % ncbi_domain)
                 sys.exit()
 
-            # gtdb_taxonomy = list(Taxonomy.rank_prefixes)
-            # gtdb_taxonomy[0] = ncbi_domain
-            # gtdb_taxonomy = ';'.join(gtdb_taxonomy)
-            missing_domain_info.append([ncbi_domain, id])
+            query_al_mark = ("SELECT count(*) " +
+                             "FROM aligned_markers am " +
+                             "LEFT JOIN marker_set_contents msc ON msc.marker_id = am.marker_id " +
+                             "WHERE genome_id = %s and msc.set_id = %s and (evalue <> '') IS TRUE;")
+
+            self.temp_cur.execute(query_al_mark, (genome_id, 1))
+            aligned_bac_count = self.temp_cur.fetchone()[0]
+
+            self.temp_cur.execute(query_al_mark, (genome_id, 2))
+            aligned_arc_count = self.temp_cur.fetchone()[0]
+
+            arc_aa_per = (aligned_arc_count * 100.0 / len_arc_marker)
+            bac_aa_per = (aligned_bac_count * 100.0 / len_bac_marker)
+
+            if arc_aa_per < self.DEFAULT_DOMAIN_THRESHOLD and bac_aa_per < self.DEFAULT_DOMAIN_THRESHOLD:
+                gtdb_domain = None
+            elif bac_aa_per >= arc_aa_per :
+                gtdb_domain = "d__Bacteria"
+            else:
+                gtdb_domain = "d__Archaea"
+
+            if gtdb_domain is None:
+                missing_domain_info.append([ncbi_domain, genome_id])
+
+            elif gtdb_domain != ncbi_domain:
+                self.logger.warning(f"{name}: NCBI ({ncbi_domain}) and GTDB ({gtdb_domain}) domains disagree in domain report "
+                                    f"(Bac = {round(bac_aa_per,2)}%; Ar = {round(arc_aa_per,2)}%).")
+                missing_domain_info.append([gtdb_domain, genome_id])
+
+
 
         q = "UPDATE metadata_taxonomy SET gtdb_domain = %s WHERE id = %s"
         self.temp_cur.executemany(q, missing_domain_info)

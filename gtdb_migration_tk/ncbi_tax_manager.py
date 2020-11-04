@@ -285,7 +285,7 @@ class TaxonomyNCBI(object):
             # remove unrecognized ranks (i.e., 'x__') and strain classification
             revised_taxonomy = []
             for t in taxonomy:
-                if not t.startswith('x__') and not t.startswith('st__'):
+                if not t.startswith('x__') and not t.startswith('st__') and ' family' not in t.lower() :
                     revised_taxonomy.append(t)
 
             # create longest taxonomy string possible with canonical ranks

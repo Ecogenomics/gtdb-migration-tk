@@ -330,7 +330,8 @@ class NCBIMeta(object):
                        'asm_name': 'ncbi_asm_name',
                        'gbrs_paired_asm': 'ncbi_gbrs_paired_asm',
                        'paired_asm_comp': 'ncbi_paired_asm_comp',
-                       'relation_to_type_material': 'ncbi_type_material_designation'}
+                       'relation_to_type_material': 'ncbi_type_material_designation',
+                       'excluded_from_refseq':'ncbi_untrustworthy_as_type'}
 
     def parse_assemblies(self, refseq_bacteria_assembly_summary_file,
             refseq_archaea_assembly_summary_file,
@@ -376,6 +377,8 @@ class NCBIMeta(object):
                         if write_header:
                             fout.write('\t' + self.fields[header])
                         indices.append(i)
+                        if write_header and header == 'excluded_from_refseq':
+                            indice_excluded_from_refseq = i
                         if write_header and header == 'wgs_master':
                             fout.write('\t' + 'ncbi_wgs_formatted')
                             indice_wgs = i
@@ -399,6 +402,11 @@ class NCBIMeta(object):
                                 fout.write('\t' + line_split[i])
                                 fout.write(
                                     '\t' + self.format_wgs(line_split[i]))
+                            elif indice_excluded_from_refseq == i:
+                                trustworthy = False
+                                if "untrustworthy as type" in line_split[i]:
+                                    trustworthy = True
+                                fout.write('\t' + str(trustworthy))
                             else:
                                 fout.write('\t' + line_split[i])
                         fout.write('\n')
