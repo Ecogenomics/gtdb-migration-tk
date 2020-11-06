@@ -105,6 +105,16 @@ class OptionsParser():
                            options.only_ncbi,
                            options.use_formatted_id)
 
+    def compare_markers(self, options):
+        check_file_exists(options.first_domain_report)
+        check_file_exists(options.second_domain_report)
+        p = Tools()
+        p.compare_markers(options.first_domain_report,
+                           options.second_domain_report,
+                          options.output_file,
+                           options.only_ncbi,
+                           options.use_formatted_id)
+
     def compare_selected_data(self, options):
         p = Tools()
         p.compare_selected_data(options.previous_metadata_file,
@@ -266,6 +276,8 @@ class OptionsParser():
               options.gtdb_prev_sp_clusters,
               options.gtdb_decorate_table)
 
+
+
     def check_unique_strains(self, options):
         check_file_exists(options.node)
         check_file_exists(options.name)
@@ -351,6 +363,8 @@ class OptionsParser():
                 self.generate_type_table(options)
         elif options.subparser_name == 'overview':
             self.compare_metadata(options)
+        elif options.subparser_name == 'compare_markers':
+            self.compare_markers(options)
         elif options.subparser_name == 'compare_field':
             self.compare_selected_data(options)
         elif options.subparser_name == 'curation_lists':

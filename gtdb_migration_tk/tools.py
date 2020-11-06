@@ -37,6 +37,7 @@ from collections import defaultdict, Counter
 from datetime import datetime
 
 from gtdb_migration_tk.strains import Strains
+from gtdb_migration_tk.biolib_lite.common import canonical_gid
 
 csv.field_size_limit(sys.maxsize)
 
@@ -482,3 +483,56 @@ class Tools(object):
 
 #    parse_ncbi_names_and_nodes('/srv/db/gtdb/metadata/release95/ncbi/taxonomy/20190725/names.dmp',
 #                               '/srv/db/gtdb/metadata/release95/ncbi/taxonomy/20190725/nodes.dmp', 'r95_taxids.lst')
+
+
+    def compare_markers(self,first_domain_report,second_domain_report,output_file,only_ncbi=False,use_formatted_id=False):
+        first_domain_report_dict = {}
+        second_domain_report_dict = {}
+        outf = open(output_file,'w')
+        outf.write("formatted_id\told_id\tnew_id\told_domain\tnew_domain\tsame_domain\told_ar122_marker_percent\tnew_ar122_marker_percent\t")
+        outf.write("ar122_marker_percent_diff\told_bac120_marker_percent\tnew_bac120_marker_percent\t")
+        outf.write("bac120_marker_percent_diff\n")
+
+
+        with open(first_domain_report,'r') as fdr:
+            headers = fdr.readline().strip('\n').split('\t')
+            genomeid_idx = headers.index("Genome Id")
+            domain_idx = headers.index("Predicted domain")
+            arc_mark_idx = headers.index("Archaeal Marker Percentage")
+            bac_mark_idx = headers.index("Bacterial Marker Percentage")
+            for line in fdr:
+                infos = line.strip('\n').split('\t')
+                if only_ncbi and infos[0].startswith('U_'):
+                    continue
+                else:
+                    id = infos[genomeid_idx]
+                    if use_formatted_id:
+                        id = canonical_gid(id)
+                    first_domain_report_dict[id] = {"domain":infos[domain_idx],
+                                                    "arc_percent":float(infos[arc_mark_idx]),
+                                                    "bac_percent":float(infos[bac_mark_idx]),
+                                                    "raw_id":infos[genomeid_idx]}
+
+        with open(second_domain_report,'r') as sdr:
+            headers = sdr.readline().strip('\n').split('\t')
+            genomeid_idx = headers.index("Genome Id")
+            domain_idx = headers.index("Predicted domain")
+            arc_mark_idx = headers.index("Archaeal Marker Percentage")
+            bac_mark_idx = headers.index("Bacterial Marker Percentage")
+            for line in sdr:
+                infos = line.strip('\n').split('\t')
+                if only_ncbi and infos[0].startswith('U_'):
+                    continue
+                else:
+                    id = infos[genomeid_idx]
+                    if use_formatted_id:
+                        id = canonical_gid(id)
+                    if id in first_domain_report_dict:
+                        outf.write(f"{id}\t{first_domain_report_dict.get(id).get('raw_id')}\t{infos[genomeid_idx]}\t"
+                              f"{first_domain_report_dict.get(id).get('domain')}\t{infos[domain_idx]}\t"
+                              f"{first_domain_report_dict.get(id).get('domain')==infos[domain_idx]}\t"
+                              f"{first_domain_report_dict.get(id).get('arc_percent')}\t{infos[arc_mark_idx]}\t"
+                              f"{abs(first_domain_report_dict.get(id).get('arc_percent')-float(infos[arc_mark_idx]))}\t"
+                              f"{first_domain_report_dict.get(id).get('bac_percent')}\t{infos[bac_mark_idx]}\t"
+                              f"{abs(first_domain_report_dict.get(id).get('bac_percent') - float(infos[bac_mark_idx]))}\n")
+

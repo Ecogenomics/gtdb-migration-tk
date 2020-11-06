@@ -693,6 +693,22 @@ if __name__ == '__main__':
         '--only_ncbi', help='Output file.', action='store_true')
     metafield_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
+
+    marker_overview_parser = subparsers.add_parser('compare_markers',
+                                            formatter_class=CustomHelpFormatter,
+                                            help='Compare marker frequencies between 2 releases.')
+    marker_overview_parser.add_argument(
+        'first_domain_report', help='File generated from gtdb power domain report from early release.')
+    marker_overview_parser.add_argument(
+        'second_domain_report', help='File generated from gtdb power domain report from latest release.')
+    marker_overview_parser.add_argument(
+        'output_file', help='Output file.')
+    marker_overview_parser.add_argument(
+        '--only_ncbi', help='Only compare NCBI genomes.', action='store_true')
+    marker_overview_parser.add_argument(
+        '--use_formatted_id', help='Output file.', action='store_true')
+    marker_overview_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
         
         
     # Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names
