@@ -447,11 +447,14 @@ class LPSN(object):
         processed_strain = str(strain)
         for spechar in special_characters:
             processed_strain = processed_strain.replace(spechar, '')
-        print(processed_strain, strain)
+            
+        #***print(processed_strain, strain)
+        
         if all(c.isdigit() or c.isupper() for c in processed_strain):
             return True
         if strain.count(' ') == 0 and all(c.isdigit() or c.isupper() or c.lower() for c in processed_strain):
             return True
+            
         return False
 
     def check_format_three_terms_strain(self, strain):
@@ -625,8 +628,8 @@ class LPSN(object):
                             if name_section:
                                 species_reference = self.cleanhtml(
                                     line).split(species_name, 1)[1].replace(']', '').replace('"', '').strip()
-                                if '"<I>Candidatus</I>' in line:
-                                    print(species_reference)
+                                #***if '"<I>Candidatus</I>' in line:
+                                #***    print(species_reference)
 
                         elif "glossary#abbreviations-in-proposals" in line:
                             type_proposed_section = True
@@ -732,10 +735,17 @@ class LPSN(object):
         output_file = open(os.path.join(
             self.outdir, 'lpsn_summary.tsv'), 'w')
 
+        self.logger.info('Parsing family pages.')
         full_list_type_genus = self.parse_family_html(output_file, input_dir)
+        
+        self.logger.info('Parsing genus pages.')
         full_list_type_species = self.parse_genus_html(
             output_file, input_dir, full_list_type_genus)
+            
+        self.logger.info('Parsing species pages.')
         self.parse_species_html(output_file, input_dir, full_list_type_species)
+        
+        self.logger.info('Parsing subspecies pages.')
         self.parse_subspecies_html(
             output_file, input_dir, full_list_type_species)
 
