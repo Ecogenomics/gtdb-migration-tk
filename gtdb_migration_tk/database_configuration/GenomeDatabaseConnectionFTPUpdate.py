@@ -15,8 +15,6 @@
 #                                                                             #
 ###############################################################################
 
-import psycopg2 as pg
-
 
 class GenomeDatabaseConnectionFTPUpdate(object):
 
@@ -32,6 +30,8 @@ class GenomeDatabaseConnectionFTPUpdate(object):
     # Returns:
     #   No return value.
     def MakePostgresConnection(self):
+        import psycopg2 as pg
+        
         conn_string = "dbname=%s user=%s host=%s password=%s" % (
             self.db_name, self.user,
             self.hostname, self.password

@@ -20,7 +20,6 @@ import sys
 import argparse
 import tempfile
 import logging
-import psycopg2
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 
 
