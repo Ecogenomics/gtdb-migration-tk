@@ -33,15 +33,19 @@ import re
 import unicodedata
 import string
 import html
+import logging
 from biolib.common import check_file_exists, make_sure_path_exists, check_dir_exists
 
 
 class LPSN(object):
     def __init__(self, lpsn_output_dir):
         """Initialization."""
+        
         self.outdir = lpsn_output_dir
         if not os.path.exists(self.outdir):
             os.makedirs(self.outdir)
+            
+        self.logger = logging.getLogger('timestamp')
 
     def full_lpsn_wf(self):
         self.download_family_lpsn_html()
@@ -135,11 +139,11 @@ class LPSN(object):
     def download_family_lpsn_html(self):
         '''
 
-        Download all html species pages from LPSN.
+        Download all HTML family pages from LPSN.
 
         '''
-        # Download pages listing all genus in LPSN
-        print('Beginning file download lpsn ...')
+        # Download pages listing all families in LPSN
+        self.logger.info('Beginning download of families from LPSN.')
         base_url = 'https://lpsn.dsmz.de/'
         make_sure_path_exists(os.path.join(self.outdir, 'family_per_letter'))
         for letter in list(string.ascii_uppercase):
@@ -147,11 +151,13 @@ class LPSN(object):
             urllib.request.urlretrieve(
                 url, os.path.join(self.outdir, 'family_per_letter', 'family_{}.html'.format(letter)))
 
-        # Parse html pages lising all genus
+        # Parse html pages lising all families
         family_sites_list = open(os.path.join(
             self.outdir, 'family_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/family/[^"]+)"')
-        print('Get a list of all the pages that contain genus information ...')
+        self.logger.info('Generating a list of all pages that contain family information.')
+        
+        num_families = 0
         for letter in list(string.ascii_uppercase):
             with open(os.path.join(self.outdir, 'family_per_letter', 'family_{}.html'.format(letter))) as webf:
                 for line in webf:
@@ -159,15 +165,22 @@ class LPSN(object):
                         line = line.replace("'", '"')
                         result = link_pattern.search(line)
                         if result:
-                            print(line)
+                            num_families += 1
+                            sys.stdout.write(' - processed {:,} families\r'.format(num_families))
+                            sys.stdout.flush()
                             family_sites_list.write('{}\t{}\n'.format(
                                 letter, base_url + result.group(1)))
         family_sites_list.close()
+        
+        sys.stdout.write('\n')
 
         # Download individual species html page
+        self.logger.info('Downloading individual family HTML pages.')
         failed_html_file = open(os.path.join(
             self.outdir, 'families_failed.lst'), 'w')
         make_sure_path_exists(os.path.join(self.outdir, 'all_families'))
+        
+        num_families = 0
         with open(os.path.join(self.outdir, 'family_list.lst')) as gsl:
             for line in gsl:
                 letter, fam_url = line.strip().split('\t')
@@ -179,16 +192,22 @@ class LPSN(object):
                         fam_url), os.path.join(self.outdir, 'all_families', letter, famname))
                 except:
                     failed_html_file.write('{}\n'.format(fam_url))
+                
+                num_families += 1
+                sys.stdout.write(' - processed {:,} families\r'.format(num_families))
+                sys.stdout.flush()
+                            
         failed_html_file.close()
+        sys.stdout.write('\n')
 
     def download_genus_lpsn_html(self):
         '''
 
-        Download all html species pages from LPSN.
+        Download all HTML genus pages from LPSN.
 
         '''
         # Download pages listing all genus in LPSN
-        print('Beginning file download lpsn ...')
+        self.logger.info('Beginning download of genera from LPSN.')
         base_url = 'https://lpsn.dsmz.de/'
         make_sure_path_exists(os.path.join(self.outdir, 'genus_per_letter'))
         for letter in list(string.ascii_uppercase):
@@ -200,7 +219,9 @@ class LPSN(object):
         genus_sites_list = open(os.path.join(
             self.outdir, 'genus_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/genus/[^"]+)"')
-        print('Get a list of all the pages that contain genus information ...')
+        self.logger.info('Generating a list of all pages that contain genus information.')
+        
+        num_genera = 0
         for letter in list(string.ascii_uppercase):
             with open(os.path.join(self.outdir, 'genus_per_letter', 'genus_{}.html'.format(letter))) as webf:
                 for line in webf:
@@ -208,15 +229,20 @@ class LPSN(object):
                         line = line.replace("'", '"')
                         result = link_pattern.search(line)
                         if result:
-                            print(line)
+                            num_genera += 1
+                            sys.stdout.write(' - processed {:,} genera\r'.format(num_genera))
+                            sys.stdout.flush()
                             genus_sites_list.write('{}\t{}\n'.format(
                                 letter, base_url + result.group(1)))
         genus_sites_list.close()
+        sys.stdout.write('\n')
 
         # Download individual species html page
+        self.logger.info('Downloading individual genus HTML pages.')
         failed_html_file = open(os.path.join(
             self.outdir, 'genera_failed.lst'), 'w')
         make_sure_path_exists(os.path.join(self.outdir, 'all_genera'))
+        num_genera = 0
         with open(os.path.join(self.outdir, 'genus_list.lst')) as gsl:
             for line in gsl:
                 letter, gen_url = line.strip().split('\t')
@@ -228,7 +254,12 @@ class LPSN(object):
                         gen_url), os.path.join(self.outdir, 'all_genera', letter, genname))
                 except:
                     failed_html_file.write('{}\n'.format(gen_url))
+                    
+                num_genera += 1
+                sys.stdout.write(' - processed {:,} genera\r'.format(num_genera))
+                sys.stdout.flush()
         failed_html_file.close()
+        sys.stdout.write('\n')
 
     def download_species_lpsn_html(self):
         '''
@@ -236,8 +267,8 @@ class LPSN(object):
         Download all html species pages from LPSN.
 
         '''
-        # Download pages listing all genus in LPSN
-        print('Beginning file download lpsn ...')
+        # Download pages listing all species in LPSN
+        self.logger.info('Beginning file of species from LPSN.')
         base_url = 'https://lpsn.dsmz.de/'
         make_sure_path_exists(os.path.join(self.outdir, 'species_per_letter'))
         for letter in list(string.ascii_uppercase):
@@ -245,11 +276,13 @@ class LPSN(object):
             urllib.request.urlretrieve(
                 url, os.path.join(self.outdir, 'species_per_letter', 'species_{}.html'.format(letter)))
 
-        # Parse html pages lising all genus
+        # Parse html pages lising all species
         species_sites_list = open(os.path.join(
             self.outdir, 'species_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/species/[^"]+)"')
-        print('Get a list of all the pages that contain species information ...')
+        self.logger.info('Generating a list of all pages that contain species information.')
+        
+        num_species = 0
         for letter in list(string.ascii_uppercase):
             with open(os.path.join(self.outdir, 'species_per_letter', 'species_{}.html'.format(letter))) as webf:
                 for line in webf:
@@ -257,15 +290,22 @@ class LPSN(object):
                         line = line.replace("'", '"')
                         result = link_pattern.search(line)
                         if result:
-                            print(line)
+                            num_species += 1
+                            sys.stdout.write(' - processed {:,} species\r'.format(num_species))
+                            sys.stdout.flush()
+                
                             species_sites_list.write('{}\t{}\n'.format(
                                 letter, base_url + result.group(1)))
         species_sites_list.close()
+        sys.stdout.write('\n')
 
         # Download individual species html page
+        self.logger.info('Downloading individual species HTML pages.')
         failed_html_file = open(os.path.join(
             self.outdir, 'species_failed.lst'), 'w')
         make_sure_path_exists(os.path.join(self.outdir, 'all_species'))
+        
+        num_species = 0
         with open(os.path.join(self.outdir, 'species_list.lst')) as gsl:
             for line in gsl:
                 letter, spe_url = line.strip().split('\t')
@@ -277,7 +317,12 @@ class LPSN(object):
                         spe_url), os.path.join(self.outdir, 'all_species', letter, spenname))
                 except:
                     failed_html_file.write('{}\n'.format(spe_url))
+                    
+                num_species += 1
+                sys.stdout.write(' - processed {:,} species\r'.format(num_species))
+                sys.stdout.flush()
         failed_html_file.close()
+        sys.stdout.write('\n')
 
     def download_subspecies_lpsn_html(self):
         '''
@@ -285,8 +330,8 @@ class LPSN(object):
         Download all html species pages from LPSN.
 
         '''
-        # Download pages listing all genus in LPSN
-        print('Beginning file download lpsn ...')
+        # Download pages listing all subspecies in LPSN
+        self.logger.info('Beginning download of subspecies from LPSN.')
         search_url = 'https://lpsn.dsmz.de/advanced_search?adv%5Btaxon-name%5D=&adv%5Bcategory%5D=subspecies&adv%5Bnomenclature%5D=&adv%5Bvalid-publ%5D=&adv%5Bcandidatus%5D=&adv%5Bcorrect-name%5D=&adv%5Bauthority%5D=&adv%5Bdeposit%5D=&adv%5Betymology%5D=&adv%5Bgender%5D=&adv%5Bdate-option%5D=&adv%5Bdate%5D=&adv%5Bdate-between%5D=&adv%5Briskgroup%5D=&adv%5Bsubmit%5D=submit-adv#results'
         base_url = 'https://lpsn.dsmz.de/'
         make_sure_path_exists(os.path.join(
@@ -294,26 +339,34 @@ class LPSN(object):
         urllib.request.urlretrieve(
             search_url, os.path.join(self.outdir, 'subspecies_all_letters', 'search_subspecies.html'))
 
-        # Parse html pages lising all genus
+        # Parse html pages lising all subspecies
         species_sites_list = open(os.path.join(
             self.outdir, 'subspecies_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/subspecies/[^"]+)"')
-        print('Get a list of all the pages that contain species information ...')
+        self.logger.info('Generating a list of all the pages that contain species information.')
+        
+        num_subspecies = 0
         with open(os.path.join(self.outdir, 'subspecies_all_letters', 'search_subspecies.html')) as webf:
             for line in webf:
                 if 'class=" color-subspecies"' in line:
                     line = line.replace("'", '"')
                     result = link_pattern.search(line)
                     if result:
-                        print(line)
+                        num_subspecies += 1
+                        sys.stdout.write(' - processed {:,} subspecies\r'.format(num_subspecies))
+                        sys.stdout.flush()
                         species_sites_list.write(
                             '{}\n'.format(base_url + result.group(1)))
         species_sites_list.close()
+        sys.stdout.write('\n')
 
         # Download individual species html page
+        self.logger.info('Downloading individual subspecies HTML pages.')
         failed_html_file = open(os.path.join(
             self.outdir, 'subspecies_failed.lst'), 'w')
         make_sure_path_exists(os.path.join(self.outdir, 'all_subspecies'))
+        
+        num_subspecies = 0
         with open(os.path.join(self.outdir, 'subspecies_list.lst')) as gsl:
             for line in gsl:
                 subspe_url = line.strip()
@@ -325,7 +378,12 @@ class LPSN(object):
                         subspe_url), os.path.join(self.outdir, 'all_subspecies', subspenname))
                 except:
                     failed_html_file.write('{}\n'.format(subspe_url))
+                    
+                num_subspecies += 1
+                sys.stdout.write(' - processed {:,} subspecies\r'.format(num_subspecies))
+                sys.stdout.flush()
         failed_html_file.close()
+        sys.stdout.write('\n')
 
     def cleanhtml(self, raw_html):
         '''
