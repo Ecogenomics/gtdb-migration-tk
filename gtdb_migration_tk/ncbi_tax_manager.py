@@ -29,13 +29,15 @@ __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 __status__ = 'Development'
 
+import json
 import os
 import sys
-import argparse
 import traceback
-from collections import namedtuple, defaultdict
+from collections import namedtuple, defaultdict, Counter
 
 from biolib.taxonomy import Taxonomy
+from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
+
 
 
 class TaxonomyNCBI(object):
@@ -429,36 +431,122 @@ class TaxonomyNCBI(object):
                                   output_prefix + '_standardized.tsv')
 
 
-if __name__ == '__main__':
-    print(__prog_name__ + ' v' + __version__ + ': ' + __prog_desc__)
-    print('  by ' + __author__ + ' (' + __email__ + ')' + '\n')
+    def populate_names_dmp_table(self,hostname, user, password, db,taxonomy_dir,
+         refseq_archaea_assembly_file,
+         refseq_bacteria_assembly_file,
+         genbank_archaea_assembly_file,
+         genbank_bacteria_assembly_file,output_prefix):
 
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument(
-        'taxonomy_dir', help='directory containing NCBI taxonomy files')
-    parser.add_argument('refseq_archaea_assembly_file',
-                        help='file with metadata for each RefSeq assembly')
-    parser.add_argument('refseq_bacteria_assembly_file',
-                        help='file with metadata for each GenBank assembly')
-    parser.add_argument('genbank_archaea_assembly_file',
-                        help='file with metadata for each GenBank assembly')
-    parser.add_argument('genbank_bacteria_assembly_file',
-                        help='file with metadata for each GenBank assembly')
-    parser.add_argument('output_prefix', help='output prefix')
+        temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
+            hostname, user, password, db)
+        temp_con.MakePostgresConnection()
+        temp_cur = temp_con.cursor()
 
-    args = parser.parse_args()
+        """Read NCBI taxonomy information and create summary output files."""
 
-    try:
-        p = TaxonomyNCBI()
-        p.run(args.taxonomy_dir,
-              args.refseq_archaea_assembly_file,
-              args.refseq_bacteria_assembly_file,
-              args.genbank_archaea_assembly_file,
-              args.genbank_bacteria_assembly_file,
-              args.output_prefix)
-    except SystemExit:
-        print("\nControlled exit resulting from an unrecoverable error or warning.")
-    except:
-        print("\nUnexpected error:", sys.exc_info()[0])
-        raise
+        output_prefix ="test"
+
+        # parse organism name
+        self._assembly_organism_name(refseq_archaea_assembly_file,
+                                     refseq_bacteria_assembly_file,
+                                     genbank_archaea_assembly_file,
+                                     genbank_bacteria_assembly_file,
+                                     output_prefix + '_organism_names.tsv')
+
+        # parse metadata file and taxonomy files
+        assembly_to_tax_id = self._assembly_to_tax_id(refseq_archaea_assembly_file,
+                                                      refseq_bacteria_assembly_file,
+                                                      genbank_archaea_assembly_file,
+                                                      genbank_bacteria_assembly_file)
+
+        node_records = self._read_nodes(
+            os.path.join(taxonomy_dir, 'nodes.dmp'))
+        print('Read %d node records.' % len(node_records))
+
+        name_records = self._read_names(
+            os.path.join(taxonomy_dir, 'names.dmp'))
+        print('Read %d name records.' % len(name_records))
+
+        # traverse taxonomy tree for each assembly
+        taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
+        #fout = open(taxonomy_file, 'w')
+        list_ranks_taxonomy = []
+
+        print('Number of assemblies: %d' % len(assembly_to_tax_id))
+        d={}
+        for assembly_accession, tax_id in assembly_to_tax_id.items():
+            d[assembly_accession] ={}
+            # traverse taxonomy tree to the root which is 'cellular organism' for genomes,
+            # 'other sequences' for plasmids, and 'unclassified sequences' for metagenomic libraries
+            taxonomy = []
+            cur_tax_id = tax_id
+
+            if cur_tax_id not in name_records:
+                print('[Warning] Assembly %s has an invalid taxid: %s' % (assembly_accession, tax_id))
+                continue
+
+            roots = ['cellular organisms', 'other sequences',
+                     'unclassified sequences', 'Viruses', 'Viroids']
+            while name_records[cur_tax_id].name_txt not in roots:
+                if cur_tax_id == '1':
+                    print('[Error] TaxId %s reached root of taxonomy tree: %s' % (tax_id, taxonomy))
+                    sys.exit(-1)
+
+                try:
+                    node_record = node_records[cur_tax_id]
+
+                    if node_record.rank in Taxonomy.rank_labels:
+                        rank_index = Taxonomy.rank_labels.index(
+                            node_record.rank)
+                        rank_prefix = Taxonomy.rank_prefixes[rank_index]
+                    elif node_record.rank == 'subspecies':
+                        rank_prefix = 'sb__'
+                    else:
+                        # unrecognized rank
+                        rank_prefix = 'x__'
+                        if node_record.rank == 'superkingdom':
+                            rank_prefix = 'd__'
+
+                    taxonomy.append((
+                        rank_prefix + name_records[cur_tax_id].name_txt,cur_tax_id))
+                    d[assembly_accession][rank_prefix + name_records[cur_tax_id].name_txt] = cur_tax_id
+                    cur_tax_id = node_record.parent_tax_id
+                except:
+                    print(traceback.format_exc())
+                    print(taxonomy)
+
+            list_ranks_taxonomy.extend(taxonomy)
+
+        only_names,only_taxid = zip(*set(list_ranks_taxonomy))
+        print(Counter(only_names).most_common(5))
+
+        with open('taxids.json', 'w') as outfile:
+            json.dump(d, outfile)
+
+            #fout.write('%s\t%s\n' % (assembly_accession, taxa_str))
+
+        #fout.close()
+
+
+        # list_names_1 = []
+        # list_names_2 = []
+        # for line in open(names_file):
+        #     line_split = [t.strip() for t in line.split('|')]
+        #
+        #     tax_id = line_split[0]
+        #     name_txt = line_split[1]
+        #     unique_name = line_split[2]
+        #     name_class = line_split[3]
+        #
+        #     if name_class == 'scientific name' and name_txt != 'environmental samples':
+        #         if name_txt in list_names_1:
+        #             print(line)
+        #         list_names_1.append(name_txt)
+        #         list_names_2.append(unique_name)
+        #
+        # print(Counter(list_names_1).most_common(10))
+        # print(Counter(list_names_2).most_common(5))
+
+
+
+

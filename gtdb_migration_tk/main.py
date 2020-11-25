@@ -227,6 +227,16 @@ class OptionsParser():
         p.update_ncbitax_db(options.organism_name_file, options.filtered, options.unfiltered, options.genome_list,
                             options.do_not_null_field)
 
+    def add_surveillance_genomes(self,options):
+        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p.add_surveillance_genomes(options.genome_list)
+
+    def add_names_dmp(self,options):
+        p = TaxonomyNCBI()
+        p.populate_names_dmp_table(options.hostname, options.user, options.password, options.db,options.taxonomy_dir,
+                              options.ra, options.rb, options.ga, options.gb,
+                              options.output_prefix)
+
     def propagate_gtdb_taxonomy(self, options):
         p = Propagate()
         p.propagate_taxonomy(options.gtdb_metadata_prev, options.gtdb_metadata_cur, options.taxonomy_file,
@@ -323,6 +333,10 @@ class OptionsParser():
             self.generate_checkm_data(options)
         elif options.subparser_name == 'update_checkm_db':
             self.update_checkm_db(options)
+        elif options.subparser_name == 'add_surveillance_genomes':
+            self.add_surveillance_genomes(options)
+        elif options.subparser_name == 'add_names_dmp':
+            self.add_names_dmp(options)
         elif options.subparser_name == 'update_db':
             self.update_db(options)
         elif options.subparser_name == 'propagate_gtdb_taxonomy':
