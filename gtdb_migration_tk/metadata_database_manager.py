@@ -183,6 +183,32 @@ class MetadataDatabaseManager(object):
             gtdbimporter.importMetadata(table, field, data_type, data_to_commit)
             self.temp_con.commit()
 
+    def add_surveillance_genomes(self,genome_list):
+        data_to_commit = []
+        with open(genome_list) as glf:
+            for line in glf:
+                data_to_commit.append([line.strip()])
+
+        self.logger.info('Updating list of surveillance genome ({} genomes.)'.format(len(data_to_commit)))
+        print("This function will remove all genomes id in survey table and reupload them")
+        response = 'y'
+        while response.lower() not in ['y', 'n']:
+            response = input(
+                "Do you want to continue [y/n]: ")
+        if response.lower() == 'y':
+            q = ("TRUNCATE survey_table")
+            print(q)
+            self.temp_cur.execute(q)
+            self.temp_con.commit()
+        elif response.lower() == 'n':
+            pass
+        else:
+            self.logger.error('Unrecognized input.')
+            sys.exit(-1)
+
+        q_add = "INSERT INTO survey_table(genome_id) VALUES (%s) "
+        self.temp_cur.executemany(q_add, data_to_commit)
+        self.temp_con.commit()
 
 class NCBITaxDatabaseManager(object):
     """Add organism name to GTDB."""

@@ -488,6 +488,45 @@ if __name__ == '__main__':
     propagate_gtdb_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
+    # Update surveillance genome list
+    add_survey_parser = subparsers.add_parser(
+        'add_surveillance_genomes', formatter_class=CustomHelpFormatter,
+        description='.')
+    add_survey_parser.add_argument('--hostname', required=True)
+    add_survey_parser.add_argument('-u', '--user',
+                                  help='psql user', required=True)
+    add_survey_parser.add_argument('-p', '--password',
+                                  help='password for psql user', required=True)
+    add_survey_parser.add_argument('-d', '--db',
+                                  help='database.', required=True)
+    add_survey_parser.add_argument('genome_list',
+                                  help='surveillance genomes.')
+    add_survey_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+    # Convert names.dmp to a table
+    # Update surveillance genome list
+    add_names_dmp_parser = subparsers.add_parser(
+        'add_names_dmp', formatter_class=CustomHelpFormatter,
+        description='.')
+    add_names_dmp_parser.add_argument('--hostname', required=True)
+    add_names_dmp_parser.add_argument('-u', '--user',
+                                  help='psql user', required=True)
+    add_names_dmp_parser.add_argument('-p', '--password',
+                                  help='password for psql user', required=True)
+    add_names_dmp_parser.add_argument('-d', '--db',
+                                  help='database.', required=True)
+    add_names_dmp_parser.add_argument('-t','--taxonomy_dir', help='directory containing NCBI taxonomy files')
+    add_names_dmp_parser.add_argument('--rb',help='RefSeq assembly summary file (assembly_summary_refseq.txt) for Bacteria', required=True)
+    add_names_dmp_parser.add_argument('--ra',help='RefSeq assembly summary file (assembly_summary_refseq.txt) for Archaea', required=True)
+    add_names_dmp_parser.add_argument('--gb',help='GenBank assembly summary file (assembly_summary_refseq.txt) for Bacteria', required=True)
+    add_names_dmp_parser.add_argument('--ga',help='GenBank assembly summary file (assembly_summary_refseq.txt) for Archaea', required=True)
+    add_names_dmp_parser.add_argument('--output_prefix', help='output prefix')
+    add_names_dmp_parser.add_argument(
+        '--silent', help="suppress output", action='store_true')
+
+
+
     # Steps to propagate GTDB Taxonomy
     update_propagated_tax_parser = subparsers.add_parser(
         'update_propagated_tax', formatter_class=CustomHelpFormatter,

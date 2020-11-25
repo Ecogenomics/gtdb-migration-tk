@@ -27,7 +27,6 @@ __status__ = 'Development'
 import os
 import glob
 import sys
-import argparse
 import urllib.request
 import re
 import unicodedata
@@ -42,13 +41,13 @@ from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_stra
 class LPSN(object):
     def __init__(self, skip_taxa_per_letter_dl, lpsn_output_dir):
         """Initialization."""
-        
+
         self.outdir = lpsn_output_dir
         if not os.path.exists(self.outdir):
             os.makedirs(self.outdir)
-            
+
         self.logger = logging.getLogger('timestamp')
-        
+
         self.base_url = 'https://lpsn.dsmz.de/'
         self.skip_taxa_per_letter_dl = skip_taxa_per_letter_dl
 
@@ -120,7 +119,7 @@ class LPSN(object):
                         processed_species.append((species, genus, desc))
                     processed_strains = []
                     strains = line_split[4].split("=")
-                    
+
                     # Normalise the strains
                     for i, strain in enumerate(strains):
                         processed_strains.append(canonical_strain_id(strain))
@@ -142,7 +141,7 @@ class LPSN(object):
         Download all HTML family pages from LPSN.
 
         '''
-        
+
         # Download pages listing all families in LPSN
         index_dir = os.path.join(self.outdir, 'family_per_letter')
         if self.skip_taxa_per_letter_dl:
@@ -160,8 +159,9 @@ class LPSN(object):
         family_sites_list = open(os.path.join(
             self.outdir, 'family_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/family/[^"]+)"')
+        family_name_pattern = re.compile(r'class=\"last-child color-family\">(.*)</a>')
+        families_to_download = []
         self.logger.info('Generating a list of all pages that contain family information.')
-        
         num_families = 0
         for letter in list(string.ascii_uppercase):
             with open(os.path.join(index_dir, 'family_{}.html'.format(letter))) as webf:
@@ -170,55 +170,72 @@ class LPSN(object):
                         line = line.replace("'", '"')
                         result = link_pattern.search(line)
                         if result:
+                            family_name = family_name_pattern.search(line).group(1)
+                            family_name = self.cleanhtml(family_name)
+
                             num_families += 1
                             sys.stdout.write(' - processed {:,} families\r'.format(num_families))
                             sys.stdout.flush()
                             family_sites_list.write('{}\t{}\n'.format(
-                                letter, self.base_url + result.group(1)))
+                                letter,family_name, self.base_url + result.group(1)))
+                            families_to_download.append(family_name)
         family_sites_list.close()
-        
+
         sys.stdout.write('\n')
+
+        # we remove the duplicate names with quotes
+        valid_families = []
+        for famname in families_to_download:
+
+            if famname.startswith('"'):
+                if famname.replace('"', '').replace('Candidatus ', '') not in families_to_download:
+                    valid_families.append(famname)
+            else:
+                valid_families.append(famname)
 
         # Download individual species html page
         self.logger.info('Downloading individual family HTML pages.')
         failed_html_file = open(os.path.join(
             self.outdir, 'families_failed.lst'), 'w')
         make_sure_path_exists(os.path.join(self.outdir, 'all_families'))
-        
+
         num_families = 0
         num_already_dl = 0
         with open(os.path.join(self.outdir, 'family_list.lst')) as gsl:
             for line in gsl:
-                letter, fam_url = line.strip().split('\t')
+                letter, family_name, fam_url = line.strip().split('\t')
                 make_sure_path_exists(os.path.join(
                     self.outdir, 'all_families', letter))
                 famname = os.path.basename(fam_url)
                 out_file = os.path.join(self.outdir, 'all_families', letter, famname)
-                
-                if not os.path.exists(out_file):
-                    try:
-                        urllib.request.urlretrieve(os.path.join(
-                            fam_url), )
-                    except:
-                        failed_html_file.write('{}\n'.format(fam_url))
+
+                if family_name in valid_families:
+                    if not os.path.exists(out_file):
+                        try:
+                            urllib.request.urlretrieve(os.path.join(
+                                fam_url), out_file)
+                        except:
+                            failed_html_file.write('{}\tfailed_download\n'.format(fam_url))
+                    else:
+                        num_already_dl += 1
                 else:
-                    num_already_dl += 1
-                
-                num_families += 1
-                sys.stdout.write(' - processed {:,} families, including {:,} that were previously downloaded\r'.format(
-                                    num_families,
-                                    num_already_dl))
+                    failed_html_file.write('{}\tduplicate_name\n'.format(fam_url))
+
+                sys.stdout.write(
+                    ' - processed {:,} families, including {:,} that were previously downloaded\r'.format(
+                        num_families,
+                        num_already_dl))
                 sys.stdout.flush()
-                            
+
         failed_html_file.close()
         sys.stdout.write('\n')
 
     def download_genus_lpsn_html(self):
-        '''
+        """
 
         Download all HTML genus pages from LPSN.
 
-        '''
+        """
         # Download pages listing all genus in LPSN
         index_dir = os.path.join(self.outdir, 'genus_per_letter')
         if self.skip_taxa_per_letter_dl:
@@ -235,8 +252,10 @@ class LPSN(object):
         genus_sites_list = open(os.path.join(
             self.outdir, 'genus_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/genus/[^"]+)"')
+        genera_name_pattern = re.compile(r'class=\"last-child color-genus\">(.*)</a>')
+        genera_to_download = []
         self.logger.info('Generating a list of all pages that contain genus information.')
-        
+
         num_genera = 0
         for letter in list(string.ascii_uppercase):
             with open(os.path.join(index_dir, 'genus_{}.html'.format(letter))) as webf:
@@ -248,10 +267,23 @@ class LPSN(object):
                             num_genera += 1
                             sys.stdout.write(' - processed {:,} genera\r'.format(num_genera))
                             sys.stdout.flush()
-                            genus_sites_list.write('{}\t{}\n'.format(
-                                letter, self.base_url + result.group(1)))
+                            genus_name = genera_name_pattern.search(line).group(1)
+                            genus_name = self.cleanhtml(genus_name)
+                            genus_sites_list.write('{}\t{}\t{}\n'.format(
+                                letter, genus_name, self.base_url + result.group(1)))
+                            genera_to_download.append(genus_name)
         genus_sites_list.close()
         sys.stdout.write('\n')
+
+        # we remove the duplicate names with quotes
+        valid_genera = []
+        for genname in genera_to_download:
+
+            if genname.startswith('"'):
+                if genname.replace('"', '').replace('Candidatus ', '') not in genera_to_download:
+                    valid_genera.append(genname)
+            else:
+                valid_genera.append(genname)
 
         # Download individual species html page
         self.logger.info('Downloading individual genus HTML pages.')
@@ -262,34 +294,34 @@ class LPSN(object):
         num_already_dl = 0
         with open(os.path.join(self.outdir, 'genus_list.lst')) as gsl:
             for line in gsl:
-                letter, gen_url = line.strip().split('\t')
+                letter, genus_name, gen_url = line.strip().split('\t')
                 make_sure_path_exists(os.path.join(
                     self.outdir, 'all_genera', letter))
                 genname = os.path.basename(gen_url)
                 out_file = os.path.join(self.outdir, 'all_genera', letter, genname)
-                
-                if not os.path.exists(out_file):
-                    try:
-                        urllib.request.urlretrieve(os.path.join(
-                            gen_url), out_file)
-                    except:
-                        failed_html_file.write('{}\n'.format(gen_url))
+                if genus_name in valid_genera:
+                    if not os.path.exists(out_file):
+                        try:
+                            urllib.request.urlretrieve(os.path.join(
+                                gen_url), out_file)
+                        except:
+                            failed_html_file.write('{}\tfailed_download\n'.format(gen_url))
+                    else:
+                        num_already_dl += 1
                 else:
-                    num_already_dl += 1
-                    
+                    failed_html_file.write('{}\tduplicate_name\n'.format(gen_url))
                 num_genera += 1
                 sys.stdout.write(' - processed {:,} genera, including {:,} that were previously downloaded\r'.format(
-                                    num_genera, num_already_dl))
+                    num_genera, num_already_dl))
                 sys.stdout.flush()
         failed_html_file.close()
         sys.stdout.write('\n')
 
     def download_species_lpsn_html(self):
-        '''
-
+        """
         Download all html species pages from LPSN.
 
-        '''
+        """
         # Download pages listing all species in LPSN
         index_dir = os.path.join(self.outdir, 'species_per_letter')
         if self.skip_taxa_per_letter_dl:
@@ -306,8 +338,10 @@ class LPSN(object):
         species_sites_list = open(os.path.join(
             self.outdir, 'species_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/species/[^"]+)"')
+        species_name_pattern = re.compile(r'class=\"last-child color-species\">(.*)</a>')
+        species_to_download = []
         self.logger.info('Generating a list of all pages that contain species information.')
-        
+
         num_species = 0
         for letter in list(string.ascii_uppercase):
             with open(os.path.join(index_dir, 'species_{}.html'.format(letter))) as webf:
@@ -319,37 +353,52 @@ class LPSN(object):
                             num_species += 1
                             sys.stdout.write(' - processed {:,} species\r'.format(num_species))
                             sys.stdout.flush()
-                
-                            species_sites_list.write('{}\t{}\n'.format(
-                                letter, self.base_url + result.group(1)))
+                            species_name = species_name_pattern.search(line).group(1)
+                            species_name = self.cleanhtml(species_name)
+                            species_sites_list.write('{}\t{}\t{}\n'.format(
+                                letter, species_name, self.base_url + result.group(1)))
+                            species_to_download.append(species_name)
         species_sites_list.close()
         sys.stdout.write('\n')
 
+        # we remove the duplicate names with quotes
+        valid_species = []
+        for spname in species_to_download:
+
+            if spname.startswith('"'):
+                if spname.replace('"', '').replace('Candidatus ', '') not in species_to_download:
+                    valid_species.append(spname)
+            else:
+                valid_species.append(spname)
+
         # Download individual species html page
         self.logger.info('Downloading individual species HTML pages.')
+
         failed_html_file = open(os.path.join(
             self.outdir, 'species_failed.lst'), 'w')
         make_sure_path_exists(os.path.join(self.outdir, 'all_species'))
-        
+
         num_species = 0
         num_already_dl = 0
         with open(os.path.join(self.outdir, 'species_list.lst')) as gsl:
             for line in gsl:
-                letter, spe_url = line.strip().split('\t')
+                letter, species_name, spe_url = line.strip().split('\t')
                 make_sure_path_exists(os.path.join(
                     self.outdir, 'all_species', letter))
                 spenname = os.path.basename(spe_url)
                 out_file = os.path.join(self.outdir, 'all_species', letter, spenname)
-                
-                if not os.path.exists(out_file):
-                    try:
-                        urllib.request.urlretrieve(os.path.join(
-                            spe_url), out_file)
-                    except:
-                        failed_html_file.write('{}\n'.format(spe_url))
+
+                if species_name in valid_species:
+                    if not os.path.exists(out_file):
+                        try:
+                            urllib.request.urlretrieve(os.path.join(
+                                spe_url), out_file)
+                        except:
+                            failed_html_file.write('{}\n'.format(spe_url))
+                    else:
+                        num_already_dl += 1
                 else:
-                    num_already_dl += 1
-                    
+                    failed_html_file.write('{}\tduplicate_name\n'.format(spe_url))
                 num_species += 1
                 sys.stdout.write(' - processed {:,} species, including {:,} that were previously downloaded\r'.format(
                                     num_species, num_already_dl))
@@ -358,11 +407,11 @@ class LPSN(object):
         sys.stdout.write('\n')
 
     def download_subspecies_lpsn_html(self):
-        '''
+        """
 
         Download all html species pages from LPSN.
 
-        '''
+        """
         # Download pages listing all subspecies in LPSN
         index_dir = os.path.join(self.outdir, 'subspecies_all_letters')
         if self.skip_taxa_per_letter_dl:
@@ -374,12 +423,14 @@ class LPSN(object):
             urllib.request.urlretrieve(
                 search_url, os.path.join(index_dir, 'search_subspecies.html'))
 
-        # Parse html pages lising all subspecies
+        # Parse html pages listing all subspecies
         species_sites_list = open(os.path.join(
             self.outdir, 'subspecies_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/subspecies/[^"]+)"')
+        subspecies_name_pattern = re.compile(r'class=\"\s?color-subspecies\">(.*)<\/a>')
+        subspecies_to_download = []
         self.logger.info('Generating a list of all the pages that contain species information.')
-        
+
         num_subspecies = 0
         with open(os.path.join(index_dir, 'search_subspecies.html')) as webf:
             for line in webf:
@@ -390,62 +441,77 @@ class LPSN(object):
                         num_subspecies += 1
                         sys.stdout.write(' - processed {:,} subspecies\r'.format(num_subspecies))
                         sys.stdout.flush()
+                        subspecies_name = subspecies_name_pattern.search(line).group(1)
+                        subspecies_name = self.cleanhtml(subspecies_name)
+                        subspecies_to_download.append(subspecies_name)
                         species_sites_list.write(
-                            '{}\n'.format(self.base_url + result.group(1)))
+                            '{}\t{}\n'.format(subspecies_name, self.base_url + result.group(1)))
         species_sites_list.close()
         sys.stdout.write('\n')
+
+        # we remove the duplicate names with quotes
+        valid_subspecies = []
+        for subspname in subspecies_to_download:
+
+            if subspname.startswith('"'):
+                if subspname.replace('"', '').replace('Candidatus ', '') not in subspecies_to_download:
+                    valid_subspecies.append(subspname)
+            else:
+                valid_subspecies.append(subspname)
 
         # Download individual species html page
         self.logger.info('Downloading individual subspecies HTML pages.')
         failed_html_file = open(os.path.join(
             self.outdir, 'subspecies_failed.lst'), 'w')
         make_sure_path_exists(os.path.join(self.outdir, 'all_subspecies'))
-        
+
         num_subspecies = 0
         num_already_dl = 0
         with open(os.path.join(self.outdir, 'subspecies_list.lst')) as gsl:
             for line in gsl:
-                subspe_url = line.strip()
+                subspecies_name, subspe_url = line.strip().split('\t')
                 make_sure_path_exists(os.path.join(
                     self.outdir, 'all_subspecies'))
                 subspenname = os.path.basename(subspe_url)
                 out_file = os.path.join(self.outdir, 'all_subspecies', subspenname)
-                if not os.path.exists(out_file):
-                    try:
-                        urllib.request.urlretrieve(os.path.join(
-                            subspe_url), out_file)
-                    except:
-                        failed_html_file.write('{}\n'.format(subspe_url))
+                if subspecies_name in valid_subspecies:
+                    if not os.path.exists(out_file):
+                        try:
+                            urllib.request.urlretrieve(os.path.join(
+                                subspe_url), out_file)
+                        except:
+                            failed_html_file.write('{}\n'.format(subspe_url))
+                    else:
+                        num_already_dl += 1
                 else:
-                    num_already_dl += 1
-                    
-                num_subspecies += 1
-                sys.stdout.write(' - processed {:,} subspecies, including {:,} that were previously downloaded\r'.format(
-                                    num_subspecies, num_already_dl))
-                sys.stdout.flush()
+                    failed_html_file.write('{}\tduplicate_name\n'.format(subspe_url))
+            num_subspecies += 1
+            sys.stdout.write(' - processed {:,} subspecies, including {:,} that were previously downloaded\r'.format(
+                num_subspecies, num_already_dl))
+            sys.stdout.flush()
         failed_html_file.close()
         sys.stdout.write('\n')
 
     def cleanhtml(self, raw_html):
-        '''
+        """
         Remove all HTML tags from HTML line
-        '''
+        """
         cleanr = re.compile('<.*?>')
         cleantext = re.sub(cleanr, '', raw_html)
         return cleantext.strip()
 
     def clean_parenthesis(self, raw_line):
-        '''
+        """
         Remove parenthesis content from HTML line
-        '''
-        #result = re.sub("[\(\[].*?[\)\]]", "", raw_line)
+        """
+        # result = re.sub("[\(\[].*?[\)\]]", "", raw_line)
         result = re.sub("\(see[^\)]+\)", "", raw_line)
         return result
 
     def parse_strains(self, list_strains):
-        '''
+        """
         Parse the HTML line listing all strains and return a list of strains
-        '''
+        """
         results = []
         # replace (now XXXX ) pattern
         now_pattern = re.compile('(\w+) \(now (\w+)\) (\d+)')
@@ -472,9 +538,9 @@ class LPSN(object):
         return results
 
     def remove_accents(self, data):
-        '''
+        """
         Remove all special characters from reference and species name
-        '''
+        """
         return ''.join(x for x in unicodedata.normalize('NFKD', html.unescape(data)) if x in string.printable)
 
     def check_format_three_terms_strain(self, strain):
@@ -679,13 +745,17 @@ class LPSN(object):
                         elif strain_section and name_section:
                             if line.strip() != '':
                                 raw_list_strain.extend(
-                                    [x.replace('strain', '').replace('Strain', '').strip() for x in self.cleanhtml(line).split(';')])
+                                    [x.replace('strain', '').replace('Strain', '').strip() for x in
+                                     self.cleanhtml(line).split(';')])
 
                 ref_type_combined = ','.join(
                     list(filter(None, [species_reference, species_proposed_type]))).strip()
-
-                output_file.write("species\t{}\t{}\t{}\t{}\n".format(species_name in full_list_type_species,
-                                                                     species_name, ref_type_combined, "=".join(raw_list_strain)))
+                if len(species_name.strip().split(' ')) >= 2:
+                    output_file.write("species\t{}\t{}\t{}\t{}\n".format(species_name in full_list_type_species,
+                                                                         species_name, ref_type_combined,
+                                                                         "=".join(raw_list_strain)))
+                else:
+                    self.logger.info(f"species name : {species_name} contains less than 2 words")
 
     def parse_subspecies_html(self, output_file, input_dir, full_list_type_species):
         type_proposed_pattern = re.compile(
@@ -737,152 +807,39 @@ class LPSN(object):
                     elif strain_section and name_section:
                         if line.strip() != '':
                             raw_list_strain.extend(
-                                [x.replace('strain', '').replace('Strain', '').strip() for x in self.cleanhtml(line).split(';')])
+                                [x.replace('strain', '').replace('Strain', '').strip() for x in
+                                 self.cleanhtml(line).split(';')])
 
                 ref_type_combined = ','.join(
                     list(filter(None, [subspecies_reference, subspecies_proposed_type]))).strip()
 
                 if short_name == '':
-                    output_file.write("species\t{}\t{}\t{}\t{}\n".format(short_name != '' and short_name in full_list_type_species,
-                                                                         subspe_name, ref_type_combined, "=".join(raw_list_strain)))
+                    output_file.write(
+                        "species\t{}\t{}\t{}\t{}\n".format(short_name != '' and short_name in full_list_type_species,
+                                                           subspe_name, ref_type_combined, "=".join(raw_list_strain)))
 
     def parse_html(self, input_dir):
-        '''
+        """
         Parse the html file of each genus.
         Store the type, the name, the reference, the strains for each species.
-        '''
-
+        """
         processed_species = []
         output_file = open(os.path.join(
             self.outdir, 'lpsn_summary.tsv'), 'w')
 
         self.logger.info('Parsing family pages.')
         full_list_type_genus = self.parse_family_html(output_file, input_dir)
-        
+
         self.logger.info('Parsing genus pages.')
         full_list_type_species = self.parse_genus_html(
             output_file, input_dir, full_list_type_genus)
-            
+
         self.logger.info('Parsing species pages.')
         self.parse_species_html(output_file, input_dir, full_list_type_species)
-        
+
         self.logger.info('Parsing subspecies pages.')
         self.parse_subspecies_html(
             output_file, input_dir, full_list_type_species)
 
         output_file.close()
         self.summarise_parsing(output_file.name)
-    #=========================================================================
-    #
-    #                         genus_result = genus_pattern.search(line)
-    #                         if genus_result:
-    #                             genus_name = genus_result.group(1)
-    #                             genus_ref_result = genus_ref_pattern.search(line)
-    #                             if genus_ref_result:
-    #                                 genus_reference = self.cleanhtml(
-    #                                     genus_ref_result.group(1))
-    #                         if 'Type genus of the order' in line:
-    #                             is_type_genus = True
-    #                         if genus_name != '':
-    #                             # write information
-    #                             output_file.write('genus\t{}\t{}\t{}\n'.format(
-    #                                 is_type_genus, genus_name, self.remove_accents(genus_reference)))
-    #                         genus_name = ''
-    #                         genus_reference = ''
-    #                         is_type_genus = False
-    #                     # if the line contains a specie
-    #                     elif '<span class="genusspecies">' in line:
-    #                         if species_name != '':
-    #                             species_name = ''
-    #                             species_reference = ''
-    #                             species_strains = ''
-    #                             neotype_strains = ''
-    #                             is_type_species = False
-    #                         species_result = species_pattern.search(line)
-    #
-    #                         alt_species_result = alt_species_pattern.search(line)
-    #                         if species_result:
-    #                             species_name = species_result.group(
-    #                                 1) + ' ' + species_result.group(2)
-    #                             species_ref_results = species_ref_pattern.search(
-    #                                 line)
-    #                             if species_ref_results:
-    #                                 species_reference = self.cleanhtml(species_ref_results.group(
-    #                                     2))
-    #                             subspecies_result = subspecies_pattern.search(line)
-    #                             if subspecies_result:
-    #                                 species_name = species_name + \
-    #                                     " subsp. " + subspecies_result.group(1)
-    #                                 subspecies_ref = subspecies_ref_pattern.search(
-    #                                     line)
-    #                                 if subspecies_ref:
-    #                                     species_reference = self.cleanhtml(subspecies_ref.group(
-    #                                         2))
-    #                         elif alt_species_result:
-    #                             species_name = alt_species_result.group(
-    #                                 1) + ' ' + alt_species_result.group(2)
-    #                             species_ref_results = species_ref_pattern.search(
-    #                                 line)
-    #                             if species_ref_results:
-    #                                 species_reference = self.cleanhtml(species_ref_results.group(
-    #                                     2))
-    #                             subspecies_result = subspecies_pattern.search(line)
-    #                             if subspecies_result:
-    #                                 species_name = species_name + \
-    #                                     " subsp. " + subspecies_result.group(1)
-    #                                 subspecies_ref = subspecies_ref_pattern.search(
-    #                                     line)
-    #                                 if subspecies_ref:
-    #                                     species_reference = self.cleanhtml(subspecies_ref.group(
-    #                                         2))
-    #
-    #                         elif 'specificepithet' not in line and 'subgen' not in line and 'ord. nov.' not in line and 'fam. nov.' not in line:
-    #                             genus_result = alt_genus_pattern.search(line)
-    #                             if genus_result:
-    #                                 genus_name = genus_result.group(1)
-    #                                 genus_ref_result = genus_ref_pattern.search(
-    #                                     line)
-    #                                 if genus_ref_result:
-    #                                     genus_reference = self.cleanhtml(
-    #                                         genus_ref_result.group(1))
-    #                             if 'Type genus of the order' in line:
-    #                                 is_type_genus = True
-    #                             if genus_name != '':
-    #                                 output_file.write('genus\t{}\t{}\t{}\n'.format(
-    #                                     is_type_genus, genus_name, genus_reference))
-    #                             genus_name = ''
-    #                             genus_reference = ''
-    #                             is_type_genus = False
-    #
-    #                         if 'Type species of the genus' in line:
-    #                             is_type_species = True
-    #                     # if the line contains a list of strains
-    #                     elif '<span class="taxon-subhead-typestrain">Type strain:</span>' in line:
-    #                         cleanline = self.cleanhtml(line)
-    #                         cleanline = self.clean_parenthesis(cleanline)
-    #
-    #                         cleanline = cleanline.replace(
-    #                             "Type strain:", '').replace(
-    #                             ".", '').strip()
-    #                         species_strains = self.parse_strains(cleanline)
-    #                     # if the line contains a list of strains (neotype)
-    #                     elif 'taxon-subhead-neotype' in line:
-    #                         neotype_result = neotype_pattern.search(line)
-    #                         if neotype_result:
-    #                             neotype_strains = self.parse_strains(
-    #                                 self.cleanhtml(neotype_result.group(2)))
-    #                     # write information for each new specie
-    #                     elif species_name not in processed_species and species_name != '' and line.startswith('Taxon Spacer'):
-    #                         output_file.write('species\t{}\t{}\t{}\t{}\t{}\n'.format(
-    #                             is_type_species, self.remove_accents(species_name), self.remove_accents(species_reference), '='.join(species_strains), '='.join(neotype_strains)))
-    #                         processed_species.append(species_name)
-    #                         species_name = ''
-    #                         species_reference = ''
-    #                         species_strains = ''
-    #                         neotype_strains = ''
-    #                         is_type_species = False
-    #                 if species_name not in processed_species and species_name != '':
-    #                     output_file.write('species\t{}\t{}\t{}\t{}\t{}\n'.format(
-    #                         is_type_species, species_name, species_reference, '='.join(species_strains), '='.join(neotype_strains)))
-    #                     processed_species.append(species_name)
-    #=========================================================================

@@ -416,6 +416,8 @@ class Strains(object):
         year_date = ''
         category_name = ''
         matched_strain_id = None
+        # if gid in ('RS_GCF_001590785.1','RS_GCF_001592025.1'):
+        #     print(f"HERE {gid}")
         for repository_strain_id in repository_strain_ids.split("="):
             strain_ids = self.metadata[gid]['ncbi_expanded_standardized_strain_ids']
             if repository_strain_id in strain_ids:
@@ -528,7 +530,10 @@ class Strains(object):
         match = None
         gtdb_types = set()
         repository_strain_ids = []
+
         for standard_name, raw_names in standard_names.items():
+            # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
+            #     print(f"HERE {gid}",standard_name, standard_name not in strain_dictionary)
             if standard_name not in strain_dictionary:
                 continue
 
@@ -720,6 +725,9 @@ class Strains(object):
                 continue
 
             standardized_sp_names = self.standardise_names([species_name])
+            # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
+            #     print(f"standardized_sp_names {gid}",species_name,standardized_sp_names)
+
 
             # get list of misspellings, synonyms, and equivalent names associated
             # with this genome
@@ -727,7 +735,10 @@ class Strains(object):
             synonyms = {}
             equivalent_names = {}
             unofficial_potential_names = set()
+            # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
+            #     print(f"HERE {gid}", genome_metadata['ncbi_taxid'])
             if genome_metadata['ncbi_taxid'] in self.ncbi_auxiliary_names:
+
                 unofficial_potential_names.update(self.ncbi_auxiliary_names[
                     genome_metadata['ncbi_taxid']]['misspelling'])
                 unofficial_potential_names.update(self.ncbi_auxiliary_names[
@@ -758,6 +769,8 @@ class Strains(object):
                                       True)
 
             if not match:
+                # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
+                #     print(f"HERE {gid}", unofficial_standard_names)
                 # check if any of the auxillary names have a species name
                 # and strain ID match with the type repository
                 match = self.strain_match(gid,
