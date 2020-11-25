@@ -69,7 +69,7 @@ class LPSN(object):
             'lpsn_genus\tlpsn_type_genus\tlpsn_genus_authority\n')
         fout_type_species.write(
             'lpsn_species\tlpsn_type_species\tlpsn_species_authority\n')
-        fout_type_strains.write('lpsn_strain\n')
+        fout_type_strains.write('lpsn_strain\tco-identical strain IDs\n')
 
         list_processed_strains = []
         processed_genus = []
@@ -134,7 +134,7 @@ class LPSN(object):
 
         fout_type_genera.close()
         fout_type_species.close()
-        fout_type_strains.close
+        fout_type_strains.close()
 
     def download_family_lpsn_html(self):
         '''
@@ -639,7 +639,7 @@ class LPSN(object):
                                 species_proposed_type = type_proposed_pattern_results.group(
                                     1)
 
-                        elif '<b>Type strains:</b>' in line and name_section:
+                        elif ('<b>Type strains:</b>' in line or '<b>Type strain:</b>' in line) and name_section:
                             strain_section = True
                         elif '<p' in line and strain_section and name_section:
                             raw_list_strain = list(
@@ -731,6 +731,7 @@ class LPSN(object):
         Parse the html file of each genus.
         Store the type, the name, the reference, the strains for each species.
         '''
+
         processed_species = []
         output_file = open(os.path.join(
             self.outdir, 'lpsn_summary.tsv'), 'w')

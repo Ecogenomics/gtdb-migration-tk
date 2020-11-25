@@ -65,14 +65,17 @@ class Strains(object):
         self.output_dir = output_dir
 
     def load_year_dict(self, year_table):
-        """Load year of priority for species as identified at LPSN, DSMZ."""
+        """Load year of priority for species as identified at LPSN."""
 
         dict_date = {}
+        
         with open(year_table) as yt:
             for line in yt:
                 infos = line.rstrip('\n').split('\t')
-                dict_date[infos[0]] = {'lpsn': infos[1],
-                                       'dsmz': infos[2]}
+                sp = infos[0]
+                year = int(infos[1])
+                dict_date[sp] = year
+                
         return dict_date
 
     def standardize_strain_id(self, strain_id):
@@ -199,7 +202,6 @@ class Strains(object):
             gtdb_ncbi_type_material_designation_index = headers.index(
                 'ncbi_type_material_designation')
             gtdb_accession_index = headers.index('accession')
-            gtdb_taxonomy_species_name_index = headers.index('ncbi_taxonomy')
             gtdb_strain_identifiers_index = headers.index(
                 'ncbi_strain_identifiers')
             gtdb_ncbi_taxonomy_unfiltered_index = headers.index(
@@ -209,8 +211,10 @@ class Strains(object):
             taxids = set()
             for line in metaf:
                 infos = line.rstrip('\n').split(separator)
+                
+                gid = infos[gtdb_accession_index]
 
-                if not infos[gtdb_accession_index].startswith('U_'):
+                if not gid.startswith('U_'):
                     # standardize NCBI strain IDs
                     standard_strain_ids = []
                     if infos[gtdb_strain_identifiers_index] != 'none':
@@ -223,14 +227,21 @@ class Strains(object):
                                                for sid in created_list
                                                if (sid != '' and sid != 'none')]
 
+                    # *** Hack to patch missing metadata in GTDB:
+                    ncbi_unfiltered_tax_str = infos[gtdb_ncbi_taxonomy_unfiltered_index]
+                    if gid == 'RS_GCF_011765685.1':
+                        ncbi_unfiltered_tax_str = 'd__Bacteria;p__Proteobacteria;c__Gammaproteobacteria;o__Enterobacterales;f__Enterobacteriaceae;g__Kluyvera;s__Kluyvera genomosp. 3'
+                    elif gid == 'RS_GCF_005860925.2':
+                        ncbi_unfiltered_tax_str = 'd__Bacteria;p__Proteobacteria;c__Alphaproteobacteria;o__Rhizobiales;f__Rhizobiaceae;x__Rhizobium/Agrobacterium group;g__Rhizobium;s__Rhizobium indicum'
+                    elif gid == 'RS_GCF_005862185.2':
+                        ncbi_unfiltered_tax_str = 'd__Bacteria;p__Proteobacteria;c__Alphaproteobacteria;o__Rhizobiales;f__Rhizobiaceae;x__Rhizobium/Agrobacterium group;g__Rhizobium;s__Rhizobium hidalgonense'
 
-                    metadata[infos[gtdb_accession_index]] = {
+                    metadata[gid] = {
                         'ncbi_organism_name': infos[gtdb_ncbi_organism_name_index],
-                        'taxonomy_species_name': infos[gtdb_taxonomy_species_name_index].split(';')[6].replace('s__',''),
                         'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
                         'ncbi_standardized_strain_ids': set(standard_strain_ids),
                         'ncbi_type_material_designation': infos[gtdb_ncbi_type_material_designation_index],
-                        'ncbi_taxonomy_unfiltered': infos[gtdb_ncbi_taxonomy_unfiltered_index],
+                        'ncbi_taxonomy_unfiltered': ncbi_unfiltered_tax_str,
                         'ncbi_taxid': int(infos[gtdb_ncbi_taxid_index])}
 
                     taxids.add(int(infos[gtdb_ncbi_taxid_index]))
@@ -356,12 +367,11 @@ class Strains(object):
 
         return None
 
-    def get_priority_year(self, spe_name, sourcest):
-        """Get year of priority for species."""
+    def get_lpsn_priority_year(self, sp):
+        """Get year of priority for species according to LPSN."""
 
-        if spe_name in self.year_table:
-            if self.year_table[spe_name][sourcest] != '':
-                return int(self.year_table[spe_name][sourcest])
+        if sp in self.lpsn_year_table:
+            return self.lpsn_year_table[sp]
 
         return ''
 
@@ -402,7 +412,10 @@ class Strains(object):
                             istype = True
 
             if istype:
-                year_date = self.get_priority_year(standard_name, sourcest)
+                if sourcest == 'lpsn':
+                    year_date = self.get_lpsn_priority_year(standard_name)
+                else:
+                    year_date = ''
 
                 if not isofficial:
                     category_name = self.select_category_name(standard_name,
@@ -488,7 +501,6 @@ class Strains(object):
                 continue
 
             if sourcest == 'lpsn':
-
                 # lpsn has information for both strains and neotype strains
                 repository_strain_ids = strain_dictionary.get(
                     standard_name).get('strains')
@@ -856,7 +868,7 @@ class Strains(object):
         fout.write(
             "\tlpsn_type_designation\tdsmz_type_designation")
         fout.write(
-            '\tlpsn_priority_year\tdsmz_priority_year')
+            '\tlpsn_priority_year')
         fout.write("\tgtdb_type_species_of_genus\n")
 
         missing_type_at_ncbi = 0
@@ -899,8 +911,7 @@ class Strains(object):
 
             fout.write('\t{}\t{}'.format(lpsn[gid].type_designation if gid in lpsn else self.NOT_TYPE_MATERIAL,
                                          dsmz[gid].type_designation if gid in dsmz else self.NOT_TYPE_MATERIAL))
-            fout.write('\t{}\t{}'.format(lpsn[gid].priority_year if gid in lpsn else '',
-                                         dsmz[gid].priority_year if gid in dsmz else ''))
+            fout.write('\t{}'.format(lpsn[gid].priority_year if gid in lpsn else ''))
             fout.write('\t{}\n'.format(type_species_of_genus))
 
             if metadata['ncbi_type_material_designation'] == 'none' and highest_priority_designation == self.TYPE_SPECIES:
@@ -976,7 +987,7 @@ class Strains(object):
         self.metadata, taxids_of_interest = self.load_metadata(metadata_file)
 
         self.logger.info('Parsing year table.')
-        self.year_table = self.load_year_dict(year_table)
+        self.lpsn_year_table = self.load_year_dict(year_table)
 
         self.logger.info(
             'Parsing NCBI taxonomy information from names.dmp and nodes.dmp.')
@@ -1023,24 +1034,22 @@ class Strains(object):
             self.logger.info('Reading type species of genus as defined at LPSN.')
             lpsn_type_species_of_genus, lpsn_genus_type_species = self._read_type_species_of_genus(
                 os.path.join(lpsn_dir, 'lpsn_species.tsv'))
-            self.logger.info(f' ... identified type species for {len(lpsn_type_species_of_genus):,} genera.')
+            self.logger.info(f' ... identified type species for {len(lpsn_genus_type_species):,} genera.')
             
             self.logger.info('Reading type species of genus as defined at BacDive.')
             dsmz_type_species_of_genus, dsmz_genus_type_species = self._read_type_species_of_genus(
                 os.path.join(dsmz_dir, 'dsmz_species.tsv'))
-            self.logger.info(f' ... identified type species for {len(lpsn_type_species_of_genus):,} genera.')
+            self.logger.info(f' ... identified type species for {len(dsmz_genus_type_species):,} genera.')
 
             for genus in lpsn_genus_type_species:
                 if genus in dsmz_genus_type_species:
                     if lpsn_genus_type_species[genus] != dsmz_genus_type_species[genus]:
-                        self.logger.warning('LPSN and DSMZ disagree on type species of genus for {}: {} {}'.format(
+                        self.logger.warning('LPSN and DSMZ disagree on type species of genus for {}: {} {}. Deferring to LPSN.'.format(
                                                 genus,
                                                 lpsn_genus_type_species[genus],
                                                 dsmz_genus_type_species[genus]))
-
-            self.logger.info('Identified {:,} LPSN and {:,} DSMZ type species of genus.'.format(
-                                len(lpsn_type_species_of_genus),
-                                len(dsmz_type_species_of_genus)))
+                        del dsmz_type_species_of_genus[dsmz_genus_type_species[genus]]
+                        del dsmz_genus_type_species[genus]
 
             self.logger.info(
                 'Generating summary type information table across all strain repositories.')
