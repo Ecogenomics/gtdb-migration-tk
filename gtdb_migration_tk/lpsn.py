@@ -698,7 +698,7 @@ class LPSN(object):
                         if type_proposed_pattern_results:
                             subspecies_proposed_type = type_proposed_pattern_results.group(
                                 1)
-                    elif '<b>Type strains:</b>' in line and name_section:
+                    elif ('<b>Type strains:</b>' in line or '<b>Type strain:</b>' in line) and name_section:
                         strain_section = True
                     elif '<p' in line and strain_section and name_section:
                         raw_list_strain = list(
