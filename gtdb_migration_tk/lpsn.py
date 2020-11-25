@@ -36,7 +36,7 @@ import html
 import logging
 from biolib.common import check_file_exists, make_sure_path_exists, check_dir_exists
 
-from gtdb_migration_tk.taxon_utils import canonical_strain_id
+from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
 
 
 class LPSN(object):
@@ -123,9 +123,6 @@ class LPSN(object):
                     
                     # Normalise the strains
                     for i, strain in enumerate(strains):
-                        if i == 0 and strain.startswith('strain '):
-                            strain = strain.replace("strain ", "", 1)
-
                         processed_strains.append(canonical_strain_id(strain))
                     processed_neotypes = []
                     processed_strain_string = '{0}\t{1}'.format(
@@ -480,27 +477,6 @@ class LPSN(object):
         '''
         return ''.join(x for x in unicodedata.normalize('NFKD', html.unescape(data)) if x in string.printable)
 
-    def check_format_strain(self, strain):
-        if not any(char.isdigit() for char in strain):
-            return False
-        # self.check_format_three_terms_strain(strain)
-        if all(c.isdigit() or c.isupper() for c in strain):
-            return True
-
-        special_characters = ['-', '.', ' ']
-        processed_strain = str(strain)
-        for spechar in special_characters:
-            processed_strain = processed_strain.replace(spechar, '')
-            
-        #***print(processed_strain, strain)
-        
-        if all(c.isdigit() or c.isupper() for c in processed_strain):
-            return True
-        if strain.count(' ') == 0 and all(c.isdigit() or c.isupper() or c.lower() for c in processed_strain):
-            return True
-            
-        return False
-
     def check_format_three_terms_strain(self, strain):
         word_counter = 0
         number_counter = 0
@@ -696,9 +672,9 @@ class LPSN(object):
                                 raw_list_strain)
 
                             raw_list_strain = [
-                                x for x in raw_list_strain if self.check_format_strain(x)]
+                                x for x in raw_list_strain if check_format_strain(x)]
+                            
                             break
-                            # print(raw_list_strain)
 
                         elif strain_section and name_section:
                             if line.strip() != '':

@@ -22,9 +22,35 @@ def canonical_strain_id(strain_id):
     """Generate canonical strain identifier."""
 
     strain_id = strain_id.strip()
+    if strain_id.startswith('strain '):
+        strain_id = strain_id.replace('strain ', '', 1)
     strain_id = re.sub(r'\(.+\)', ' ', strain_id)
     strain_id = ' '.join(strain_id.split())
     strain_id = re.sub('[\W_]+', '', strain_id).upper()
     
     return strain_id
+    
+    
+def check_format_strain(strain_id):
+    """Check if strain ID has an acceptable format."""
+    
+    # skip IDs within a number
+    if not any(char.isdigit() for char in strain_id):
+        return False
+
+    if all(c.isdigit() or c.isupper() for c in strain_id):
+        return True
+
+    special_characters = ['-', '.', ' ']
+    processed_strain = str(strain_id)
+    for spechar in special_characters:
+        processed_strain = processed_strain.replace(spechar, '')
+
+    if all(c.isdigit() or c.isupper() for c in processed_strain):
+        return True
+        
+    if strain_id.count(' ') == 0 and all(c.isdigit() or c.isupper() or c.lower() for c in processed_strain):
+        return True
+        
+    return False
     

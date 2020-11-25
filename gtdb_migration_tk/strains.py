@@ -36,7 +36,7 @@ import math
 from collections import defaultdict, namedtuple
 import multiprocessing as mp
 
-from gtdb_migration_tk.taxon_utils import canonical_strain_id
+from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
 
 
 class Strains(object):
@@ -288,7 +288,6 @@ class Strains(object):
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
                     if len(list_strains) > 0:
                         lpsn_strains_dic[sp] = {'strains': '='.join(set(list_strains)), 'neotypes': ''}
-                    print(sp, list_strains) #***
                 else:
                     # DHP: I don't think this case every occurs (?)
                     list_strains = [pattern.sub('', a.strip()).upper(
@@ -298,11 +297,31 @@ class Strains(object):
 
                     lpsn_strains_dic[sp] = {
                         'strains': '='.join(set(list_strains)), 'neotypes': '='.join(set(list_neotypes))}
+                        
+        self.logger.info(' - identified strain ids for {:,} species on LPSN website.'.format(
+                            len(lpsn_strains_dic)))
 
         # get co-identical strain IDs in LPSN GSS file
         _, lpsn_gss_strain_ids = self.parse_lpsn_gss_metadata(lpsn_gss_file)
-        for sp in lpsn_gss_strain_ids:
-            pass
+        new_strain_ids = 0
+        for sp, strain_ids in lpsn_gss_strain_ids.items():
+            if sp in lpsn_strains_dic:
+                scraped_strain_ids = set(lpsn_strains_dic[sp]['strains'].split('='))
+                new_strain_ids += len(set(strain_ids) - scraped_strain_ids)
+                
+                # GSS file is more reliable so defer to these co-identical strain IDs
+                lpsn_strains_dic[sp] = {'strains': '='.join(strain_ids), 'neotypes': lpsn_strains_dic[sp]['neotypes']}
+            else:
+                lpsn_strains_dic[sp] = {'strains': '='.join(strain_ids), 'neotypes': ''}
+
+        self.logger.info(' - identified strain ids for {:,} species in LPSN GSS file; deferring to LPSN GSS data whenever possible.'.format(
+                            len(lpsn_gss_strain_ids)))
+        self.logger.info(' - identified {:,} species exclusive to LPSN website.'.format(
+                            len(set(lpsn_strains_dic) - set(lpsn_gss_strain_ids))))
+        self.logger.info(' - identified {:,} species exclusive to LPSN GSS file (ideally zero!).'.format(
+                            len(set(lpsn_gss_strain_ids) - set(lpsn_strains_dic))))
+        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN GSS file (ideally zero!).'.format(
+                            new_strain_ids))
                         
         return lpsn_strains_dic
     
@@ -648,7 +667,8 @@ class Strains(object):
         return standardized
 
     def parse_strains(self, sourcest, strain_dictionary, outfile):
-        """Parse information for a single strain resource (e.g., LPSN, DSMZ, or StrainInfo)."""
+        """Parse information for a single strain resource (e.g., LPSN or DSMZ)."""
+        
         worker_queue = mp.Queue()
         writer_queue = mp.Queue()
 
@@ -698,10 +718,14 @@ class Strains(object):
             species_name = self.get_species_name(gid)
             if species_name is None:
                 continue
+
             standardized_sp_names = self.standardise_names([species_name])
 
             # get list of misspellings, synonyms, and equivalent names associated
             # with this genome
+            misspelling_names = {}
+            synonyms = {}
+            equivalent_names = {}
             unofficial_potential_names = set()
             if genome_metadata['ncbi_taxid'] in self.ncbi_auxiliary_names:
                 unofficial_potential_names.update(self.ncbi_auxiliary_names[
@@ -1182,7 +1206,9 @@ class Strains(object):
                                                 taxon, years, priorities[taxon]))
 
                     priorities[taxon] = years[0]
-                    strain_ids[taxon] = [canonical_strain_id(strain_id) for strain_id in tokens[nom_type_idx].split(';')]
+                    strain_ids[taxon] = [canonical_strain_id(strain_id) 
+                                            for strain_id in tokens[nom_type_idx].split(';')
+                                            if check_format_strain(canonical_strain_id(strain_id))]
         
         return priorities, strain_ids
 

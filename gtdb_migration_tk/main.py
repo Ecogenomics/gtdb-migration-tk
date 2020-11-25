@@ -53,7 +53,7 @@ class OptionsParser():
     def full_lpsn_wf(self, options):
         """Full workflow to parse LPSN."""
         make_sure_path_exists(options.output_dir)
-        p = LPSN(options.output_dir)
+        p = LPSN(False, options.output_dir)
         p.full_lpsn_wf()
 
     def pull_html(self, options):
@@ -68,7 +68,7 @@ class OptionsParser():
     def parse_html(self, options):
         """Parse all html files."""
         make_sure_path_exists(options.output_dir)
-        p = LPSN(options.output_dir)
+        p = LPSN(False, options.output_dir)
         p.parse_html(options.input_dir)
 
     def download_strains(self, options):
