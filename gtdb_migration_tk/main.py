@@ -59,7 +59,7 @@ class OptionsParser():
     def pull_html(self, options):
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
-        p = LPSN(options.output_dir)
+        p = LPSN(options.skip_taxa_per_letter_dl, options.output_dir)
         p.download_family_lpsn_html()
         p.download_genus_lpsn_html()
         p.download_species_lpsn_html()
@@ -93,10 +93,10 @@ class OptionsParser():
         p.generate_type_strain_table(options.metadata_file,
                                      options.ncbi_names,
                                      options.ncbi_nodes,
+                                     options.lpsn_gss_file,
                                      options.lpsn_dir,
                                      options.dsmz_dir,
-                                     options.year_table,
-                                     options.source_strain)
+                                     options.year_table)
 
     def compare_metadata(self, options):
         p = Tools()

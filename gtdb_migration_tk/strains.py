@@ -36,6 +36,8 @@ import math
 from collections import defaultdict, namedtuple
 import multiprocessing as mp
 
+from gtdb_migration_tk.taxon_utils import canonical_strain_id
+
 
 class Strains(object):
     def __init__(self, output_dir=None, cpus=1):
@@ -266,14 +268,17 @@ class Strains(object):
 
         return dsmz_strains_dic
 
-    def load_lpsn_strains_dictionary(self, lpsn_dir):
-        # We load the dictionary of strains from LPSN
+    def load_lpsn_strains_dictionary(self, lpsn_dir, lpsn_gss_file):
+    
+        # get co-identical strain IDs found by scraping LPSN website
         pattern = re.compile('[\W_]+')
         lpsn_strains_dic = {}
         with open(os.path.join(lpsn_dir, 'lpsn_strains.tsv'), encoding='utf-8') as lpstr:
             lpstr.readline()
             for line in lpstr:
                 infos = line.rstrip('\n').split('\t')
+                
+                sp = infos[0]
 
                 if len(infos) ==1 :
                     print("len(infos) < 2 ")
@@ -282,15 +287,23 @@ class Strains(object):
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
                     if len(list_strains) > 0:
-                        lpsn_strains_dic[infos[0]] = {'strains': '='.join(set(list_strains)), 'neotypes': ''}
+                        lpsn_strains_dic[sp] = {'strains': '='.join(set(list_strains)), 'neotypes': ''}
+                    print(sp, list_strains) #***
                 else:
+                    # DHP: I don't think this case every occurs (?)
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
                     list_neotypes = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[2].split('=') if (a != '' and a != 'none')]
 
-                    lpsn_strains_dic[infos[0]] = {
+                    lpsn_strains_dic[sp] = {
                         'strains': '='.join(set(list_strains)), 'neotypes': '='.join(set(list_neotypes))}
+
+        # get co-identical strain IDs in LPSN GSS file
+        _, lpsn_gss_strain_ids = self.parse_lpsn_gss_metadata(lpsn_gss_file)
+        for sp in lpsn_gss_strain_ids:
+            pass
+                        
         return lpsn_strains_dic
     
     def _read_type_species_of_genus(self, species_file):
@@ -976,10 +989,10 @@ class Strains(object):
                                    metadata_file,
                                    ncbi_names_file,
                                    ncbi_nodes_file,
+                                   lpsn_gss_file,
                                    lpsn_dir,
                                    dsmz_dir,
-                                   year_table,
-                                   sourcest):
+                                   year_table):
         """Parse multiple sources to identify genomes assembled from type material."""
 
         # initialize data being parsed from file
@@ -1007,60 +1020,58 @@ class Strains(object):
 
         # identify genomes assembled from type material
         self.logger.info('Identifying genomes assembled from type material.')
-        if sourcest == 'lpsn' or sourcest == 'all':
-            self.logger.info('Parsing information in LPSN directory.')
-            self.lpsn_strains_dic = self.load_lpsn_strains_dictionary(lpsn_dir)
+        self.logger.info('Parsing information in LPSN directory.')
+        lpsn_strains_dic = self.load_lpsn_strains_dictionary(lpsn_dir,
+                                                                lpsn_gss_file)
 
-            self.logger.info('Processing LPSN data.')
-            lpsn_summary_file = os.path.join(self.output_dir, 'lpsn_summary.tsv')
-            self.parse_strains('lpsn',
-                               self.lpsn_strains_dic,
-                               lpsn_summary_file)
+        self.logger.info('Processing LPSN data.')
+        lpsn_summary_file = os.path.join(self.output_dir, 'lpsn_summary.tsv')
+        self.parse_strains('lpsn',
+                           lpsn_strains_dic,
+                           lpsn_summary_file)
 
-        if sourcest == 'dsmz' or sourcest == 'all':
-            self.logger.info('Parsing information in DSMZ directory.')
-            self.dsmz_strains_dic = self.load_dsmz_strains_dictionary(dsmz_dir)
+        self.logger.info('Parsing information in DSMZ directory.')
+        dsmz_strains_dic = self.load_dsmz_strains_dictionary(dsmz_dir)
 
-            self.logger.info('Processing DSMZ data.')
-            dsmz_summary_file = os.path.join(
-                self.output_dir, 'dsmz_summary.tsv')
-            self.parse_strains('dsmz',
-                               self.dsmz_strains_dic,
-                               dsmz_summary_file)
+        self.logger.info('Processing DSMZ data.')
+        dsmz_summary_file = os.path.join(
+            self.output_dir, 'dsmz_summary.tsv')
+        self.parse_strains('dsmz',
+                           dsmz_strains_dic,
+                           dsmz_summary_file)
 
         # generate global summary file if information was generated from all
         # sources
-        if sourcest == 'all':
-            self.logger.info('Reading type species of genus as defined at LPSN.')
-            lpsn_type_species_of_genus, lpsn_genus_type_species = self._read_type_species_of_genus(
-                os.path.join(lpsn_dir, 'lpsn_species.tsv'))
-            self.logger.info(f' ... identified type species for {len(lpsn_genus_type_species):,} genera.')
-            
-            self.logger.info('Reading type species of genus as defined at BacDive.')
-            dsmz_type_species_of_genus, dsmz_genus_type_species = self._read_type_species_of_genus(
-                os.path.join(dsmz_dir, 'dsmz_species.tsv'))
-            self.logger.info(f' ... identified type species for {len(dsmz_genus_type_species):,} genera.')
+        self.logger.info('Reading type species of genus as defined at LPSN.')
+        lpsn_type_species_of_genus, lpsn_genus_type_species = self._read_type_species_of_genus(
+            os.path.join(lpsn_dir, 'lpsn_species.tsv'))
+        self.logger.info(f' ... identified type species for {len(lpsn_genus_type_species):,} genera.')
+        
+        self.logger.info('Reading type species of genus as defined at BacDive.')
+        dsmz_type_species_of_genus, dsmz_genus_type_species = self._read_type_species_of_genus(
+            os.path.join(dsmz_dir, 'dsmz_species.tsv'))
+        self.logger.info(f' ... identified type species for {len(dsmz_genus_type_species):,} genera.')
 
-            for genus in lpsn_genus_type_species:
-                if genus in dsmz_genus_type_species:
-                    if lpsn_genus_type_species[genus] != dsmz_genus_type_species[genus]:
-                        self.logger.warning('LPSN and DSMZ disagree on type species of genus for {}: {} {}. Deferring to LPSN.'.format(
-                                                genus,
-                                                lpsn_genus_type_species[genus],
-                                                dsmz_genus_type_species[genus]))
-                        del dsmz_type_species_of_genus[dsmz_genus_type_species[genus]]
-                        del dsmz_genus_type_species[genus]
+        for genus in lpsn_genus_type_species:
+            if genus in dsmz_genus_type_species:
+                if lpsn_genus_type_species[genus] != dsmz_genus_type_species[genus]:
+                    self.logger.warning('LPSN and DSMZ disagree on type species of genus for {}: {} {}. Deferring to LPSN.'.format(
+                                            genus,
+                                            lpsn_genus_type_species[genus],
+                                            dsmz_genus_type_species[genus]))
+                    del dsmz_type_species_of_genus[dsmz_genus_type_species[genus]]
+                    del dsmz_genus_type_species[genus]
 
-            self.logger.info(
-                'Generating summary type information table across all strain repositories.')
-            summary_table_file = os.path.join(
-                self.output_dir, 'gtdb_type_strain_summary.tsv')
-            self.type_summary_table(ncbi_authority,
-                                    lpsn_summary_file,
-                                    dsmz_summary_file,
-                                    lpsn_type_species_of_genus,
-                                    dsmz_type_species_of_genus,
-                                    summary_table_file)
+        self.logger.info(
+            'Generating summary type information table across all strain repositories.')
+        summary_table_file = os.path.join(
+            self.output_dir, 'gtdb_type_strain_summary.tsv')
+        self.type_summary_table(ncbi_authority,
+                                lpsn_summary_file,
+                                dsmz_summary_file,
+                                lpsn_type_species_of_genus,
+                                dsmz_type_species_of_genus,
+                                summary_table_file)
 
         self.logger.info('Done.')
         
@@ -1113,10 +1124,11 @@ class Strains(object):
                     
         return priorities, dup_sp
         
-    def parse_lpsn_gss_priorities(self, lpsn_gss_file):
-        """Get priority of species and usbspecies from LPSN GSS file."""
+    def parse_lpsn_gss_metadata(self, lpsn_gss_file):
+        """Get priority and co-identical strain IDs for species and subspecies in LPSN GSS file."""
 
         priorities = {}
+        strain_ids = {}
         illegitimate_names = set()
         with open(lpsn_gss_file, encoding='utf-8', errors='ignore') as f:
             csv_reader = csv.reader(f)
@@ -1128,6 +1140,7 @@ class Strains(object):
                     subsp_idx = tokens.index('subsp_epithet')
                     status_idx = tokens.index('status')
                     author_idx = tokens.index('authors')
+                    nom_type_idx = tokens.index('nomenclatural_type')
                 else:
                     generic = tokens[genus_idx].strip().replace('"', '')
                     specific = tokens[specific_idx].strip().replace('"', '')
@@ -1169,8 +1182,9 @@ class Strains(object):
                                                 taxon, years, priorities[taxon]))
 
                     priorities[taxon] = years[0]
+                    strain_ids[taxon] = [canonical_strain_id(strain_id) for strain_id in tokens[nom_type_idx].split(';')]
         
-        return priorities
+        return priorities, strain_ids
 
     def generate_date_table(self, 
                                 lpsn_scraped_species_info,
@@ -1186,7 +1200,7 @@ class Strains(object):
                                     len(dup_scraped_sp)))
         
         self.logger.info('Reading priority references from LPSN GSS file.')
-        gss_sp_priority = self.parse_lpsn_gss_priorities(lpsn_gss_file)
+        gss_sp_priority, _ = self.parse_lpsn_gss_metadata(lpsn_gss_file)
         self.logger.info(' - read priority for {:,} species.'.format(len(gss_sp_priority)))
         if dup_scraped_sp:
             self.logger.info(' - {:,} of duplicated scraped species resolved in GSS file.'.format(
