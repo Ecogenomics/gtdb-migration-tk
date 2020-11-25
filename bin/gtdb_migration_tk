@@ -84,7 +84,7 @@ def print_help():
     Information from Nomenclatural resources:
       lpsn     -> Process steps for LPSN.
       bacdive  -> Process steps for BacDive. [In Dev]
-      strains  -> Set of tools to combined information from LPSN,DSMZ and Straininfo.
+      strains  -> Set of tools to combined information from LPSN and DSMZ.
       ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find all strain ids
       
     Curation files
@@ -109,7 +109,7 @@ def print_help():
 if __name__ == '__main__':
 
     # initialize the options parser
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser(add_help=True)
     subparsers = parser.add_subparsers(help="--", dest='subparser_name')
     
     # Clean FTP server
@@ -548,7 +548,7 @@ if __name__ == '__main__':
                                                 dest='lpsn_subparser_name')
 
     lpsn_parser_lpsn_wf = lpsn_subparser.add_parser('lpsn_wf',
-                                                    add_help=False,
+                                                    add_help=True,
                                                     formatter_class=CustomHelpFormatter,
                                                     help='Full Pipeline Pull HTML and Parse HTML')
     lpsn_parser_lpsn_wf.add_argument(
@@ -557,7 +557,7 @@ if __name__ == '__main__':
         '--silent', help="suppress output", action='store_true')
 
     lpsn_parser_pull = lpsn_subparser.add_parser('pull_html',
-                                                 add_help=False,
+                                                 add_help=True,
                                                  formatter_class=CustomHelpFormatter,
                                                  help='Get files from LPSN listing all genera and species.')
     lpsn_parser_pull.add_argument(
@@ -566,7 +566,7 @@ if __name__ == '__main__':
         '--silent', help="suppress output", action='store_true')
 
     lpsn_parser_parse_html = lpsn_subparser.add_parser('parse_html',
-                                                       add_help=False,
+                                                       add_help=True,
                                                        formatter_class=CustomHelpFormatter,
                                                        help='Parse HTML files.')
                                                        
@@ -586,7 +586,7 @@ if __name__ == '__main__':
                                                       dest='bacdive_subparser_name')
 
     bacdive_parser_dl_strains = bacdive_subparser.add_parser('download_strains',
-                                                             add_help=False,
+                                                             add_help=True,
                                                              formatter_class=CustomHelpFormatter,
                                                              help='Produce metadata files describing type genera, species, and strains according to DSMZ.')
     bacdive_parser_dl_strains.add_argument(
@@ -620,26 +620,30 @@ if __name__ == '__main__':
         
     # Tools to combine Medata from different databases.
     strains_parser = subparsers.add_parser('strains',
+                                           add_help=True,
                                            formatter_class=CustomHelpFormatter,
-                                           description='Tools to combine Medata from different databases.')
-    strains_subparser = strains_parser.add_subparsers(help='Tools to combine Medata from different databases.',
+                                           description='Tools to combine metadata from different databases.')
+    strains_subparser = strains_parser.add_subparsers(help='Tools to combine metadata from different databases.',
                                                       dest='strains_subparser_name')
 
     strains_parser_date = strains_subparser.add_parser('date_table',
-                                                       add_help=False,
+                                                       add_help=True,
                                                        formatter_class=CustomHelpFormatter,
-                                                       help='Generate a tab delimited file listing all reference dates from LPSN,DSMZ,Straininfo for each species name.')
-    strains_parser_date.add_argument(
-        '--lpsn_species_info', help='LPSN species file created by LPSN website parsing.', required=True)
-    strains_parser_date.add_argument(
-        '--dsmz_species_info', help='DSMZ species file created by DSMZ website parsing.', required=True)
+                                                       help='Generate table with LPSN year or priority for species and subspecies names.')
+    strains_parser_date.add_argument('--lpsn_scraped_species_info', 
+                        help='LPSN species file created by LPSN website parsing.',
+                        required=True)
+    strains_parser_date.add_argument('--lpsn_gss_file', 
+                        help="table from lpsn.dsmz.de with nomenclature information (lpsn_gss_<date>.csv)",
+                        required=True)
+        
     strains_parser_date.add_argument('--output_file',
                                      help='Output file.')
     strains_parser_date.add_argument(
         '--silent', help="suppress output", action='store_true')
 
     strains_parser_type = strains_subparser.add_parser('type_table',
-                                                       add_help=False,
+                                                       add_help=True,
                                                        formatter_class=CustomHelpFormatter,
                                                        help='Generate a tab delimited file listing all reference dates from LPSN,DSMZ,Straininfo for each species name.')
 
@@ -739,19 +743,23 @@ if __name__ == '__main__':
         sys.exit(0)
     else:
         args = parser.parse_args()
+        
+    silent = False
+    if hasattr(args, 'silent'):
+        silent = args.silent
 
     try:
         logger_setup(os.path.dirname(args.log),
                      os.path.basename(args.log),
                      'GTDB Migration Tk',
                      __version__,
-                     args.silent)
+                     silent)
     except:
-        logger_setup(None,
+        logger_setup('.',
                      'gtdb_migration_tk.log',
                      'GTDB Migration Tk',
                      __version__,
-                     args.silent)
+                     silent)
 
     # do what we came here to do
     try:

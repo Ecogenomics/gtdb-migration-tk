@@ -24,11 +24,12 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
+import os
 import sys
 import argparse
 import re
+import csv
 import datetime
-import os
 import logging
 import time
 import math
@@ -62,35 +63,6 @@ class Strains(object):
         self.logger = logging.getLogger('timestamp')
         self.cpus = cpus
         self.output_dir = output_dir
-
-    def load_date_dict(self, lpsn_species_info):
-        datedict = {}
-        with open(lpsn_species_info) as lsi:
-            for line in lsi:
-                if 'straininfo_strains_number' in line:
-                    continue
-                infos = line.rstrip('\n').split('\t')
-                if infos[2] != '':
-                    date = re.sub(r'\([^)]*\)', '', infos[2])
-                    date = re.sub(r'emend\.[^\d]*\d{4}', '', date)
-                    date = re.sub(r' ex [^\d]*\d{4}', ' ', date)
-                    matches = re.findall('[1-3][0-9]{3}', date, re.DOTALL)
-                    matches = [int(a) for a in matches if int(a) <= self.year]
-                    if matches:
-                        datedict[infos[0].replace('s__', '')] = sorted(
-                            matches)[0]
-        # We make sure that species and subspecies type species have the same date
-        # ie Photorhabdus luminescens and Photorhabdus luminescens subsp.
-        # Luminescens
-        for k, v in datedict.items():
-            infos_name = k.split(' ')
-            if len(infos_name) == 2 and '{0} {1} subsp. {1}'.format(infos_name[0], infos_name[1]) in datedict:
-                datedict[k] = min(int(v), int(datedict.get(
-                    '{0} {1} subsp. {1}'.format(infos_name[0], infos_name[1]))))
-            elif len(infos_name) == 4 and infos_name[1] == infos_name[3] and '{} {}'.format(infos_name[0], infos_name[1]) in datedict:
-                datedict[k] = min(int(v), int(datedict.get(
-                    '{} {}'.format(infos_name[0], infos_name[1]))))
-        return datedict
 
     def load_year_dict(self, year_table):
         """Load year of priority for species as identified at LPSN, DSMZ."""
@@ -1082,19 +1054,147 @@ class Strains(object):
                                     summary_table_file)
 
         self.logger.info('Done.')
+        
+    def parse_lpsn_scraped_priorities(self, lpsn_scraped_species_info):
+        """Parse year of priority from references scraped from LPSN."""
 
-    def generate_date_table(self, lpsn_species_info, dsmz_species_info, output_file):
+        priorities = {}
+        with open(lpsn_scraped_species_info) as lsi:
+            lsi.readline()
+            for line in lsi:
+                infos = line.rstrip('\n').split('\t')
+                
+                sp = infos[0]
+                if sp == 's__':
+                    # *** hack to skip bad case in file
+                    # Pierre to fix
+                    continue 
+
+                species_authority = infos[2]
+                reference_str = species_authority.split(', ')[0]
+                references = reference_str.replace('(', '').replace(')', '')
+                years = re.sub(r'emend\.[^\d]*\d{4}', '', references)
+                years = re.sub(r'ex [^\d]*\d{4}', ' ', years)
+                years = re.findall('[1-3][0-9]{3}', years, re.DOTALL)
+                years = [int(y) for y in years if int(y) <= datetime.datetime.now().year]
+                
+                if len(years) == 0:
+                    # assume this name is validated through ICN and just take the first 
+                    # date given as the year of priority
+                    years = re.findall('[1-3][0-9]{3}', references, re.DOTALL)
+                    years = [int(y) for y in years if int(y) <= datetime.datetime.now().year]
+                    
+                priorities[sp.replace('s__', '')] = years[0]
+                            
+        # We make sure that species and subspecies type species have the same date
+        # ie Photorhabdus luminescens and Photorhabdus luminescens subsp.
+        # Luminescens
+        for k, v in priorities.items():
+            infos_name = k.split(' ')
+            if len(infos_name) == 2 and '{0} {1} subsp. {1}'.format(infos_name[0], infos_name[1]) in priorities:
+                priorities[k] = min(int(v), int(priorities.get(
+                    '{0} {1} subsp. {1}'.format(infos_name[0], infos_name[1]))))
+            elif len(infos_name) == 4 and infos_name[1] == infos_name[3] and '{} {}'.format(infos_name[0], infos_name[1]) in priorities:
+                priorities[k] = min(int(v), int(priorities.get(
+                    '{} {}'.format(infos_name[0], infos_name[1]))))
+                    
+        return priorities
+        
+    def parse_lpsn_gss_priorities(self, lpsn_gss_file):
+        """Get priority of species and usbspecies from LPSN GSS file."""
+
+        priorities = {}
+        illegitimate_names = set()
+        with open(lpsn_gss_file, encoding='utf-8', errors='ignore') as f:
+            csv_reader = csv.reader(f)
+
+            for line_num, tokens in enumerate(csv_reader):
+                if line_num == 0:
+                    genus_idx = tokens.index('genus_name')
+                    specific_idx = tokens.index('sp_epithet')
+                    subsp_idx = tokens.index('subsp_epithet')
+                    status_idx = tokens.index('status')
+                    author_idx = tokens.index('authors')
+                else:
+                    generic = tokens[genus_idx].strip().replace('"', '')
+                    specific = tokens[specific_idx].strip().replace('"', '')
+                    subsp = tokens[subsp_idx].strip().replace('"', '')
+                    
+                    if subsp:
+                        taxon = '{} {} subsp. {}'.format(generic, specific, subsp)
+                    elif specific:
+                        taxon = '{} {}'.format(generic, specific)
+                    else:
+                        # skip genus entries
+                        continue
+
+                    status = tokens[status_idx].strip().replace('"', '')
+                    status_tokens = [t.strip() for t in status.split(';')]
+                    status_tokens = [tt.strip() for t in status_tokens for tt in t.split(',') ]
+                    
+                    if 'illegitimate name' in status_tokens:
+                        illegitimate_names.add(taxon)
+                        if taxon in priorities:
+                            continue
+
+                    # get priority references, ignoring references if they are
+                    # marked as being a revied name as indicated by a 'ex' or 'emend'
+                    # (e.g. Holospora (ex Hafkine 1890) Gromov and Ossipov 1981)
+                    ref_str = tokens[author_idx]
+                    references = ref_str.replace('(', '').replace(')', '')
+                    years = re.sub(r'emend\.[^\d]*\d{4}', '', references)
+                    years = re.sub(r'ex [^\d]*\d{4}', ' ', years)
+                    years = re.findall('[1-3][0-9]{3}', years, re.DOTALL)
+                    years = [int(y) for y in years if int(y) <= datetime.datetime.now().year]
+
+                    if (taxon not in illegitimate_names
+                        and taxon in priorities 
+                        and years[0] != priorities[taxon]):
+                            # conflict that can't be attributed to one of the entries being
+                            # considered an illegitimate name
+                            self.logger.error('Conflicting priority references for {}: {} {}'.format(
+                                                taxon, years, priorities[taxon]))
+
+                    priorities[taxon] = years[0]
+        
+        return priorities
+
+    def generate_date_table(self, 
+                                lpsn_scraped_species_info,
+                                lpsn_gss_file, 
+                                output_file):
+        """Parse priority year from LPSN data."""
+        
+        self.logger.info('Reading priority references scrapped from LPSN.')
+        scraped_sp_priority = self.parse_lpsn_scraped_priorities(lpsn_scraped_species_info)
+        self.logger.info(' - read priority for {:,} species.'.format(len(scraped_sp_priority)))
+        
+        self.logger.info('Reading priority references from LPSN GSS file.')
+        gss_sp_priority = self.parse_lpsn_gss_priorities(lpsn_gss_file)
+        self.logger.info(' - read priority for {:,} species.'.format(len(gss_sp_priority)))
+        
+        self.logger.info('Scrapped priority information for {:,} species not in GSS file.'.format(
+                            len(set(scraped_sp_priority) - set(gss_sp_priority))))
+        self.logger.info('Parsed priority information for {:,} species not on LPSN website.'.format(
+                            len(set(gss_sp_priority) - set(scraped_sp_priority))))
+                            
+        self.logger.info('Writing out year of priority for species giving preference to GSS file.')
         output_file = open(output_file, 'w')
-        lpsn_date_dict = self.load_date_dict(lpsn_species_info)
-        dsmz_date_dict = self.load_date_dict(dsmz_species_info)
-        all_species = list(lpsn_date_dict.keys())
-        all_species.extend(list(dsmz_date_dict.keys()))
-        for spe in set(all_species):
-            list_date = [''] * 4
-            list_date[0] = spe
-            if spe in lpsn_date_dict:
-                list_date[1] = str(lpsn_date_dict.get(spe))
-            if spe in dsmz_date_dict:
-                list_date[2] = str(dsmz_date_dict.get(spe))
-            output_file.write('{}\n'.format('\t'.join(list_date)))
+        same_year = 0
+        diff_year = 0
+        for sp in sorted(set(scraped_sp_priority).union(gss_sp_priority)):
+            if sp in gss_sp_priority:
+                output_file.write('{}\t{}\n'.format(sp, gss_sp_priority[sp]))
+            else:
+                output_file.write('{}\t{}\n'.format(sp, scraped_sp_priority[sp]))
+                
+            if sp in gss_sp_priority and sp in scraped_sp_priority:
+                if gss_sp_priority[sp] == scraped_sp_priority[sp]:
+                    same_year += 1
+                else:
+                    diff_year += 1
+                    
+        self.logger.info(' - same priority year in GSS file and website: {:,}'.format(same_year))
+        self.logger.info(' - different priority year in GSS file and website: {:,}'.format(diff_year))
+            
         output_file.close()

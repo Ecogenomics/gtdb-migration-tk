@@ -78,8 +78,8 @@ class OptionsParser():
 
     def generate_date_table(self, options):
         p = Strains()
-        p.generate_date_table(options.lpsn_species_info,
-                              options.dsmz_species_info,
+        p.generate_date_table(options.lpsn_scraped_species_info,
+                              options.lpsn_gss_file,
                               options.output_file)
 
     def generate_ncbi_strains_summary(self, options):
