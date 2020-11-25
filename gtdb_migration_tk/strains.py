@@ -1059,6 +1059,7 @@ class Strains(object):
         """Parse year of priority from references scraped from LPSN."""
 
         priorities = {}
+        dup_sp = set()
         with open(lpsn_scraped_species_info) as lsi:
             lsi.readline()
             for line in lsi:
@@ -1083,9 +1084,12 @@ class Strains(object):
                     # date given as the year of priority
                     years = re.findall('[1-3][0-9]{3}', references, re.DOTALL)
                     years = [int(y) for y in years if int(y) <= datetime.datetime.now().year]
-                    
+                
+                sp = sp.replace('s__', '')
+                if sp in priorities:
+                    dup_sp.add(sp)
                 priorities[sp.replace('s__', '')] = years[0]
-                            
+
         # We make sure that species and subspecies type species have the same date
         # ie Photorhabdus luminescens and Photorhabdus luminescens subsp.
         # Luminescens
@@ -1098,7 +1102,7 @@ class Strains(object):
                 priorities[k] = min(int(v), int(priorities.get(
                     '{} {}'.format(infos_name[0], infos_name[1]))))
                     
-        return priorities
+        return priorities, dup_sp
         
     def parse_lpsn_gss_priorities(self, lpsn_gss_file):
         """Get priority of species and usbspecies from LPSN GSS file."""
@@ -1166,12 +1170,18 @@ class Strains(object):
         """Parse priority year from LPSN data."""
         
         self.logger.info('Reading priority references scrapped from LPSN.')
-        scraped_sp_priority = self.parse_lpsn_scraped_priorities(lpsn_scraped_species_info)
+        scraped_sp_priority, dup_scraped_sp = self.parse_lpsn_scraped_priorities(lpsn_scraped_species_info)
         self.logger.info(' - read priority for {:,} species.'.format(len(scraped_sp_priority)))
+        if dup_scraped_sp:
+            self.logger.info(' - identified {:,} species with duplicate entries. A small number is expected.'.format(
+                                    len(dup_scraped_sp)))
         
         self.logger.info('Reading priority references from LPSN GSS file.')
         gss_sp_priority = self.parse_lpsn_gss_priorities(lpsn_gss_file)
         self.logger.info(' - read priority for {:,} species.'.format(len(gss_sp_priority)))
+        if dup_scraped_sp:
+            self.logger.info(' - {:,} of duplicated scraped species resolved in GSS file.'.format(
+                            len(dup_scraped_sp.intersection(gss_sp_priority))))
         
         self.logger.info('Scrapped priority information for {:,} species not in GSS file.'.format(
                             len(set(scraped_sp_priority) - set(gss_sp_priority))))
