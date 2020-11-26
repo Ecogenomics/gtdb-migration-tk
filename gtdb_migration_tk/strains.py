@@ -229,21 +229,12 @@ class Strains(object):
                                                for sid in created_list
                                                if (sid != '' and sid != 'none')]
 
-                    # *** Hack to patch missing metadata in GTDB:
-                    ncbi_unfiltered_tax_str = infos[gtdb_ncbi_taxonomy_unfiltered_index]
-                    if gid == 'RS_GCF_011765685.1':
-                        ncbi_unfiltered_tax_str = 'd__Bacteria;p__Proteobacteria;c__Gammaproteobacteria;o__Enterobacterales;f__Enterobacteriaceae;g__Kluyvera;s__Kluyvera genomosp. 3'
-                    elif gid == 'RS_GCF_005860925.2':
-                        ncbi_unfiltered_tax_str = 'd__Bacteria;p__Proteobacteria;c__Alphaproteobacteria;o__Rhizobiales;f__Rhizobiaceae;x__Rhizobium/Agrobacterium group;g__Rhizobium;s__Rhizobium indicum'
-                    elif gid == 'RS_GCF_005862185.2':
-                        ncbi_unfiltered_tax_str = 'd__Bacteria;p__Proteobacteria;c__Alphaproteobacteria;o__Rhizobiales;f__Rhizobiaceae;x__Rhizobium/Agrobacterium group;g__Rhizobium;s__Rhizobium hidalgonense'
-
                     metadata[gid] = {
                         'ncbi_organism_name': infos[gtdb_ncbi_organism_name_index],
                         'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
                         'ncbi_standardized_strain_ids': set(standard_strain_ids),
                         'ncbi_type_material_designation': infos[gtdb_ncbi_type_material_designation_index],
-                        'ncbi_taxonomy_unfiltered': ncbi_unfiltered_tax_str,
+                        'ncbi_taxonomy_unfiltered': infos[gtdb_ncbi_taxonomy_unfiltered_index],
                         'ncbi_taxid': int(infos[gtdb_ncbi_taxid_index])}
 
                     taxids.add(int(infos[gtdb_ncbi_taxid_index]))
@@ -416,8 +407,6 @@ class Strains(object):
         year_date = ''
         category_name = ''
         matched_strain_id = None
-        # if gid in ('RS_GCF_001590785.1','RS_GCF_001592025.1'):
-        #     print(f"HERE {gid}")
         for repository_strain_id in repository_strain_ids.split("="):
             strain_ids = self.metadata[gid]['ncbi_expanded_standardized_strain_ids']
             if repository_strain_id in strain_ids:
@@ -530,10 +519,7 @@ class Strains(object):
         match = None
         gtdb_types = set()
         repository_strain_ids = []
-
         for standard_name, raw_names in standard_names.items():
-            # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
-            #     print(f"HERE {gid}",standard_name, standard_name not in strain_dictionary)
             if standard_name not in strain_dictionary:
                 continue
 
@@ -725,9 +711,6 @@ class Strains(object):
                 continue
 
             standardized_sp_names = self.standardise_names([species_name])
-            # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
-            #     print(f"standardized_sp_names {gid}",species_name,standardized_sp_names)
-
 
             # get list of misspellings, synonyms, and equivalent names associated
             # with this genome
@@ -735,10 +718,7 @@ class Strains(object):
             synonyms = {}
             equivalent_names = {}
             unofficial_potential_names = set()
-            # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
-            #     print(f"HERE {gid}", genome_metadata['ncbi_taxid'])
             if genome_metadata['ncbi_taxid'] in self.ncbi_auxiliary_names:
-
                 unofficial_potential_names.update(self.ncbi_auxiliary_names[
                     genome_metadata['ncbi_taxid']]['misspelling'])
                 unofficial_potential_names.update(self.ncbi_auxiliary_names[
@@ -769,8 +749,6 @@ class Strains(object):
                                       True)
 
             if not match:
-                # if gid in ('RS_GCF_001590785.1', 'RS_GCF_001592025.1'):
-                #     print(f"HERE {gid}", unofficial_standard_names)
                 # check if any of the auxillary names have a species name
                 # and strain ID match with the type repository
                 match = self.strain_match(gid,
