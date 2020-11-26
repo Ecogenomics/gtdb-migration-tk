@@ -299,7 +299,7 @@ class Strains(object):
             if sp in lpsn_strains_dic:
                 scraped_strain_ids = set(lpsn_strains_dic[sp]['strains'].split('='))
                 new_strain_ids += len(set(strain_ids) - scraped_strain_ids)
-                
+
                 # GSS file is more reliable so defer to these co-identical strain IDs
                 lpsn_strains_dic[sp] = {'strains': '='.join(strain_ids), 'neotypes': lpsn_strains_dic[sp]['neotypes']}
             else:
@@ -1060,12 +1060,12 @@ class Strains(object):
         self.logger.info('Reading type species of genus as defined at LPSN.')
         lpsn_type_species_of_genus, lpsn_genus_type_species = self._read_type_species_of_genus(
             os.path.join(lpsn_dir, 'lpsn_species.tsv'))
-        self.logger.info(f' ... identified type species for {len(lpsn_genus_type_species):,} genera.')
+        self.logger.info(f' - identified type species for {len(lpsn_genus_type_species):,} genera.')
         
         self.logger.info('Reading type species of genus as defined at BacDive.')
         dsmz_type_species_of_genus, dsmz_genus_type_species = self._read_type_species_of_genus(
             os.path.join(dsmz_dir, 'dsmz_species.tsv'))
-        self.logger.info(f' ... identified type species for {len(dsmz_genus_type_species):,} genera.')
+        self.logger.info(f' - identified type species for {len(dsmz_genus_type_species):,} genera.')
 
         for genus in lpsn_genus_type_species:
             if genus in dsmz_genus_type_species:
@@ -1099,12 +1099,6 @@ class Strains(object):
             lsi.readline()
             for line in lsi:
                 infos = line.rstrip('\n').split('\t')
-                
-                sp = infos[0]
-                if sp == 's__':
-                    # *** hack to skip bad case in file
-                    # Pierre to fix
-                    continue 
 
                 species_authority = infos[2]
                 reference_str = species_authority.split(', ')[0]
@@ -1120,7 +1114,7 @@ class Strains(object):
                     years = re.findall('[1-3][0-9]{3}', references, re.DOTALL)
                     years = [int(y) for y in years if int(y) <= datetime.datetime.now().year]
                 
-                sp = sp.replace('s__', '')
+                sp = infos[0].replace('s__', '')
                 if sp in priorities:
                     dup_sp.add(sp)
                 priorities[sp.replace('s__', '')] = years[0]

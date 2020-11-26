@@ -673,7 +673,7 @@ if __name__ == '__main__':
                                                        formatter_class=CustomHelpFormatter,
                                                        help='Generate table with LPSN year or priority for species and subspecies names.')
     strains_parser_date.add_argument('--lpsn_scraped_species_info', 
-                        help='LPSN species file created by LPSN website parsing.',
+                        help="LPSN species file created by LPSN website parsing (lpsn_species.tsv from 'gtdb_migration_tk lpsn parse_html').",
                         required=True)
     strains_parser_date.add_argument('--lpsn_gss_file', 
                         help="table from lpsn.dsmz.de with nomenclature information (lpsn_gss_<date>.csv)",

@@ -22,8 +22,12 @@ def canonical_strain_id(strain_id):
     """Generate canonical strain identifier."""
 
     strain_id = strain_id.strip()
+    
     if strain_id.startswith('strain '):
         strain_id = strain_id.replace('strain ', '', 1)
+    if strain_id.startswith('Strain '):
+        strain_id = strain_id.replace('Strain ', '', 1)
+        
     strain_id = re.sub(r'\(.+\)', ' ', strain_id)
     strain_id = ' '.join(strain_id.split())
     strain_id = re.sub('[\W_]+', '', strain_id).upper()

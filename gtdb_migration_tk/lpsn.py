@@ -738,7 +738,7 @@ class LPSN(object):
                                 raw_list_strain)
 
                             raw_list_strain = [
-                                x for x in raw_list_strain if check_format_strain(x)]
+                                x for x in raw_list_strain if check_format_strain(canonical_strain_id(x))]
                             
                             break
 
@@ -800,7 +800,7 @@ class LPSN(object):
                         raw_list_strain = self.parse_strains(raw_list_strain)
 
                         raw_list_strain = [
-                            x for x in raw_list_strain if self.check_format_strain(x)]
+                            x for x in raw_list_strain if check_format_strain(canonical_strain_id(x))]
                         break
                         # print(raw_list_strain)
 
