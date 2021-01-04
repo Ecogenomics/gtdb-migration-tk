@@ -26,7 +26,7 @@ from gtdb_migration_tk.propagate_taxonomy import Propagate
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.tools import Tools
-from gtdb_migration_tk.genome_manager import DirectoryManager
+from gtdb_migration_tk.directory_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.marker_manager import MarkerManager
@@ -125,13 +125,13 @@ class OptionsParser():
     def clean_ftp(self, options):
         p = DirectoryManager()
         p.clean_ftp(options.new_list_genomes,
-                    options.ftp_genome_dir_file, options.ftp_genome_dir,
+                    options.ftp_genome_dir_file,
                     options.report_dir,
                     options.taxonomy_file)
 
     def parse_genome_directory(self, options):
         p = DirectoryManager()
-        p.run(options.genome_dir, options.output_file)
+        p.generate_genome_dir_file(options.genome_dir, options.output_file)
 
     def update_refseq_from_ftp_files(self, options):
         p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
@@ -208,7 +208,7 @@ class OptionsParser():
                             options.db, options.password,
                             options.ftp_download_date,
                             options.repository,
-                            options.output_dir, options.cpus)
+                            options.report_folder, options.cpus)
         p.runUpdate(options.checkm_profile_new_genomes,
                     options.genome_dirs_file, options.ftp_download_date)
 
@@ -224,7 +224,7 @@ class OptionsParser():
 
     def update_ncbitax_db(self, options):
         p = NCBITaxDatabaseManager(options.hostname, options.user, options.password, options.db)
-        p.update_ncbitax_db(options.organism_name_file, options.filtered, options.unfiltered, options.genome_list,
+        p.update_ncbitax_db(options.organism_names, options.filtered, options.unfiltered, options.genome_list,
                             options.do_not_null_field)
 
     def add_surveillance_genomes(self,options):
@@ -233,9 +233,9 @@ class OptionsParser():
 
     def add_names_dmp(self,options):
         p = TaxonomyNCBI()
-        p.populate_names_dmp_table(options.hostname, options.user, options.password, options.db,options.taxonomy_dir,
+        p.populate_names_dmp_table(options.taxonomy_dir,
                               options.ra, options.rb, options.ga, options.gb,
-                              options.output_prefix)
+                              options.output_file)
 
     def propagate_gtdb_taxonomy(self, options):
         p = Propagate()

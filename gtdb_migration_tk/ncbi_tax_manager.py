@@ -431,27 +431,15 @@ class TaxonomyNCBI(object):
                                   output_prefix + '_standardized.tsv')
 
 
-    def populate_names_dmp_table(self,hostname, user, password, db,taxonomy_dir,
+    def populate_names_dmp_table(self,taxonomy_dir,
          refseq_archaea_assembly_file,
          refseq_bacteria_assembly_file,
          genbank_archaea_assembly_file,
-         genbank_bacteria_assembly_file,output_prefix):
+         genbank_bacteria_assembly_file,output_file):
 
-        temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            hostname, user, password, db)
-        temp_con.MakePostgresConnection()
-        temp_cur = temp_con.cursor()
 
         """Read NCBI taxonomy information and create summary output files."""
 
-        output_prefix ="test"
-
-        # parse organism name
-        self._assembly_organism_name(refseq_archaea_assembly_file,
-                                     refseq_bacteria_assembly_file,
-                                     genbank_archaea_assembly_file,
-                                     genbank_bacteria_assembly_file,
-                                     output_prefix + '_organism_names.tsv')
 
         # parse metadata file and taxonomy files
         assembly_to_tax_id = self._assembly_to_tax_id(refseq_archaea_assembly_file,
@@ -468,8 +456,6 @@ class TaxonomyNCBI(object):
         print('Read %d name records.' % len(name_records))
 
         # traverse taxonomy tree for each assembly
-        taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
-        #fout = open(taxonomy_file, 'w')
         list_ranks_taxonomy = []
 
         print('Number of assemblies: %d' % len(assembly_to_tax_id))
@@ -520,32 +506,10 @@ class TaxonomyNCBI(object):
         only_names,only_taxid = zip(*set(list_ranks_taxonomy))
         print(Counter(only_names).most_common(5))
 
-        with open('taxids.json', 'w') as outfile:
+        with open(output_file, 'w') as outfile:
             json.dump(d, outfile)
 
-            #fout.write('%s\t%s\n' % (assembly_accession, taxa_str))
 
-        #fout.close()
-
-
-        # list_names_1 = []
-        # list_names_2 = []
-        # for line in open(names_file):
-        #     line_split = [t.strip() for t in line.split('|')]
-        #
-        #     tax_id = line_split[0]
-        #     name_txt = line_split[1]
-        #     unique_name = line_split[2]
-        #     name_class = line_split[3]
-        #
-        #     if name_class == 'scientific name' and name_txt != 'environmental samples':
-        #         if name_txt in list_names_1:
-        #             print(line)
-        #         list_names_1.append(name_txt)
-        #         list_names_2.append(unique_name)
-        #
-        # print(Counter(list_names_1).most_common(10))
-        # print(Counter(list_names_2).most_common(5))
 
 
 
