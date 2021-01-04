@@ -51,11 +51,11 @@ class TaxonomyNCBI(object):
         self.bacterial_division = '0'
         self.unassigned_division = '8'
 
-    def _assembly_organism_name(self, 
-                                refseq_archaea_assembly_file, 
+    def _assembly_organism_name(self,
+                                refseq_archaea_assembly_file,
                                 refseq_bacteria_assembly_file,
-                                genbank_archaea_assembly_file, 
-                                genbank_bacteria_assembly_file, 
+                                genbank_archaea_assembly_file,
+                                genbank_bacteria_assembly_file,
                                 output_organism_name_file):
         """Parse out organism name for each genome."""
 
@@ -282,7 +282,7 @@ class TaxonomyNCBI(object):
 
     def standardize_taxonomy(self, ncbi_taxonomy_file, keep_subranks, output_consistent):
         """Produce standardized taxonomy file from NCBI taxonomy strings.
-        
+
         This is either a 7 rank taxonomy (domain to species) or the 7 rank taxonomy with
         subranks.
         """
@@ -295,8 +295,8 @@ class TaxonomyNCBI(object):
             gid = line_split[0]
             taxonomy = line_split[1].split(';')
 
-            if not ('d__Bacteria' in taxonomy 
-                    or 'd__Archaea' in taxonomy 
+            if not ('d__Bacteria' in taxonomy
+                    or 'd__Archaea' in taxonomy
                     or 'd__Eukaryota' in taxonomy
                     or 'd__Fungi' in taxonomy):
                 continue
@@ -305,18 +305,18 @@ class TaxonomyNCBI(object):
             revised_taxonomy = []
             for t in taxonomy:
                 rank_prefix = t.split('__')[0]
-                if (not t.startswith('x__') 
-                    and ' family' not in t.lower() 
-                    and not rank_prefix == 'sb' 
+                if (not t.startswith('x__')
+                    and ' family' not in t.lower()
+                    and not rank_prefix == 'sb'
                     and (not len(rank_prefix) == 2 or keep_subranks)):
                     revised_taxonomy.append(t)
 
             rank_prefixes = Taxonomy.rank_prefixes
             if keep_subranks:
-                rank_prefixes = ['d__', 'sd__', 
-                                 'p__', 'sp__', 
-                                 'c__', 'sc__', 
-                                 'o__', 'so__', 
+                rank_prefixes = ['d__', 'sd__',
+                                 'p__', 'sp__',
+                                 'c__', 'sc__',
+                                 'o__', 'so__',
                                  'f__', 'sf__',
                                  'g__', 'sg__',
                                  's__']
@@ -480,22 +480,11 @@ class TaxonomyNCBI(object):
          refseq_archaea_assembly_file,
          refseq_bacteria_assembly_file,
          genbank_archaea_assembly_file,
-         genbank_bacteria_assembly_file,
-         output_prefix):
+         genbank_bacteria_assembly_file,output_file):
+
         """Read NCBI taxonomy information and create summary output files."""
 
-        temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            hostname, user, password, db)
-        temp_con.MakePostgresConnection()
-
-        output_prefix ="test"
-
         # parse organism name
-        self._assembly_organism_name(refseq_archaea_assembly_file,
-                                     refseq_bacteria_assembly_file,
-                                     genbank_archaea_assembly_file,
-                                     genbank_bacteria_assembly_file,
-                                     output_prefix + '_organism_names.tsv')
 
         # parse metadata file and taxonomy files
         assembly_to_tax_id = self._assembly_to_tax_id(refseq_archaea_assembly_file,
@@ -562,32 +551,10 @@ class TaxonomyNCBI(object):
         only_names, _only_taxid = zip(*set(list_ranks_taxonomy))
         print(Counter(only_names).most_common(5))
 
-        with open('taxids.json', 'w') as outfile:
+        with open(output_file, 'w') as outfile:
             json.dump(d, outfile)
 
-            #fout.write('%s\t%s\n' % (assembly_accession, taxa_str))
 
-        #fout.close()
-
-
-        # list_names_1 = []
-        # list_names_2 = []
-        # for line in open(names_file):
-        #     line_split = [t.strip() for t in line.split('|')]
-        #
-        #     tax_id = line_split[0]
-        #     name_txt = line_split[1]
-        #     unique_name = line_split[2]
-        #     name_class = line_split[3]
-        #
-        #     if name_class == 'scientific name' and name_txt != 'environmental samples':
-        #         if name_txt in list_names_1:
-        #             print(line)
-        #         list_names_1.append(name_txt)
-        #         list_names_2.append(unique_name)
-        #
-        # print(Counter(list_names_1).most_common(10))
-        # print(Counter(list_names_2).most_common(5))
 
 
 
