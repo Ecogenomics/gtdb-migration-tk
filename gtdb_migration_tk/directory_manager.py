@@ -18,6 +18,7 @@
 import os
 import shutil
 import logging
+from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists,canonical_gid
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
@@ -34,21 +35,35 @@ class DirectoryManager(object):
 
         fout = open(output_file, 'w')
 
-        for code in ['GCA', 'GCF']:
-            code_dir = os.path.join(database_dir, code)
+        # initialising progress bar objects
+        high_loop = tqdm(range(1))
+        mid_loop = tqdm(range(1))
+        #low_loop = tqdm(range(1))
+
+        for code in [('GCA','Genbank'), ('GCF','Refseq')]:
+            code_dir = os.path.join(database_dir, code[0])
             if not os.path.exists(code_dir) or not os.path.isdir(code_dir):
-                print('we skip {}'.format(code))
+                print('we skip {}'.format(code[1]))
                 continue
+
+            high_loop.refresh()
+            high_loop.reset(total=len(os.listdir(code_dir)))
+
             for first_three in os.listdir(code_dir):
+                high_loop.update()  # update outer tqdm
                 onethird_species_dir = os.path.join(code_dir, first_three)
                 if os.path.isfile(onethird_species_dir):
                     continue
-                for second_three in os.listdir(onethird_species_dir):
+                mid_loop.refresh()  # force print final state
+                mid_loop.reset(total=len(os.listdir(onethird_species_dir)))
+
+                for ii,second_three in enumerate(os.listdir(onethird_species_dir)):
+                    mid_loop.update()
                     twothird_species_dir = os.path.join(
                         onethird_species_dir, second_three)
                     if os.path.isfile(twothird_species_dir):
                         continue
-                    for third_three in os.listdir(twothird_species_dir):
+                    for iii,third_three in enumerate(os.listdir(twothird_species_dir)):
                         threethird_species_dir = os.path.join(
                             twothird_species_dir, third_three)
                         if os.path.isfile(threethird_species_dir):
@@ -75,7 +90,6 @@ class DirectoryManager(object):
         @return: True
         """
         if len(os.listdir(genome_path)) == 0:
-            print('we delete {}'.format(genome_path))
             os.rmdir(genome_path)
             self.delete_empty_directory(os.path.dirname(genome_path))
         return True

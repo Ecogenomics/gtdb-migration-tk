@@ -30,9 +30,6 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-
 # Specific import
 from gtdb_migration_tk.main import OptionsParser
 from gtdb_migration_tk.biolib_lite.logger import logger_setup
@@ -67,7 +64,7 @@ def print_help():
       trnascan       -> Identifies tRNAs in genomes.
       join_checkm    -> Join CheckM output files for different releases
       checkm         -> Estimates the quality of the new genomes
-      
+
      Access to Database:
      update_db          -> Update the gtdb database
      update_checkm_db   -> Import CheckM estimates
@@ -80,7 +77,7 @@ def print_help():
 
     NCBI Taxonomy:
       parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file.
-      
+
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release 
       update_propagate_tax    -> Push propagated taxonomy to new DB
@@ -91,7 +88,7 @@ def print_help():
       strains      -> Set of tools to combined information from LPSN and DSMZ.
       ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find 
                       all strain ids
-      
+
     Curation files
       curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, 
                         and genomes with modified NCBI names
@@ -170,7 +167,7 @@ def __checkm_qa(group, required):
 
 
 def __cpus(group):
-    group.add_argument('-c', '--cpus', default=1, help='Number of threads.')
+    group.add_argument('-c', '--cpus', type=int ,default=1, help='Number of threads.')
 
 
 def __database_setup(group, required):
