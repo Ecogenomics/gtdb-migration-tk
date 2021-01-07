@@ -16,28 +16,21 @@
 ###############################################################################
 
 
-import os
-import shutil
-import hashlib
 import glob
-import gzip
-import sys
-import argparse
-import tempfile
-from datetime import datetime
-import multiprocessing as mp
 import logging
+import os
+import sys
+
+from datetime import datetime
+from tqdm import tqdm
+
 from gtdb_migration_tk.ftp_manager_tools import FTPTools
 
 
-class RefSeqManager(object):
-
-    def __init__(self, new_refseq_folder, dry_run=False, cpus=1):
-
+class GenericDatabaseManager(object):
+    def __init__(self):
         self.domains = ["archaea", "bacteria"]
         self.genome_domain_dict = {}
-
-        self.threads = cpus
 
         self.genomic_ext = "_genomic.fna"
         self.protein_ext = "_protein.faa"
@@ -54,12 +47,61 @@ class RefSeqManager(object):
         self.allExts = self.fastaExts + self.extensions + self.reports
         self.allbutFasta = self.extensions + self.reports
 
-        self.dry_run = dry_run
+        self.logger = logging.getLogger('timestamp')
 
+    def loadpreviousrecords(self,old_genome_dirs):
+
+
+        # old_dict lists all records from the previous gtdb update
+        with open(old_genome_dirs, 'r') as old_file:
+            old_dict = {old_line.split("\t")[0]: old_line.split("\t")[1].strip()
+                        for old_line in old_file}
+        print("{}:old_dict loaded".format(str(datetime.now())))
+        return old_dict
+
+    def generate_dict_to_remove(self,new_dict,old_dict):
+        self.logger.info("Remove Genome Step")
+        removed_dict = {removed_key: old_dict[removed_key] for removed_key in list(
+            set(old_dict.keys()) - set(new_dict.keys()))}
+        self.logger.info("{0} genomes to remove".format(len(removed_dict)))
+        return removed_dict
+
+    def generate_dict_to_add(self, new_dict, old_dict):
+        self.logger.info("Add Genome Step")
+        added_dict = {added_key: new_dict[added_key] for added_key in list(
+            set(new_dict.keys()) - set(old_dict.keys()))}
+        self.logger.info("{0} genomes to add".format(len(added_dict)))
+        return added_dict
+
+    def generate_dict_to_compare(self, new_dict, old_dict):
+        self.logger.info("Update Genome Step")
+        self.logger.info("Generating intersection list.")
+        intersect_list = list(
+            set(old_dict.keys()).intersection(set(new_dict.keys())))
+        self.logger.info("Intersection list:{} genomes".format(len(intersect_list)))
+        return intersect_list
+
+
+class RefSeqManager(GenericDatabaseManager):
+
+    def __init__(self, new_refseq_folder, dry_run=False, cpus=1):
+        super().__init__()
+        self.threads = cpus
+        self.dry_run = dry_run
         self.report_gcf = open(os.path.join(
             new_refseq_folder, "report_gcf.log"), "w", 1)
         self.genomes_to_review = open(os.path.join(
             new_refseq_folder, "gid_to_review.log"), "w", 1)
+
+    def parseAssemblySummary(self,assembly_summary):
+        result_list = []
+        with open(assembly_summary, 'r') as ftp_assembly_summary_file:
+            ftp_assembly_summary_file.readline()
+            result_list = [new_line.split(
+                "\t")[0] for new_line in ftp_assembly_summary_file if new_line.split("\t")[10] == "latest"]
+        return result_list
+
+
 
     def runComparison(self, ftp_refseq, new_refseq, ftp_genome_dirs, old_genome_dirs, archaea_assembly_summary, bacteria_assembly_summary):
         '''
@@ -68,108 +110,60 @@ class RefSeqManager(object):
         are of interest
         '''
 
-        # old_dict lists all records from the previous gtdb update
-        with open(old_genome_dirs, 'r') as old_file:
-            old_dict = {old_line.split("\t")[0]: old_line.split("\t")[1].strip()
-                        for old_line in old_file}
-        print("{}:old_dict loaded".format(
-            str(datetime.now())))
 
-        # This is a one of for the transtion from the old directory structure
-        # to the new one
-        with open(old_genome_dirs, 'r') as old_file:
-            old_dict_domain = {old_line.split("\t")[0]: old_line.split("\t")[1].strip().split("/")[8]
-                               for old_line in old_file}
-        print("{}:old_dict_domain loaded ({} records)".format(
-            str(datetime.now()), len(old_dict_domain)))
+        old_dict = self.loadpreviousrecords(old_genome_dirs)
 
         # new list list all records from the ftp folder and considered as
         # latest
-        new_list = []
-        with open(archaea_assembly_summary, 'r') as ftp_assembly_summary_file:
-            ftp_assembly_summary_file.readline()
-            new_list = [new_line.split(
-                "\t")[0] for new_line in ftp_assembly_summary_file if new_line.split("\t")[10] == "latest"]
+
+        new_list = self.parseAssemblySummary(archaea_assembly_summary)
         self.genome_domain_dict = {arcid: "Archaea" for arcid in new_list}
-        with open(bacteria_assembly_summary, 'r') as ftp_assembly_summary_file:
-            ftp_assembly_summary_file.readline()
-            bacterial_new_list = [new_line.split(
-                "\t")[0] for new_line in ftp_assembly_summary_file if new_line.split("\t")[10] == "latest"]
+        bacterial_new_list = self.parseAssemblySummary(bacteria_assembly_summary)
         for bacid in bacterial_new_list:
             self.genome_domain_dict[bacid] = "Bacteria"
+
         new_list.extend(bacterial_new_list)
-        print("{}:new_list loaded ({} records).".format(
-            str(datetime.now()), len(new_list)))
+        self.logger.info("new_list loaded ({} records).".format(len(new_list)))
 
         # new dict lists all records from FTP which are in new_list
         new_dict = {}
-        cter = 0
-        print("loading new_dict.....")
+        self.logger.info("loading new_dict.....")
+        num_lines = sum(1 for line in open(ftp_genome_dirs))
         with open(ftp_genome_dirs, 'r') as new_genome_dirs_file:
-            for new_line in new_genome_dirs_file:
-                cter += 1
-                # print('{}'.format(cter), end='\r')
-                new_line_split = new_line.split("\t")
-                if new_line_split[0].startswith("GCF") and new_line_split[0] in new_list:
-                    new_dict[new_line_split[0]] = new_line_split[1].strip()
+            for new_line in tqdm(new_genome_dirs_file,total=num_lines):
+                gid,path,*_ = new_line.split("\t")
+                if gid.startswith("GCF") and gid in new_list:
+                    new_dict[gid] = gid.strip()
 
-        print("{}:new_dict loaded ({} records).".format(
-            str(datetime.now()), len(new_dict)))
+        self.logger.info("new_dict loaded ({} records).".format(len(new_dict)))
 
         ftptools = FTPTools(
-            self.report_gcf, self.genomes_to_review, self.genome_domain_dict)
+            self.report_gcf, self.genomes_to_review, self.genome_domain_dict,self.dry_run)
 
         # delete genomes from the Database
-        removed_dict = {removed_key: old_dict[removed_key] for removed_key in list(
-            set(old_dict.keys()) - set(new_dict.keys()))}
-        ftptools.removeGenomes(removed_dict, old_dict_domain)
+        removed_dict = self.generate_dict_to_remove(new_dict,old_dict)
+        ftptools.removeGenomes(removed_dict)
 
         #new genomes in FTP
-        added_dict = {added_key: new_dict[added_key] for added_key in list(
-            set(new_dict.keys()) - set(old_dict.keys()))}
+        added_dict = self.generate_dict_to_add(new_dict,old_dict)
         ftptools.addGenomes(added_dict, ftp_refseq,
                              new_refseq, self.genome_domain_dict)
 
 
-
-        print("{}:Generating intersection list.....".format(str(datetime.now())))
-        intersect_list = list(
-            set(old_dict.keys()).intersection(set(new_dict.keys())))
-        print("{}:Intersection list:{} genomes".format(
-            str(datetime.now()), len(intersect_list)))
+        intersect_list = self.generate_dict_to_compare(new_dict,old_dict)
         ftptools.compareGenomes(
              intersect_list, old_dict, new_dict, ftp_refseq, new_refseq, self.threads)
+
         self.report_gcf.close()
         self.genomes_to_review.close()
 
 
-class GenBankManager(object):
+class GenBankManager(GenericDatabaseManager):
 
     def __init__(self, new_genbank_folder, dry_run=False, cpus=1):
-        self.domains = ["archaea", "bacteria"]
-        self.genome_domain_dict = {}
-
-        self.genomic_ext = "_genomic.fna.gz"
-        self.protein_ext = "_protein.faa.gz"
-        self.cds_ext = "_cds_from_genomic.fna.gz"
-        self.rna_ext = "_rna_from_genomic.fna.gz"
-
-        self.fastaExts = (self.genomic_ext, self.protein_ext)
-        self.extrafastaExts = (self.cds_ext, self.rna_ext)
-
-        self.extensions = ("_feature_table.txt.gz", "_genomic.gbff.gz",
-                           "_genomic.gff.gz", "_protein.gpff.gz", "_wgsmaster.gbff.gz")
-        self.reports = ("_assembly_report.txt",
-                        "_assembly_stats.txt", "_hashes.txt")
-        self.allExts = self.fastaExts + self.extensions + self.reports
-        self.allbutFasta = self.extensions + self.reports
-
+        super().__init__()
         self.threads = cpus
-
         self.dry_run = dry_run
-
-        self.logger = logging.getLogger('timestamp')
-
         self.report = open(os.path.join(new_genbank_folder,
                                         "extra_gbk_report_gcf.log"), "w")
         self.genomes_to_review = open(os.path.join(
@@ -184,61 +178,36 @@ class GenBankManager(object):
         are of interest
         '''
 
-        # old_dict lists all records from the previous gtdb update
-        with open(old_genbank_genome_dirs, 'r') as old_file:
-            old_dict = {old_line.split("\t")[0]: old_line.split("\t")[1].strip()
-                        for old_line in old_file}
-        self.logger.info("{}:old_dict loaded".format(str(datetime.now())))
-
-        # This is a one of for the transition from the old directory structure
-        # to the new one
-        with open(old_genbank_genome_dirs, 'r') as old_file:
-            old_dict_domain = {old_line.split("\t")[0]: old_line.split("\t")[1].strip().split("/")[8]
-                               for old_line in old_file}
-        self.logger.info(
-            "{}:old_dict_domain loaded".format(str(datetime.now())))
+        old_dict = self.loadpreviousrecords(old_genbank_genome_dirs)
 
         listGCA = self.parseAssemblySummary(
             gbk_arc_assembly, gbk_bac_assembly, new_refseq_genome_dirs)
         # new dict lists all records from FTP which are in new_list
         new_dict = {}
         num_lines = sum(1 for line in open(ftp_genbank_genome_dirs))
-        processedItems = 0
         with open(ftp_genbank_genome_dirs, 'r') as new_genome_dirs_file:
-            for new_line in new_genome_dirs_file:
-                processedItems += 1
-                statusStr = 'New Dictionary = Finished processing %d of %d (%.2f%%) gca records.' % (
-                    processedItems, num_lines, float(processedItems) * 100 / num_lines)
-                sys.stdout.write('%s\r' % statusStr)
-                sys.stdout.flush()
-                new_line_split = new_line.split("\t")
-                if new_line_split[0].startswith("GCA") and new_line_split[0] in listGCA:
-                    new_dict[new_line_split[0]] = new_line_split[1].strip()
-        sys.stdout.write('\n')
-        self.logger.info("{}:new_dict loaded".format(str(datetime.now())))
+            for new_line in tqdm(new_genome_dirs_file,total=num_lines):
+                gid,path,*_ = new_line.split("\t")
+                if gid.startswith("GCA") and gid in listGCA:
+                    new_dict[gid] = path.strip()
+        self.logger.info("new_dict loaded")
 
         ftptools = FTPTools(
-            self.report, self.genomes_to_review, self.genome_domain_dict)
+            self.report, self.genomes_to_review, self.genome_domain_dict,self.dry_run)
 
         # delete genomes from the Database
-        removed_dict = {removed_key: old_dict[removed_key] for removed_key in list(
-            set(old_dict.keys()) - set(new_dict.keys()))}
-        self.logger.info("{0} genomes to remove".format(len(removed_dict)))
-        ftptools.removeGenomes(removed_dict, old_dict_domain)
+        removed_dict = self.generate_dict_to_remove(new_dict,old_dict)
+        ftptools.removeGenomes(removed_dict)
 
         # new genomes in FTP
         added_dict = {added_key: new_dict[added_key] for added_key in list(
             set(new_dict.keys()) - set(old_dict.keys()))}
         self.logger.info("{0} genomes to add".format(len(added_dict)))
+        added_dict = self.generate_dict_to_add(new_dict,old_dict)
         ftptools.addGenomes(added_dict, ftp_genbank,
                            new_genbank, self.genome_domain_dict)
 
-        self.logger.info(
-            "{}:Generating intersection list.....".format(str(datetime.now())))
-        intersect_list = list(
-            set(old_dict.keys()).intersection(set(new_dict.keys())))
-        self.logger.info("{}:Intersection list:{} genomes".format(
-            str(datetime.now()), len(intersect_list)))
+        intersect_list = self.generate_dict_to_compare(new_dict,old_dict)
         ftptools.compareGenomes(
              intersect_list, old_dict, new_dict, ftp_genbank, new_genbank, self.threads)
         self.select_gca.close()
