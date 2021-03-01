@@ -22,9 +22,10 @@ import multiprocessing as mp
 
 from collections import defaultdict
 
-from biolib.common import make_sure_path_exists
+from biolib.common import remove_extension, make_sure_path_exists
 from biolib.external.execute import check_dependencies
 from biolib.checksum import sha256
+from tqdm import tqdm
 
 
 class MarkerManager(object):
@@ -48,26 +49,26 @@ class MarkerManager(object):
         self.logger = logging.getLogger('timestamp')
 
     def run_hmmsearch(self, gtdb_genome_path_file, report, db):
-        """Identify marker genes using Pfam and TIGRfam HMMs."""
-
+        extension = ""
         name = ""
         worker = None
         if db == 'pfam':
             marker_folder = 'pfam_33.1'
             full_extension = '_pfam_33.1.tsv'
+            symlink_extension = '_pfam.tsv'
             name = 'Pfam'
             worker = self.__pfam_worker
         elif db == 'tigrfam':
             marker_folder = 'tigrfam_15.0'
             full_extension = '_tigrfam_15.0.tsv'
+            symlink_extension = '_tigrfam.tsv'
+            #extension = '_tigrfam_15.0.tsv'
             name = 'Tigrfam'
             worker = self.__tigrfam_worker
-
-        # get genomes marker as new or modified, and limit
-        # marker gene finding to this subset of genomes
         genomes_to_consider = set()
         for line in open(report):
             line_split = line.strip().split('\t')
+
             genome_id = line_split[1]
 
             attributes = line_split[2].split(';')
@@ -81,58 +82,53 @@ class MarkerManager(object):
         # get path to all unprocessed genome gene files
         self.logger.info('Checking genomes.')
         genome_files = []
-        countr = 0
-        for line in open(gtdb_genome_path_file):
-            countr += 1
-            statusStr = '{} lines read.'.format(countr)
-            sys.stdout.write('%s\r' % statusStr)
-            sys.stdout.flush()
 
-            line_split = line.strip().split('\t')
+        with open(gtdb_genome_path_file,'r') as  ggpf:
+            for idx,line in enumerate(tqdm(ggpf)):
+                gid,gpath,*_ = line.strip().split('\t')
 
-            gid = line_split[0]
-            gpath = line_split[1]
+                prodigal_dir = os.path.join(gpath, 'prodigal')
+                marker_file = os.path.join(
+                    prodigal_dir, marker_folder, gid + full_extension)
+                if os.path.exists(marker_file):
+                    #print("File exists: {}".format(marker_file))
+                    # verify checksum
+                    checksum_file = marker_file + '.sha256'
+                    if os.path.exists(checksum_file):
+                        checksum = sha256(marker_file)
+                        cur_checksum = open(
+                            checksum_file).readline().strip()
+                        if checksum == cur_checksum:
+                            if gid in genomes_to_consider:
+                                self.logger.warning(
+                                    f'Genome {gid} is marked as new or modified, but already has {name} annotations.')
+                                self.logger.warning('Genome is being skipped!')
+                            continue
 
-            prodigal_dir = os.path.join(gpath, 'prodigal')
-            marker_file = os.path.join(
-                prodigal_dir, marker_folder, gid + full_extension)
-            if os.path.exists(marker_file):
-                # verify checksum
-                checksum_file = marker_file + '.sha256'
-                if os.path.exists(checksum_file):
-                    checksum = sha256(marker_file)
-                    cur_checksum = open(
-                        checksum_file).readline().strip()
-                    if checksum == cur_checksum:
-                        if gid in genomes_to_consider:
-                            self.logger.warning(
-                                f'Genome {gid} is marked as new or modified, but already has {name} annotations.')
-                            self.logger.warning('Genome is being skipped!')
-                        continue
-
-                self.logger.warning(
-                    f'Genome {gid} has {name} annotations, but an invalid checksum and was not marked for reannotation.')
-                self.logger.warning(f'Genome will be reannotated.')
-
-            elif gid not in genomes_to_consider:
-                self.logger.warning(
-                    f'Genome {gid} has no {name} annotations, but is also not marked for processing?')
-                self.logger.warning(f'Genome will be reannotated!')
-
-            gene_file = os.path.join(
-                prodigal_dir, gid + self.protein_file_ext)
-            if os.path.exists(gene_file):
-                if os.stat(gene_file).st_size == 0:
                     self.logger.warning(
-                        f' Protein file appears to be empty: {gene_file}')
-                else:
-                    genome_files.append(gene_file)
+                        f'Genome {gid} has {name} annotations, but an invalid checksum and was not marked for reannotation.')
+                    self.logger.warning(f'Genome will be reannotated.')
+
+                elif gid not in genomes_to_consider:
+                    self.logger.warning(
+                        f'Genome {gid} has no {name} annotations, but is also not marked for processing?')
+                    self.logger.warning(f'Genome will be reannotated!')
+
+                gene_file = os.path.join(
+                    prodigal_dir, gid + self.protein_file_ext)
+                if os.path.exists(gene_file):
+                    if os.stat(gene_file).st_size == 0:
+                        self.logger.warning(
+                            f' Protein file appears to be empty: {gene_file}')
+                    else:
+                        genome_files.append(gene_file)
 
         self.logger.info(f'Number of unprocessed genomes: {len(genome_files)}')
 
         # identify marker genes in parallel using HMMs and the HMMER package
         workerQueue = mp.Queue()
         writerQueue = mp.Queue()
+
 
         for f in genome_files:
             workerQueue.put(f)
@@ -266,8 +262,18 @@ class MarkerManager(object):
             new_tophit_link = os.path.join(assembly_dir, filename.replace(
                 self.protein_file_ext, symlink_pfam_tophit_extension))
 
-            os.symlink(output_hit_file, new_hit_link)
-            os.symlink(pfam_tophit_file, new_tophit_link)
+            #==================================================================
+            # print(f'{new_hit_link} will point to {output_hit_file}')
+            # print(f'{new_tophit_link} will point to {pfam_tophit_file}')
+            #==================================================================
+
+            output_hit_file_relative = os.path.join(
+                '.', pfam_version, filename.replace(self.protein_file_ext, pfam_extension))
+            pfam_tophit_file_relative = os.path.join('.', pfam_version, filename.replace(
+                self.protein_file_ext, pfam_tophit_extension))
+
+            os.symlink(output_hit_file_relative, new_hit_link)
+            os.symlink(pfam_tophit_file_relative, new_tophit_link)
 
             # allow results to be processed or written to file
             queue_out.put(gene_file)
@@ -387,8 +393,13 @@ class MarkerManager(object):
             new_tophit_link = os.path.join(assembly_dir, filename.replace(
                 self.protein_file_ext, symlink_tigrfam_tophit_extension))
 
-            os.symlink(output_hit_file, new_hit_link)
-            os.symlink(tigrfam_tophit_file, new_tophit_link)
+            # Symlink needs to be relative to avoid pointing to previous version of Tigrfam when we copy folder
+            output_hit_file_relative = os.path.join('.', tigrfam_version, filename.replace(
+                self.protein_file_ext, tigrfam_extension))
+            tigrfam_tophit_file_relative = os.path.join(assembly_dir, tigrfam_version, filename.replace(
+                self.protein_file_ext, tigrfam_tophit_extension))
+            os.symlink(output_hit_file_relative, new_hit_link)
+            os.symlink(tigrfam_tophit_file_relative, new_tophit_link)
 
             # allow results to be processed or written to file
             queue_out.put(gene_file)

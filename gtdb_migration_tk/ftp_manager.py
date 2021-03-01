@@ -133,7 +133,7 @@ class RefSeqManager(GenericDatabaseManager):
             for new_line in tqdm(new_genome_dirs_file,total=num_lines):
                 gid,path,*_ = new_line.split("\t")
                 if gid.startswith("GCF") and gid in new_list:
-                    new_dict[gid] = gid.strip()
+                    new_dict[gid] = path.strip()
 
         self.logger.info("new_dict loaded ({} records).".format(len(new_dict)))
 
@@ -142,7 +142,7 @@ class RefSeqManager(GenericDatabaseManager):
 
         # delete genomes from the Database
         removed_dict = self.generate_dict_to_remove(new_dict,old_dict)
-        ftptools.removeGenomes(removed_dict)
+        #.removeGenomes(removed_dict)
 
         #new genomes in FTP
         added_dict = self.generate_dict_to_add(new_dict,old_dict)

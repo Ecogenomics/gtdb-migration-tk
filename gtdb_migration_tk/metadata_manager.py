@@ -20,12 +20,14 @@ import sys
 import logging
 import ntpath
 import datetime
-from biolib.common import check_file_exists, make_sure_path_exists
-from biolib.parallel import Parallel
-from biolib.seq_io import read_fasta
+from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists, get_num_lines
+from gtdb_migration_tk.biolib_lite.parallel import Parallel
+from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 
 from gtdb_migration_tk.genometk_lite.metadata_nucleotide import MetadataNucleotide
 from gtdb_migration_tk.genometk_lite.metadata_genes import MetadataGenes
+
+from tqdm import tqdm
 
 
 class MetadataTable(object):
@@ -415,26 +417,17 @@ class MetadataManager(object):
     def generate_metadata(self, gtdb_genome_path_file):
         self.starttime = datetime.datetime.utcnow().replace(microsecond=0)
         input_files = []
-        countr = 0
-        for line in open(gtdb_genome_path_file):
-            countr += 1
-            statusStr = '{} lines read.'.format(countr)
-            sys.stdout.write('%s\r' % statusStr)
-            sys.stdout.flush()
+        with open(gtdb_genome_path_file) as ggpf:
+            for line in tqdm(ggpf,total=get_num_lines(gtdb_genome_path_file)):
+                gid,gpath,*_ = line.strip().split('\t')
+                assembly_id = os.path.basename(os.path.normpath(gpath))
 
-            line_split = line.strip().split('\t')
-
-            gid = line_split[0]
-            gpath = line_split[1]
-            assembly_id = os.path.basename(os.path.normpath(gpath))
-
-            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
-            gff_file = os.path.join(gpath, 'prodigal', gid + '_protein.gff')
-
-            input_files.append([genome_file, gff_file])
+                genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
+                gff_file = os.path.join(gpath, 'prodigal', gid + '_protein.gff')
+                input_files.append([genome_file, gff_file])
 
         # process each genome
-        print('Generating metadata for each genome:')
+        self.logger.info('Generating metadata for each genome:')
         parallel = Parallel(cpus=self.cpus)
         parallel.run(self._producer,
                      None,
@@ -459,7 +452,6 @@ class MetadataManager(object):
         return full_genome_dir
 
     def nucleotide(self, genome_file,output_dir):
-        #self.logger.info('Calculating nucleotide properties of genome.')
 
         check_file_exists(genome_file)
         make_sure_path_exists(output_dir)
@@ -485,7 +477,6 @@ class MetadataManager(object):
         fout.close()
 
     def gene(self, genome_file,gff_file,output_dir):
-        #self.logger.info('Calculating gene properties of genome.')
 
         check_file_exists(genome_file)
         check_file_exists(gff_file)

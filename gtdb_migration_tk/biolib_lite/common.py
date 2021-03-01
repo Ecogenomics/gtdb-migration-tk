@@ -25,6 +25,7 @@ import errno
 import sys
 import logging
 import ntpath
+import mmap
 import re
 import gzip
 from datetime import datetime
@@ -56,6 +57,16 @@ def canonical_gid(gid):
         gid = gid[0:gid.find('.')]
 
     return gid
+
+
+def get_num_lines(file_path):
+    """ Calculate the number of lines in a file."""
+    fp = open(file_path, "r+")
+    buf = mmap.mmap(fp.fileno(), 0)
+    lines = 0
+    while buf.readline():
+        lines += 1
+    return lines
 
 
 def is_float(s):

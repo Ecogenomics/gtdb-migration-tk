@@ -32,21 +32,21 @@ from tqdm import tqdm
 
 class FTPTools(object):
     def __init__(self, report, genomes_to_review, genome_domain_dict,dry_run):
-        self.reports = ("_assembly_report.txt",
-                        "_assembly_stats.txt", "_hashes.txt")
-
-        self.genomic_ext = "_genomic.fna.gz"
-        self.protein_ext = "_protein.faa.gz"
-        self.cds_ext = "_cds_from_genomic.fna.gz"
-        self.rna_ext = "_rna_from_genomic.fna.gz"
-
-        self.extensions = ("_feature_table.txt.gz", "_genomic.gbff.gz",
-                           "_genomic.gff.gz", "_protein.gpff.gz", "_wgsmaster.gbff.gz")
+        self.genomic_ext = "_genomic.fna"
+        self.protein_ext = "_protein.faa"
+        self.cds_ext = "_cds_from_genomic.fna"
+        self.rna_ext = "_rna_from_genomic.fna"
 
         self.fastaExts = (self.genomic_ext, self.protein_ext)
         self.extrafastaExts = (self.cds_ext, self.rna_ext)
+
+        self.extensions = ("_feature_table.txt", "_genomic.gbff",
+                           "_genomic.gff", "_protein.gpff", "_wgsmaster.gbff")
+        self.reports = ("_assembly_report.txt",
+                        "_assembly_stats.txt", "_hashes.txt")
         self.allExts = self.fastaExts + self.extensions + self.reports
         self.allbutFasta = self.extensions + self.reports
+
         self.report = report
         self.genomes_to_review = genomes_to_review
         self.genome_domain_dict = genome_domain_dict
@@ -255,13 +255,10 @@ class FTPTools(object):
                 else:
                     # The 2 main fasta files haven't changed so we can copy the old
                     # gtdb folder over
-                    if os.path.exists(target_dir):
-                        shutil.rmtree(target_dir)
                     shutil.copytree(
                         gtdb_dir, target_dir, symlinks=True,
                         ignore=shutil.ignore_patterns("*_assembly_structure"))
-                    if not os.path.isdir(os.path.join(target_dir,'prodigal')):
-                        status.append("unmodified")
+                    status.append("unmodified")
 
 
 

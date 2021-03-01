@@ -33,7 +33,12 @@ import json
 import os
 import sys
 import traceback
-from collections import namedtuple, Counter
+from collections import namedtuple, defaultdict, Counter
+import logging
+import pandas as pd
+
+from sqlalchemy import create_engine
+
 
 from biolib.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
@@ -51,12 +56,19 @@ class TaxonomyNCBI(object):
         self.bacterial_division = '0'
         self.unassigned_division = '8'
 
+        self.logger = logging.getLogger('timestamp')
+
+
     def _assembly_organism_name(self,
                                 refseq_archaea_assembly_file,
                                 refseq_bacteria_assembly_file,
                                 genbank_archaea_assembly_file,
                                 genbank_bacteria_assembly_file,
                                 output_organism_name_file):
+
+
+    def _assembly_organism_name(self, refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
+                                genbank_archaea_assembly_file, genbank_bacteria_assembly_file, output_organism_name_file):
         """Parse out organism name for each genome."""
 
         fout = open(output_organism_name_file, 'w')
@@ -400,11 +412,11 @@ class TaxonomyNCBI(object):
 
         node_records = self._read_nodes(
             os.path.join(taxonomy_dir, 'nodes.dmp'))
-        print('Read %d node records.' % len(node_records))
+        self.logger.info('Read %d node records.' % len(node_records))
 
         name_records = self._read_names(
             os.path.join(taxonomy_dir, 'names.dmp'))
-        print('Read %d name records.' % len(name_records))
+        self.logger.info('Read %d name records.' % len(name_records))
 
         # traverse taxonomy tree for each assembly
         taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
@@ -552,7 +564,20 @@ class TaxonomyNCBI(object):
         print(Counter(only_names).most_common(5))
 
         with open(output_file, 'w') as outfile:
-            json.dump(d, outfile)
+            #json.dump(d, outfile)
+            outfile.write(f"genome_id\tpayload\n")
+            for k,v in d.items():
+                outfile.write(f"{k}\t{json.dumps(v)}\n")
+
+    def update_taxid_to_db(self,hostname,user,password,db,lpsn_file):
+
+        engine_current = create_engine(f'postgresql://{user}:{password}@{hostname}:5432/{db}',
+                                       convert_unicode=True,
+                                       pool_size=5,
+                                       max_overflow=20,
+                                       pool_recycle=3600)
+        df = pd.read_csv(lpsn_file, sep='\t')
+        df.to_sql('genome_taxid',engine_current, index=False , if_exists='append')
 
 
 
