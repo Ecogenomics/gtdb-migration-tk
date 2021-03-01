@@ -18,6 +18,7 @@
 import os
 import shutil
 import logging
+from pathlib import Path
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists,canonical_gid
@@ -89,7 +90,7 @@ class DirectoryManager(object):
         @param genome_path: path to delete
         @return: True
         """
-        if len(os.listdir(genome_path)) == 0:
+        if Path(genome_path).exists() and len(os.listdir(genome_path)) == 0:
             os.rmdir(genome_path)
             self.delete_empty_directory(os.path.dirname(genome_path))
         return True
@@ -147,7 +148,8 @@ class DirectoryManager(object):
             print("{}/{} genomes deleted".format(idx,
                                                  len(deleted_genomes)), end="\r")
             deleted_genome_file.write('{}\n'.format(deleted_genome))
-            shutil.rmtree(current_ftp_genomes.get(deleted_genome))
+            if Path(current_ftp_genomes.get(deleted_genome)).exists() and Path(current_ftp_genomes.get(deleted_genome)).is_dir():
+                shutil.rmtree(current_ftp_genomes.get(deleted_genome))
             self.delete_empty_directory(os.path.dirname(
                 current_ftp_genomes.get(deleted_genome)))
 

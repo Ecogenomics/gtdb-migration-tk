@@ -34,6 +34,11 @@ import os
 import sys
 import traceback
 from collections import namedtuple, defaultdict, Counter
+import logging
+import pandas as pd
+
+from sqlalchemy import create_engine
+
 
 from biolib.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
@@ -50,6 +55,9 @@ class TaxonomyNCBI(object):
 
         self.bacterial_division = '0'
         self.unassigned_division = '8'
+
+        self.logger = logging.getLogger('timestamp')
+
 
     def _assembly_organism_name(self, refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
                                 genbank_archaea_assembly_file, genbank_bacteria_assembly_file, output_organism_name_file):
@@ -370,17 +378,17 @@ class TaxonomyNCBI(object):
 
         node_records = self._read_nodes(
             os.path.join(taxonomy_dir, 'nodes.dmp'))
-        print('Read %d node records.' % len(node_records))
+        self.logger.info('Read %d node records.' % len(node_records))
 
         name_records = self._read_names(
             os.path.join(taxonomy_dir, 'names.dmp'))
-        print('Read %d name records.' % len(name_records))
+        self.logger.info('Read %d name records.' % len(name_records))
 
         # traverse taxonomy tree for each assembly
         taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
         fout = open(taxonomy_file, 'w')
 
-        print('Number of assemblies: %d' % len(assembly_to_tax_id))
+        self.logger.info('Number of assemblies: %d' % len(assembly_to_tax_id))
         for assembly_accession, tax_id in assembly_to_tax_id.items():
             # traverse taxonomy tree to the root which is 'cellular organism' for genomes,
             # 'other sequences' for plasmids, and 'unclassified sequences' for metagenomic libraries
@@ -388,14 +396,14 @@ class TaxonomyNCBI(object):
             cur_tax_id = tax_id
 
             if cur_tax_id not in name_records:
-                print('[Warning] Assembly %s has an invalid taxid: %s' % (assembly_accession, tax_id))
+                self.logger.warning('[Warning] Assembly %s has an invalid taxid: %s' % (assembly_accession, tax_id))
                 continue
 
             roots = ['cellular organisms', 'other sequences',
                      'unclassified sequences', 'Viruses', 'Viroids']
             while name_records[cur_tax_id].name_txt not in roots:
                 if cur_tax_id == '1':
-                    print('[Error] TaxId %s reached root of taxonomy tree: %s' % (tax_id, taxonomy))
+                    self.logger.error('[Error] TaxId %s reached root of taxonomy tree: %s' % (tax_id, taxonomy))
                     sys.exit(-1)
 
                 try:
@@ -440,6 +448,7 @@ class TaxonomyNCBI(object):
 
         """Read NCBI taxonomy information and create summary output files."""
 
+        print(output_file)
 
         # parse metadata file and taxonomy files
         assembly_to_tax_id = self._assembly_to_tax_id(refseq_archaea_assembly_file,
@@ -507,7 +516,20 @@ class TaxonomyNCBI(object):
         print(Counter(only_names).most_common(5))
 
         with open(output_file, 'w') as outfile:
-            json.dump(d, outfile)
+            #json.dump(d, outfile)
+            outfile.write(f"genome_id\tpayload\n")
+            for k,v in d.items():
+                outfile.write(f"{k}\t{json.dumps(v)}\n")
+
+    def update_taxid_to_db(self,hostname,user,password,db,lpsn_file):
+
+        engine_current = create_engine(f'postgresql://{user}:{password}@{hostname}:5432/{db}',
+                                       convert_unicode=True,
+                                       pool_size=5,
+                                       max_overflow=20,
+                                       pool_recycle=3600)
+        df = pd.read_csv(lpsn_file, sep='\t')
+        df.to_sql('genome_taxid',engine_current, index=False , if_exists='append')
 
 
 

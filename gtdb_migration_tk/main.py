@@ -25,7 +25,7 @@ from gtdb_migration_tk.bacdive import BacDive
 from gtdb_migration_tk.propagate_taxonomy import Propagate
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
-from gtdb_migration_tk.tools import Tools
+from gtdb_migration_tk.utils.tools import Tools
 from gtdb_migration_tk.directory_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
@@ -56,13 +56,22 @@ class OptionsParser():
         p = LPSN(False, options.output_dir)
         p.full_lpsn_wf()
 
+    def add_lpsn_metadata(self,options):
+        p = LPSN(False, None)
+        p.add_lpsn_metadata(options.hostname, options.user, options.password, options.db,options.lpsn_metadata_file)
+
+    def update_taxid_to_db(self,options):
+        p = TaxonomyNCBI()
+        p.update_taxid_to_db(options.hostname, options.user, options.password, options.db,options.input_file)
+
     def pull_html(self, options):
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(options.skip_taxa_per_letter_dl, options.output_dir)
-        p.download_family_lpsn_html()
-        p.download_genus_lpsn_html()
-        p.download_species_lpsn_html()
+        # for rk in ['phylum','class','order','family','genus','species']:
+        for rk in ['genus', 'species']:
+
+            p.download_rank_lpsn_html(rk)
         p.download_subspecies_lpsn_html()
 
     def parse_html(self, options):
@@ -125,8 +134,8 @@ class OptionsParser():
     def clean_ftp(self, options):
         p = DirectoryManager()
         p.clean_ftp(options.new_list_genomes,
-                    options.ftp_genome_dir_file,
-                    options.report_dir,
+                    options.ftp_genome_dirs,
+                    options.report_folder,
                     options.taxonomy_file)
 
     def parse_genome_directory(self, options):
@@ -136,7 +145,7 @@ class OptionsParser():
     def update_refseq_from_ftp_files(self, options):
         p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
         p.runComparison(
-            options.ftp_refseq, options.output_dir, options.ftp_genome_dirs, options.old_genome_dirs,
+            options.ftp_refseq, options.output_dir, options.ftp_directory_file, options.old_genome_dirs,
             options.arc_assembly_summary, options.bac_assembly_summary)
 
     def update_genbank_from_ftp_files(self, options):
@@ -181,7 +190,7 @@ class OptionsParser():
                            options.ga, options.genome_list, options.output_file)
 
     def generate_rna_silva(self, options):
-        p = RnaManager(options.cpus, options.version,
+        p = RnaManager(options.cpus, options.rna_version,
                        options.rnapath, options.rna_gene)
         p.generate_rna_silva(options.gtdb_genome_path_file)
 
@@ -319,6 +328,8 @@ class OptionsParser():
             self.parse_ncbi_dir(options)
         elif options.subparser_name == 'parse_ncbi_taxonomy':
             self.parse_ncbi_taxonomy(options)
+        elif options.subparser_name == 'update_taxid_to_db':
+            self.update_taxid_to_db(options)
         elif options.subparser_name == 'rna_silva':
             self.generate_rna_silva(options)
         elif options.subparser_name == 'update_silva':
@@ -358,6 +369,8 @@ class OptionsParser():
         elif options.subparser_name == 'lpsn':
             if options.lpsn_subparser_name == 'lpsn_wf':
                 self.full_lpsn_wf(options)
+            elif options.lpsn_subparser_name == 'add_metadata':
+                self.add_lpsn_metadata(options)
             elif options.lpsn_subparser_name == 'parse_html':
                 self.parse_html(options)
             elif options.lpsn_subparser_name == 'pull_html':
