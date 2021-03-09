@@ -668,7 +668,6 @@ def get_main_parser():
             __gtdb_genome_path_file(grp, required=True)
             __ltp_version(grp, required=True)
             __ssu_version(grp, required=True)
-            __rna_gene(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __rna_file_path(grp)
@@ -945,7 +944,6 @@ def get_main_parser():
                 __input_dir(grp, required=True)
                 __output_dir(grp, required=True)
                 __lpsn_gss_file(grp, required=True)
-                __unfiltered_taxonomy(grp, required=True)
             with arg_group(parser, 'options arguments') as grp:
                 __silent(grp)
 
@@ -996,11 +994,10 @@ def get_main_parser():
                 __silent(grp)
 
         with subparser(strains_sub_parsers, 'type_table',
-                       'Generate table indicating metadata from LPSN and DSMZ for each species name.') as parser:
+                       'Generate table indicating metadata from LPSN for each species name.') as parser:
             with arg_group(parser, 'required named arguments') as grp:
                 __lpsn_gss_file(grp, required=True)
                 __lpsn_directory(grp, required=True)
-                __dsmz_directory(grp, required=True)
                 __year_table_file(grp, required=True)
                 __metadata_file(grp, required=True)
                 __ncbi_names(grp, required=True)

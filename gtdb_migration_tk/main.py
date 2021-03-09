@@ -78,7 +78,7 @@ class OptionsParser():
         """Parse all html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(False, options.output_dir)
-        p.parse_html(options.input_dir)
+        p.parse_html(options.input_dir,options.lpsn_gss_file)
 
     def download_strains(self, options):
         make_sure_path_exists(options.output_dir)
@@ -99,12 +99,11 @@ class OptionsParser():
 
     def generate_type_table(self, options):
         p = Strains(options.output_dir, options.cpus)
-        p.generate_type_strain_table(options.metadata_file,
+        p.generate_type_strain_table(options.metadata,
                                      options.ncbi_names,
                                      options.ncbi_nodes,
                                      options.lpsn_gss_file,
                                      options.lpsn_dir,
-                                     options.dsmz_dir,
                                      options.year_table)
 
     def compare_metadata(self, options):
@@ -268,8 +267,8 @@ class OptionsParser():
               options.output_file)
 
     def generate_trnascan_data(self, options):
-        p = tRNAScan(options.gbk_arc_assembly_file, options.gbk_bac_assembly_file,
-                     options.rfq_arc_assembly_file, options.rfq_bac_assembly_file, options.cpus)
+        p = tRNAScan(options.ga, options.gb,
+                     options.ra, options.rb, options.cpus)
         p.run(options.gtdb_genome_path_file)
 
     def parse_ncbi_dir(self, options):

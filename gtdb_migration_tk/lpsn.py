@@ -34,6 +34,7 @@ import string
 import html
 import logging
 import pandas as pd
+import csv
 
 from sqlalchemy import create_engine
 from bs4 import BeautifulSoup
@@ -128,7 +129,8 @@ class LPSN(object):
 
                     # Normalise the strains
                     for i, strain in enumerate(strains):
-                        processed_strains.append(canonical_strain_id(strain))
+                        if strain != 'n/a':
+                            processed_strains.append(canonical_strain_id(strain))
                     processed_neotypes = []
                     processed_strain_string = '{0}\t{1}'.format(
                         line_split[2], "=".join(processed_strains))
@@ -140,6 +142,7 @@ class LPSN(object):
         fout_type_genera.close()
         fout_type_species.close()
         fout_type_strains.close()
+
 
     def download_rank_lpsn_html(self,rank_name):
         '''
@@ -893,6 +896,7 @@ class LPSN(object):
 
         if rank_name != 'subspecies':
             for letter in list(string.ascii_uppercase):
+                print(f'letter: {letter}',end='\r')
                 for file in glob.glob(os.path.join(os.path.join(input_dir, f'all_{rank_name}'), letter, "*")):
                     headers_order,all_rank=self.parse_generic_html(rank_name,headers_order,all_rank,file)
         else:
@@ -920,12 +924,17 @@ class LPSN(object):
             type_genus_index = headers.index('Type genus')
             type_species_index = headers.index('Type species')
 
+
+
             headers.insert(originalpub_index, 'Priority')
+
+            nomenclature_index = headers.index('Nomenclatural status')
 
 
             name_pattern = re.compile(r'\[([^,]*),.*\]')
 
             all_infos = []
+            all_infos_dict = {}
             for line in fp:
                 infos = line.strip().split('\t')
                 # rank_of_interest
@@ -1048,9 +1057,16 @@ class LPSN(object):
                         infos[name_index] = name_result.group(1)
                     infos.insert(originalpub_index, 'n/a')
 
+                if infos[rank_index]+'_'+infos[name_index] in all_infos_dict:
+                    previous_infos = all_infos_dict.get(infos[rank_index]+'_'+infos[name_index])
+                    if self.check_illegimate(previous_infos[nomenclature_index]):
+                        all_infos_dict[infos[rank_index] + '_' + infos[name_index]] = infos
+                else:
+                    all_infos_dict[infos[rank_index]+'_'+infos[name_index]] = infos
+
                 all_infos.append(infos)
 
-        df = pd.DataFrame.from_records(all_infos, columns=headers)
+        df = pd.DataFrame.from_records(list(all_infos_dict.values()), columns=headers)
 
         reordering_header = ['Rank', 'Name', 'Category']
         for type_rank in ['phylum', 'class', 'order', 'family', 'genus', 'species', 'strain']:
@@ -1064,6 +1080,7 @@ class LPSN(object):
         df = df[reordering_header]
         df.to_csv(parsed_file, sep="\t", index=False)
         parsed_file.close()
+        return parsed_file
 
     def add_lpsn_metadata(self,hostname,user,password,db,lpsn_file):
 
@@ -1177,7 +1194,7 @@ class LPSN(object):
             output_file_class.write(string_to_write.get(key).get('to_write'))
         return full_list_type_order
 
-    def parse_family_html(self, output_file, input_dir,output_file_family):
+    def parse_family_html(self, input_dir):
         # Pattern for family
         type_genus_pattern = re.compile('color-genus">\"?<I>([a-zA-Z]+)</I>')
         family_pattern = re.compile(
@@ -1252,32 +1269,10 @@ class LPSN(object):
                                 type_genus_reference = self.cleanhtml(line).split(type_genus_name)[-1].replace('"','')
                                 type_genus_list.append(type_genus_name)
 
-                if family_name in string_to_write:
-                    if 'not assigned' in string_to_write.get(family_name).get('ref'):
-                        # we replace no assigned with full entry
-                        string_to_write[family_name] = {'ref':family_reference.replace(', not assigned','not assigned'),
-                                                        'to_write':'Family\t{}\t{}\t{}\t{}\n'.format('f__'+family_name,
-                                                              '/'.join(['g__'+x for x in type_genus_list]),
-                                                              family_reference.replace(', not assigned','not assigned'),
-                                                                           type_genus_reference.strip())
-                                                        }
-                else:
-                    string_to_write[family_name] = {'ref': family_reference.replace(', not assigned', 'not assigned'),
-                                                    'to_write': 'Family\t{}\t{}\t{}\t{}\n'.format('f__' + family_name,
-                                                                                                  '/'.join(
-                                                                                                      ['g__' + x for x
-                                                                                                       in
-                                                                                                       type_genus_list]),
-                                                                                                  family_reference.replace(
-                                                                                                      ', not assigned',
-                                                                                                      'not assigned'),
-                                                                                                  type_genus_reference.strip())}
-
                 # We remove 'not assigned to family'  if family has another entry with more information
                 for it in type_genus_list:
                     full_list_type_genus[it] = family_name
-        for key in sorted(string_to_write.keys()):
-            output_file_family.write(string_to_write.get(key).get('to_write'))
+
         return full_list_type_genus
 
     def parse_order_html(self, output_file, input_dir,output_file_order):
@@ -1380,7 +1375,7 @@ class LPSN(object):
             output_file_order.write(string_to_write.get(key).get('to_write'))
         return full_list_type_genus
 
-    def parse_genus_html(self, output_file, input_dir,output_file_genus, full_list_type_genus):
+    def parse_genus_html(self, output_file, input_dir, full_list_type_genus):
         # Patterns for genus
         genus_pattern = re.compile(
             r'<b>Name:</b> \"?\s?<I>([a-zA-Z]+)</I>')
@@ -1395,9 +1390,9 @@ class LPSN(object):
             r'<b>Name:</b> \"?<I>Candidatus</I> ([a-zA-Z]+)')
         full_list_type_species = []
         string_to_write = {}
-        letters=['H']
-        #for letter in list(string.ascii_uppercase):
-        for letter in letters:
+        #letters=['H']
+        for letter in list(string.ascii_uppercase):
+        #for letter in letters:
 
             for file in glob.glob(os.path.join(os.path.join(input_dir, 'all_genera'), letter, "*")):
                 genus_name = ''
@@ -1473,33 +1468,14 @@ class LPSN(object):
                 ref_type_combined = ','.join(
                     list(filter(None, [genus_reference, genus_proposed_type]))).strip()
 
-                if genus_name in string_to_write:
-                    if 'not assigned' in string_to_write.get(genus_name).get('ref'):
-                        string_to_write[genus_name] = {'ref':ref_type_combined.replace(', not assigned','not assigned'),
-                                                       'to_write':'Genus\t{}\t{}\t{}\t{}\n'.format('g__'+genus_name,
-                                                              '/'.join(['s__'+x for x in type_species_list]),
-                                                              ref_type_combined.replace(', not assigned','not assigned'),
-                                                                         type_species_reference.strip())}
-                else:
-                    string_to_write[genus_name] = {'ref': ref_type_combined.replace(', not assigned', 'not assigned'),
-                                                   'to_write': 'Genus\t{}\t{}\t{}\t{}\n'.format('g__' + genus_name,
-                                                                                                '/'.join(
-                                                                                                    ['s__' + x for x in
-                                                                                                     type_species_list]),
-                                                                                                ref_type_combined.replace(
-                                                                                                    ', not assigned',
-                                                                                                    'not assigned'),
-                                                                                                type_species_reference.strip())}
 
                 output_file.write("genus\t{}\t{}\t{}\t\n".format(
                     genus_name in full_list_type_genus, genus_name, ref_type_combined))
                 full_list_type_species.extend(type_species_list)
         # We remove 'not assigned to class'  if class has another entry with more information
-        for key in sorted(string_to_write.keys()):
-            output_file_genus.write(string_to_write.get(key).get('to_write'))
         return full_list_type_species
 
-    def parse_species_html(self, output_file, input_dir,output_file_species, full_list_type_species):
+    def parse_species_html(self, output_file, input_dir, full_list_type_species):
         # Pattern for species
         species_pattern = re.compile(
             r'<b>Name:</b> \"?<I>([a-zA-Z]+)</I> <I>([a-zA-Z]+)</I>')
@@ -1509,8 +1485,8 @@ class LPSN(object):
         type_proposed_pattern = re.compile(
             '<b>Proposed as:</b>(.*)</p>')
 
-        #for letter in list(string.ascii_uppercase):
-        for letter in ['S']:
+        for letter in list(string.ascii_uppercase):
+        #for letter in ['S']:
             for file in glob.glob(os.path.join(input_dir, 'all_species', letter, "*")):
                 species_name = ''
                 species_reference = ''
@@ -1574,7 +1550,7 @@ class LPSN(object):
                                 raw_list_strain)
 
                             raw_list_strain = [
-                                x for x in raw_list_strain if check_format_strain(canonical_strain_id(x))]
+                                x for x in raw_list_strain if  (x != 'n/a' and check_format_strain(canonical_strain_id(x)))]
 
                             strain_section = False
 
@@ -1595,7 +1571,6 @@ class LPSN(object):
                                 correct_species_name = correct_species_results.group(
                                     1) + " " + correct_species_results.group(2)
                                 if correct_species_name == species_name:
-                                    print(species_name)
                                     skip_species = True
                                     break
                         if correct_section and 'class="helper"' in line:
@@ -1608,9 +1583,6 @@ class LPSN(object):
                     output_file.write("species\t{}\t{}\t{}\t{}\n".format(species_name in full_list_type_species,
                                                                          species_name, ref_type_combined,
                                                                          "=".join(raw_list_strain)))
-                    output_file_species.write('Species\t{}\t{}\t{}\tNone\n'.format('s__' + species_name,
-                                                                  '/'.join([x for x in raw_list_strain]),
-                                                                  ref_type_combined))
 
                 elif not skip_species and len(species_name.strip().split(' ')) < 2:
                     self.logger.info(f"species name : {species_name} contains less than 2 words")
@@ -1618,7 +1590,7 @@ class LPSN(object):
                 else:
                     self.logger.info(f"species name : {species_name} skipped because duplicates")
 
-    def parse_subspecies_html(self, output_file, input_dir,output_file_subspecies, full_list_type_species):
+    def parse_subspecies_html(self, output_file, input_dir, full_list_type_species):
 
         type_proposed_pattern = re.compile(
             '<b>Proposed as:</b>(.*)</p>')
@@ -1664,7 +1636,7 @@ class LPSN(object):
                         raw_list_strain = self.parse_strains(raw_list_strain)
 
                         raw_list_strain = [
-                            x for x in raw_list_strain if check_format_strain(canonical_strain_id(x))]
+                            x for x in raw_list_strain if ( x != 'n/a' and check_format_strain(canonical_strain_id(x)))]
                         break
                         # print(raw_list_strain)
 
@@ -1683,7 +1655,6 @@ class LPSN(object):
                             correct_subspecies_name = correct_subspecies_results.group(
                                 1) + " " + correct_subspecies_results.group(2) + " subsp. "+correct_subspecies_results.group(3)
                             if correct_subspecies_name == subspe_name:
-                                print(correct_subspecies_name)
                                 skip_species = True
                                 break
                     elif correct_section and 'class="helper"' in line:
@@ -1697,18 +1668,218 @@ class LPSN(object):
                         output_file.write(
                             "species\t{}\t{}\t{}\t{}\n".format(short_name != '' and short_name in full_list_type_species,
                                                            subspe_name, ref_type_combined, "=".join(raw_list_strain)))
-                        output_file_subspecies.write("Subspecies\t{}\t{}\t{}\tNone\n".format('ss__'+subspe_name,
-                                                                       "/".join(raw_list_strain),ref_type_combined))
+
+
+    def check_illegimate(self,status_raw):
+        status = status_raw.strip().replace('"', '')
+        status_tokens = [t.strip() for t in status.split(';')]
+        status_tokens = [tt.strip() for t in status_tokens for tt in t.split(',')]
+
+        if 'illegitimate name' in status_tokens:
+            return True
+        return False
 
 
 
+    def parse_gss(self,gss_file):
+        gss_species = {}
+        record_mapping = {}
+        type_species_genus = {}
+        with open(gss_file) as lpsng:
+            headers = lpsng.readline().strip().split(',')
+            genus_name_idx = headers.index('genus_name')
+            sp_epithet_idx = headers.index('sp_epithet')
+            subsp_epithet_idx = headers.index('subsp_epithet')
+            nomenclatural_type_idx = headers.index('nomenclatural_type')
+            record_no_idx = headers.index('record_no')
+            authors_idx = headers.index('authors')
+            status_idx = headers.index('status')
 
-    def parse_html(self, input_dir):
+
+        with open(gss_file, "r") as csvfile:
+            csvreader = csv.reader(csvfile)
+            next(csvreader)
+            for row in csvreader:
+                if row[sp_epithet_idx] != '':
+                    if row[subsp_epithet_idx] != '':
+                        temp_name = row[genus_name_idx] + ' ' + row[sp_epithet_idx] + ' subsp. ' + row[
+                            subsp_epithet_idx]
+                        status_list = row[status_idx]
+                        is_illegitimate = self.check_illegimate(status_list)
+                        if (temp_name in gss_species and is_illegitimate is False
+                                and gss_species[temp_name]['illegitimate'] is True):
+                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
+                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+                            record_mapping[row[record_no_idx]] = temp_name
+                        elif temp_name not in gss_species:
+                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
+                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+                            record_mapping[row[record_no_idx]] = temp_name
+
+                    else:
+                        temp_name = row[genus_name_idx] + ' ' + row[sp_epithet_idx]
+                        status_list = row[status_idx]
+                        is_illegitimate = self.check_illegimate(status_list)
+                        if (temp_name in gss_species and is_illegitimate is False
+                                and gss_species[temp_name]['illegitimate'] is True):
+                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
+                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+                            record_mapping[row[record_no_idx]] = temp_name
+                        elif temp_name not in gss_species:
+                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
+                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+
+                else:
+                    gss_species[row[genus_name_idx]] = {'type':'species','authors': row[authors_idx],
+                                                        'type_species' : row[record_no_idx]}
+                    record_mapping[row[record_no_idx]] = row[genus_name_idx]
+                    type_species_genus[row[nomenclatural_type_idx]] = row[genus_name_idx]
+
+
+        return gss_species,record_mapping,type_species_genus
+
+
+    def parse_html_ts(self,output_all_ranks):
+        results_tsog,results_tgof,results_tgoo = {},{},{}
+        with open(output_all_ranks) as lsf:
+            line = lsf.readline()
+            headers = line.strip().split('\t')
+            rank_index = headers.index('Rank')
+            name_index = headers.index('Name')
+            type_species_index = headers.index('Type species')
+            type_genus_index = headers.index('Type genus')
+
+            for line in lsf:
+                infos = line.strip().split('\t')
+                if infos[rank_index] =='genus' and infos[type_species_index] != 'n/a':
+                    results_tsog[infos[type_species_index]] = infos[name_index]
+                if infos[rank_index] == 'family' and infos[type_genus_index] != 'n/a':
+                    results_tgof[infos[type_genus_index]] = infos[name_index]
+                if infos[rank_index] == 'order' and infos[type_genus_index] != 'n/a':
+                    results_tgoo[infos[type_genus_index]] = infos[name_index]
+
+        return results_tsog,results_tgof,results_tgoo
+
+
+
+    def summarise_parsing_2(self,output_all_ranks,gss_file):
+        # parse gss_file
+        gss_dict,record_mapping,type_species_genus = self.parse_gss(gss_file)
+
+        html_type_spe_of_gen,html_type_gen_of_fam,html_type_gen_of_ord = self.parse_html_ts(output_all_ranks)
+
+
+
+        """Create metadata by parsing assembly stats files."""
+
+        # identify type genera, species, and strains according to LPSN
+        fout_type_genera = open(os.path.join(
+            os.path.dirname(output_all_ranks), 'lpsn_genera.tsv'), 'w')
+        fout_type_species = open(os.path.join(
+            os.path.dirname(output_all_ranks), 'lpsn_species.tsv'), 'w')
+        fout_type_strains = open(os.path.join(
+            os.path.dirname(output_all_ranks), 'lpsn_strains.tsv'), 'w')
+
+        fout_type_genera.write(
+            'lpsn_genus\tlpsn_type_genus_of_family\tlpsn_type_genus_of_order\tlpsn_genus_authority\n')
+        fout_type_species.write(
+            'lpsn_species\tlpsn_type_species\tlpsn_species_authority\tsource\n')
+        fout_type_strains.write('lpsn_strain\tco-identical strain IDs\n')
+
+        list_processed_strains = []
+        processed_genus = []
+        processed_species = []
+
+        strains = set()
+
+        # Parse the lpsn summary file
+        with open(output_all_ranks) as lsf:
+            line = lsf.readline()
+            headers = line.strip().split('\t')
+            rank_index = headers.index('Rank')
+            name_index = headers.index('Name')
+
+            originalpub_index = headers.index('Original publication')
+            type_strains_index = headers.index('Type strain')
+            priority_index = headers.index('Priority')
+
+
+
+            for line in lsf:
+                line_split = line.rstrip('\n').split('\t')
+
+                if line_split[rank_index] == 'genus':
+                    genus_name = line_split[name_index]
+                    genus = 'g__' + genus_name
+                    if genus_name in gss_dict:
+                        desc = gss_dict.get(genus_name).get('authors')
+                    else:
+                        desc = line_split[priority_index]
+
+                    family = ''
+                    order = ''
+                    if genus_name in html_type_gen_of_fam:
+                        family = 'f__'+html_type_gen_of_fam.get(genus_name)
+                    if genus_name in html_type_gen_of_ord:
+                        order = 'o__' + html_type_gen_of_ord.get(genus_name)
+
+
+                    if (genus, family,order, desc) not in processed_genus:
+                            fout_type_genera.write(f'{genus}\t{family}\t'
+                                                   f'{order}\t{desc}\n')
+                            processed_genus.append((genus, family,order, desc))
+
+                if line_split[rank_index] in ['species','subspecies']:
+                    processed_strains = []
+                    spe_name = line_split[name_index]
+                    species = 's__' + spe_name
+                    source = ''
+                    if spe_name in gss_dict:
+                        source = 'GSS'
+                        desc = gss_dict.get(spe_name).get('authors')
+                        genus = ''
+
+                        if gss_dict.get(spe_name).get('record_no') in type_species_genus:
+                            genus = type_species_genus.get(gss_dict.get(spe_name).get('record_no'))
+
+                        strains = gss_dict.get(spe_name).get('strains').split(';')
+
+                    else:
+                        source = 'HTML'
+                        desc = line_split[priority_index]
+                        genus = html_type_spe_of_gen.get(spe_name,'')
+                        strains = line_split[type_strains_index].split(';')
+
+
+                    if (species, genus, desc) not in processed_species:
+                        fout_type_species.write(f'{species}\t{genus}\t{desc}\t{source}\n')
+                        processed_species.append((species, genus, desc))
+
+                    # Normalise the strains
+                    for i, strain in enumerate(strains):
+                        if strain != 'n/a':
+                            processed_strains.append(canonical_strain_id(strain))
+                    processed_neotypes = []
+                    processed_strain_string = '{0}\t{1}'.format(
+                        spe_name, "=".join(processed_strains))
+                    if processed_strain_string not in list_processed_strains:
+                        fout_type_strains.write(
+                            '{0}\n'.format(processed_strain_string))
+                        list_processed_strains.append(processed_strain_string)
+
+        fout_type_genera.close()
+        fout_type_species.close()
+        fout_type_strains.close()
+
+
+
+    def parse_html(self, input_dir, gss_file):
         """
         Parse the html file of each genus.
         Store the type, the name, the reference, the strains for each species.
         """
         processed_species = []
+
         output_file = open(os.path.join(
             self.outdir, 'lpsn_summary.tsv'), 'w')
 
@@ -1726,15 +1897,8 @@ class LPSN(object):
         for item in all_rank:
             output_all_ranks.write('\t'.join([item.get(potential_header,'n/a') for potential_header in headers_order])+'\n')
 
-
-        # self.logger.info('Parsing class pages.')
-        # full_list_type_order = self.parse_class_html(input_dir)
-        #
-        # self.logger.info('Parsing order pages.')
-        # full_list_type_genus_for_ord = self.parse_order_html(output_file, input_dir)
-        #
         self.logger.info('Parsing family pages.')
-        full_list_type_genus = self.parse_family_html(output_file, input_dir)
+        full_list_type_genus = self.parse_family_html(input_dir)
 
         self.logger.info('Parsing genus pages.')
         full_list_type_species = self.parse_genus_html(
@@ -1748,6 +1912,10 @@ class LPSN(object):
             output_file, input_dir, full_list_type_species)
 
         output_file.close()
+
         output_all_ranks.close()
-        self.parse_all_ranks_data(output_all_ranks)
-        self.summarise_parsing(output_file.name)
+        #parsed_file = self.parse_all_ranks_tsv('/srv/home/uqpchaum/tmp_dir/gtdb-migration-tk/test_clean_tk_branch/lpsn/20210301/parse_html/all_ranks/full_parsing_raw.tsv')
+        parsed_file = self.parse_all_ranks_tsv(output_all_ranks.name)
+
+        self.summarise_parsing(output_file.name,full_list_type_genus)
+        self.summarise_parsing_2(parsed_file.name,gss_file)
