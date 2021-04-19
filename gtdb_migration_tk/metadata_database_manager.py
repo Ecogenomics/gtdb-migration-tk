@@ -17,8 +17,6 @@
 
 import os
 import sys
-import argparse
-import tempfile
 import logging
 import glob
 

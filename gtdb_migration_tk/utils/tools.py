@@ -30,7 +30,7 @@ import logging
 import re
 
 import csv
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, namedtuple
 from datetime import datetime
 
 from gtdb_migration_tk.strains import Strains
@@ -46,19 +46,7 @@ class Tools(object):
         """Initialization."""
         self.logger = logging.getLogger()
 
-    def select_delimiter(self, metafile):
-        # Parse TSV or CSV file
-        for line in open(metafile):
-            if len(line.split('\t')) >= len(line.split(',')):
-                return '\t'
-            else:
-                return ','
 
-    def file_len(self, fname):
-        with open(fname) as f:
-            for i, l in enumerate(f):
-                pass
-        return i + 1
 
     def compare_metadata(self, old_meta_file, new_meta_file, only_ncbi=False, use_formatted_id = False):
 
@@ -527,4 +515,3 @@ class Tools(object):
                               f"{abs(first_domain_report_dict.get(id).get('arc_percent')-float(infos[arc_mark_idx]))}\t"
                               f"{first_domain_report_dict.get(id).get('bac_percent')}\t{infos[bac_mark_idx]}\t"
                               f"{abs(first_domain_report_dict.get(id).get('bac_percent') - float(infos[bac_mark_idx]))}\n")
-

@@ -21,7 +21,6 @@ import logging
 from biolib.common import check_file_exists, make_sure_path_exists
 
 from gtdb_migration_tk.lpsn import LPSN
-from gtdb_migration_tk.bacdive import BacDive
 from gtdb_migration_tk.propagate_taxonomy import Propagate
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
@@ -79,11 +78,6 @@ class OptionsParser():
         make_sure_path_exists(options.output_dir)
         p = LPSN(False, options.output_dir)
         p.parse_html(options.input_dir,options.lpsn_gss_file)
-
-    def download_strains(self, options):
-        make_sure_path_exists(options.output_dir)
-        p = BacDive(options.output_dir, options.username, options.pwd)
-        p.download_strains()
 
     def generate_date_table(self, options):
         p = Strains()
@@ -250,6 +244,14 @@ class OptionsParser():
         p.propagate_taxonomy(options.gtdb_metadata_prev, options.gtdb_metadata_cur, options.taxonomy_file,
                              options.rep_file)
 
+    def propagate_curated_taxonomy(self,options):
+        p=Propagate()
+        p.propagate_taxonomy_from_reps_to_cluster(options.taxonomy_file,options.metadata,options.output_file)
+
+    def add_taxonomy_to_database(self,options):
+        p=Propagate(options.hostname, options.user, options.password, options.db)
+        p.add_taxonomy_to_database(options.taxonomy_file,options.metadata,options.truncate_taxonomy)
+
     def update_propagated_tax(self, options):
         p = Propagate(options.hostname, options.user, options.password, options.db)
         p.add_propagated_taxonomy(options.taxonomy_file, options.metadata_file, options.genome_list,
@@ -351,6 +353,10 @@ class OptionsParser():
             self.update_db(options)
         elif options.subparser_name == 'propagate_gtdb_taxonomy':
             self.propagate_gtdb_taxonomy(options)
+        elif options.subparser_name == 'propagate_curated_taxonomy':
+            self.propagate_curated_taxonomy(options)
+        elif options.subparser_name == 'add_taxonomy_to_database':
+            self.add_taxonomy_to_database(options)
         elif options.subparser_name == 'update_propagated_tax':
             self.update_propagated_tax(options)
         elif options.subparser_name == 'set_gtdb_domain':
@@ -377,9 +383,6 @@ class OptionsParser():
             else:
                 self.logger.error('Unknown command: ' +
                                   options.lpsn_subparser_name + '\n')
-        elif options.subparser_name == 'bacdive':
-            if options.bacdive_subparser_name == 'download_strains':
-                self.download_strains(options)
         elif options.subparser_name == 'ncbi_strains':
             self.generate_ncbi_strains_summary(options)
         elif options.subparser_name == 'strains':

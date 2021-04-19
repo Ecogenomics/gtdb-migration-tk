@@ -139,3 +139,29 @@ def remove_extension(filename, extension=None):
         f = f[0:-1]
 
     return f
+
+#### PC ADDED functionalities to common #####
+
+def select_delimiter(metafile):
+    # Parse TSV or CSV file
+    for line in open(metafile):
+        if len(line.split('\t')) >= len(line.split(',')):
+            return '\t'
+        else:
+            return ','
+
+def clean_html(raw_html):
+    """
+    Remove all HTML tags from HTML line
+    """
+    cleanr = re.compile('<.*?>')
+    cleantext = re.sub(cleanr, '', raw_html)
+    return cleantext.strip()
+
+def clean_parenthesis(raw_line):
+    """
+    Remove parenthesis content from HTML line
+    """
+    # result = re.sub("[\(\[].*?[\)\]]", "", raw_line)
+    result = re.sub("\(see[^\)]+\)", "", raw_line)
+    return result
