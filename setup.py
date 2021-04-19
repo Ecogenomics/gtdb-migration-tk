@@ -24,5 +24,5 @@ setup(
     package_data={'gtdb_migration_tk': ['VERSION']},
     url='https://github.com/Ecogenomics/gtdb-migration-tk',
     description='Toolkit for updating the GTDB to the next release and test data.',
-    install_requires=['requests', 'unidecode', 'biolib>=0.1.0', 'pandas', 'numpy'],
+    install_requires=['requests', 'unidecode', 'biolib>=0.1.0', 'pandas', 'numpy','sqlalchemy','bs4'],
 )

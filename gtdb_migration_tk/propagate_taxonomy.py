@@ -5,9 +5,13 @@ import argparse
 from collections import defaultdict
 import logging
 
+import re
+
+from gtdb_migration_tk.biolib_lite.common import check_file_exists, canonical_gid
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
+from gtdb_migration_tk.utils.common import read_gtdb_metadata
 
 csv.field_size_limit(sys.maxsize)
 
@@ -210,7 +214,7 @@ class Propagate(object):
 
         for i, rank in enumerate(Taxonomy.rank_labels):
             data_to_commit = []
-            for gid, taxa in gtdb_taxonomy.iteritems():
+            for gid, taxa in gtdb_taxonomy.items():
                 if rank == 'domain':
                     rank_str = taxa[i]
                     data_to_commit.append((gid, rank_str))
@@ -332,5 +336,94 @@ class Propagate(object):
 
         self.logger.info('NCBI genomes that were missing GTDB domain info: %d' % len(missing_domain_info))
 
+    def propagate_taxonomy_from_reps_to_cluster(self,taxonomy_file,metadata_file,output_file):
+        """Propagate labels to all genomes in a cluster. Based on genometreetk"""
+
+        check_file_exists(taxonomy_file)
+        check_file_exists(metadata_file)
 
 
+        # get representative genome information
+        rep_metadata = read_gtdb_metadata(metadata_file, ['gtdb_representative',
+                                                                  'gtdb_clustered_genomes'])
+
+        rep_metadata = {canonical_gid(gid): values
+                        for gid, values in rep_metadata.items()}
+
+        explict_tax = Taxonomy().read(taxonomy_file)
+
+        # sanity check all representatives have a taxonomy string
+        rep_count = 0
+        for gid in rep_metadata:
+            is_rep_genome, clustered_genomes = rep_metadata.get(gid, (None, None))
+            if is_rep_genome:
+                rep_count += 1
+                if gid not in explict_tax:
+                    self.logger.error(
+                        'Expected to find {} in input taxonomy as it is a GTDB representative.'.format(gid))
+                    sys.exit(-1)
+
+        self.logger.info(
+            'Identified {:,} representatives in metadata file and {:,} genomes in input taxonomy file.'.format(
+                rep_count,
+                len(explict_tax)))
+
+        # propagate taxonomy to genomes clustered with each representative
+        fout = open(output_file, 'w')
+        for rid, taxon_list in explict_tax.items():
+            taxonomy_str = ';'.join(taxon_list)
+            rid = canonical_gid(rid)
+
+            is_rep_genome, clustered_genomes = rep_metadata[rid]
+            if is_rep_genome:
+                # assign taxonomy to representative and all genomes in the cluster
+                fout.write('{}\t{}\n'.format(rid, taxonomy_str))
+                for cid in [gid.strip() for gid in clustered_genomes.split(';')]:
+                    cid = canonical_gid(cid)
+                    if cid != rid:
+                        if cid in rep_metadata:
+                            fout.write('{}\t{}\n'.format(cid, taxonomy_str))
+                        else:
+                            self.logger.warning('Skipping {} as it is not in GTDB metadata file.'.format(cid))
+            else:
+                self.logger.error(
+                    'Did not expected to find {} in input taxonomy as it is not a GTDB representative.'.format(rid))
+                sys.exit(-1)
+
+        self.logger.info('Taxonomy written to: {}'.format(output_file))
+
+
+    def add_taxonomy_to_database(self,taxonomy_file,metadata_file,truncate_taxonomy):
+        """
+        Update the taxonomy in the database, this is usually used after propagate_taxonomy_from_reps_to_cluster function
+
+        @param taxonomy_file: taxonomy file listing all genomes to update; genome id can either be canonical (G123456789),
+        normal(GCF_123456789.1) or extended (RS_GCF_123456789.1)
+        @param canonical_gid_mapping: TSV file in the format (canonical_id,full_genome_id)
+        @return:
+        """
+        if truncate_taxonomy:
+            self.logger.info('Truncating GTDB taxonomy to domain classification.')
+            self.truncate_taxonomy(metadata_file)
+
+
+        # read taxonomy file
+        taxonomy = Taxonomy().read(taxonomy_file)
+
+        canonical_mapping = read_gtdb_metadata(metadata_file,['formatted_accession'])
+        canonical_mapping = {v.formatted_accession: k for k, v in canonical_mapping.items()}
+
+        # add each taxonomic rank to database
+        for i, rank in enumerate(Taxonomy.rank_labels):
+            data_to_commit = []
+            for genome_id, taxa in taxonomy.items():
+                if re.match(r"G\d{9}", genome_id):
+                    # This is a canonical id, need to be changed to normal id
+                    genome_id = canonical_mapping.get(genome_id)
+
+                rank_str = taxa[i]
+                data_to_commit.append((genome_id, rank_str))
+
+            gtdbimporter = GTDBImporter(self.temp_cur)
+            gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
+            self.temp_con.commit()

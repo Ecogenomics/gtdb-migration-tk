@@ -38,7 +38,7 @@ import csv
 
 from sqlalchemy import create_engine
 from bs4 import BeautifulSoup
-from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, clean_html
 from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
 
 
@@ -56,100 +56,17 @@ class LPSN(object):
         self.skip_taxa_per_letter_dl = skip_taxa_per_letter_dl
 
     def full_lpsn_wf(self):
-        for rk in ['phylum','class','order','family','genus','species']:
+        for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species']:
             self.download_rank_lpsn_html(rk)
-        #self.download_rank_lpsn_html()
-        #self.download_class_lpsn_html()
-        #self.download_order_lpsn_html()
-        #self.download_family_lpsn_html()
-        #self.download_genus_lpsn_html()
-        #self.download_species_lpsn_html()
         self.download_subspecies_lpsn_html()
         self.parse_html(os.path.join(self.outdir, 'genus_html'))
 
-    def summarise_parsing(self, lpsn_scrape_file,full_list_type_genus):
-        """Create metadata by parsing assembly stats files."""
-
-        # identify type genera, species, and strains according to LPSN
-        fout_type_genera = open(os.path.join(
-            self.outdir, 'lpsn_genera.tsv'), 'w')
-        fout_type_species = open(os.path.join(
-            self.outdir, 'lpsn_species.tsv'), 'w')
-        fout_type_strains = open(os.path.join(
-            self.outdir, 'lpsn_strains.tsv'), 'w')
-
-        fout_type_genera.write(
-            'lpsn_genus\tlpsn_type_genus\tlpsn_genus_authority\n')
-        fout_type_species.write(
-            'lpsn_species\tlpsn_type_species\tlpsn_species_authority\n')
-        fout_type_strains.write('lpsn_strain\tco-identical strain IDs\n')
-
-        list_processed_strains = []
-        processed_genus = []
-        processed_species = []
-
-        strains = set()
-
-        # Parse the lpsn summary file
-        with open(lpsn_scrape_file) as lsf:
-            for line in lsf:
-                line_split = line.rstrip('\n').split('\t')
-
-                if line_split[0] == 'genus':
-                    genus = 'g__' + line_split[2]
-                    desc = line_split[3].strip()
-
-                    family = ''
-                    if line_split[1] == 'True':
-                        family = 'f__' + full_list_type_genus.get(line_split[2])
-
-                    desc = desc.replace(' ?', '')
-
-                    if (genus, family, desc) not in processed_genus:
-                        fout_type_genera.write('%s\t%s\t%s\n' %
-                                               (genus, family, desc))
-                        processed_genus.append((genus, family, desc))
-                elif line_split[0] == 'species':
-                    species = 's__' + line_split[2]
-                    desc = line_split[3].strip()
-
-                    genus = ''
-                    if line_split[1] == 'True':
-                        genus = 'g__' + line_split[2].split()[0]
-
-                    if (species, genus, desc) not in processed_species:
-                        cleanr = re.compile('<.*?>')
-                        species = re.sub(cleanr, '', species)
-                        genus = re.sub(cleanr, '', genus)
-                        fout_type_species.write(
-                            '%s\t%s\t%s\n' % (species, genus, desc))
-                        processed_species.append((species, genus, desc))
-                    processed_strains = []
-                    strains = line_split[4].split("=")
-
-                    # Normalise the strains
-                    for i, strain in enumerate(strains):
-                        if strain != 'n/a':
-                            processed_strains.append(canonical_strain_id(strain))
-                    processed_neotypes = []
-                    processed_strain_string = '{0}\t{1}'.format(
-                        line_split[2], "=".join(processed_strains))
-                    if processed_strain_string not in list_processed_strains:
-                        fout_type_strains.write(
-                            '{0}\n'.format(processed_strain_string))
-                        list_processed_strains.append(processed_strain_string)
-
-        fout_type_genera.close()
-        fout_type_species.close()
-        fout_type_strains.close()
-
-
-    def download_rank_lpsn_html(self,rank_name):
-        '''
+    def download_rank_lpsn_html(self, rank_name):
+        """
 
         Download all HTML pages from LPSN for a specific rank.
 
-        '''
+        """
         # Download pages listing all rank_of_interest in LPSN
         index_dir = os.path.join(self.outdir, f'{rank_name}_per_letter')
         if self.skip_taxa_per_letter_dl:
@@ -160,7 +77,7 @@ class LPSN(object):
             for letter in list(string.ascii_uppercase):
                 url = self.base_url + f'{rank_name}?page=' + letter
                 urllib.request.urlretrieve(
-                    url, os.path.join(index_dir, '{}_{}.html'.format(rank_name,letter)))
+                    url, os.path.join(index_dir, '{}_{}.html'.format(rank_name, letter)))
 
         # Parse html pages lising all classes
         rank_sites_list = open(os.path.join(
@@ -172,23 +89,21 @@ class LPSN(object):
         num_ranks = 0
 
         for letter in list(string.ascii_uppercase):
-            with open(os.path.join(index_dir, '{}_{}.html'.format(rank_name,letter))) as webf:
+            with open(os.path.join(index_dir, '{}_{}.html'.format(rank_name, letter))) as webf:
                 for line in webf:
                     if f'class="last-child color-{rank_name}"' in line:
                         line = line.replace("'", '"')
                         result = link_pattern.search(line)
                         if result:
                             rk_name = rank_name_pattern.search(line).group(1)
-                            rk_name = self.cleanhtml(rk_name)
+                            rk_name = clean_html(rk_name)
 
                             num_ranks += 1
-                            print(' - processed {:,} names ({} level).'.format(num_ranks,rank_name),end='\r')
+                            print(' - processed {:,} names ({} level).'.format(num_ranks, rank_name), end='\r')
                             rank_sites_list.write('{}\t{}\t{}\n'.format(
                                 letter, rk_name, self.base_url + result.group(1)))
                             rank_to_download.append(rk_name)
         rank_sites_list.close()
-
-
 
         # we remove the duplicate names with quotes
         valid_names = []
@@ -199,7 +114,7 @@ class LPSN(object):
                     valid_names.append(temp_name)
             elif temp_name.startswith("["):
                 if ', no' in temp_name:
-                    potential_name = temp_name.split(', no')[0].replace('[','')
+                    potential_name = temp_name.split(', no')[0].replace('[', '')
                     if potential_name not in rank_to_download:
                         valid_names.append(temp_name)
             else:
@@ -221,486 +136,33 @@ class LPSN(object):
                 url_name = os.path.basename(rk_url)
                 out_file = os.path.join(self.outdir, f'all_{rank_name}', letter, url_name)
 
-                if rk_name in valid_names:
-                    if not os.path.exists(out_file):
-                        try:
-                            urllib.request.urlretrieve(os.path.join(
-                                rk_url), out_file)
-                        except:
-                            failed_html_file.write('{}\tfailed_download\n'.format(rk_url))
-                    else:
-                        num_already_dl += 1
-                else:
-                    failed_html_file.write('{}\tduplicate_name\n'.format(rk_url))
+                num_already_dl = self.download_rank_name(rk_name, rk_url,
+                                                         out_file, valid_names,
+                                                         failed_html_file, num_already_dl)
 
                 num_ranks += 1
                 print(
                     ' - processed {:,} names ({} level), including {:,} that were previously downloaded\r'.format(
                         num_ranks,
                         rank_name,
-                        num_already_dl),end='\r')
+                        num_already_dl), end='\r')
 
         failed_html_file.close()
 
+    def download_rank_name(self, rk_name, rk_url, out_file, valid_names, failed_html_file, num_already_dl):
 
-    def download_class_lpsn_html(self):
-        '''
-
-        Download all HTML class pages from LPSN.
-
-        '''
-        # Download pages listing all classes in LPSN
-        index_dir = os.path.join(self.outdir, 'class_per_letter')
-        if self.skip_taxa_per_letter_dl:
-            self.logger.info('Skipping download of classes at LPSN and using results in: {}'.format(index_dir))
-        else:
-            self.logger.info('Beginning download of classes from LPSN.')
-            make_sure_path_exists(index_dir)
-            for letter in list(string.ascii_uppercase):
-                url = self.base_url + 'class?page=' + letter
-                urllib.request.urlretrieve(
-                    url, os.path.join(index_dir, 'class_{}.html'.format(letter)))
-
-        # Parse html pages lising all classes
-        class_sites_list = open(os.path.join(
-            self.outdir, 'class_list.lst'), 'w')
-        link_pattern = re.compile(r'href="(/class/[^"]+)"')
-        class_name_pattern = re.compile(r'class=\"last-child color-class\">(.*)</a>')
-        classes_to_download = []
-        self.logger.info('Generating a list of all pages that contain class information.')
-        num_classes = 0
-        for letter in list(string.ascii_uppercase):
-            with open(os.path.join(index_dir, 'class_{}.html'.format(letter))) as webf:
-                for line in webf:
-                    if 'class="last-child color-class"' in line:
-                        line = line.replace("'", '"')
-                        result = link_pattern.search(line)
-                        if result:
-                            class_name = class_name_pattern.search(line).group(1)
-                            class_name = self.cleanhtml(class_name)
-
-                            num_classes += 1
-                            sys.stdout.write(' - processed {:,} classes\r'.format(num_classes))
-                            sys.stdout.flush()
-                            class_sites_list.write('{}\t{}\t{}\n'.format(
-                                letter, class_name, self.base_url + result.group(1)))
-                            classes_to_download.append(class_name)
-        class_sites_list.close()
-
-        sys.stdout.write('\n')
-
-        # we remove the duplicate names with quotes
-        valid_classes = []
-        for claname in classes_to_download:
-
-            if claname.startswith('"'):
-                if claname.replace('"', '').replace('Candidatus ', '') not in classes_to_download:
-                    valid_classes.append(claname)
+        if rk_name in valid_names:
+            if not os.path.exists(out_file):
+                try:
+                    urllib.request.urlretrieve(os.path.join(
+                        rk_url), out_file)
+                except:
+                    failed_html_file.write('{}\tfailed_download\n'.format(rk_url))
             else:
-                valid_classes.append(claname)
-
-        # Download individual classes html page
-        self.logger.info('Downloading individual class HTML pages.')
-        failed_html_file = open(os.path.join(
-            self.outdir, 'classes_failed.lst'), 'w')
-        make_sure_path_exists(os.path.join(self.outdir, 'all_classes'))
-
-        num_classes = 0
-        num_already_dl = 0
-        with open(os.path.join(self.outdir, 'class_list.lst')) as gsl:
-            for line in gsl:
-                letter, class_name, class_url = line.strip().split('\t')
-                make_sure_path_exists(os.path.join(
-                    self.outdir, 'all_classes', letter))
-                claname = os.path.basename(class_url)
-                out_file = os.path.join(self.outdir, 'all_classes', letter, claname)
-
-                if class_name in valid_classes:
-                    if not os.path.exists(out_file):
-                        try:
-                            urllib.request.urlretrieve(os.path.join(
-                                class_url), out_file)
-                        except:
-                            failed_html_file.write('{}\tfailed_download\n'.format(class_url))
-                    else:
-                        num_already_dl += 1
-                else:
-                    failed_html_file.write('{}\tduplicate_name\n'.format(class_url))
-
-                num_classes += 1
-                sys.stdout.write(
-                    ' - processed {:,} classes, including {:,} that were previously downloaded\r'.format(
-                        num_classes,
-                        num_already_dl))
-                sys.stdout.flush()
-
-        failed_html_file.close()
-        sys.stdout.write('\n')
-
-    def download_order_lpsn_html(self):
-        '''
-
-        Download all HTML order pages from LPSN.
-
-        '''
-        # Download pages listing all orders in LPSN
-        index_dir = os.path.join(self.outdir, 'order_per_letter')
-        if self.skip_taxa_per_letter_dl:
-            self.logger.info('Skipping download of orders at LPSN and using results in: {}'.format(index_dir))
+                num_already_dl += 1
         else:
-            self.logger.info('Beginning download of orders from LPSN.')
-            make_sure_path_exists(index_dir)
-            for letter in list(string.ascii_uppercase):
-                url = self.base_url + 'order?page=' + letter
-                urllib.request.urlretrieve(
-                    url, os.path.join(index_dir, 'order_{}.html'.format(letter)))
-
-        # Parse html pages lising all orders
-        order_sites_list = open(os.path.join(
-            self.outdir, 'order_list.lst'), 'w')
-        link_pattern = re.compile(r'href="(/order/[^"]+)"')
-        order_name_pattern = re.compile(r'class=\"last-child color-order\">(.*)</a>')
-        orders_to_download = []
-        self.logger.info('Generating a list of all pages that contain order information.')
-        num_orders = 0
-        for letter in list(string.ascii_uppercase):
-            with open(os.path.join(index_dir, 'order_{}.html'.format(letter))) as webf:
-                for line in webf:
-                    if 'class="last-child color-order"' in line:
-                        line = line.replace("'", '"')
-                        result = link_pattern.search(line)
-                        if result:
-                            order_name = order_name_pattern.search(line).group(1)
-                            order_name = self.cleanhtml(order_name)
-
-                            num_orders += 1
-                            sys.stdout.write(' - processed {:,} orders\r'.format(num_orders))
-                            sys.stdout.flush()
-                            order_sites_list.write('{}\t{}\t{}\n'.format(
-                                letter, order_name, self.base_url + result.group(1)))
-                            orders_to_download.append(order_name)
-        order_sites_list.close()
-
-        sys.stdout.write('\n')
-
-        # we remove the duplicate names with quotes
-        valid_orders = []
-        for ordname in orders_to_download:
-
-            if ordname.startswith('"'):
-                if ordname.replace('"', '').replace('Candidatus ', '') not in orders_to_download:
-                    valid_orders.append(ordname)
-            else:
-                valid_orders.append(ordname)
-
-        # Download individual classes html page
-        self.logger.info('Downloading individual order HTML pages.')
-        failed_html_file = open(os.path.join(
-            self.outdir, 'orders_failed.lst'), 'w')
-        make_sure_path_exists(os.path.join(self.outdir, 'all_orders'))
-
-        num_orders = 0
-        num_already_dl = 0
-        with open(os.path.join(self.outdir, 'order_list.lst')) as gsl:
-            for line in gsl:
-                letter, order_name, order_url = line.strip().split('\t')
-                make_sure_path_exists(os.path.join(
-                    self.outdir, 'all_orders', letter))
-                ordname = os.path.basename(order_url)
-                out_file = os.path.join(self.outdir, 'all_orders', letter, ordname)
-
-                if order_name in valid_orders:
-                    if not os.path.exists(out_file):
-                        try:
-                            urllib.request.urlretrieve(os.path.join(
-                                order_url), out_file)
-                        except:
-                            failed_html_file.write('{}\tfailed_download\n'.format(order_url))
-                    else:
-                        num_already_dl += 1
-                else:
-                    failed_html_file.write('{}\tduplicate_name\n'.format(order_url))
-
-                num_orders +=1
-                sys.stdout.write(
-                    ' - processed {:,} orders, including {:,} that were previously downloaded\r'.format(
-                        num_orders,
-                        num_already_dl))
-                sys.stdout.flush()
-
-        failed_html_file.close()
-        sys.stdout.write('\n')
-
-    def download_family_lpsn_html(self):
-        '''
-
-        Download all HTML family pages from LPSN.
-
-        '''
-
-        # Download pages listing all families in LPSN
-        index_dir = os.path.join(self.outdir, 'family_per_letter')
-        if self.skip_taxa_per_letter_dl:
-            self.logger.info('Skipping download of families at LPSN and using results in: {}'.format(index_dir))
-        else:
-            self.logger.info('Beginning download of families from LPSN.')
-            make_sure_path_exists(index_dir)
-            for letter in list(string.ascii_uppercase):
-                url = self.base_url + 'family?page=' + letter
-                urllib.request.urlretrieve(
-                    url, os.path.join(index_dir, 'family_{}.html'.format(letter)))
-
-
-        # Parse html pages lising all families
-        family_sites_list = open(os.path.join(
-            self.outdir, 'family_list.lst'), 'w')
-        link_pattern = re.compile(r'href="(/family/[^"]+)"')
-        family_name_pattern = re.compile(r'class=\"last-child color-family\">(.*)</a>')
-        families_to_download = []
-        self.logger.info('Generating a list of all pages that contain family information.')
-        num_families = 0
-        for letter in list(string.ascii_uppercase):
-            with open(os.path.join(index_dir, 'family_{}.html'.format(letter))) as webf:
-                for line in webf:
-                    if 'class="last-child color-family"' in line:
-                        line = line.replace("'", '"')
-                        result = link_pattern.search(line)
-                        if result:
-                            family_name = family_name_pattern.search(line).group(1)
-                            family_name = self.cleanhtml(family_name)
-
-                            num_families += 1
-                            sys.stdout.write(' - processed {:,} families\r'.format(num_families))
-                            sys.stdout.flush()
-                            family_sites_list.write('{}\t{}\t{}\n'.format(
-                                letter,family_name, self.base_url + result.group(1)))
-                            families_to_download.append(family_name)
-        family_sites_list.close()
-
-        sys.stdout.write('\n')
-
-        # we remove the duplicate names with quotes
-        valid_families = []
-        for famname in families_to_download:
-
-            if famname.startswith('"'):
-                if famname.replace('"', '').replace('Candidatus ', '') not in families_to_download:
-                    valid_families.append(famname)
-            else:
-                valid_families.append(famname)
-
-        # Download individual species html page
-        self.logger.info('Downloading individual family HTML pages.')
-        failed_html_file = open(os.path.join(
-            self.outdir, 'families_failed.lst'), 'w')
-        make_sure_path_exists(os.path.join(self.outdir, 'all_families'))
-
-        num_families = 0
-        num_already_dl = 0
-        with open(os.path.join(self.outdir, 'family_list.lst')) as gsl:
-            for line in gsl:
-                letter, family_name, fam_url = line.strip().split('\t')
-                make_sure_path_exists(os.path.join(
-                    self.outdir, 'all_families', letter))
-                famname = os.path.basename(fam_url)
-                out_file = os.path.join(self.outdir, 'all_families', letter, famname)
-
-                if family_name in valid_families:
-                    if not os.path.exists(out_file):
-                        try:
-                            urllib.request.urlretrieve(os.path.join(
-                                fam_url), out_file)
-                        except:
-                            failed_html_file.write('{}\tfailed_download\n'.format(fam_url))
-                    else:
-                        num_already_dl += 1
-                else:
-                    failed_html_file.write('{}\tduplicate_name\n'.format(fam_url))
-                num_families +=1
-                sys.stdout.write(
-                    ' - processed {:,} families, including {:,} that were previously downloaded\r'.format(
-                        num_families,
-                        num_already_dl))
-                sys.stdout.flush()
-
-        failed_html_file.close()
-        sys.stdout.write('\n')
-
-    def download_genus_lpsn_html(self):
-        """
-
-        Download all HTML genus pages from LPSN.
-
-        """
-        # Download pages listing all genus in LPSN
-        index_dir = os.path.join(self.outdir, 'genus_per_letter')
-        if self.skip_taxa_per_letter_dl:
-            self.logger.info('Skipping download of genera at LPSN and using results in: {}'.format(index_dir))
-        else:
-            self.logger.info('Beginning download of genera from LPSN.')
-            make_sure_path_exists(index_dir)
-            for letter in list(string.ascii_uppercase):
-                url = self.base_url + 'genus?page=' + letter
-                urllib.request.urlretrieve(
-                    url, os.path.join(index_dir, 'genus_{}.html'.format(letter)))
-
-        # Parse html pages lising all genus
-        genus_sites_list = open(os.path.join(
-            self.outdir, 'genus_list.lst'), 'w')
-        link_pattern = re.compile(r'href="(/genus/[^"]+)"')
-        genera_name_pattern = re.compile(r'class=\"last-child color-genus\">(.*)</a>')
-        genera_to_download = []
-        self.logger.info('Generating a list of all pages that contain genus information.')
-
-        num_genera = 0
-        for letter in list(string.ascii_uppercase):
-            with open(os.path.join(index_dir, 'genus_{}.html'.format(letter))) as webf:
-                for line in webf:
-                    if 'class="last-child color-genus"' in line:
-                        line = line.replace("'", '"')
-                        result = link_pattern.search(line)
-                        if result:
-                            num_genera += 1
-                            sys.stdout.write(' - processed {:,} genera\r'.format(num_genera))
-                            sys.stdout.flush()
-                            genus_name = genera_name_pattern.search(line).group(1)
-                            genus_name = self.cleanhtml(genus_name)
-                            genus_sites_list.write('{}\t{}\t{}\n'.format(
-                                letter, genus_name, self.base_url + result.group(1)))
-                            genera_to_download.append(genus_name)
-        genus_sites_list.close()
-        sys.stdout.write('\n')
-
-        # we remove the duplicate names with quotes
-        valid_genera = []
-        for genname in genera_to_download:
-
-            if genname.startswith('"'):
-                if genname.replace('"', '').replace('Candidatus ', '') not in genera_to_download:
-                    valid_genera.append(genname)
-            else:
-                valid_genera.append(genname)
-
-        # Download individual species html page
-        self.logger.info('Downloading individual genus HTML pages.')
-        failed_html_file = open(os.path.join(
-            self.outdir, 'genera_failed.lst'), 'w')
-        make_sure_path_exists(os.path.join(self.outdir, 'all_genera'))
-        num_genera = 0
-        num_already_dl = 0
-        with open(os.path.join(self.outdir, 'genus_list.lst')) as gsl:
-            for line in gsl:
-                letter, genus_name, gen_url = line.strip().split('\t')
-                make_sure_path_exists(os.path.join(
-                    self.outdir, 'all_genera', letter))
-                genname = os.path.basename(gen_url)
-                out_file = os.path.join(self.outdir, 'all_genera', letter, genname)
-                if genus_name in valid_genera:
-                    if not os.path.exists(out_file):
-                        try:
-                            urllib.request.urlretrieve(os.path.join(
-                                gen_url), out_file)
-                        except:
-                            failed_html_file.write('{}\tfailed_download\n'.format(gen_url))
-                    else:
-                        num_already_dl += 1
-                else:
-                    failed_html_file.write('{}\tduplicate_name\n'.format(gen_url))
-                num_genera += 1
-                sys.stdout.write(' - processed {:,} genera, including {:,} that were previously downloaded\r'.format(
-                    num_genera, num_already_dl))
-                sys.stdout.flush()
-        failed_html_file.close()
-        sys.stdout.write('\n')
-
-    def download_species_lpsn_html(self):
-        """
-        Download all html species pages from LPSN.
-
-        """
-        # Download pages listing all species in LPSN
-        index_dir = os.path.join(self.outdir, 'species_per_letter')
-        if self.skip_taxa_per_letter_dl:
-            self.logger.info('Skipping download of species at LPSN and using results in: {}'.format(index_dir))
-        else:
-            self.logger.info('Beginning file of species from LPSN.')
-            make_sure_path_exists(index_dir)
-            for letter in list(string.ascii_uppercase):
-                url = self.base_url + 'species?page=' + letter
-                urllib.request.urlretrieve(
-                    url, os.path.join(index_dir, 'species_{}.html'.format(letter)))
-
-        # Parse html pages lising all species
-        species_sites_list = open(os.path.join(
-            self.outdir, 'species_list.lst'), 'w')
-        link_pattern = re.compile(r'href="(/species/[^"]+)"')
-        species_name_pattern = re.compile(r'class=\"last-child color-species\">(.*)</a>')
-        species_to_download = []
-        self.logger.info('Generating a list of all pages that contain species information.')
-
-        num_species = 0
-        for letter in list(string.ascii_uppercase):
-            with open(os.path.join(index_dir, 'species_{}.html'.format(letter))) as webf:
-                for line in webf:
-                    if 'class="last-child color-species"' in line:
-                        line = line.replace("'", '"')
-                        result = link_pattern.search(line)
-                        if result:
-                            num_species += 1
-                            sys.stdout.write(' - processed {:,} species\r'.format(num_species))
-                            sys.stdout.flush()
-                            species_name = species_name_pattern.search(line).group(1)
-                            species_name = self.cleanhtml(species_name)
-                            species_sites_list.write('{}\t{}\t{}\n'.format(
-                                letter, species_name, self.base_url + result.group(1)))
-                            species_to_download.append(species_name)
-        species_sites_list.close()
-        sys.stdout.write('\n')
-
-        # we remove the duplicate names with quotes
-        valid_species = []
-        for spname in species_to_download:
-
-            if spname.startswith('"'):
-                if spname.replace('"', '').replace('Candidatus ', '') not in species_to_download:
-                    valid_species.append(spname)
-            else:
-                valid_species.append(spname)
-
-        # Download individual species html page
-        self.logger.info('Downloading individual species HTML pages.')
-
-        failed_html_file = open(os.path.join(
-            self.outdir, 'species_failed.lst'), 'w')
-        make_sure_path_exists(os.path.join(self.outdir, 'all_species'))
-
-        num_species = 0
-        num_already_dl = 0
-        with open(os.path.join(self.outdir, 'species_list.lst')) as gsl:
-            for line in gsl:
-                letter, species_name, spe_url = line.strip().split('\t')
-                make_sure_path_exists(os.path.join(
-                    self.outdir, 'all_species', letter))
-                spenname = os.path.basename(spe_url)
-                out_file = os.path.join(self.outdir, 'all_species', letter, spenname)
-
-                if species_name in valid_species:
-                    if not os.path.exists(out_file):
-                        try:
-                            urllib.request.urlretrieve(os.path.join(
-                                spe_url), out_file)
-                        except:
-                            failed_html_file.write('{}\n'.format(spe_url))
-                    else:
-                        num_already_dl += 1
-                else:
-                    failed_html_file.write('{}\tduplicate_name\n'.format(spe_url))
-                num_species += 1
-                sys.stdout.write(' - processed {:,} species, including {:,} that were previously downloaded\r'.format(
-                                    num_species, num_already_dl))
-                sys.stdout.flush()
-        failed_html_file.close()
-        sys.stdout.write('\n')
+            failed_html_file.write('{}\tduplicate_name\n'.format(rk_url))
+        return num_already_dl
 
     def download_subspecies_lpsn_html(self):
         """
@@ -738,7 +200,7 @@ class LPSN(object):
                         sys.stdout.write(' - processed {:,} subspecies\r'.format(num_subspecies))
                         sys.stdout.flush()
                         subspecies_name = subspecies_name_pattern.search(line).group(1)
-                        subspecies_name = self.cleanhtml(subspecies_name)
+                        subspecies_name = clean_html(subspecies_name)
                         subspecies_to_download.append(subspecies_name)
                         species_sites_list.write(
                             '{}\t{}\n'.format(subspecies_name, self.base_url + result.group(1)))
@@ -788,31 +250,15 @@ class LPSN(object):
         failed_html_file.close()
         sys.stdout.write('\n')
 
-    def cleanhtml(self, raw_html):
-        """
-        Remove all HTML tags from HTML line
-        """
-        cleanr = re.compile('<.*?>')
-        cleantext = re.sub(cleanr, '', raw_html)
-        return cleantext.strip()
-
-    def clean_parenthesis(self, raw_line):
-        """
-        Remove parenthesis content from HTML line
-        """
-        # result = re.sub("[\(\[].*?[\)\]]", "", raw_line)
-        result = re.sub("\(see[^\)]+\)", "", raw_line)
-        return result
-
     def parse_strains(self, list_strains):
         """
         Parse the HTML line listing all strains and return a list of strains
         """
         results = []
         # replace (now XXXX ) pattern
-        now_pattern = re.compile('(\w+) \(now (\w+)\) (\d+)')
+        now_pattern = re.compile(r'(\w+) \(now (\w+)\) (\d+)')
         # replace (formerly XXXX) pattern
-        formerly_pattern = re.compile('(\w+) \(formerly (\w+)\) (\d+)')
+        formerly_pattern = re.compile(r'(\w+) \(formerly (\w+)\) (\d+)')
         for item in list_strains:
             if '(' in item:
                 now_res = now_pattern.search(item)
@@ -852,7 +298,7 @@ class LPSN(object):
             return True
         return False
 
-    def parse_generic_html(self,rank_name,headers_order,all_rank,file):
+    def parse_generic_html(self, rank_name, headers_order, all_rank, file):
         new_header_pattern = re.compile(r'(<b>([a-zA-Z\d\-_\s]+):</b>)(.*)')
         dict_info = {'Rank': rank_name}
         soup = BeautifulSoup(open(file), "html.parser")
@@ -889,24 +335,23 @@ class LPSN(object):
         dict_info.pop("Linking", None)
 
         all_rank.append(dict_info)
-        return headers_order,all_rank
+        return headers_order, all_rank
 
-
-    def parse_rank_html(self,rank_name, input_dir,headers_order,all_rank):
+    def parse_rank_html(self, rank_name, input_dir, headers_order, all_rank):
 
         if rank_name != 'subspecies':
             for letter in list(string.ascii_uppercase):
-                print(f'letter: {letter}',end='\r')
+                print(f'letter: {letter}', end='\r')
                 for file in glob.glob(os.path.join(os.path.join(input_dir, f'all_{rank_name}'), letter, "*")):
-                    headers_order,all_rank=self.parse_generic_html(rank_name,headers_order,all_rank,file)
+                    headers_order, all_rank = self.parse_generic_html(rank_name, headers_order, all_rank, file)
         else:
             for file in glob.glob(os.path.join(input_dir, 'all_subspecies', "*")):
                 headers_order, all_rank = self.parse_generic_html(rank_name, headers_order, all_rank, file)
 
-        return headers_order,all_rank
+        return headers_order, all_rank
 
-    def parse_all_ranks_tsv(self,raw_allranks_file):
-        parsed_file = open(os.path.join(os.path.dirname(raw_allranks_file),'full_parsing_parsed.tsv'),'w')
+    def parse_all_ranks_tsv(self, raw_allranks_file):
+        parsed_file = open(os.path.join(os.path.dirname(raw_allranks_file), 'full_parsing_parsed.tsv'), 'w')
 
         with open(raw_allranks_file) as fp:
             header_line = fp.readline()
@@ -924,12 +369,9 @@ class LPSN(object):
             type_genus_index = headers.index('Type genus')
             type_species_index = headers.index('Type species')
 
-
-
             headers.insert(originalpub_index, 'Priority')
 
             nomenclature_index = headers.index('Nomenclatural status')
-
 
             name_pattern = re.compile(r'\[([^,]*),.*\]')
 
@@ -942,8 +384,8 @@ class LPSN(object):
 
                 # Parse "Correct Name" so it is just the taxon name without the publication
                 if roi in ['species', 'subspecies'] and len(infos[correctname_index].split(" ")) >= 2:
-                    if len(infos[correctname_index].split(" ")) > 3 and infos[correctname_index].split(" ")[
-                        2] == 'subsp.':
+                    if (len(infos[correctname_index].split(" ")) > 3 and
+                            infos[correctname_index].split(" ")[2] == 'subsp.'):
                         infos[correctname_index] = " ".join(infos[correctname_index].split(' ')[0:4]).replace('"', '')
                     else:
                         infos[correctname_index] = " ".join(infos[correctname_index].split(' ')[0:2]).replace('"', '')
@@ -981,9 +423,7 @@ class LPSN(object):
                         infos[parenttaxon_index] = parent.split(' ')[1]
                     else:
                         infos[parenttaxon_index] = parent.split(' ')[0]
-                infos[parenttaxon_index] = infos[parenttaxon_index].replace('"', '').replace("[", "").replace("]",
-                                                                                                              "").replace(
-                    ',', '')
+                infos[parenttaxon_index] = re.sub(r'\"|\[|\]|,','',infos[parenttaxon_index])
 
                 # Clean up the "Child taxa" to a comma separated list(e.g.: for Acidobacteria this would be just
                 # Acidobacteriia, Blastocatellia, ..., Vicinamibacteria)
@@ -1057,12 +497,12 @@ class LPSN(object):
                         infos[name_index] = name_result.group(1)
                     infos.insert(originalpub_index, 'n/a')
 
-                if infos[rank_index]+'_'+infos[name_index] in all_infos_dict:
-                    previous_infos = all_infos_dict.get(infos[rank_index]+'_'+infos[name_index])
+                if infos[rank_index] + '_' + infos[name_index] in all_infos_dict:
+                    previous_infos = all_infos_dict.get(infos[rank_index] + '_' + infos[name_index])
                     if self.check_illegimate(previous_infos[nomenclature_index]):
                         all_infos_dict[infos[rank_index] + '_' + infos[name_index]] = infos
                 else:
-                    all_infos_dict[infos[rank_index]+'_'+infos[name_index]] = infos
+                    all_infos_dict[infos[rank_index] + '_' + infos[name_index]] = infos
 
                 all_infos.append(infos)
 
@@ -1082,7 +522,7 @@ class LPSN(object):
         parsed_file.close()
         return parsed_file
 
-    def add_lpsn_metadata(self,hostname,user,password,db,lpsn_file):
+    def add_lpsn_metadata(self, hostname, user, password, db, lpsn_file):
 
         engine_current = create_engine(f'postgresql://{user}:{password}@{hostname}:5432/{db}',
                                        convert_unicode=True,
@@ -1090,505 +530,9 @@ class LPSN(object):
                                        max_overflow=20,
                                        pool_recycle=3600)
         df = pd.read_csv(lpsn_file, sep='\t')
+        df.columns = [x.lower() for x in df.columns]
+        df.columns = df.columns.str.replace(' ', '_')
         df.to_sql('lpsn_metadata', engine_current, if_exists='replace')
-
-    def parse_class_html(self, input_dir,output_file_class):
-        # Pattern for class
-        type_order_pattern = re.compile('color-order">\"?<I>([a-zA-Z]+)</I>')
-        class_pattern = re.compile(
-            r'<b>Name:</b> \"?\s?<I>([a-zA-Z]+)</I>')
-        type_proposed_pattern = re.compile(
-            '<b>Proposed as:</b>(.*)</p>')
-
-        alt_class_pattern_a = re.compile(
-            r'<b>Name:</b>\s?\[([a-zA-Z]+)')
-        alt_class_pattern_b = re.compile(
-            r'<b>Name:</b> \"?<I>Candidatus</I> ([a-zA-Z]+)')
-
-
-
-
-        full_list_type_order = {}
-        string_to_write = {}
-        for letter in list(string.ascii_uppercase):
-            for file in glob.glob(os.path.join(os.path.join(input_dir, 'all_classes'), letter, "*")):
-                class_name = ''
-                class_reference = ''
-                name_section = False
-                type_order_section = False
-                type_order_list = []
-                type_order_reference = ''
-                with open(file) as f:
-                    for line in f:
-                        line = line.replace("'", '"')
-                        if 'glossary#citation-of-names-and-authors' in line:
-                            class_pattern_results = class_pattern.search(
-                                line)
-                            if class_pattern_results and class_pattern_results.group(1) != 'Candidatus':
-                                class_name = class_pattern_results.group(1)
-                                name_section = True
-                            else:
-                                alt_class_pattern_a_results = alt_class_pattern_a.search(
-                                    line)
-                                if alt_class_pattern_a_results:
-                                    class_name = alt_class_pattern_a_results.group(
-                                        1)
-                                    name_section = True
-                                else:
-                                    alt_class_pattern_b_results = alt_class_pattern_b.search(
-                                        line)
-                                    if alt_class_pattern_b_results:
-                                        class_name = alt_class_pattern_b_results.group(
-                                            1)
-                                        name_section = True
-                            if name_section:
-                                class_reference = self.cleanhtml(
-                                    line.split(class_name, 1)[1]).replace(']', '').replace('"', '').strip()
-
-
-                        if '<b>Type order:</b>' in line:
-                            type_order_section = True
-                        elif '<p' in line and type_order_section:
-                            break
-                        elif type_order_section:
-                            type_order_pattern_results = type_order_pattern.search(
-                                line)
-                            if type_order_pattern_results:
-                                type_order_name = type_order_pattern_results.group(
-                                    1)
-                                if type_order_name.lower() == 'candidatus':
-                                    alt_type_order_pattern_b = re.compile('color-order">\"?<I>Candidatus</I> ([a-zA-Z]+)')
-                                    type_order_pattern_results = alt_type_order_pattern_b.search(
-                                        line)
-                                    if type_order_pattern_results:
-                                        type_order_name = "Candidatus "+type_order_pattern_results.group(
-                                            1)
-                                type_order_reference = self.cleanhtml(line).split(type_order_name)[-1].replace('"','')
-                                type_order_list.append(type_order_name)
-
-                if class_name in string_to_write:
-                    if 'not assigned' in string_to_write.get(class_name).get('ref'):
-                        # we replace not assigned with full entry
-                        string_to_write[class_name] = {'ref':class_reference.replace(', not assigned','not assigned'),
-                                               'to_write':'Class\t{}\t{}\t{}\t{}\n'.format('c__' + class_name,
-                                                                                '/'.join(['o__' + x for x in
-                                                                                          type_order_list]),
-                                                                                class_reference.replace(
-                                                                                    ', not assigned', 'not assigned'),
-                                                                                type_order_reference.strip())}
-                else:
-                        string_to_write[class_name] = {'ref':class_reference.replace(', not assigned','not assigned'),
-                                               'to_write':'Class\t{}\t{}\t{}\t{}\n'.format('c__' + class_name,
-                                                                                '/'.join(['o__' + x for x in
-                                                                                          type_order_list]),
-                                                                                class_reference.replace(
-                                                                                    ', not assigned', 'not assigned'),
-                                                                                type_order_reference.strip())
-
-                                               }
-                for it in type_order_list:
-                    full_list_type_order[it] = class_name
-
-        # We remove 'not assigned to class'  if class has another entry with more information
-        for key in sorted(string_to_write.keys()):
-            output_file_class.write(string_to_write.get(key).get('to_write'))
-        return full_list_type_order
-
-    def parse_family_html(self, input_dir):
-        # Pattern for family
-        type_genus_pattern = re.compile('color-genus">\"?<I>([a-zA-Z]+)</I>')
-        family_pattern = re.compile(
-            r'<b>Name:</b> \"?\s?<I>([a-zA-Z]+)</I>')
-        type_proposed_pattern = re.compile(
-            '<b>Proposed as:</b>(.*)</p>')
-
-        alt_family_pattern_a = re.compile(
-            r'<b>Name:</b>\s?\[([a-zA-Z]+)')
-        alt_family_pattern_b = re.compile(
-            r'<b>Name:</b> \"?<I>Candidatus</I> ([a-zA-Z]+)')
-
-
-
-
-        full_list_type_genus = {}
-        string_to_write = {}
-        for letter in list(string.ascii_uppercase):
-            for file in glob.glob(os.path.join(os.path.join(input_dir, 'all_families'), letter, "*")):
-                family_name = ''
-                family_reference = ''
-                name_section = False
-                type_genus_section = False
-                type_genus_list = []
-                type_genus_reference = ''
-
-                with open(file) as f:
-                    for line in f:
-                        line = line.replace("'", '"')
-                        if 'glossary#citation-of-names-and-authors' in line:
-                            family_pattern_results = family_pattern.search(
-                                line)
-                            if family_pattern_results and family_pattern_results.group(1) != 'Candidatus':
-                                family_name = family_pattern_results.group(1)
-                                name_section = True
-                            else:
-                                alt_family_pattern_a_results = alt_family_pattern_a.search(
-                                    line)
-                                if alt_family_pattern_a_results:
-                                    family_name = alt_family_pattern_a_results.group(
-                                        1)
-                                    name_section = True
-                                else:
-                                    alt_family_pattern_b_results = alt_family_pattern_b.search(
-                                        line)
-                                    if alt_family_pattern_b_results:
-                                        family_name = alt_family_pattern_b_results.group(
-                                            1)
-                                        name_section = True
-                            if name_section:
-                                family_reference = self.cleanhtml(
-                                    line.split(family_name, 1)[1]).replace(']', '').replace('"', '').strip()
-
-
-                        if '<b>Type genus:</b>' in line:
-                            type_genus_section = True
-                        elif '<p' in line and type_genus_section:
-                            break
-                        elif type_genus_section:
-                            type_genus_pattern_results = type_genus_pattern.search(
-                                line)
-                            if type_genus_pattern_results:
-                                type_genus_name = type_genus_pattern_results.group(
-                                    1)
-                                if type_genus_name.lower() == 'candidatus':
-                                    alt_type_genus_pattern_b = re.compile('color-genus">\"?<I>Candidatus</I> ([a-zA-Z]+)')
-                                    type_genus_pattern_results = alt_type_genus_pattern_b.search(
-                                        line)
-                                    if type_genus_pattern_results:
-                                        type_genus_name = "Candidatus "+type_genus_pattern_results.group(
-                                            1)
-                                type_genus_reference = self.cleanhtml(line).split(type_genus_name)[-1].replace('"','')
-                                type_genus_list.append(type_genus_name)
-
-                # We remove 'not assigned to family'  if family has another entry with more information
-                for it in type_genus_list:
-                    full_list_type_genus[it] = family_name
-
-        return full_list_type_genus
-
-    def parse_order_html(self, output_file, input_dir,output_file_order):
-        # Pattern for family
-        type_genus_pattern = re.compile('color-genus">\"?<I>([a-zA-Z]+)</I>')
-        order_pattern = re.compile(
-            r'<b>Name:</b> \"?\s?<I>([a-zA-Z]+)</I>')
-        type_proposed_pattern = re.compile(
-            '<b>Proposed as:</b>(.*)</p>')
-
-        alt_order_pattern_a = re.compile(
-            r'<b>Name:</b>\s?\[([a-zA-Z]+)')
-        alt_order_pattern_b = re.compile(
-            r'<b>Name:</b> \"?<I>Candidatus</I> ([a-zA-Z]+)')
-
-
-        full_list_type_genus = {}
-        string_to_write = {}
-
-        for letter in list(string.ascii_uppercase):
-            for file in glob.glob(os.path.join(os.path.join(input_dir, 'all_orders'), letter, "*")):
-                order_name = ''
-                order_reference = ''
-                name_section = False
-                type_genus_section = False
-                type_genus_list = []
-                type_genus_reference = ''
-                with open(file) as f:
-                    for line in f:
-                        line = line.replace("'", '"')
-                        if 'glossary#citation-of-names-and-authors' in line:
-                            order_pattern_results = order_pattern.search(
-                                line)
-                            if order_pattern_results and order_pattern_results.group(1) != 'Candidatus':
-                                order_name = order_pattern_results.group(1)
-                                name_section = True
-                            else:
-                                alt_order_pattern_a_results = alt_order_pattern_a.search(
-                                    line)
-                                if alt_order_pattern_a_results:
-                                    order_name = alt_order_pattern_a_results.group(
-                                        1)
-                                    name_section = True
-                                else:
-                                    alt_order_pattern_b_results = alt_order_pattern_b.search(
-                                        line)
-                                    if alt_order_pattern_b_results:
-                                        order_name = alt_order_pattern_b_results.group(
-                                            1)
-                                        name_section = True
-                            if name_section:
-                                order_reference = self.cleanhtml(
-                                    line.split(order_name, 1)[1]).replace(']', '').replace('"', '').strip()
-
-
-                        if '<b>Type genus:</b>' in line:
-                            type_genus_section = True
-                        elif '<p' in line and type_genus_section:
-                            break
-                        elif type_genus_section:
-                            type_genus_pattern_results = type_genus_pattern.search(
-                                line)
-                            if type_genus_pattern_results:
-                                type_genus_name = type_genus_pattern_results.group(
-                                    1)
-                                if type_genus_name.lower() == 'candidatus':
-                                    alt_type_genus_pattern_b = re.compile(
-                                        'color-genus">\"?<I>Candidatus</I> ([a-zA-Z]+)')
-                                    type_genus_pattern_results = alt_type_genus_pattern_b.search(
-                                        line)
-                                    if type_genus_pattern_results:
-                                        type_genus_name = "Candidatus " + type_genus_pattern_results.group(
-                                            1)
-                                type_genus_reference = self.cleanhtml(line).split(type_genus_name)[-1].replace('"', '')
-                                type_genus_list.append(type_genus_name)
-
-                if order_name in string_to_write:
-                    if 'not assigned' in string_to_write.get(order_name).get('ref'):
-                        # we replace not assigned with full entry
-                        string_to_write[order_name] = {'ref':order_reference.replace(', not assigned','not assigned'),
-                                                       'to_write':'Order\t{}\t{}\t{}\t{}\n'.format('o__'+order_name,
-                                                              '/'.join(['g__'+x for x in type_genus_list]),
-                                                              order_reference.replace(', not assigned','not assigned'),
-                                                                         type_genus_reference.strip())}
-                else:
-                    string_to_write[order_name] = {'ref': order_reference.replace(', not assigned', 'not assigned'),
-                                                   'to_write': 'Order\t{}\t{}\t{}\t{}\n'.format('o__' + order_name,
-                                                                                                '/'.join(
-                                                                                                    ['g__' + x for x in
-                                                                                                     type_genus_list]),
-                                                                                                order_reference.replace(
-                                                                                                    ', not assigned',
-                                                                                                    'not assigned'),
-                                                                                                type_genus_reference.strip())}
-
-                for it in type_genus_list:
-                    full_list_type_genus[it] = order_name
-        # We remove 'not assigned to class'  if class has another entry with more information
-        for key in sorted(string_to_write.keys()):
-            output_file_order.write(string_to_write.get(key).get('to_write'))
-        return full_list_type_genus
-
-    def parse_genus_html(self, output_file, input_dir, full_list_type_genus):
-        # Patterns for genus
-        genus_pattern = re.compile(
-            r'<b>Name:</b> \"?\s?<I>([a-zA-Z]+)</I>')
-        type_species_pattern = re.compile(
-            '\"?<I>([a-zA-Z]+)</I> <I>([a-zA-Z]+)</I>')
-        type_proposed_pattern = re.compile(
-            '<b>Proposed as:</b>(.*)</p>')
-
-        alt_genus_pattern_a = re.compile(
-            r'<b>Name:</b>\s?\[([a-zA-Z]+)')
-        alt_genus_pattern_b = re.compile(
-            r'<b>Name:</b> \"?<I>Candidatus</I> ([a-zA-Z]+)')
-        full_list_type_species = []
-        string_to_write = {}
-        #letters=['H']
-        for letter in list(string.ascii_uppercase):
-        #for letter in letters:
-
-            for file in glob.glob(os.path.join(os.path.join(input_dir, 'all_genera'), letter, "*")):
-                genus_name = ''
-                genus_reference = ''
-                genus_proposed_type = ''
-
-                name_section = False
-                type_proposed_section = False
-                type_species_section = False
-                type_species_reference = ''
-                type_species_list = []
-
-                with open(file) as f:
-                    for line in f:
-                        line = line.replace("'", '"')
-                        if 'glossary#citation-of-names-and-authors' in line:
-                            genus_pattern_results = genus_pattern.search(
-                                line)
-                            if genus_pattern_results and genus_pattern_results.group(1) != 'Candidatus':
-                                genus_name = genus_pattern_results.group(1)
-                                name_section = True
-                            else:
-                                alt_genus_pattern_a_results = alt_genus_pattern_a.search(
-                                    line)
-                                if alt_genus_pattern_a_results:
-                                    genus_name = alt_genus_pattern_a_results.group(
-                                        1)
-                                    name_section = True
-                                else:
-                                    alt_genus_pattern_b_results = alt_genus_pattern_b.search(
-                                        line)
-                                    if alt_genus_pattern_b_results:
-                                        genus_name = alt_genus_pattern_b_results.group(
-                                            1)
-                                        name_section = True
-                            if name_section:
-                                genus_reference = self.cleanhtml(
-                                    line.split(genus_name, 1)[1]).replace(']', '').replace('"', '').strip()
-
-                        elif "glossary#abbreviations-in-proposals" in line:
-                            type_proposed_section = True
-                            type_proposed_pattern_results = type_proposed_pattern.search(
-                                line)
-                            if type_proposed_pattern_results:
-                                genus_proposed_type = type_proposed_pattern_results.group(
-                                    1)
-
-                        elif '<b>Type species:</b>' in line and name_section:
-                            type_species_section = True
-                        elif '<p' in line and type_species_section and name_section:
-                            break
-                        elif type_species_section and name_section:
-                            type_species_pattern_results = type_species_pattern.search(
-                                line)
-                            if type_species_pattern_results:
-                                type_specie_name = type_species_pattern_results.group(
-                                    1) + " " + type_species_pattern_results.group(2)
-                                type_species_list.append(type_specie_name)
-
-                                if type_specie_name.lower().startswith('candidatus '):
-                                    alt_type_species_pattern_b = re.compile(
-                                        'color-species">\"?<I>Candidatus</I> ([a-zA-Z]+) ([a-zA-Z]+)')
-                                    type_species_pattern_results = alt_type_species_pattern_b.search(
-                                        line)
-                                    if type_species_pattern_results:
-                                        type_specie_name = "Candidatus " + type_species_pattern_results.group(
-                                    1) + " " + type_species_pattern_results.group(2)
-                                if genus_name == 'Hansschlegelia':
-                                    a=1
-                                type_species_reference = self.cleanhtml(line).split(type_specie_name)[-1].replace('"', '')
-
-
-                ref_type_combined = ','.join(
-                    list(filter(None, [genus_reference, genus_proposed_type]))).strip()
-
-
-                output_file.write("genus\t{}\t{}\t{}\t\n".format(
-                    genus_name in full_list_type_genus, genus_name, ref_type_combined))
-                full_list_type_species.extend(type_species_list)
-        # We remove 'not assigned to class'  if class has another entry with more information
-        return full_list_type_species
-
-    def parse_species_html(self, output_file, input_dir, full_list_type_species):
-        # Pattern for species
-        species_pattern = re.compile(
-            r'<b>Name:</b> \"?<I>([a-zA-Z]+)</I> <I>([a-zA-Z]+)</I>')
-        candidatus_species_pattern = re.compile(
-            r'<b>Name:</b> \"?<I>Candidatus</I> ([a-zA-Z]+) ([a-zA-Z]+)"')
-
-        type_proposed_pattern = re.compile(
-            '<b>Proposed as:</b>(.*)</p>')
-
-        for letter in list(string.ascii_uppercase):
-        #for letter in ['S']:
-            for file in glob.glob(os.path.join(input_dir, 'all_species', letter, "*")):
-                species_name = ''
-                species_reference = ''
-                species_strains = ''
-                neotype_strains = ''
-                species_proposed_type = ''
-                name_section = False
-                strain_section = False
-                correct_section = False
-                type_proposed_section = False
-                raw_list_strain = []
-                infos = []
-                skip_species = False
-                with open(file) as f:
-                    for line in f:
-                        line = line.replace("'", '"')
-
-                        # if the line contains a genus
-                        if 'glossary#citation-of-names-and-authors' in line:
-                            if '"<I>Candidatus</I>' not in line:
-                                species_pattern_results = species_pattern.search(
-                                    line)
-                                if species_pattern_results:
-                                    species_name = species_pattern_results.group(
-                                        1) + " " + species_pattern_results.group(2)
-                                    if species_name == 'Streptomyces netropsis':
-                                        a = 1
-                                    name_section = True
-                            else:
-                                candidatus_species_pattern_results = candidatus_species_pattern.search(
-                                    line)
-                                if candidatus_species_pattern_results:
-                                    species_name = candidatus_species_pattern_results.group(
-                                        1) + " " + candidatus_species_pattern_results.group(2)
-                                    name_section = True
-
-                            if name_section:
-                                species_reference = self.cleanhtml(
-                                    line).split(species_name, 1)[1].replace(']', '').replace('"', '').strip()
-                                #***if '"<I>Candidatus</I>' in line:
-                                #***    print(species_reference)
-
-                        elif "glossary#abbreviations-in-proposals" in line:
-                            type_proposed_section = True
-                            type_proposed_pattern_results = type_proposed_pattern.search(
-                                line)
-                            if type_proposed_pattern_results:
-                                species_proposed_type = type_proposed_pattern_results.group(
-                                    1)
-
-                        elif ('<b>Type strains:</b>' in line or '<b>Type strain:</b>' in line) and name_section:
-                            strain_section = True
-                        elif '<p' in line and strain_section and name_section:
-                            raw_list_strain = list(
-                                filter(lambda a: a.strip() != "no culture isolated", raw_list_strain))
-                            raw_list_strain = list(
-                                filter(lambda a: a.strip() != "no culture available", raw_list_strain))
-                            raw_list_strain = list(
-                                filter(lambda a: a.strip() != "no pure culture", raw_list_strain))
-                            raw_list_strain = self.parse_strains(
-                                raw_list_strain)
-
-                            raw_list_strain = [
-                                x for x in raw_list_strain if  (x != 'n/a' and check_format_strain(canonical_strain_id(x)))]
-
-                            strain_section = False
-
-
-                        elif strain_section and name_section:
-                            if line.strip() != '':
-                                raw_list_strain.extend(
-                                    [x.replace('strain', '').replace('Strain', '').strip() for x in
-                                     self.cleanhtml(line).split(';')])
-
-                        if '<p class="corr-name">' in line:
-                            correct_section = True
-                        elif correct_section:
-                            correct_species_pattern = re.compile(r'color-species">\"?<I>([a-zA-Z]+)</I> <I>([a-zA-Z]+)</I>')
-                            correct_species_results = correct_species_pattern.search(line)
-                            if correct_species_results:
-
-                                correct_species_name = correct_species_results.group(
-                                    1) + " " + correct_species_results.group(2)
-                                if correct_species_name == species_name:
-                                    skip_species = True
-                                    break
-                        if correct_section and 'class="helper"' in line:
-                            correct_section = False
-
-
-                    ref_type_combined = ','.join(
-                    list(filter(None, [species_reference, species_proposed_type]))).strip()
-                if not skip_species and len(species_name.strip().split(' ')) >= 2:
-                    output_file.write("species\t{}\t{}\t{}\t{}\n".format(species_name in full_list_type_species,
-                                                                         species_name, ref_type_combined,
-                                                                         "=".join(raw_list_strain)))
-
-                elif not skip_species and len(species_name.strip().split(' ')) < 2:
-                    self.logger.info(f"species name : {species_name} contains less than 2 words")
-
-                else:
-                    self.logger.info(f"species name : {species_name} skipped because duplicates")
 
     def parse_subspecies_html(self, output_file, input_dir, full_list_type_species):
 
@@ -1615,7 +559,7 @@ class LPSN(object):
                 for line in f:
                     line = line.replace("'", '"')
                     if 'glossary#citation-of-names-and-authors' in line:
-                        subspecies_reference = self.cleanhtml(
+                        subspecies_reference = clean_html(
                             line).split(subspe_name, 1)[1]
                     elif "glossary#abbreviations-in-proposals" in line:
                         type_proposed_section = True
@@ -1636,7 +580,7 @@ class LPSN(object):
                         raw_list_strain = self.parse_strains(raw_list_strain)
 
                         raw_list_strain = [
-                            x for x in raw_list_strain if ( x != 'n/a' and check_format_strain(canonical_strain_id(x)))]
+                            x for x in raw_list_strain if (x != 'n/a' and check_format_strain(canonical_strain_id(x)))]
                         break
                         # print(raw_list_strain)
 
@@ -1644,16 +588,18 @@ class LPSN(object):
                         if line.strip() != '':
                             raw_list_strain.extend(
                                 [x.replace('strain', '').replace('Strain', '').strip() for x in
-                                 self.cleanhtml(line).split(';')])
+                                 clean_html(line).split(';')])
 
                     elif '<p class="corr-name">' in line:
                         correct_section = True
                     elif correct_section:
-                        correct_subspecies_pattern = re.compile(r'color-subspecies">\"?<I>([a-zA-Z]+)</I> <I>([a-zA-Z]+)</I> subsp. <I>([a-zA-Z]+)</I>')
+                        correct_subspecies_pattern = re.compile(
+                            r'color-subspecies">\"?<I>([a-zA-Z]+)</I> <I>([a-zA-Z]+)</I> subsp. <I>([a-zA-Z]+)</I>')
                         correct_subspecies_results = correct_subspecies_pattern.search(line)
                         if correct_subspecies_results:
                             correct_subspecies_name = correct_subspecies_results.group(
-                                1) + " " + correct_subspecies_results.group(2) + " subsp. "+correct_subspecies_results.group(3)
+                                1) + " " + correct_subspecies_results.group(
+                                2) + " subsp. " + correct_subspecies_results.group(3)
                             if correct_subspecies_name == subspe_name:
                                 skip_species = True
                                 break
@@ -1666,11 +612,11 @@ class LPSN(object):
                 if short_name == '':
                     if not skip_species:
                         output_file.write(
-                            "species\t{}\t{}\t{}\t{}\n".format(short_name != '' and short_name in full_list_type_species,
-                                                           subspe_name, ref_type_combined, "=".join(raw_list_strain)))
+                            "species\t{}\t{}\t{}\t{}\n".format(
+                                short_name != '' and short_name in full_list_type_species,
+                                subspe_name, ref_type_combined, "=".join(raw_list_strain)))
 
-
-    def check_illegimate(self,status_raw):
+    def check_illegimate(self, status_raw):
         status = status_raw.strip().replace('"', '')
         status_tokens = [t.strip() for t in status.split(';')]
         status_tokens = [tt.strip() for t in status_tokens for tt in t.split(',')]
@@ -1679,9 +625,7 @@ class LPSN(object):
             return True
         return False
 
-
-
-    def parse_gss(self,gss_file):
+    def parse_gss(self, gss_file):
         gss_species = {}
         record_mapping = {}
         type_species_genus = {}
@@ -1695,7 +639,6 @@ class LPSN(object):
             authors_idx = headers.index('authors')
             status_idx = headers.index('status')
 
-
         with open(gss_file, "r") as csvfile:
             csvreader = csv.reader(csvfile)
             next(csvreader)
@@ -1708,12 +651,16 @@ class LPSN(object):
                         is_illegitimate = self.check_illegimate(status_list)
                         if (temp_name in gss_species and is_illegitimate is False
                                 and gss_species[temp_name]['illegitimate'] is True):
-                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
-                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+                            gss_species[temp_name] = {'type': 'species', 'authors': row[authors_idx],
+                                                      'illegitimate': is_illegitimate,
+                                                      'strains': row[nomenclatural_type_idx],
+                                                      'record_no': row[record_no_idx]}
                             record_mapping[row[record_no_idx]] = temp_name
                         elif temp_name not in gss_species:
-                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
-                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+                            gss_species[temp_name] = {'type': 'species', 'authors': row[authors_idx],
+                                                      'illegitimate': is_illegitimate,
+                                                      'strains': row[nomenclatural_type_idx],
+                                                      'record_no': row[record_no_idx]}
                             record_mapping[row[record_no_idx]] = temp_name
 
                     else:
@@ -1722,25 +669,27 @@ class LPSN(object):
                         is_illegitimate = self.check_illegimate(status_list)
                         if (temp_name in gss_species and is_illegitimate is False
                                 and gss_species[temp_name]['illegitimate'] is True):
-                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
-                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+                            gss_species[temp_name] = {'type': 'species', 'authors': row[authors_idx],
+                                                      'illegitimate': is_illegitimate,
+                                                      'strains': row[nomenclatural_type_idx],
+                                                      'record_no': row[record_no_idx]}
                             record_mapping[row[record_no_idx]] = temp_name
                         elif temp_name not in gss_species:
-                            gss_species[temp_name] = {'type':'species','authors': row[authors_idx],
-                                'illegitimate':is_illegitimate,'strains' : row[nomenclatural_type_idx],'record_no':row[record_no_idx]}
+                            gss_species[temp_name] = {'type': 'species', 'authors': row[authors_idx],
+                                                      'illegitimate': is_illegitimate,
+                                                      'strains': row[nomenclatural_type_idx],
+                                                      'record_no': row[record_no_idx]}
 
                 else:
-                    gss_species[row[genus_name_idx]] = {'type':'species','authors': row[authors_idx],
-                                                        'type_species' : row[record_no_idx]}
+                    gss_species[row[genus_name_idx]] = {'type': 'species', 'authors': row[authors_idx],
+                                                        'type_species': row[record_no_idx]}
                     record_mapping[row[record_no_idx]] = row[genus_name_idx]
                     type_species_genus[row[nomenclatural_type_idx]] = row[genus_name_idx]
 
+        return gss_species, record_mapping, type_species_genus
 
-        return gss_species,record_mapping,type_species_genus
-
-
-    def parse_html_ts(self,output_all_ranks):
-        results_tsog,results_tgof,results_tgoo = {},{},{}
+    def parse_html_ts(self, output_all_ranks):
+        results_tsog, results_tgof, results_tgoo = {}, {}, {}
         with open(output_all_ranks) as lsf:
             line = lsf.readline()
             headers = line.strip().split('\t')
@@ -1751,24 +700,20 @@ class LPSN(object):
 
             for line in lsf:
                 infos = line.strip().split('\t')
-                if infos[rank_index] =='genus' and infos[type_species_index] != 'n/a':
+                if infos[rank_index] == 'genus' and infos[type_species_index] != 'n/a':
                     results_tsog[infos[type_species_index]] = infos[name_index]
                 if infos[rank_index] == 'family' and infos[type_genus_index] != 'n/a':
                     results_tgof[infos[type_genus_index]] = infos[name_index]
                 if infos[rank_index] == 'order' and infos[type_genus_index] != 'n/a':
                     results_tgoo[infos[type_genus_index]] = infos[name_index]
 
-        return results_tsog,results_tgof,results_tgoo
+        return results_tsog, results_tgof, results_tgoo
 
-
-
-    def summarise_parsing_2(self,output_all_ranks,gss_file):
+    def summarise_parsing(self, output_all_ranks, gss_file):
         # parse gss_file
-        gss_dict,record_mapping,type_species_genus = self.parse_gss(gss_file)
+        gss_dict, record_mapping, type_species_genus = self.parse_gss(gss_file)
 
-        html_type_spe_of_gen,html_type_gen_of_fam,html_type_gen_of_ord = self.parse_html_ts(output_all_ranks)
-
-
+        html_type_spe_of_gen, html_type_gen_of_fam, html_type_gen_of_ord = self.parse_html_ts(output_all_ranks)
 
         """Create metadata by parsing assembly stats files."""
 
@@ -1799,11 +744,8 @@ class LPSN(object):
             rank_index = headers.index('Rank')
             name_index = headers.index('Name')
 
-            originalpub_index = headers.index('Original publication')
             type_strains_index = headers.index('Type strain')
             priority_index = headers.index('Priority')
-
-
 
             for line in lsf:
                 line_split = line.rstrip('\n').split('\t')
@@ -1819,21 +761,19 @@ class LPSN(object):
                     family = ''
                     order = ''
                     if genus_name in html_type_gen_of_fam:
-                        family = 'f__'+html_type_gen_of_fam.get(genus_name)
+                        family = 'f__' + html_type_gen_of_fam.get(genus_name)
                     if genus_name in html_type_gen_of_ord:
                         order = 'o__' + html_type_gen_of_ord.get(genus_name)
 
+                    if (genus, family, order, desc) not in processed_genus:
+                        fout_type_genera.write(f'{genus}\t{family}\t'
+                                               f'{order}\t{desc}\n')
+                        processed_genus.append((genus, family, order, desc))
 
-                    if (genus, family,order, desc) not in processed_genus:
-                            fout_type_genera.write(f'{genus}\t{family}\t'
-                                                   f'{order}\t{desc}\n')
-                            processed_genus.append((genus, family,order, desc))
-
-                if line_split[rank_index] in ['species','subspecies']:
+                if line_split[rank_index] in ['species', 'subspecies']:
                     processed_strains = []
                     spe_name = line_split[name_index]
                     species = 's__' + spe_name
-                    source = ''
                     if spe_name in gss_dict:
                         source = 'GSS'
                         desc = gss_dict.get(spe_name).get('authors')
@@ -1847,9 +787,8 @@ class LPSN(object):
                     else:
                         source = 'HTML'
                         desc = line_split[priority_index]
-                        genus = html_type_spe_of_gen.get(spe_name,'')
+                        genus = html_type_spe_of_gen.get(spe_name, '')
                         strains = line_split[type_strains_index].split(';')
-
 
                     if (species, genus, desc) not in processed_species:
                         fout_type_species.write(f'{species}\t{genus}\t{desc}\t{source}\n')
@@ -1859,7 +798,6 @@ class LPSN(object):
                     for i, strain in enumerate(strains):
                         if strain != 'n/a':
                             processed_strains.append(canonical_strain_id(strain))
-                    processed_neotypes = []
                     processed_strain_string = '{0}\t{1}'.format(
                         spe_name, "=".join(processed_strains))
                     if processed_strain_string not in list_processed_strains:
@@ -1871,51 +809,27 @@ class LPSN(object):
         fout_type_species.close()
         fout_type_strains.close()
 
-
-
     def parse_html(self, input_dir, gss_file):
         """
         Parse the html file of each genus.
         Store the type, the name, the reference, the strains for each species.
         """
-        processed_species = []
-
-        output_file = open(os.path.join(
-            self.outdir, 'lpsn_summary.tsv'), 'w')
-
         make_sure_path_exists(os.path.join(self.outdir, 'all_ranks'))
 
         self.logger.info('Parsing all pages.')
         headers_order = ['Rank']
         all_rank = []
-        for rk in ['phylum','class','order','family','genus','species','subspecies']:
+        for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species', 'subspecies']:
             self.logger.info(f'Parsing {rk}.')
-            headers_order,all_rank = self.parse_rank_html(rk,input_dir, headers_order,all_rank)
+            headers_order, all_rank = self.parse_rank_html(rk, input_dir, headers_order, all_rank)
 
         output_all_ranks = open(os.path.join(self.outdir, 'all_ranks', 'full_parsing_raw.tsv'), 'w')
-        output_all_ranks.write('\t'.join(headers_order)+'\n')
+        output_all_ranks.write('\t'.join(headers_order) + '\n')
         for item in all_rank:
-            output_all_ranks.write('\t'.join([item.get(potential_header,'n/a') for potential_header in headers_order])+'\n')
-
-        self.logger.info('Parsing family pages.')
-        full_list_type_genus = self.parse_family_html(input_dir)
-
-        self.logger.info('Parsing genus pages.')
-        full_list_type_species = self.parse_genus_html(
-            output_file, input_dir,full_list_type_genus)
-
-        self.logger.info('Parsing species pages.')
-        self.parse_species_html(output_file, input_dir, full_list_type_species)
-
-        self.logger.info('Parsing subspecies pages.')
-        self.parse_subspecies_html(
-            output_file, input_dir, full_list_type_species)
-
-        output_file.close()
+            output_all_ranks.write(
+                '\t'.join([item.get(potential_header, 'n/a') for potential_header in headers_order]) + '\n')
 
         output_all_ranks.close()
-        #parsed_file = self.parse_all_ranks_tsv('/srv/home/uqpchaum/tmp_dir/gtdb-migration-tk/test_clean_tk_branch/lpsn/20210301/parse_html/all_ranks/full_parsing_raw.tsv')
         parsed_file = self.parse_all_ranks_tsv(output_all_ranks.name)
 
-        self.summarise_parsing(output_file.name,full_list_type_genus)
-        self.summarise_parsing_2(parsed_file.name,gss_file)
+        self.summarise_parsing(parsed_file.name, gss_file)

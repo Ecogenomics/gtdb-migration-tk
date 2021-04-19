@@ -36,6 +36,7 @@ import tempfile
 from collections import defaultdict
 import re
 
+from gtdb_migration_tk.biolib_lite.common import get_num_lines
 
 class NCBIStrainParser(object):
     """Extract genes in nucleotide space."""
@@ -47,11 +48,6 @@ class NCBIStrainParser(object):
         self.refseq_dictionary = self.parse_summary(
             assembly_summary_bacteria_refseq, assembly_summary_archaea_refseq)
 
-    def file_len(self, fname):
-        with open(fname) as f:
-            for i, l in enumerate(f):
-                pass
-        return i + 1
 
     def parse_summary(self, assembly_bacteria_summary, assembly_archaea_summary):
         assembly_summary_dict = {}
@@ -77,7 +73,7 @@ class NCBIStrainParser(object):
             "genome_id\tOrganism name\tncbi_strain_identifiers\tncbi_type_material_designation\n")
         pattern_strain = re.compile('^\s+\/strain=".+')
         pattern_isolate = re.compile('^\s+\/isolate=".+')
-        number_of_genomes = self.file_len(genome_dir_file)
+        number_of_genomes = get_num_lines(genome_dir_file)
         count = 1
         with open(genome_dir_file, 'r') as genomelistfile:
             for line in genomelistfile:
@@ -89,10 +85,6 @@ class NCBIStrainParser(object):
                 line_split = line.strip().split('\t')
 
                 genome_id = line_split[0]
-                #==============================================================
-                # if genome_id not in ['GCF_000756285.1', 'GCF_900104035.1', 'GCF_000013925.1', 'GCF_900099745.1', 'GCF_000006605.1', 'GCF_000953375.1', 'GCF_000285595.1', 'GCF_001013905.1', 'GCF_001281105.1', 'GCF_000006805.1', 'GCF_000022905.1']:
-                #     continue
-                #==============================================================
                 genome_path = line_split[1]
                 genome_dir_id = os.path.basename(os.path.normpath(genome_path))
 

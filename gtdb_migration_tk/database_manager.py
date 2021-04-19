@@ -31,17 +31,12 @@ __email__ = 'p.chaumeil@qfab.org'
 __status__ = 'Development'
 
 import os
-import shutil
 import hashlib
 import re
 import glob
-import gzip
-import sys
-import argparse
 import datetime
 import ntpath
 import multiprocessing as mp
-import time
 import logging
 
 from atpbar import atpbar
@@ -61,7 +56,7 @@ class DatabaseManager(object):
     def __init__(self, user, hostname, db, password, ftp_download_date, repository, path_to_log, cpus):
 
         self.repository = repository
-        # By default we set the id to genbank (it is either 2 or 3
+        # By default we set the id to genbank (it is either 2 or 3 )
         self.id_database = 3
         if repository == "refseq":
             self.id_database = 2
