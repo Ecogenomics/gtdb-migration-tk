@@ -285,7 +285,7 @@ class Propagate(object):
 
         q = ("SELECT id,name, ncbi_taxonomy FROM metadata_taxonomy "
             + "LEFT JOIN genomes USING(id) "
-             + "WHERE (gtdb_domain IS NULL or gtdb_domain = 'd__') and ncbi_taxonomy IS NOT NULL")
+             + "WHERE (gtdb_domain IS NULL or gtdb_domain = 'none' or gtdb_domain = 'd__') and ncbi_taxonomy IS NOT NULL")
         self.temp_cur.execute(q)
 
 
@@ -319,11 +319,14 @@ class Propagate(object):
                 gtdb_domain = "d__Archaea"
 
             if gtdb_domain is None:
+                print([ncbi_domain, genome_id])
                 missing_domain_info.append([ncbi_domain, genome_id])
 
             elif gtdb_domain != ncbi_domain:
                 self.logger.warning(f"{name}: NCBI ({ncbi_domain}) and GTDB ({gtdb_domain}) domains disagree in domain report "
                                     f"(Bac = {round(bac_aa_per,2)}%; Ar = {round(arc_aa_per,2)}%).")
+                missing_domain_info.append([gtdb_domain, genome_id])
+            else:
                 missing_domain_info.append([gtdb_domain, genome_id])
 
 

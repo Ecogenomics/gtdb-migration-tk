@@ -18,7 +18,7 @@
 import sys
 import logging
 
-from biolib.common import check_file_exists, make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists
 
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.propagate_taxonomy import Propagate
@@ -67,8 +67,8 @@ class OptionsParser():
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(options.skip_taxa_per_letter_dl, options.output_dir)
-        # for rk in ['phylum','class','order','family','genus','species']:
-        for rk in ['genus', 'species']:
+        for rk in ['phylum','class','order','family','genus','species']:
+        #for rk in ['genus', 'species']:
 
             p.download_rank_lpsn_html(rk)
         p.download_subspecies_lpsn_html()
@@ -86,10 +86,10 @@ class OptionsParser():
                               options.output_file)
 
     def generate_ncbi_strains_summary(self, options):
-        p = NCBIStrainParser(options.assembly_summary_bacteria_genbank, options.assembly_summary_archaea_genbank,
-                             options.assembly_summary_bacteria_refseq, options.assembly_summary_archaea_refseq)
+        p = NCBIStrainParser(options.gb, options.ga,
+                             options.rb, options.ra)
         p.generate_ncbi_strains_summary(
-            options.genome_dir_file, options.out_dir)
+            options.gtdb_genome_path_file, options.output_dir)
 
     def generate_type_table(self, options):
         p = Strains(options.output_dir, options.cpus)
@@ -180,7 +180,7 @@ class OptionsParser():
         p.parse_assemblies(options.rb,
                            options.ra,
                            options.gb,
-                           options.ga, options.genome_list, options.output_file)
+                           options.ga, options.metadata, options.output_file)
 
     def generate_rna_silva(self, options):
         p = RnaManager(options.cpus, options.rna_version,
@@ -211,12 +211,12 @@ class OptionsParser():
                             options.ftp_download_date,
                             options.repository,
                             options.report_folder, options.cpus)
-        p.runUpdate(options.checkm_profile_new_genomes,
-                    options.genome_dirs_file, options.ftp_download_date)
+        p.runUpdate(options.checkm_profile,
+                    options.gtdb_genome_path_file, options.ftp_download_date)
 
     def update_checkm_db(self, options):
         p = CheckMDatabaseManager(options.hostname, options.user, options.password, options.db)
-        p.add_checkm_to_db(options.checkm_profiles, options.check_qa, options.metadata)
+        p.add_checkm_to_db(options.checkm_profile, options.check_qa, options.metadata)
 
     def update_metadata_db(self, options):
         p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
@@ -254,8 +254,8 @@ class OptionsParser():
 
     def update_propagated_tax(self, options):
         p = Propagate(options.hostname, options.user, options.password, options.db)
-        p.add_propagated_taxonomy(options.taxonomy_file, options.metadata_file, options.genome_list,
-                                  options.truncate_taxonomy, options.rep_id_file)
+        p.add_propagated_taxonomy(options.taxonomy_file, options.metadata, options.genome_list,
+                                  options.truncate_taxonomy, options.rep_file)
 
     def set_gtdb_domain(self, options):
         p = Propagate(options.hostname, options.user, options.password, options.db)
@@ -265,7 +265,7 @@ class OptionsParser():
         p = GenomeType()
         p.run(options.genbank_assembly_summary,
               options.refseq_assembly_summary,
-              options.genome_file,
+              options.gtdb_genome_path_file,
               options.output_file)
 
     def generate_trnascan_data(self, options):
@@ -304,6 +304,12 @@ class OptionsParser():
         check_file_exists(options.metadata_file)
         p = Tools()
         p.parse_ncbi_names_and_nodes(options.name, options.node, options.metadata_file, options.output_file)
+
+    def compare_metadata_genome_dir(self, options):
+        check_file_exists(options.metadata)
+        check_file_exists(options.gtdb_genome_path_file)
+        p = Tools()
+        p.compare_metadata_genome_dir(options.metadata, options.gtdb_genome_path_file)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
@@ -400,6 +406,8 @@ class OptionsParser():
             self.curation_lists(options)
         elif options.subparser_name == 'check_unique_strains':
             self.check_unique_strains(options)
+        elif options.subparser_name == 'compare_metadata_genome_dir':
+            self.compare_metadata_genome_dir(options)
         else:
             self.logger.error('Unknown command: ' +
                               options.subparser_name + '\n')

@@ -194,7 +194,7 @@ class MetadataDatabaseManager(object):
             response = input(
                 "Do you want to continue [y/n]: ")
         if response.lower() == 'y':
-            q = ("TRUNCATE survey_table")
+            q = ("TRUNCATE survey_genomes")
             print(q)
             self.temp_cur.execute(q)
             self.temp_con.commit()
@@ -204,7 +204,7 @@ class MetadataDatabaseManager(object):
             self.logger.error('Unrecognized input.')
             sys.exit(-1)
 
-        q_add = "INSERT INTO survey_table(genome_id) VALUES (%s) "
+        q_add = "INSERT INTO survey_genomes(canonical_gid) VALUES (%s) "
         self.temp_cur.executemany(q_add, data_to_commit)
         self.temp_con.commit()
 
