@@ -34,7 +34,7 @@ from collections import defaultdict, Counter, namedtuple
 from datetime import datetime
 
 from gtdb_migration_tk.strains import Strains
-from gtdb_migration_tk.biolib_lite.common import canonical_gid
+from gtdb_migration_tk.biolib_lite.common import canonical_gid, select_delimiter
 
 csv.field_size_limit(sys.maxsize)
 
@@ -50,7 +50,7 @@ class Tools(object):
 
     def compare_metadata(self, old_meta_file, new_meta_file, only_ncbi=False, use_formatted_id = False):
 
-        old_delimiter = self.select_delimiter(old_meta_file)
+        old_delimiter = select_delimiter(old_meta_file)
 
         old_nested_dict = {}
         with open(old_meta_file, 'r') as omf:
@@ -88,7 +88,7 @@ class Tools(object):
 
         self.logger.info('{} parsed'.format(old_meta_file))
 
-        new_delimiter = self.select_delimiter(new_meta_file)
+        new_delimiter = select_delimiter(new_meta_file)
 
         header_summary = {}
         new_nested_dict = {}
@@ -170,7 +170,7 @@ class Tools(object):
             print("\t- {}".format(new_column))
 
     def compare_selected_data(self, old_meta_file, new_meta_file, metafield, output_file, only_ncbi=False):
-        old_delimiter = self.select_delimiter(old_meta_file)
+        old_delimiter = select_delimiter(old_meta_file)
         old_nested_dict = {}
         with open(old_meta_file, 'r') as omf:
             old_headers = omf.readline().split(old_delimiter)
@@ -190,7 +190,7 @@ class Tools(object):
                         old_nested_dict[line[0]] = str(
                             line[old_headers.index(metafield)])
 
-        new_delimiter = self.select_delimiter(new_meta_file)
+        new_delimiter = select_delimiter(new_meta_file)
         new_nested_dict = {}
         with open(new_meta_file, 'r') as nmf:
             new_headers = nmf.readline().split(new_delimiter)
@@ -515,3 +515,26 @@ class Tools(object):
                               f"{abs(first_domain_report_dict.get(id).get('arc_percent')-float(infos[arc_mark_idx]))}\t"
                               f"{first_domain_report_dict.get(id).get('bac_percent')}\t{infos[bac_mark_idx]}\t"
                               f"{abs(first_domain_report_dict.get(id).get('bac_percent') - float(infos[bac_mark_idx]))}\n")
+
+    def compare_metadata_genome_dir(self,metadata_file,genome_dir_file):
+        list_genomes_in_metadata = []
+        with open(metadata_file, encoding='utf-8') as metaf:
+            headers_line = metaf.readline()
+            separator = ','
+            if '\t' in headers_line:
+                separator = '\t'
+            headers = headers_line.rstrip('\n').split(separator)
+            gtdb_accession_index = headers.index('accession')
+            for line in metaf:
+                list_genomes_in_metadata.append(line.strip().split(separator)[gtdb_accession_index].replace('RS_','').replace('GB_',''))
+
+        list_genomes_in_genomedir = {}
+        with open(genome_dir_file, encoding='utf-8') as metaf:
+            for line in metaf:
+                infos=line.strip().split(separator)
+                list_genomes_in_genomedir[infos[0]]=infos[1]
+
+        print('Genomes in directory but not in metadata')
+        for k,v in list_genomes_in_genomedir.items():
+            if k not in list_genomes_in_metadata:
+                print(f'{k}\t{v}')

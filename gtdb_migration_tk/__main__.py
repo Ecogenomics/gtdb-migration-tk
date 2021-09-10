@@ -941,7 +941,6 @@ def get_main_parser():
     with subparser(sub_parsers, 'ncbi_genome_category',
                    'Identify genomes marked by NCBI as being a MAG or SAG.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
             __genbank_assembly_summary(grp, required=True)
             __refseq_assembly_summary(grp, required=True)
             __gtdb_genome_path_file(grp, required=True)
@@ -1092,6 +1091,14 @@ def get_main_parser():
             __name(grp, required=True)
             __metadata_file(grp, required=True)
             __output_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
+
+    with subparser(sub_parsers, 'compare_metadata_genome_dir',
+                   'Compare list of genomes in metadata file and genome_dirs') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __metadata_file(grp, required=True)
+            __gtdb_genome_path_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 

@@ -79,7 +79,8 @@ class DatabaseManager(object):
 
     def runUpdate(self, checkm, genome_dirs_file, dl_date):
 
-        self.update_date = self.parse_date(dl_date)
+        #self.update_date = self.parse_date(dl_date)
+        self.update_date = dl_date
         self.dict_existing_records = self._populateExistingRecords()
         self.list_checkm_records = self._populateNewRecords(checkm)
         self.genome_dirs_dict = self._populateGenomeDirs(genome_dirs_file)
@@ -293,6 +294,7 @@ class DatabaseManager(object):
                 break
             # if the record was part of the checkm file, it has already been
             # updated
+
             if record not in self.list_checkm_records:
                 if record not in self.genome_dirs_dict:
                     list_sql = self._removeRecord(
@@ -300,6 +302,10 @@ class DatabaseManager(object):
                 else:
                     list_sql = self._checkPathRecord(
                         record, list_sql, list_report, self.dict_existing_records[record], self.genome_dirs_dict[record])
+            elif record in self.list_checkm_records and record not in self.genome_dirs_dict:
+                list_sql = self._removeRecord(
+                    record, list_report, list_sql)
+
             # allow results to be processed or written to file
             queue_out.put(record)
         tasklist.append(list_sql)

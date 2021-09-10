@@ -904,8 +904,6 @@ class Strains(object):
         num_type_species_of_genus = 0
         for gid, metadata in self.metadata.items():
 
-            if gid == 'RS_GCF_003104955.1':
-                a=1
             fout.write(gid)
 
             species_name = self.get_species_name(gid)
@@ -925,6 +923,7 @@ class Strains(object):
             fout.write('\t{}'.format(highest_priority_designation))
 
             type_species_of_genus = False
+            #print(gid,species_name)
             canonical_sp_name = ' '.join(species_name.split()[0:2])
             if (highest_priority_designation == 'type strain of species' and
                     (species_name in lpsn_type_species_of_genus or canonical_sp_name in lpsn_type_species_of_genus )):
