@@ -394,8 +394,9 @@ class MarkerManager(object):
             # Symlink needs to be relative to avoid pointing to previous version of Tigrfam when we copy folder
             output_hit_file_relative = os.path.join('.', tigrfam_version, filename.replace(
                 self.protein_file_ext, tigrfam_extension))
-            tigrfam_tophit_file_relative = os.path.join(assembly_dir, tigrfam_version, filename.replace(
+            tigrfam_tophit_file_relative = os.path.join('.', tigrfam_version, filename.replace(
                 self.protein_file_ext, tigrfam_tophit_extension))
+
             os.symlink(output_hit_file_relative, new_hit_link)
             os.symlink(tigrfam_tophit_file_relative, new_tophit_link)
 

@@ -214,8 +214,10 @@ class TaxonomyNCBI(object):
         # check for tell-tale signs on invalid species names
         if sp_name[0].islower():
             return False, 'first letter of name is lowercase'
-        if sp_name.split()[-1].isupper():
+        if sp_name.split()[-1][0].isupper():
             return False, 'first letter of specific name is uppercase'
+        if sp_name.split()[-1].lower() in ['phylum','class','order','family','genus']:
+            return False, 'specific name is a rank'
         if " bacterium" in sp_name.lower():
             return False, "name contains the word 'bacterium'"
         if " bacteirum" in sp_name.lower():
@@ -306,7 +308,6 @@ class TaxonomyNCBI(object):
                     if rank_prefix == 's__':
                         valid_name, canonical_species_name = self._valid_species_name(
                             taxon)
-
                         if valid_name:
                             canonical_taxonomy[Taxonomy.rank_prefixes.index(
                                 rank_prefix)] = canonical_species_name
