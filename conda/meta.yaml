@@ -1,0 +1,37 @@
+{% set data = load_setup_py_data(setup_file='../setup.py', from_recipe_dir=True) %}
+
+package:
+  name: gtdb_migration_tk
+  version: {{ data['version'] }}
+
+source:
+  url: https://github.com/Ecogenomics/gtdb-migration-tk/archive/{{ data['version'] }}.tar.gz
+
+build:
+  noarch: python
+  number: 0
+  script: "{{ PYTHON }} -m pip install . -vv"
+
+requirements:
+  host:
+    - python >=3.6
+    - pip
+  run:
+    - python >=3.6
+    - requests
+    - unidecode
+    - biolib >=0.1.0
+    - pandas
+    - numpy
+    - sqlalchemy
+    - bs4
+
+test:
+  imports:
+    - gtdb_migration_tk
+  commands:
+    - gtdb_migration_tk -h
+
+about:
+  home: https://github.com/Ecogenomics/gtdb-migration-tk
+  summary: 'Toolkit for updating the GTDB to the next release and test data.'
