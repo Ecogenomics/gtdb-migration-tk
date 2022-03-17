@@ -218,6 +218,8 @@ class TaxonomyNCBI(object):
             return False, 'first letter of specific name is uppercase'
         if sp_name.split()[-1].lower() in ['phylum','class','order','family','genus']:
             return False, 'specific name is a rank'
+        if " genomospecies" in sp_name.lower():
+            return False, "name contains the word 'genomospecies'"
         if " bacterium" in sp_name.lower():
             return False, "name contains the word 'bacterium'"
         if " bacteirum" in sp_name.lower():

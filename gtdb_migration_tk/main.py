@@ -55,20 +55,19 @@ class OptionsParser():
         p = LPSN(False, options.output_dir)
         p.full_lpsn_wf()
 
-    def add_lpsn_metadata(self,options):
+    def add_lpsn_metadata(self, options):
         p = LPSN(False, None)
-        p.add_lpsn_metadata(options.hostname, options.user, options.password, options.db,options.lpsn_metadata_file)
+        p.add_lpsn_metadata(options.hostname, options.user, options.password, options.db, options.lpsn_metadata_file)
 
-    def update_taxid_to_db(self,options):
+    def update_taxid_to_db(self, options):
         p = TaxonomyNCBI()
-        p.update_taxid_to_db(options.hostname, options.user, options.password, options.db,options.input_file)
+        p.update_taxid_to_db(options.hostname, options.user, options.password, options.db, options.input_file)
 
     def pull_html(self, options):
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(options.skip_taxa_per_letter_dl, options.output_dir)
-        for rk in ['phylum','class','order','family','genus','species']:
-        #for rk in ['genus', 'species']:
+        for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species']:
 
             p.download_rank_lpsn_html(rk)
         p.download_subspecies_lpsn_html()
@@ -77,7 +76,7 @@ class OptionsParser():
         """Parse all html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(False, options.output_dir)
-        p.parse_html(options.input_dir,options.lpsn_gss_file)
+        p.parse_html(options.input_dir, options.lpsn_gss_file)
 
     def generate_date_table(self, options):
         p = Strains()
@@ -112,10 +111,10 @@ class OptionsParser():
         check_file_exists(options.second_domain_report)
         p = Tools()
         p.compare_markers(options.first_domain_report,
-                           options.second_domain_report,
+                          options.second_domain_report,
                           options.output_file,
-                           options.only_ncbi,
-                           options.use_formatted_id)
+                          options.only_ncbi,
+                          options.use_formatted_id)
 
     def compare_selected_data(self, options):
         p = Tools()
@@ -229,28 +228,28 @@ class OptionsParser():
         p.update_ncbitax_db(options.organism_names, options.filtered, options.unfiltered, options.genome_list,
                             options.do_not_null_field)
 
-    def add_surveillance_genomes(self,options):
+    def add_surveillance_genomes(self, options):
         p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
         p.add_surveillance_genomes(options.genome_list)
 
-    def add_names_dmp(self,options):
+    def add_names_dmp(self, options):
         p = TaxonomyNCBI()
         p.populate_names_dmp_table(options.taxonomy_dir,
-                              options.ra, options.rb, options.ga, options.gb,
-                              options.output_file)
+                                   options.ra, options.rb, options.ga, options.gb,
+                                   options.output_file)
 
     def propagate_gtdb_taxonomy(self, options):
         p = Propagate()
         p.propagate_taxonomy(options.gtdb_metadata_prev, options.gtdb_metadata_cur, options.taxonomy_file,
                              options.rep_file)
 
-    def propagate_curated_taxonomy(self,options):
-        p=Propagate()
-        p.propagate_taxonomy_from_reps_to_cluster(options.taxonomy_file,options.metadata,options.output_file)
+    def propagate_curated_taxonomy(self, options):
+        p = Propagate()
+        p.propagate_taxonomy_from_reps_to_cluster(options.taxonomy_file, options.metadata, options.output_file)
 
-    def add_taxonomy_to_database(self,options):
-        p=Propagate(options.hostname, options.user, options.password, options.db)
-        p.add_taxonomy_to_database(options.taxonomy_file,options.metadata,options.truncate_taxonomy)
+    def add_taxonomy_to_database(self, options):
+        p = Propagate(options.hostname, options.user, options.password, options.db)
+        p.add_taxonomy_to_database(options.taxonomy_file, options.metadata, options.truncate_taxonomy)
 
     def update_propagated_tax(self, options):
         p = Propagate(options.hostname, options.user, options.password, options.db)
@@ -295,8 +294,6 @@ class OptionsParser():
               options.gtdb_sp_clusters,
               options.gtdb_prev_sp_clusters,
               options.gtdb_decorate_table)
-
-
 
     def check_unique_strains(self, options):
         check_file_exists(options.node)
