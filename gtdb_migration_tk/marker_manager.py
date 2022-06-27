@@ -78,7 +78,8 @@ class MarkerManager(object):
                 if attribute == 'new' or attribute == 'modified':
                     genomes_to_consider.add(genome_id)
 
-        self.logger.info(f'Identified {len(genomes_to_consider)} genomes as new or modified.')
+        self.logger.info(
+            f'Identified {len(genomes_to_consider)} genomes as new or modified.')
 
         # get path to all unprocessed genome gene files
         self.logger.info('Checking genomes.')
@@ -272,10 +273,10 @@ class MarkerManager(object):
             new_tophit_link = os.path.join(assembly_dir, filename.replace(
                 self.protein_file_ext, symlink_pfam_tophit_extension))
 
-            #==================================================================
+            # ==================================================================
             # print(f'{new_hit_link} will point to {output_hit_file}')
             # print(f'{new_tophit_link} will point to {pfam_tophit_file}')
-            #==================================================================
+            # ==================================================================
 
             os.symlink(output_hit_file, new_hit_link)
             os.symlink(pfam_tophit_file, new_tophit_link)
@@ -376,9 +377,9 @@ class MarkerManager(object):
             cmd = 'hmmsearch -o %s --tblout %s --noali --notextw --cut_nc --cpu 1 %s %s' % (
                 hmmsearch_out, output_hit_file, self.tigrfam_hmms, gene_file)
             os.system(cmd)
-            #==================================================================
+            # ==================================================================
             # print(cmd)
-            #==================================================================
+            # ==================================================================
 
             # calculate checksum
             checksum = sha256(output_hit_file)
@@ -397,10 +398,10 @@ class MarkerManager(object):
             new_tophit_link = os.path.join(assembly_dir, filename.replace(
                 self.protein_file_ext, symlink_tigrfam_tophit_extension))
 
-            #==================================================================
+            # ==================================================================
             # print(f'{new_hit_link} will point to {output_hit_file}')
             # print(f'{new_tophit_link} will point to {tigrfam_tophit_file}')
-            #==================================================================
+            # ==================================================================
 
             os.symlink(output_hit_file, new_hit_link)
             os.symlink(tigrfam_tophit_file, new_tophit_link)

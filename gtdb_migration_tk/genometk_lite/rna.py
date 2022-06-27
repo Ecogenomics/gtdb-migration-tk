@@ -22,7 +22,14 @@ import sys
 import biolib.seq_io as seq_io
 from biolib.external.blast import Blast
 from biolib.taxonomy import Taxonomy
-from biolib.common import check_file_exists, make_sure_path_exists
+from biolib.common import make_sure_path_exists
+
+
+def rev_comp(seq):
+    """Reverse complement a sequence."""
+    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+
+    return "".join(complement.get(base, base) for base in reversed(seq))
 
 
 class RNA(object):
@@ -119,7 +126,7 @@ class RNA(object):
                         rev_comp = True
                         ali_from, ali_to = ali_to, ali_from
 
-                    align_len = int(ali_to) - int(ali_from)
+                    align_len = int(ali_to) - int(ali_from) + 1
 
                     if float(iEvalue) <= evalue_threshold:
                         seq_info[seq_id] = seq_info.get(
@@ -157,11 +164,11 @@ class RNA(object):
             # if hits overlap then retain only the longest
             start_new = int(info[2])
             end_new = int(info[3])
-            rev_new = bool(info[4])
+            rev_new = info[5] == 'True'
 
             start = int(hits[seq_id][2])
             end = int(hits[seq_id][3])
-            rev = bool(info[5])
+            rev = hits[seq_id][5] == 'True'
 
             # check if hits should be concatenated
             if abs(start - end_new) < concatenate_threshold and rev_new == rev:
@@ -169,7 +176,7 @@ class RNA(object):
                 del hits[seq_id]
                 info[2] = str(start_new)
                 info[3] = str(end)
-                info[4] = str(end - start_new)
+                info[4] = str(end - start_new + 1)
                 hits[concate_seq_id] = info
                 bConcatenate = True
 
@@ -178,7 +185,7 @@ class RNA(object):
                 del hits[seq_id]
                 info[2] = str(start)
                 info[3] = str(end_new)
-                info[4] = str(end_new - start)
+                info[4] = str(end_new - start + 1)
                 hits[concate_seq_id] = info
                 bConcatenate = True
 
@@ -345,13 +352,18 @@ class RNA(object):
                 seq_id = seq_id[0:seq_id.rfind('-#')]
 
             seq_info = [orig_seq_id] + best_hits[orig_seq_id]
+
             seq = seqs[seq_id]
             summary_out.write('\t'.join(seq_info) +
                               '\t' + str(len(seq)) + '\n')
 
             seq_out.write('>' + seq_info[0] + '\n')
-            seq_out.write(
-                seq[int(seq_info[3]) + 1:int(seq_info[4]) + 1] + '\n')
+
+            ssu_seq = seq[int(seq_info[3]) - 1:int(seq_info[4])]
+            if seq_info[6] == 'True':
+                ssu_seq = rev_comp(ssu_seq)
+
+            seq_out.write(ssu_seq + '\n')
 
         summary_out.close()
         seq_out.close()
@@ -451,24 +463,19 @@ class RNA(object):
         self.euk_model = euk_model
 
         make_sure_path_exists(output_dir)
-        # print(output_dir)
 
         seq_file = None
-        #self.logger.info('Identifying %s rRNA genes on sequences.' % rna_name)
         best_hits = self._identify(
             genome_file, self.evalue, self.min_len, self.concatenate, output_dir)
-        #self.logger.info('Identified ' + str(len(best_hits)) + ' putative %s genes.' % rna_name)
 
         if len(best_hits):
             #self.logger.info('Extracting rRNA genes.')
             seq_file = self._extract(genome_file, best_hits, output_dir)
 
-        if db is not None and seq_file:
-            #self.logger.info('Classifying rRNA sequences.')
-            self.classify(seq_file, db, taxonomy_file,
-                           self.evalue, output_dir)
+        # ***if db is not None and seq_file:
+        # ***    self.classify(seq_file, db, taxonomy_file,
+        # ***                  self.evalue, output_dir)
 
         canary_file = os.path.join(output_dir, self.rna_name + '.canary.txt')
-        # print(canary_file)
         with open(canary_file, 'w') as filehandle:
             filehandle.write('done.\n')

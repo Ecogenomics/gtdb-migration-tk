@@ -317,7 +317,7 @@ if __name__ == '__main__':
 
 
     update_metadata_db_parser = subparsers.add_parser(
-        'update_metadata_db', formatter_class=CustomHelpFormatter, description='Update information inf the database.')
+        'update_metadata_db', formatter_class=CustomHelpFormatter, description='Update information in the database.')
     update_metadata_db_parser.add_argument('--hostname', required=True)
     update_metadata_db_parser.add_argument('-u', '--user',
                                   help='psql user', required=True)
