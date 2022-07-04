@@ -14,9 +14,9 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
+
 import glob
 import os
-import shutil
 import sys
 import logging
 import ntpath
@@ -34,29 +34,29 @@ import multiprocessing as mp
 class RnaLTPManager(object):
     """Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB."""
 
-    def __init__(self,cpus,rna_ltp_version,rna_ssu_version,rna_path):
+    def __init__(self, cpus, rna_ltp_version, rna_ssu_version, rna_path):
         self.cpus = cpus
         self.rna_ltp_version = rna_ltp_version
         self.rna_ssu_version = rna_ssu_version
         self.rna_path = rna_path
         self.logger = logging.getLogger('timestamp')
 
-        #E-value threshold for defining valid hits.
+        # E-value threshold for defining valid hits.
         self.evalue = 1e-6
-
 
         # needed to pick up previously identified and extracted 16S rRNA genes
         self.silva_output_dir = 'rna_silva_{}'.format(self.rna_ssu_version)
 
-
         self.ltp_output_dir = 'rna_ltp_{}'.format(self.rna_ltp_version)
 
-        root_path = os.path.join(rna_path,'ltp',str(self.rna_ltp_version))
+        root_path = os.path.join(rna_path, 'ltp', str(self.rna_ltp_version))
 
-        self.ltp_ssu_file = os.path.join(root_path,'ltp_{}.fna'.format(str(self.rna_ltp_version)))
-        self.ltp_taxonomy_file = os.path.join(root_path,'ltp_{}_taxonomy.tsv'.format(str(self.rna_ltp_version)))
+        self.ltp_ssu_file = os.path.join(
+            root_path, 'ltp_{}.fna'.format(str(self.rna_ltp_version)))
+        self.ltp_taxonomy_file = os.path.join(
+            root_path, 'ltp_{}_taxonomy.tsv'.format(str(self.rna_ltp_version)))
 
-        for item in [self.ltp_ssu_file,self.ltp_taxonomy_file]:
+        for item in [self.ltp_ssu_file, self.ltp_taxonomy_file]:
             if not os.path.exists(item):
                 print('{} does not exist'.format(item))
                 sys.exit(-1)
@@ -70,15 +70,17 @@ class RnaLTPManager(object):
 
         output_dir = os.path.join(full_genome_dir, self.ltp_output_dir)
 
-        rna = RNA(self.cpus,'ssu')
+        rna = RNA(self.cpus, 'ssu')
         make_sure_path_exists(output_dir)
         # we clean the directory
         filelist = glob.glob(os.path.join(output_dir, "*"))
         for f in filelist:
             os.remove(f)
 
-        rna.classify(ssu_file,self.ltp_ssu_file,self.ltp_taxonomy_file,self.evalue, output_dir)
-        canary_file = os.path.join(full_genome_dir, self.ltp_output_dir, 'ltp.canary.txt')
+        rna.classify(ssu_file, self.ltp_ssu_file,
+                     self.ltp_taxonomy_file, self.evalue, output_dir)
+        canary_file = os.path.join(
+            full_genome_dir, self.ltp_output_dir, 'ltp.canary.txt')
         # print(canary_file)
         with open(canary_file, 'w') as filehandle:
             filehandle.write(f'Silva version:{self.rna_ssu_version}.\n')
@@ -89,13 +91,13 @@ class RnaLTPManager(object):
     def _progress(self, processed_items, total_items):
         current_time_utc = datetime.datetime.utcnow().replace(microsecond=0)
         if processed_items > 0:
-            time_left= (current_time_utc - self.starttime) * (total_items-processed_items)/ processed_items
+            time_left = (current_time_utc - self.starttime) * \
+                (total_items-processed_items) / processed_items
             return 'Processed {} of {} ({}%) genomes. (ETA {})           '.format(processed_items,
-                                                               total_items,
-                                                               round(processed_items * 100.0 / total_items,2),time_left)
+                                                                                  total_items,
+                                                                                  round(processed_items * 100.0 / total_items, 2), time_left)
 
-
-    def generate_rna_ltp(self, gtdb_genome_path_file,all_genomes=False):
+    def generate_rna_ltp(self, gtdb_genome_path_file, all_genomes=False):
         """Create metadata by parsing assembly stats files."""
 
         input_files = []
