@@ -232,7 +232,7 @@ class Strains(object):
                     metadata[gid] = {
                         'ncbi_organism_name': infos[gtdb_ncbi_organism_name_index],
                         'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
-                        'ncbi_standardized_strain_ids': set(standard_strain_ids),
+                        'ncbi_standardised_strain_ids': set(standard_strain_ids),
                         'ncbi_type_material_designation': infos[gtdb_ncbi_type_material_designation_index],
                         'ncbi_taxonomy_unfiltered': infos[gtdb_ncbi_taxonomy_unfiltered_index],
                         'ncbi_taxid': int(infos[gtdb_ncbi_taxid_index])}
@@ -408,7 +408,7 @@ class Strains(object):
         category_name = ''
         matched_strain_id = None
         for repository_strain_id in repository_strain_ids.split("="):
-            strain_ids = self.metadata[gid]['ncbi_expanded_standardized_strain_ids']
+            strain_ids = self.metadata[gid]['ncbi_expanded_standardised_strain_ids']
             if repository_strain_id in strain_ids:
                 istype = True
             else:
@@ -832,12 +832,12 @@ class Strains(object):
                 gtdb_type_status,
                 self.metadata[gid]['ncbi_strain_ids'],
                 '; '.join(
-                    self.metadata[gid]['ncbi_expanded_standardized_strain_ids']),
+                    self.metadata[gid]['ncbi_expanded_standardised_strain_ids']),
                 matched_strain_id,
                 category_name,
                 matched_sp_name,
                 '; '.join(repository_strain_ids.intersection(
-                    self.metadata[gid]['ncbi_expanded_standardized_strain_ids'])),
+                    self.metadata[gid]['ncbi_expanded_standardised_strain_ids'])),
                 '; '.join(repository_strain_ids),
                 misspelling,
                 equivalent_name,
@@ -910,7 +910,7 @@ class Strains(object):
             fout.write('\t{}\t{}\t{}\t{}'.format(species_name,
                                              metadata['ncbi_organism_name'],
                                              metadata['ncbi_strain_ids'],
-                                             '; '.join(metadata['ncbi_expanded_standardized_strain_ids'])))
+                                             '; '.join(metadata['ncbi_expanded_standardised_strain_ids'])))
 
             fout.write('\t{}\t{}'.format(ncbi_authority.get(metadata['ncbi_taxid'], '').replace('"', '~'),
                                      metadata['ncbi_type_material_designation']))
@@ -974,7 +974,7 @@ class Strains(object):
         for gid, genome_metadata in self.metadata.items():
             # determine the list of strain IDs at NCBI that are
             # associated with the genome
-            strain_ids = genome_metadata['ncbi_standardized_strain_ids']
+            strain_ids = genome_metadata['ncbi_standardised_strain_ids']
             ncbi_taxid = genome_metadata['ncbi_taxid']
             if ncbi_taxid in ncbi_coidentical_strain_ids:
                 if strain_ids.intersection(ncbi_coidentical_strain_ids[ncbi_taxid]):
@@ -996,7 +996,7 @@ class Strains(object):
                         strain_ids = strain_ids.union(
                             ncbi_coidentical_strain_ids[ncbi_sp_taxid])
 
-            self.metadata[gid]['ncbi_expanded_standardized_strain_ids'] = strain_ids
+            self.metadata[gid]['ncbi_expanded_standardised_strain_ids'] = strain_ids
 
     def generate_type_strain_table(self,
                                    metadata_file,

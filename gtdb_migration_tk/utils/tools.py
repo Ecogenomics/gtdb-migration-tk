@@ -381,7 +381,7 @@ class Tools(object):
                             'taxonomy_species_name': infos[gtdb_taxonomy_species_name_index].split(';')[6].replace('s__',
                                                                                                                    ''),
                             'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
-                            'ncbi_standardized_strain_ids': set(standard_strain_ids),
+                            'ncbi_standardised_strain_ids': set(standard_strain_ids),
                             'ncbi_type_material_designation': infos[gtdb_ncbi_type_material_designation_index],
                             'ncbi_taxonomy_unfiltered': infos[gtdb_ncbi_taxonomy_unfiltered_index],
                             'ncbi_taxid': int(infos[gtdb_ncbi_taxid_index])}
@@ -396,14 +396,14 @@ class Tools(object):
         metadata, taxids_of_interest = self.load_metadata(metadata_file)
         outputfile = open(output_file, 'w')
         outputfile.write(
-            'genome\tncbi_taxid\tncbi_standardized_strain_ids\tncbi_expanded_standardized_strain_ids\texpanded\tcoidentical_strains\tcoidentical_intersection\tcoidentical_union\t')
+            'genome\tncbi_taxid\tncbi_standardised_strain_ids\tncbi_expanded_standardised_strain_ids\texpanded\tcoidentical_strains\tcoidentical_intersection\tcoidentical_union\t')
         outputfile.write(
             'associated_with_species\tspecies_intersection\tspecies_union\tsame_collection\n')
 
         for gid, genome_metadata in metadata.items():
                 # determine the list of strain IDs at NCBI that are
                 # associated with the genome
-            strain_ids = genome_metadata['ncbi_standardized_strain_ids']
+            strain_ids = genome_metadata['ncbi_standardised_strain_ids']
             ncbi_taxid = genome_metadata['ncbi_taxid']
             coidentical_interbool = False
             coindentical_interlist = []
@@ -442,7 +442,7 @@ class Tools(object):
 
             if int(ncbi_taxid) in extended_taxid:
                 expanded = False
-                if len(genome_metadata['ncbi_standardized_strain_ids']) != len(strain_ids):
+                if len(genome_metadata['ncbi_standardised_strain_ids']) != len(strain_ids):
                     expanded = True
                 list_collections = [
                     ''.join([i for i in s if not i.isdigit()]) for s in strain_ids]
@@ -452,12 +452,12 @@ class Tools(object):
                     if countcoll.most_common()[0][1] > 1:
                         issucecollec = True
                 outputfile.write("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(gid, ncbi_taxid, '='.join(
-                    genome_metadata['ncbi_standardized_strain_ids']), '='.join(strain_ids), expanded,
+                    genome_metadata['ncbi_standardised_strain_ids']), '='.join(strain_ids), expanded,
                     coidentical_interbool, '='.join(
                         coindentical_interlist), '='.join(coindentical_unionlist),
                     ncbi_sp_taxid_interbool, '='.join(ncbi_sp_taxid_interlist), '='.join(ncbi_sp_taxid_unionlist), issuecollec))
 
-            metadata[gid]['ncbi_expanded_standardized_strain_ids'] = strain_ids
+            metadata[gid]['ncbi_expanded_standardised_strain_ids'] = strain_ids
         outputfile.close()
 
 
