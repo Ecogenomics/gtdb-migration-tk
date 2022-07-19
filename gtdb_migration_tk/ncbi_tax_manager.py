@@ -283,7 +283,7 @@ class TaxonomyNCBI(object):
         return True, 's__' + sp_name
 
     def standardize_taxonomy(self, ncbi_taxonomy_file, output_consistent):
-        """Produce standardized 7-rank taxonomy file from NCBI taxonomy strings."""
+        """Produce standardised 7-rank taxonomy file from NCBI taxonomy strings."""
 
         fout_consistent = open(output_consistent, 'w')
         failed_filters = set()
@@ -439,7 +439,7 @@ class TaxonomyNCBI(object):
         fout.close()
 
         self.standardize_taxonomy(taxonomy_file,
-                                  output_prefix + '_standardized.tsv')
+                                  output_prefix + '_standardised.tsv')
 
 
     def populate_names_dmp_table(self,taxonomy_dir,

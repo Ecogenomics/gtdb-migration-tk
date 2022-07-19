@@ -126,8 +126,8 @@ class OptionsParser():
     def clean_ftp(self, options):
         p = DirectoryManager()
         p.clean_ftp(options.new_list_genomes,
-                    options.ftp_genome_dirs,
-                    options.report_folder,
+                    options.ftp_genome_dir_file,
+                    options.report_dir,
                     options.taxonomy_file)
 
     def parse_genome_directory(self, options):
