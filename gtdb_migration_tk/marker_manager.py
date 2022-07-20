@@ -17,24 +17,18 @@
 
 import os
 import sys
-import argparse
 import logging
-import ntpath
 import multiprocessing as mp
 
 from collections import defaultdict
 
-from biolib.common import remove_extension, make_sure_path_exists
+from biolib.common import make_sure_path_exists
 from biolib.external.execute import check_dependencies
 from biolib.checksum import sha256
 
-from gtdb_migration_tk.prettytable import PrettyTable
-
-from gtdb_migration_tk.tools import Tools
-
 
 class MarkerManager(object):
-    """Create file indicating directory of each genome."""
+    """Identify marker genes using Pfam and TIGRfam HMMs."""
 
     def __init__(self, tmp_dir='/tmp/', cpus=1):
         """Initialization."""
@@ -44,30 +38,33 @@ class MarkerManager(object):
 
         check_dependencies(['prodigal', 'hmmsearch', 'pfam_search.pl'])
 
-        self.tigrfam_hmms = '/srv/whitlam/bio/db/tigrfam/15.0/TIGRFAMs_15.0_HMM/tigrfam.hmm'
+        # identify TIGRfam and Pfam marker genes comprising the bac120, ar122, ar53, or
+        # rp2 marker sets using a carefully selected subset of HMMs
+        self.tigrfam_hmms = '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_v1/tigrfam.hmm'
+        self.pfam_hmm_dir = '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_v1/'
 
-        self.pfam_hmm_dir = '/srv/db/pfam/33.1/'
         self.protein_file_ext = '_protein.faa'
 
         self.logger = logging.getLogger('timestamp')
 
     def run_hmmsearch(self, gtdb_genome_path_file, report, db):
-        extension = ""
+        """Identify marker genes using Pfam and TIGRfam HMMs."""
+
         name = ""
         worker = None
         if db == 'pfam':
             marker_folder = 'pfam_33.1'
             full_extension = '_pfam_33.1.tsv'
-            symlink_extension = '_pfam.tsv'
             name = 'Pfam'
             worker = self.__pfam_worker
         elif db == 'tigrfam':
             marker_folder = 'tigrfam_15.0'
             full_extension = '_tigrfam_15.0.tsv'
-            symlink_extension = '_tigrfam.tsv'
-            #extension = '_tigrfam_15.0.tsv'
             name = 'Tigrfam'
             worker = self.__tigrfam_worker
+
+        # get genomes marker as new or modified, and limit
+        # marker gene finding to this subset of genomes
         genomes_to_consider = set()
         for line in open(report):
             line_split = line.strip().split('\t')
@@ -95,13 +92,11 @@ class MarkerManager(object):
 
             gid = line_split[0]
             gpath = line_split[1]
-            assembly_id = os.path.basename(os.path.normpath(gpath))
 
             prodigal_dir = os.path.join(gpath, 'prodigal')
             marker_file = os.path.join(
                 prodigal_dir, marker_folder, gid + full_extension)
             if os.path.exists(marker_file):
-                #print("File exists: {}".format(marker_file))
                 # verify checksum
                 checksum_file = marker_file + '.sha256'
                 if os.path.exists(checksum_file):
@@ -135,6 +130,7 @@ class MarkerManager(object):
 
         self.logger.info(f'Number of unprocessed genomes: {len(genome_files)}')
 
+        # identify marker genes in parallel using HMMs and the HMMER package
         workerQueue = mp.Queue()
         writerQueue = mp.Queue()
 
@@ -169,7 +165,6 @@ class MarkerManager(object):
     def run_tophit(self, gtdb_genome_path_file, db):
 
         extension = ""
-        name = ""
         if db == 'pfam':
             marker_version = 'pfam_33.1'
             extension = f'_{marker_version}.tsv'
@@ -190,11 +185,8 @@ class MarkerManager(object):
 
             gid = line_split[0]
             gpath = line_split[1]
-            assembly_id = os.path.basename(os.path.normpath(gpath))
 
             prodigal_dir = os.path.join(gpath, 'prodigal')
-            output_file = os.path.join(
-                prodigal_dir, marker_version, gid + extension)
 
             gene_file = os.path.join(
                 prodigal_dir, gid + self.protein_file_ext)
@@ -248,13 +240,14 @@ class MarkerManager(object):
 
             assembly_dir, filename = os.path.split(gene_file)
             make_sure_path_exists(os.path.join(assembly_dir, pfam_version))
-
             output_hit_file = os.path.join(
                 assembly_dir, pfam_version, filename.replace(self.protein_file_ext, pfam_extension))
-            cmd = 'pfam_search.pl -outfile %s -cpu 1 -fasta %s -dir %s' % (
-                output_hit_file, gene_file, self.pfam_hmm_dir)
+
+            cmd = 'pfam_search.pl -outfile {} -cpu 1 -fasta {} -dir {}'.format(
+                output_hit_file,
+                gene_file,
+                self.pfam_hmm_dir)
             os.system(cmd)
-            # print(cmd)
 
             # calculate checksum
             checksum = sha256(output_hit_file)
@@ -272,11 +265,6 @@ class MarkerManager(object):
                 self.protein_file_ext, symlink_pfam_extension))
             new_tophit_link = os.path.join(assembly_dir, filename.replace(
                 self.protein_file_ext, symlink_pfam_tophit_extension))
-
-            # ==================================================================
-            # print(f'{new_hit_link} will point to {output_hit_file}')
-            # print(f'{new_tophit_link} will point to {pfam_tophit_file}')
-            # ==================================================================
 
             os.symlink(output_hit_file, new_hit_link)
             os.symlink(pfam_tophit_file, new_tophit_link)
@@ -374,12 +362,13 @@ class MarkerManager(object):
                 self.protein_file_ext, tigrfam_extension))
             hmmsearch_out = os.path.join(assembly_dir, tigrfam_version, filename.replace(
                 self.protein_file_ext, f'_{tigrfam_version}.out'))
-            cmd = 'hmmsearch -o %s --tblout %s --noali --notextw --cut_nc --cpu 1 %s %s' % (
-                hmmsearch_out, output_hit_file, self.tigrfam_hmms, gene_file)
+
+            cmd = 'hmmsearch -o {} --tblout {} --noali --notextw --cut_nc --cpu 1 {} {}'.format(
+                hmmsearch_out,
+                output_hit_file,
+                self.tigrfam_hmms,
+                gene_file)
             os.system(cmd)
-            # ==================================================================
-            # print(cmd)
-            # ==================================================================
 
             # calculate checksum
             checksum = sha256(output_hit_file)
@@ -397,11 +386,6 @@ class MarkerManager(object):
                 self.protein_file_ext, symlink_tigrfam_extension))
             new_tophit_link = os.path.join(assembly_dir, filename.replace(
                 self.protein_file_ext, symlink_tigrfam_tophit_extension))
-
-            # ==================================================================
-            # print(f'{new_hit_link} will point to {output_hit_file}')
-            # print(f'{new_tophit_link} will point to {tigrfam_tophit_file}')
-            # ==================================================================
 
             os.symlink(output_hit_file, new_hit_link)
             os.symlink(tigrfam_tophit_file, new_tophit_link)
