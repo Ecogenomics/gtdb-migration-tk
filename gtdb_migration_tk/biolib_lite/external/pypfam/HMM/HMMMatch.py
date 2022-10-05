@@ -15,60 +15,20 @@
 #                                                                             #
 ###############################################################################
 
-__author__ = 'Donovan Parks'
-__copyright__ = 'Copyright 2015'
-__credits__ = ['Donovan Parks']
-__license__ = 'GPL3'
-__maintainer__ = 'Donovan Parks'
-__email__ = 'donovan.parks@gmail.com'
 
-import hashlib
-
-
-def sha256(input_file):
-    """Determine SHA256 hash for file.
-
-    Parameters
-    ----------
-    input_file : str
-        Name of file.
-
-    Returns
-    -------
-    str
-        SHA256 hash.
+class HMMMatch(object):
+    """
+    This class has been adapted from the Perl module written by Genome Research Ltd.
+    Perl authors: Jaina Mistry (jm14@sanger.ac.uk), John Tate (jt6@sanger.ac.uk), Rob Finn (finnr@janelia.hhmi.org)
+    Perl version: ?
+    Python authors: Aaron Mussig (a.mussig@uq.edu.au)
     """
 
-    BLOCKSIZE = 65536
-    hasher = hashlib.sha1()
-    with open(input_file, 'rb') as afile:
-        buf = afile.read(BLOCKSIZE)
-        while len(buf) > 0:
-            hasher.update(buf)
-            buf = afile.read(BLOCKSIZE)
-
-    return hasher.hexdigest()
-
-def sha256_rb(input_file):
-    """Determine SHA256 hash for binary format.
-
-    Parameters
-    ----------
-    input_file : str
-        Name of file.
-
-    Returns
-    -------
-    str
-        SHA256 hash.
-    """
-
-    BLOCKSIZE = 65536
-    hasher = hashlib.sha1()
-    with input_file as onefile:
-        buf = onefile.read(BLOCKSIZE)
-        while len(buf) > 0:
-            hasher.update(buf)
-            buf = onefile.read(BLOCKSIZE)
-
-    return hasher.hexdigest()
+    def __init__(self):
+        """
+        evalue (float), bits (float), name (str) , bias (float)
+        """
+        self.evalue = None
+        self.bits = None
+        self.name = None
+        self.bias = None

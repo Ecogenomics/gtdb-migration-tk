@@ -27,30 +27,43 @@ import tempfile
 from datetime import datetime
 import multiprocessing as mp
 import logging
+from pathlib import Path
+
 from tqdm import tqdm
 
 
 class FTPTools(object):
     def __init__(self, report, genomes_to_review, genome_domain_dict,dry_run):
-        self.genomic_ext = "_genomic.fna"
-        self.protein_ext = "_protein.faa"
-        self.cds_ext = "_cds_from_genomic.fna"
-        self.rna_ext = "_rna_from_genomic.fna"
+        self.genomic_ext = ("_genomic.fna",)
+        self.from_genomic_ext= ("_cds_from_genomic.fna","_rna_from_genomic.fna")
 
-        self.fastaExts = (self.genomic_ext, self.protein_ext)
-        self.extrafastaExts = (self.cds_ext, self.rna_ext)
-
-        self.extensions = ("_feature_table.txt", "_genomic.gbff",
-                           "_genomic.gff", "_protein.gpff", "_wgsmaster.gbff")
+        self.extensions = ("_genomic.gbff",
+                           "_genomic.gff", "_wgsmaster.gbff")
         self.reports = ("_assembly_report.txt",
                         "_assembly_stats.txt", "_hashes.txt")
-        self.allExts = self.fastaExts + self.extensions + self.reports
+        self.hmmer_exts_to_gzip = ("_pfam_33.1.tsv","_pfam_33.1_tophit.tsv",'_tigrfam_15.0.out','_tigrfam_15.0.tsv','_tigrfam_15.0_tophit.tsv')
+        self.prodigal_exts_to_gzip = ("_protein.faa","_protein.fna",'_protein.gff')
+        self.exts_to_gzip = self.genomic_ext + self.extensions + self.hmmer_exts_to_gzip + self.prodigal_exts_to_gzip
+        self.allExts = self.genomic_ext + self.extensions + self.reports
         self.allbutFasta = self.extensions + self.reports
 
         self.report = report
         self.genomes_to_review = genomes_to_review
         self.genome_domain_dict = genome_domain_dict
         self.dry_run = dry_run
+
+        self.ignore_extensions = ["*_assembly_structure","*_cds_from_genomic.fna.gz","*_genomic_gaps.txt.gz",
+                                "*_genomic.gtf.gz","*_rna_from_genomic.fna.gz","*_translated_cds.faa.gz",
+                                "*_protein.faa.gz","*_feature_count.txt.gz","*_feature_table.txt.gz",
+                                "*_protein.gpff.gz"]
+
+        self.ignore_extensions_not_archived = ["*_cds_from_genomic.fna","*_genomic_gaps.txt",
+                                "*_genomic.gtf","*_rna_from_genomic.fna","*_translated_cds.faa",
+                                "*_protein.faa","*_feature_count.txt","*_feature_table.txt",
+                                "*_protein.gpff"]
+
+        # We can ignore to copy folders that are no longer in use for the current GTDB release
+        self.deprecated_folders=['rna_silva','pfam_27','rna_silva_132','lsu_5S','rna_silva_138','ssu_gg','ssu_gg_2013_08','ssu_silva_199_gg_taxonomy','prokka']
 
     def rreplace(self, s, old, new, occurrence):
         '''
@@ -164,16 +177,7 @@ class FTPTools(object):
             self.report.write(
                 "{0}\t{1}\tnew\n".format(genome_domain_dict.get(gcf_record).upper(), gcf_record))
             if not self.dry_run:
-                shutil.copytree(path_record, target_dir, ignore=shutil.ignore_patterns("*_assembly_structure"))
-                for compressed_file in glob.glob(target_dir + "/*.gz"):
-                    if not os.path.isdir(compressed_file):
-                        inF = gzip.open(compressed_file, 'rb')
-                        outF = open(
-                            self.rreplace(compressed_file, ".gz", "", 1), 'wb')
-                        outF.write(inF.read())
-                        inF.close()
-                        outF.close()
-                        os.remove(compressed_file)
+                shutil.copytree(path_record, target_dir, ignore=shutil.ignore_patterns(*self.ignore_extensions))
 
     def removeGenomes(self, removed_dict):
         '''
@@ -197,29 +201,34 @@ class FTPTools(object):
         status = []
         if not self.dry_run:
             tmp_ftp_dir = tempfile.mkdtemp()
-            tmp_target = os.path.join(tmp_ftp_dir, os.path.basename(target_dir))
-            shutil.copytree(ftp_dir, tmp_target, symlinks=True,
-                            ignore=shutil.ignore_patterns("*_assembly_structure"))
-            for compressed_file in glob.glob(tmp_target + "/*.gz"):
-                if os.path.isdir(compressed_file) is False:
-                    inF = gzip.open(compressed_file, 'rb')
-                    try:
-                        outF = open(
-                            self.rreplace(compressed_file, ".gz", "", 1), 'wb')
-                    except IOError:
-                        os.chmod(
-                            self.rreplace(compressed_file, ".gz", "", 1), 0o775)
-                        outF = open(
-                            self.rreplace(compressed_file, ".gz", "", 1), 'wb')
-                    outF.write(inF.read())
-                    inF.close()
-                    outF.close()
-                    os.remove(compressed_file)
+            tmp_ftp_target = os.path.join(tmp_ftp_dir,'ftp', os.path.basename(target_dir))
+            tmp_existing_target = os.path.join(tmp_ftp_dir, 'previous_release', os.path.basename(target_dir))
 
-            ftpdict, ftpdict_fasta, ftpdict_faa, ftpdict_extra_fasta = self.parse_checksum(
-                tmp_target)
-            gtdbdict, gtdbdict_fasta, gtdbdict_faa, gtdbdict_extra_fasta = self.parse_checksum(
-                gtdb_dir)
+            shutil.copytree(ftp_dir, tmp_ftp_target, symlinks=True,
+                            ignore=shutil.ignore_patterns("*_assembly_structure",'prokka'))
+            shutil.copytree(gtdb_dir, tmp_existing_target, symlinks=True,
+                            ignore=shutil.ignore_patterns("*_assembly_structure",'prokka'))
+            for tmp_target in [tmp_ftp_target, tmp_existing_target]:
+                for compressed_file in glob.glob(tmp_target + "/*.gz"):
+                    if os.path.isdir(compressed_file) is False:
+                        inF = gzip.open(compressed_file, 'rb')
+                        try:
+                            outF = open(
+                                self.rreplace(compressed_file, ".gz", "", 1), 'wb')
+                        except IOError:
+                            os.chmod(
+                                self.rreplace(compressed_file, ".gz", "", 1), 0o775)
+                            outF = open(
+                                self.rreplace(compressed_file, ".gz", "", 1), 'wb')
+                        outF.write(inF.read())
+                        inF.close()
+                        outF.close()
+                        os.remove(compressed_file)
+
+            ftpdict, ftpdict_fasta = self.parse_checksum(
+                tmp_ftp_target)
+            gtdbdict, gtdbdict_fasta = self.parse_checksum(
+                tmp_existing_target)
 
             # if the genomic.fna.gz or the protein.faa.gz are missing, we set this
             # record as incomplete
@@ -229,8 +238,8 @@ class FTPTools(object):
                                                                                                                                         gtdb_dir,
                                                                                                                                         gtdbdict_fasta.keys()))
                 status.append("incomplete")
-                shutil.copytree(tmp_target, target_dir, symlinks=True,
-                                ignore=shutil.ignore_patterns("*_assembly_structure"))
+                shutil.copytree(ftp_dir, target_dir, symlinks=True,
+                                ignore=shutil.ignore_patterns(*self.ignore_extensions))
                 # we unzip of gz file
 
             else:
@@ -248,43 +257,106 @@ class FTPTools(object):
                     if os.path.exists(target_dir):
                         shutil.rmtree(target_dir)
                     shutil.copytree(
-                        tmp_target, target_dir, symlinks=True,
-                        ignore=shutil.ignore_patterns("*_assembly_structure"))
+                        ftp_dir, target_dir, symlinks=True,
+                        ignore=shutil.ignore_patterns(*self.ignore_extensions))
+                    for name in glob.glob(os.path.join(target_dir, '*')):
+                        if name.endswith(self.exts_to_gzip):
+                            with open(name, 'rb') as f_in, gzip.open(name+'.gz','wb') as f_out:
+                                f_out.writelines(f_in)
                     status.append("modified")
 
                 else:
                     # The 2 main fasta files haven't changed so we can copy the old
                     # gtdb folder over
+                    extensions_to_ignore = self.ignore_extensions + self.ignore_extensions_not_archived+self.deprecated_folders
+
                     shutil.copytree(
                         gtdb_dir, target_dir, symlinks=True,
-                        ignore=shutil.ignore_patterns("*_assembly_structure"))
+                        ignore=shutil.ignore_patterns(*extensions_to_ignore))
+                    # little hack here, there is 2 _protein.faa files in each folder one from NCBI, one generated by
+                    # prodigal,we want to copy the one from prodigal
+                    shutil.copyfile(
+                        os.path.join(gtdb_dir,'prodigal',genome_record+'_protein.faa'),
+                        os.path.join(target_dir, 'prodigal', genome_record+'_protein.faa'))
+
+                    for path in Path(target_dir).rglob('*'):
+                        name = str(path)
+                        if name.endswith(self.exts_to_gzip):
+                            with open(name, 'rb') as f_in, gzip.open(name+'.gz','wb') as f_out:
+                                f_out.writelines(f_in)
+                            try:
+                                os.remove(name)
+                            except OSError as e:  # name the Exception `e`
+                                print("Failed with:", e.strerror)  # look what it says
+                                print("Error code:", e.code)
+                        if os.path.islink(name):
+                            os.unlink(name)
+
+                    """Process each data item in parallel."""
+                    tigrfam_version = 'tigrfam_15.0'
+                    tigrfam_extension = f'_{tigrfam_version}.tsv.gz'
+                    tigrfam_tophit_extension = f'_{tigrfam_version}_tophit.tsv.gz'
+                    tigrfam_out = f'_{tigrfam_version}.out.gz'
+
+                    symlink_tigrfam_extension = '_tigrfam.tsv.gz'
+                    symlink_tigrfam_tophit_extension = '_tigrfam_tophit.tsv.gz'
+                    symlink_tigrfam_out = '_tigrfam.out.gz'
+
+                    # create symlink in prodigal_folder
+                    new_hit_link = os.path.join(target_dir,'prodigal', genome_record + symlink_tigrfam_extension)
+                    new_tophit_link = os.path.join(target_dir,'prodigal', genome_record + symlink_tigrfam_tophit_extension)
+                    new_out_link = os.path.join(target_dir,'prodigal', genome_record + symlink_tigrfam_out)
+
+                    # Symlink needs to be relative to avoid pointing to previous version of Tigrfam when we copy folder
+                    output_hit_file_relative = os.path.join('.', tigrfam_version, genome_record + tigrfam_extension)
+                    tigrfam_tophit_file_relative = os.path.join('.', tigrfam_version, genome_record + tigrfam_tophit_extension)
+                    tigrfam_out_file_relative = os.path.join('.', tigrfam_version, genome_record + tigrfam_out)
+
+                    os.symlink(output_hit_file_relative, new_hit_link)
+                    os.symlink(tigrfam_tophit_file_relative, new_tophit_link)
+                    os.symlink(tigrfam_out_file_relative, new_out_link)
+
+                    """Process each data item in parallel."""
+
+                    pfam_version = 'pfam_33.1'
+                    pfam_extension = f'_{pfam_version}.tsv.gz'
+                    pfam_tophit_extension = f'_{pfam_version}_tophit.tsv.gz'
+
+                    symlink_pfam_extension = '_pfam.tsv.gz'
+                    symlink_pfam_tophit_extension = '_pfam_tophit.tsv.gz'
+
+                    # create symlink in prodigal_folder
+                    new_hit_link = os.path.join(target_dir,'prodigal', genome_record + symlink_pfam_extension)
+                    new_tophit_link = os.path.join(target_dir,'prodigal', genome_record + symlink_pfam_tophit_extension)
+
+
+                    # Symlink needs to be relative to avoid pointing to previous version of Tigrfam when we copy folder
+                    output_hit_file_relative = os.path.join('.', pfam_version, genome_record + pfam_extension)
+                    pfam_tophit_file_relative = os.path.join('.', pfam_version, genome_record + pfam_tophit_extension)
+
+                    os.symlink(output_hit_file_relative, new_hit_link)
+                    os.symlink(pfam_tophit_file_relative, new_tophit_link)
+
                     status.append("unmodified")
+
+
 
 
 
                     # We check if all other file of this folder are the same.
                     checksum_changed = False
 
-                    for key, value in ftpdict_faa.items():
-                        if value != gtdbdict_faa.get(key):
-                            checksum_changed = True
-                            shutil.copy2(
-                                os.path.join(tmp_target, key), os.path.join(target_dir, key))
-                            status.append("new_protein")
-
                     for key, value in ftpdict.items():
                         if value != gtdbdict.get(key):
                             checksum_changed = True
                             shutil.copy2(
-                                os.path.join(tmp_target, key), os.path.join(target_dir, key))
+                                os.path.join(tmp_ftp_target, key), os.path.join(target_dir, key))
+                            if key.endswith(self.exts_to_gzip):
+                                with open(os.path.join(target_dir, key), 'rb') as f_in, gzip.open(os.path.join(target_dir, key+'.gz'),'wb') as f_out:
+                                    f_out.writelines(f_in)
+                                os.remove(os.path.join(target_dir, key))
                             status.append("new_metadata")
 
-                    for key, value in ftpdict_extra_fasta.items():
-                        if value != gtdbdict_extra_fasta.get(key):
-                            checksum_changed = True
-                            shutil.copy2(
-                                os.path.join(tmp_target, key), os.path.join(target_dir, key))
-                            status.append("new_cds_rna")
                     # we copy the new checksum
                     if checksum_changed:
                         try:
@@ -347,25 +419,17 @@ class FTPTools(object):
         :param md5File:
         '''
 
-        out_dict, out_dict_fasta, out_dict_faa, out_dict_extra_fasta = {}, {}, {}, {}
+        out_dict, out_dict_fasta= {}, {}
 
         for name in glob.glob(os.path.join(pathtodir, '*')):
-            if name.endswith(self.extrafastaExts):
-                out_dict_extra_fasta[os.path.basename(
-                    name)] = self.sha256Calculator(name)
-                os.chmod(name, 0o664)
-            elif name.endswith(self.genomic_ext):
+            if name.endswith(self.genomic_ext) and not name.endswith(self.from_genomic_ext):
                 out_dict_fasta[os.path.basename(
-                    name)] = self.sha256Calculator(name)
-                os.chmod(name, 0o664)
-            elif name.endswith(self.protein_ext):
-                out_dict_faa[os.path.basename(
                     name)] = self.sha256Calculator(name)
                 os.chmod(name, 0o664)
             elif name.endswith(self.allbutFasta):
                 out_dict[os.path.basename(name)] = self.sha256Calculator(name)
                 os.chmod(name, 0o664)
-        return (out_dict, out_dict_fasta, out_dict_faa, out_dict_extra_fasta)
+        return (out_dict, out_dict_fasta)
 
     def sha256Calculator(self, file_path):
 

@@ -1,3 +1,4 @@
+import gzip
 import os
 import sys
 import logging
@@ -9,7 +10,7 @@ from tqdm import tqdm
 from gtdb_migration_tk.biolib_lite.common import remove_extension
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.prodigal import Prodigal
-from gtdb_migration_tk.biolib_lite.checksum import sha256
+from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 
 from gtdb_migration_tk.utils.prettytable import PrettyTable
 from gtdb_migration_tk.utils.tools import Tools
@@ -84,7 +85,7 @@ class ProdigalManager(object):
                 gpath = line_split[1]
 
                 aa_gene_file = os.path.join(
-                    gpath, 'prodigal', gid + '_protein.faa')
+                    gpath, 'prodigal', gid + '_protein.faa.gz')
 
 
                 if all_genomes:
@@ -95,13 +96,17 @@ class ProdigalManager(object):
                 else:
                     if os.path.exists(aa_gene_file):
                         # verify checksum
-                        checksum_file = aa_gene_file + '.sha256'
+                        checksum_file = aa_gene_file[0:-3] + '.sha256'
                         if os.path.exists(checksum_file):
-                            checksum = sha256(aa_gene_file)
+                            checksum = sha256_rb(gzip.GzipFile(fileobj=open(aa_gene_file, 'rb')))
                             cur_checksum = open(
                                 checksum_file).readline().strip()
                             if checksum == cur_checksum:
                                 continue
+                            else:
+                                print(checksum, cur_checksum)
+                        else:
+                            print('No checksum file found for %s' % aa_gene_file)
                     genome_paths[gid] = gpath
 
             # run Prodigal
@@ -123,7 +128,7 @@ class ProdigalManager(object):
         for gid, gpath in genome_paths.items():
             assembly_id = os.path.basename(os.path.normpath(gpath))
 
-            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
+            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
             if os.path.exists(genome_file):
                 if os.stat(genome_file).st_size == 0:
                     self.logger.warning(
@@ -135,7 +140,7 @@ class ProdigalManager(object):
                 self.logger.warning(
                     'Genomic file appears to be missing: %s' % genome_file)
 
-            gff_file = os.path.join(gpath, assembly_id + '_genomic.gff')
+            gff_file = os.path.join(gpath, assembly_id + '_genomic.gff.gz')
             if os.path.exists(gff_file):
                 if os.stat(gff_file).st_size == 0:
                     self.logger.warning(
@@ -167,20 +172,20 @@ class ProdigalManager(object):
             genome_path, genome_id = ntpath.split(genome_file)
             genome_id = remove_extension(genome_id)
 
-            aa_gene_file = os.path.join(self.tmp_dir, genome_id + '_genes.faa')
-            nt_gene_file = os.path.join(self.tmp_dir, genome_id + '_genes.fna')
-            gff_file = os.path.join(self.tmp_dir, genome_id + '.gff')
+            aa_gene_file = os.path.join(self.tmp_dir, genome_id + '_genes.faa.gz')
+            nt_gene_file = os.path.join(self.tmp_dir, genome_id + '_genes.fna.gz')
+            gff_file = os.path.join(self.tmp_dir, genome_id + '.gff.gz')
 
             genome_root = genome_id[0:genome_id.find('_', 4)]
             prodigal_path = os.path.join(genome_path, 'prodigal')
             if not os.path.exists(prodigal_path):
                 os.makedirs(prodigal_path)
             new_aa_gene_file = os.path.join(
-                prodigal_path, genome_root + '_protein.faa')
+                prodigal_path, genome_root + '_protein.faa.gz')
             new_nt_gene_file = os.path.join(
-                prodigal_path, genome_root + '_protein.fna')
+                prodigal_path, genome_root + '_protein.fna.gz')
             new_gff_file = os.path.join(
-                prodigal_path, genome_root + '_protein.gff')
+                prodigal_path, genome_root + '_protein.gff.gz')
 
             os.system('mv %s %s' % (aa_gene_file, new_aa_gene_file))
             os.system('mv %s %s' % (nt_gene_file, new_nt_gene_file))
@@ -203,8 +208,8 @@ class ProdigalManager(object):
                                            summary_stats[genome_id].coding_density_11 * 100))
             fout.close()
 
-            checksum = sha256(new_aa_gene_file)
-            fout = open(new_aa_gene_file + '.sha256', 'w')
+            checksum = sha256_rb((gzip.GzipFile(fileobj=open(new_aa_gene_file, 'rb'))))
+            fout = open(new_aa_gene_file[0:-3] + '.sha256', 'w')
             fout.write(checksum)
             fout.close()
 
@@ -213,14 +218,15 @@ class ProdigalManager(object):
 
         ncbi_transl_table = None
         if os.path.exists(gene_feature_file):
-            for line in open(gene_feature_file):
-                if line[0] == '#':
-                    continue
+            with gzip.open(gene_feature_file, 'rt') as f:
+                for line in f:
+                    if line[0] == '#':
+                        continue
 
-                if 'transl_table=' in line:
-                    trans_num = line[line.rfind('=') + 1:].strip()
-                    ncbi_transl_table = int(trans_num)
-                    break
+                    if 'transl_table=' in line:
+                        trans_num = line[line.rfind('=') + 1:].strip()
+                        ncbi_transl_table = int(trans_num)
+                        break
 
         return ncbi_transl_table
 

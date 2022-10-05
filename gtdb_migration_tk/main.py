@@ -137,10 +137,11 @@ class OptionsParser():
     def update_refseq_from_ftp_files(self, options):
         p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
         p.runComparison(
-            options.ftp_refseq, options.output_dir, options.ftp_directory_file, options.old_genome_dirs,
+            options.ftp_refseq, options.output_dir, options.ftp_genome_dirs, options.old_genome_dirs,
             options.arc_assembly_summary, options.bac_assembly_summary)
 
     def update_genbank_from_ftp_files(self, options):
+        print(options)
         p = GenBankManager(options.output_dir, options.dry_run, options.cpus)
         p.runComparison(
             options.ftp_genbank, options.output_dir, options.ftp_genbank_genome_dirs,
@@ -158,12 +159,12 @@ class OptionsParser():
     def run_hmmsearch(self, options):
         p = MarkerManager(options.tmp_dir, options.cpus)
         p.run_hmmsearch(options.gtdb_genome_path_file,
-                        options.report, options.db)
+                        options.report, options.db,options.folder_suffix,options.hmm_db_path)
         self.logger.info('Done.')
 
     def run_tophit(self, options):
         p = MarkerManager('/tmp', options.cpus)
-        p.run_tophit(options.gtdb_genome_path_file, options.db)
+        p.run_tophit(options.gtdb_genome_path_file, options.db,options.folder_suffix)
 
     def generate_metadata(self, options):
         p = MetadataManager(options.cpus)
