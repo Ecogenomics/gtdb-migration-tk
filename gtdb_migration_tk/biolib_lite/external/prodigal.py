@@ -22,6 +22,7 @@ __license__ = 'GPL3'
 __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 
+import gzip
 import os
 import logging
 import tempfile
@@ -30,7 +31,7 @@ import ntpath
 from collections import defaultdict, namedtuple
 
 from biolib.common import check_file_exists, remove_extension, make_sure_path_exists
-from biolib.seq_io import read_fasta
+from biolib.seq_io import read_fasta, write_fasta
 from biolib.parallel import Parallel
 from biolib.external.execute import check_on_path
 
@@ -69,9 +70,11 @@ class Prodigal(object):
 
         genome_id = remove_extension(genome_file)
 
-        aa_gene_file = os.path.join(self.output_dir, genome_id + '_genes.faa')
-        nt_gene_file = os.path.join(self.output_dir, genome_id + '_genes.fna')
-        gff_file = os.path.join(self.output_dir, genome_id + '.gff')
+
+
+        aa_gene_file = os.path.join(self.output_dir, genome_id + '_genes.faa.gz')
+        nt_gene_file = os.path.join(self.output_dir, genome_id + '_genes.fna.gz')
+        gff_file = os.path.join(self.output_dir, genome_id + '.gff.gz')
 
         best_translation_table = -1
         table_coding_density = {4: -1, 11: -1}
@@ -81,6 +84,8 @@ class Prodigal(object):
             tmp_dir = tempfile.mkdtemp()
 
             seqs = read_fasta(genome_file)
+
+
 
             # determine number of bases
             total_bases = 0
@@ -100,8 +105,18 @@ class Prodigal(object):
             else:
                 translation_tables = [4, 11]
 
+
+
             for translation_table in translation_tables:
                 os.makedirs(os.path.join(tmp_dir, str(translation_table)))
+                # If this is a gzipped genome, re-write the uncompressed genome
+                # file to disk
+                prodigal_input = genome_file
+                if genome_file.endswith('.gz'):
+                    prodigal_input = os.path.join(
+                        tmp_dir, str(translation_table), os.path.basename(genome_file[0:-3]) + '.fna')
+                    write_fasta(seqs, prodigal_input)
+
                 aa_gene_file_tmp = os.path.join(tmp_dir, str(translation_table), genome_id + '_genes.faa')
                 nt_gene_file_tmp = os.path.join(tmp_dir, str(translation_table), genome_id + '_genes.fna')
                 gff_file_tmp = os.path.join(tmp_dir, str(translation_table), genome_id + '.gff')
@@ -121,7 +136,7 @@ class Prodigal(object):
                                                                                                  translation_table,
                                                                                                  aa_gene_file_tmp,
                                                                                                  nt_gene_file_tmp,
-                                                                                                 genome_file,
+                                                                                                 prodigal_input,
                                                                                                  gff_file_tmp)
                 os.system(cmd)
 
@@ -146,9 +161,15 @@ class Prodigal(object):
                 else:
                     best_translation_table = self.translation_table
 
-            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.faa'), aa_gene_file)
-            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.fna'), nt_gene_file)
-            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '.gff'), gff_file)
+            for file in [os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.faa'),
+                         os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.fna'),
+                         os.path.join(tmp_dir, str(best_translation_table), genome_id + '.gff')]:
+                with open(file, 'rb') as f_in, gzip.open(file+'.gz', 'wb') as f_out:
+                     f_out.writelines(f_in)
+
+            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.faa.gz'), aa_gene_file)
+            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.fna.gz'), nt_gene_file)
+            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '.gff.gz'), gff_file)
 
             # clean up temporary files
             shutil.rmtree(tmp_dir)

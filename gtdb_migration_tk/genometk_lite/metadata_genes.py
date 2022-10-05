@@ -14,7 +14,7 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
-
+import gzip
 import logging
 
 import biolib.seq_io as seq_io
@@ -50,7 +50,11 @@ class GenericFeatureParser():
             Generic feature file to parse.
         """
 
-        for line in open(gff_file):
+        open_file = open
+        if gff_file.endswith('.gz'):
+            open_file = gzip.open
+
+        for line in open_file(gff_file):
             if line[0] == '#':
                 continue
 

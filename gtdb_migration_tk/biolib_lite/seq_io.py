@@ -482,7 +482,7 @@ def seq_lengths(fasta_file):
     return lens
 
 
-def write_fasta(seqs, output_file):
+def write_fasta(seqs, output_file, wrap=80):
     """Write sequences to fasta file.
 
     If the output file has the extension 'gz',
@@ -501,7 +501,8 @@ def write_fasta(seqs, output_file):
     else:
         fout = open(output_file, 'w')
 
-    for seq_id, seq in seqs.items():
-        fout.write('>' + seq_id + '\n')
-        fout.write(seq + '\n')
+    for gid, gseq in seqs.items():
+        fout.write('>{}\n'.format(gid))
+        for i in range(0, len(gseq), wrap):
+            fout.write('{}\n'.format(gseq[i:i + wrap]))
     fout.close()

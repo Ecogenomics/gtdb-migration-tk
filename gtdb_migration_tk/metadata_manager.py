@@ -422,8 +422,8 @@ class MetadataManager(object):
                 gid,gpath,*_ = line.strip().split('\t')
                 assembly_id = os.path.basename(os.path.normpath(gpath))
 
-                genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
-                gff_file = os.path.join(gpath, 'prodigal', gid + '_protein.gff')
+                genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
+                gff_file = os.path.join(gpath, 'prodigal', gid + '_protein.gff.gz')
                 input_files.append([genome_file, gff_file])
 
         # process each genome

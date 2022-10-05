@@ -37,9 +37,9 @@ class DirectoryManager(object):
         fout = open(output_file, 'w')
 
         # initialising progress bar objects
-        high_loop = tqdm(range(1))
-        mid_loop = tqdm(range(1))
-        # low_loop = tqdm(range(1))
+        high_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:100}{r_bar}')
+        mid_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:100}{r_bar}')
+        low_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:100}{r_bar}')
 
         for code in [('GCA', 'Genbank'), ('GCF', 'Refseq')]:
             code_dir = os.path.join(database_dir, code[0])
@@ -64,7 +64,10 @@ class DirectoryManager(object):
                         onethird_species_dir, second_three)
                     if os.path.isfile(twothird_species_dir):
                         continue
+                    low_loop.refresh()  # force print final state
+                    low_loop.reset(total=len(os.listdir(twothird_species_dir)))
                     for iii, third_three in enumerate(os.listdir(twothird_species_dir)):
+                        low_loop.update()
                         threethird_species_dir = os.path.join(
                             twothird_species_dir, third_three)
                         if os.path.isfile(threethird_species_dir):

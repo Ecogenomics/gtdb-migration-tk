@@ -14,61 +14,32 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
+import logging
+import multiprocessing as mp
+import os
 
-__author__ = 'Donovan Parks'
-__copyright__ = 'Copyright 2015'
-__credits__ = ['Donovan Parks']
-__license__ = 'GPL3'
-__maintainer__ = 'Donovan Parks'
-__email__ = 'donovan.parks@gmail.com'
-
-import hashlib
+from gtdb_migration_tk.biolib_lite.external.pypfam.Scan.PfamScan import PfamScan
 
 
-def sha256(input_file):
-    """Determine SHA256 hash for file.
+class PfamSearch(object):
+    """Runs pfam_search.pl over a set of genomes.
+    Copied from GTDB-Tk 2.1.1 but modified a lot!!"""
 
-    Parameters
-    ----------
-    input_file : str
-        Name of file.
+    def __init__(self,
+                 pfam_hmm_dir):
+        """Initialization."""
 
-    Returns
-    -------
-    str
-        SHA256 hash.
-    """
+        self.cpus_per_genome = 1
+        self.pfam_hmm_dir = pfam_hmm_dir
 
-    BLOCKSIZE = 65536
-    hasher = hashlib.sha1()
-    with open(input_file, 'rb') as afile:
-        buf = afile.read(BLOCKSIZE)
-        while len(buf) > 0:
-            hasher.update(buf)
-            buf = afile.read(BLOCKSIZE)
+    def run(self, gene_file,output_hit_file):
+        """Process each data item in parallel."""
+        try:
+            pfam_scan = PfamScan(cpu=self.cpus_per_genome, fasta=gene_file, dir=self.pfam_hmm_dir)
+            pfam_scan.search()
+            pfam_scan.write_results(output_hit_file, None, None, None, None)
+        except Exception as error:
+            raise error
 
-    return hasher.hexdigest()
 
-def sha256_rb(input_file):
-    """Determine SHA256 hash for binary format.
 
-    Parameters
-    ----------
-    input_file : str
-        Name of file.
-
-    Returns
-    -------
-    str
-        SHA256 hash.
-    """
-
-    BLOCKSIZE = 65536
-    hasher = hashlib.sha1()
-    with input_file as onefile:
-        buf = onefile.read(BLOCKSIZE)
-        while len(buf) > 0:
-            hasher.update(buf)
-            buf = onefile.read(BLOCKSIZE)
-
-    return hasher.hexdigest()

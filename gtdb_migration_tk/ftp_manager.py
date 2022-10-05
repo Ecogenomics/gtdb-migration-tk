@@ -86,7 +86,7 @@ class RefSeqManager(GenericDatabaseManager):
 
     def __init__(self, new_refseq_folder, dry_run=False, cpus=1):
         super().__init__()
-        self.threads = cpus
+        self.threads = int(cpus)
         self.dry_run = dry_run
         self.report_gcf = open(os.path.join(
             new_refseq_folder, "report_gcf.log"), "w", 1)
@@ -123,6 +123,7 @@ class RefSeqManager(GenericDatabaseManager):
             self.genome_domain_dict[bacid] = "Bacteria"
 
         new_list.extend(bacterial_new_list)
+        new_set = set(new_list)
         self.logger.info("new_list loaded ({} records).".format(len(new_list)))
 
         # new dict lists all records from FTP which are in new_list
@@ -132,7 +133,7 @@ class RefSeqManager(GenericDatabaseManager):
         with open(ftp_genome_dirs, 'r') as new_genome_dirs_file:
             for new_line in tqdm(new_genome_dirs_file,total=num_lines):
                 gid,path,*_ = new_line.split("\t")
-                if gid.startswith("GCF") and gid in new_list:
+                if gid.startswith("GCF") and gid in new_set:
                     new_dict[gid] = path.strip()
 
         self.logger.info("new_dict loaded ({} records).".format(len(new_dict)))
@@ -142,12 +143,11 @@ class RefSeqManager(GenericDatabaseManager):
 
         # delete genomes from the Database
         removed_dict = self.generate_dict_to_remove(new_dict,old_dict)
-        #.removeGenomes(removed_dict)
+        #removeGenomes(removed_dict)
 
         #new genomes in FTP
         added_dict = self.generate_dict_to_add(new_dict,old_dict)
-        ftptools.addGenomes(added_dict, ftp_refseq,
-                             new_refseq, self.genome_domain_dict)
+        ftptools.addGenomes(added_dict, ftp_refseq, new_refseq, self.genome_domain_dict)
 
 
         intersect_list = self.generate_dict_to_compare(new_dict,old_dict)
@@ -162,7 +162,7 @@ class GenBankManager(GenericDatabaseManager):
 
     def __init__(self, new_genbank_folder, dry_run=False, cpus=1):
         super().__init__()
-        self.threads = cpus
+        self.threads = int(cpus)
         self.dry_run = dry_run
         self.report = open(os.path.join(new_genbank_folder,
                                         "extra_gbk_report_gcf.log"), "w")
@@ -184,11 +184,12 @@ class GenBankManager(GenericDatabaseManager):
             gbk_arc_assembly, gbk_bac_assembly, new_refseq_genome_dirs)
         # new dict lists all records from FTP which are in new_list
         new_dict = {}
+        setGCA = set(listGCA)
         num_lines = sum(1 for line in open(ftp_genbank_genome_dirs))
         with open(ftp_genbank_genome_dirs, 'r') as new_genome_dirs_file:
             for new_line in tqdm(new_genome_dirs_file,total=num_lines):
                 gid,path,*_ = new_line.split("\t")
-                if gid.startswith("GCA") and gid in listGCA:
+                if gid.startswith("GCA") and gid in setGCA:
                     new_dict[gid] = path.strip()
         self.logger.info("new_dict loaded")
 
@@ -203,6 +204,7 @@ class GenBankManager(GenericDatabaseManager):
         added_dict = {added_key: new_dict[added_key] for added_key in list(
             set(new_dict.keys()) - set(old_dict.keys()))}
         self.logger.info("{0} genomes to add".format(len(added_dict)))
+
         added_dict = self.generate_dict_to_add(new_dict,old_dict)
         ftptools.addGenomes(added_dict, ftp_genbank,
                            new_genbank, self.genome_domain_dict)
@@ -210,6 +212,7 @@ class GenBankManager(GenericDatabaseManager):
         intersect_list = self.generate_dict_to_compare(new_dict,old_dict)
         ftptools.compareGenomes(
              intersect_list, old_dict, new_dict, ftp_genbank, new_genbank, self.threads)
+
         self.select_gca.close()
         self.report.close()
         self.genomes_to_review.close()
