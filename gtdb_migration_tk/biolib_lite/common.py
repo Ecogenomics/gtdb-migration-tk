@@ -16,7 +16,7 @@
 ###############################################################################
 
 """
-Those functions are copied from https://github.com/dparks1134/biolib on the 09/10/2020
+Those functions are copied from `biolib <https://github.com/dparks1134/biolib>`_  on the 09/10/2020
 
 """
 

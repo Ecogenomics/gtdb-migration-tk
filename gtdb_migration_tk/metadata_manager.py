@@ -21,6 +21,7 @@ import logging
 import ntpath
 import datetime
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists, get_num_lines
+#from gtdblib.util import make_sure_path_exists,check_file_exists, get_num_lines
 from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 

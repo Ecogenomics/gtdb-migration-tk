@@ -1,6 +1,5 @@
 import gzip
 import os
-import sys
 import logging
 import ntpath
 
