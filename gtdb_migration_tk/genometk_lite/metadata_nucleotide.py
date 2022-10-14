@@ -30,7 +30,7 @@ class MetadataNucleotide():
         self.logger = logging.getLogger('timestamp')
 
     def generate(self, genome_file, contig_break):
-        """Derive metdata across nucleotide sequences.
+        """Derive metadata across nucleotide sequences.
 
         Parameters
         ----------

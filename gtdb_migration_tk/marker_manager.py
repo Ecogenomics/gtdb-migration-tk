@@ -31,10 +31,11 @@ from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.external.pfam_search import PfamSearch
+from gtdb_migration_tk.utils.tools import symlink
 
 
 class MarkerManager(object):
-    """Identify marker genes using Pfam and TIGRfam HMMs."""
+    """Identify marker genes using Pfam and tigrfam HMMs."""
 
     def __init__(self, tmp_dir='/tmp/', cpus=1):
         """Initialization."""
@@ -46,8 +47,6 @@ class MarkerManager(object):
 
         # identify TIGRfam and Pfam marker genes comprising the bac120, ar122, ar53, or
         # rp2 marker sets using a carefully selected subset of HMMs
-        #self.tigrfam_hmms = '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm'
-        #self.pfam_hmm_dir = '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/'
         self.tigrfam_hmms = ''
         self.pfam_hmm_dir = ''
 
@@ -97,16 +96,14 @@ class MarkerManager(object):
                 gid,gpath,*_ = line.strip().split('\t')
 
                 prodigal_dir = os.path.join(gpath, 'prodigal')
-                marker_file = os.path.join(
-                    prodigal_dir, marker_folder, gid + full_extension)
+                marker_file = os.path.join(prodigal_dir, marker_folder, gid + full_extension)
                 marker_zipped_file = marker_file + '.gz'
                 if os.path.exists(marker_zipped_file):
                     # verify checksum
                     checksum_file = marker_file + '.sha256'
                     if os.path.exists(checksum_file):
                         checksum = sha256_rb(gzip.GzipFile(fileobj=open(marker_zipped_file, 'rb')))
-                        cur_checksum = open(
-                            checksum_file).readline().strip()
+                        cur_checksum = open(checksum_file).readline().strip()
                         if checksum == cur_checksum:
                             if gid in genomes_to_consider:
                                 self.logger.warning(
@@ -128,8 +125,7 @@ class MarkerManager(object):
                     prodigal_dir, gid + self.protein_file_ext)
                 if os.path.exists(gene_file):
                     if os.stat(gene_file).st_size == 0:
-                        self.logger.warning(
-                            f' Protein file appears to be empty: {gene_file}')
+                        self.logger.warning(f' Protein file appears to be empty: {gene_file}')
                     else:
                         genome_files.append(gene_file)
 
@@ -194,7 +190,6 @@ class MarkerManager(object):
 
             prodigal_dir = os.path.join(gpath, 'prodigal')
 
-
             gene_file = os.path.join(
                 prodigal_dir, gid + self.protein_file_ext)
             if os.path.exists(gene_file):
@@ -209,10 +204,7 @@ class MarkerManager(object):
                     # determine top hits
                     tophit_file = os.path.join(assembly_dir, marker_version, filename.replace(
                         self.protein_file_ext, tophit_out))
-                    if db == 'pfam':
-                        self._pfam_top_hit(output_hit_file, tophit_file)
-                    elif db == 'tigrfam':
-                        self._tigr_top_hit(output_hit_file, tophit_file)
+                    self._parse_top_hit(output_hit_file, tophit_file,db)
 
     def __progress(self, num_items, queue_out):
         """Store or write results of worker threads in a single thread."""
@@ -233,12 +225,19 @@ class MarkerManager(object):
     def __pfam_worker(self, queue_in, queue_out, folder_name):
         """Process each data item in parallel."""
 
-        pfam_version = 'pfam_{}'.format(folder_name)
+        prefix = "pfam"
+        pfam_version = '{}_{}'.format(prefix,folder_name)
         pfam_extension = f'_{pfam_version}.tsv'
+        pfam_extension_gz = f'_{pfam_version}.tsv.gz'
         pfam_tophit_extension = f'_{pfam_version}_tophit.tsv'
+        pfam_tophit_extension_gz = f'_{pfam_version}_tophit.tsv.gz'
 
-        symlink_pfam_extension = '_pfam.tsv'
-        symlink_pfam_tophit_extension = '_pfam_tophit.tsv'
+        if '_lite' in pfam_extension:
+            symlink_pfam_extension_gz = f'_{prefix}_lite.tsv.gz'
+            symlink_pfam_tophit_extension_gz = f'_{prefix}_lite_tophit.tsv.gz'
+        else:
+            symlink_pfam_extension_gz = f'_{prefix}.tsv.gz'
+            symlink_pfam_tophit_extension_gz = f'_{prefix}_tophit.tsv.gz'
 
         while True:
             gene_file = queue_in.get(block=True, timeout=None)
@@ -261,12 +260,12 @@ class MarkerManager(object):
                 pfam_search = PfamSearch(self.pfam_hmm_dir)
                 pfam_search.run(temp_gene_file, output_hit_file)
 
+                # determine top hits
+                pfam_tophit_file = os.path.join(assembly_dir, pfam_version, filename.replace(
+                    self.protein_file_ext, pfam_tophit_extension))
+                self._parse_top_hit(output_hit_file, pfam_tophit_file,prefix)
 
-                # cmd = 'pfam_search.pl -outfile {} -cpu 1 -fasta {} -dir {}'.format(
-                #     output_hit_file,
-                #     temp_gene_file,
-                #     self.pfam_hmm_dir)
-                # os.system(cmd)
+
 
                 # calculate checksum
                 checksum = sha256(output_hit_file)
@@ -274,26 +273,29 @@ class MarkerManager(object):
                 fout.write(checksum)
                 fout.close()
 
-                # determine top hits
-                pfam_tophit_file = os.path.join(assembly_dir, pfam_version, filename.replace(
-                    self.protein_file_ext, pfam_tophit_extension))
-                self._pfam_top_hit(output_hit_file, pfam_tophit_file)
+                # archive the pfam file and the tophit file
+                with open(output_hit_file, 'rb') as f_in, gzip.open(output_hit_file + '.gz', 'wb') as f_out:
+                    f_out.writelines(f_in)
+                os.remove(output_hit_file)
+                with open(pfam_tophit_file, 'rb') as f_in, gzip.open(pfam_tophit_file + '.gz', 'wb') as f_out:
+                    f_out.writelines(f_in)
+                os.remove(pfam_tophit_file)
+
 
                 # create symlink in prodigal_folder
                 new_hit_link = os.path.join(assembly_dir, filename.replace(
-                    self.protein_file_ext, symlink_pfam_extension))
+                    self.protein_file_ext, symlink_pfam_extension_gz))
                 new_tophit_link = os.path.join(assembly_dir, filename.replace(
-                    self.protein_file_ext, symlink_pfam_tophit_extension))
+                    self.protein_file_ext, symlink_pfam_tophit_extension_gz))
 
                 output_hit_file_relative = os.path.join(
-                    '.', pfam_version, filename.replace(self.protein_file_ext, pfam_extension))
+                    '.', pfam_version, filename.replace(self.protein_file_ext, pfam_extension_gz))
                 pfam_tophit_file_relative = os.path.join('.', pfam_version, filename.replace(
-                    self.protein_file_ext, pfam_tophit_extension))
+                    self.protein_file_ext, pfam_tophit_extension_gz))
 
-                if not Path(new_hit_link).is_symlink():
-                    os.symlink(output_hit_file_relative, new_hit_link)
-                if not Path(new_tophit_link).is_symlink():
-                    os.symlink(pfam_tophit_file_relative, new_tophit_link)
+                symlink(output_hit_file_relative, new_hit_link, overwrite=True)
+                symlink(pfam_tophit_file_relative, new_tophit_link, overwrite=True)
+
 
             #we can now delete the temporary directory
             finally:
@@ -302,29 +304,44 @@ class MarkerManager(object):
             # allow results to be processed or written to file
             queue_out.put(gene_file)
 
-    def _pfam_top_hit(self, pfam_file, pfam_tophit_file):
-        """Identify top Pfam hits."""
+    def _parse_top_hit(self,input_file,tophit_file,hmmdb):
+        """Identify top Pfam and TIGRfam hits."""
 
         tophits = defaultdict(dict)
-        for line in open(pfam_file):
-            if line[0] == '#' or not line.strip():
-                continue
+        gene_id = None
+        for line in open(input_file):
+            if hmmdb == 'tigrfam':
+                if line[0] == '#' or line[0] == '[':
+                    continue
+                line_split = line.split()
+                gene_id = line_split[0]
+                hmm_id = line_split[3]
+                evalue = float(line_split[4])
+                bitscore = float(line_split[5])
 
-            line_split = line.split()
-            gene_id = line_split[0]
-            hmm_id = line_split[5]
-            evalue = float(line_split[12])
-            bitscore = float(line_split[11])
-            if gene_id in tophits:
-                if hmm_id in tophits[gene_id]:
-                    if bitscore > tophits[gene_id][hmm_id][1]:
-                        tophits[gene_id][hmm_id] = (evalue, bitscore)
-                else:
+            elif hmmdb == 'pfam':
+                if line[0] == '#' or not line.strip():
+                    continue
+                line_split = line.split()
+                gene_id = line_split[0]
+                hmm_id = line_split[5]
+                evalue = float(line_split[12])
+                bitscore = float(line_split[11])
+
+
+        if gene_id is None:
+            self.logger.warning(
+                f' No gene id found in {input_file} for hmmdb {hmmdb}')
+        elif gene_id in tophits:
+            if hmm_id in tophits[gene_id]:
+                if bitscore > tophits[gene_id][hmm_id][1]:
                     tophits[gene_id][hmm_id] = (evalue, bitscore)
             else:
                 tophits[gene_id][hmm_id] = (evalue, bitscore)
+        else:
+            tophits[gene_id][hmm_id] = (evalue, bitscore)
 
-        fout = open(pfam_tophit_file, 'w')
+        fout = open(tophit_file, 'w')
         fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
         for gene_id, hits in tophits.items():
             hit_str = []
@@ -334,51 +351,101 @@ class MarkerManager(object):
         fout.close()
 
         # calculate checksum
-        checksum = sha256(pfam_tophit_file)
-        fout = open(pfam_tophit_file + '.sha256', 'w')
+        checksum = sha256(tophit_file)
+        fout = open(tophit_file + '.sha256', 'w')
         fout.write(checksum)
         fout.close()
 
-    def _tigr_top_hit(self, tigrfam_file, tigrfam_tophit_file):
-        """Identify top TIGRfam hits."""
+    # def _pfam_top_hit(self, pfam_file, pfam_tophit_file):
+    #     """Identify top Pfam hits."""
+    #
+    #     tophits = defaultdict(dict)
+    #     for line in open(pfam_file):
+    #         if line[0] == '#' or not line.strip():
+    #             continue
+    #
+    #         line_split = line.split()
+    #         gene_id = line_split[0]
+    #         hmm_id = line_split[5]
+    #         evalue = float(line_split[12])
+    #         bitscore = float(line_split[11])
+    #         if gene_id in tophits:
+    #             if hmm_id in tophits[gene_id]:
+    #                 if bitscore > tophits[gene_id][hmm_id][1]:
+    #                     tophits[gene_id][hmm_id] = (evalue, bitscore)
+    #             else:
+    #                 tophits[gene_id][hmm_id] = (evalue, bitscore)
+    #         else:
+    #             tophits[gene_id][hmm_id] = (evalue, bitscore)
+    #
+    #     fout = open(pfam_tophit_file, 'w')
+    #     fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
+    #     for gene_id, hits in tophits.items():
+    #         hit_str = []
+    #         for hmm_id, stats in hits.items():
+    #             hit_str.append(hmm_id + ',' + ','.join(map(str, stats)))
+    #         fout.write('%s\t%s\n' % (gene_id, ';'.join(hit_str)))
+    #     fout.close()
+    #
+    #     # calculate checksum
+    #     checksum = sha256(pfam_tophit_file)
+    #     fout = open(pfam_tophit_file + '.sha256', 'w')
+    #     fout.write(checksum)
+    #     fout.close()
 
-        tophits = {}
-        for line in open(tigrfam_file):
-            if line[0] == '#' or line[0] == '[':
-                continue
-
-            line_split = line.split()
-            gene_id = line_split[0]
-            hmm_id = line_split[3]
-            evalue = float(line_split[4])
-            bitscore = float(line_split[5])
-            if gene_id in tophits:
-                if bitscore > tophits[gene_id][2]:
-                    tophits[gene_id] = (hmm_id, evalue, bitscore)
-            else:
-                tophits[gene_id] = (hmm_id, evalue, bitscore)
-
-        fout = open(tigrfam_tophit_file, 'w')
-        fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
-        for gene_id, stats in tophits.items():
-            hit_str = ','.join(map(str, stats))
-            fout.write('%s\t%s\n' % (gene_id, hit_str))
-        fout.close()
-
-        # calculate checksum
-        checksum = sha256(tigrfam_tophit_file)
-        fout = open(tigrfam_tophit_file + '.sha256', 'w')
-        fout.write(checksum)
-        fout.close()
+    # def _tigr_top_hit(self, tigrfam_file, tigrfam_tophit_file):
+    #     """Identify top TIGRfam hits."""
+    #
+    #     tophits = defaultdict(dict)
+    #     for line in open(tigrfam_file):
+    #         if line[0] == '#' or line[0] == '[':
+    #             continue
+    #
+    #         line_split = line.split()
+    #         gene_id = line_split[0]
+    #         hmm_id = line_split[3]
+    #         evalue = float(line_split[4])
+    #         bitscore = float(line_split[5])
+    #         if gene_id in tophits:
+    #             if bitscore > tophits[gene_id][2]:
+    #                 tophits[gene_id] = (hmm_id, evalue, bitscore)
+    #         else:
+    #             tophits[gene_id] = (hmm_id, evalue, bitscore)
+    #
+    #     fout = open(tigrfam_tophit_file, 'w')
+    #     fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
+    #     for gene_id, stats in tophits.items():
+    #         hit_str = ','.join(map(str, stats))
+    #         fout.write('%s\t%s\n' % (gene_id, hit_str))
+    #     fout.close()
+    #
+    #     # calculate checksum
+    #     checksum = sha256(tigrfam_tophit_file)
+    #     fout = open(tigrfam_tophit_file + '.sha256', 'w')
+    #     fout.write(checksum)
+    #     fout.close()
 
     def __tigrfam_worker(self, queue_in, queue_out,folder_name):
         """Process each data item in parallel."""
-        tigrfam_version = f'tigrfam_{folder_name}'
-        tigrfam_extension = f'_{tigrfam_version}.tsv'
-        tigrfam_tophit_extension = f'_{tigrfam_version}_tophit.tsv'
 
-        symlink_tigrfam_extension = '_tigrfam.tsv'
-        symlink_tigrfam_tophit_extension = '_tigrfam_tophit.tsv'
+        prefix = "tigrfam"
+        tigrfam_version = f'{prefix}_{folder_name}'
+        tigrfam_extension = f'_{tigrfam_version}.tsv'
+        tigrfam_extension_gz = f'_{tigrfam_version}.tsv.gz'
+        tigrfam_out = f'_{tigrfam_version}.out'
+        tigrfam_out_gz = f'_{tigrfam_version}.out.gz'
+        tigrfam_tophit_extension = f'_{tigrfam_version}_tophit.tsv'
+        tigrfam_tophit_extension_gz = f'_{tigrfam_version}_tophit.tsv.gz'
+
+
+        if '_lite' in tigrfam_extension:
+            symlink_tigrfam_extension_gz = f'_{prefix}_lite.tsv.gz'
+            symlink_tigrfam_tophit_extension_gz = f'_{prefix}_lite_tophit.tsv.gz'
+            symlink_tigrfam_out_gz = f'_{prefix}_lite.out.gz'
+        else:
+            symlink_tigrfam_extension_gz = f'_{prefix}.tsv.gz'
+            symlink_tigrfam_tophit_extension_gz = f'_{prefix}_tophit.tsv.gz'
+            symlink_tigrfam_out_gz = f'_{prefix}.out.gz'
 
         while True:
             gene_file = queue_in.get(block=True, timeout=None)
@@ -390,6 +457,8 @@ class MarkerManager(object):
 
             output_hit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
                 self.protein_file_ext, tigrfam_extension))
+            out_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
+                self.protein_file_ext, tigrfam_out))
 
             #because the gene file is a zipped file, we need to unzip it in a temporary directory
             temp_dir = tempfile.mkdtemp()
@@ -408,33 +477,48 @@ class MarkerManager(object):
                     temp_gene_file)
                 os.system(cmd)
 
+
+                # determine top hits
+                tigrfam_tophit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
+                    self.protein_file_ext, tigrfam_tophit_extension))
+                self._parse_top_hit(output_hit_file, tigrfam_tophit_file,prefix)
+
                 # calculate checksum
                 checksum = sha256(output_hit_file)
                 fout = open(output_hit_file + '.sha256', 'w')
                 fout.write(checksum)
                 fout.close()
 
-                # determine top hits
-                tigrfam_tophit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
-                    self.protein_file_ext, tigrfam_tophit_extension))
-                self._tigr_top_hit(output_hit_file, tigrfam_tophit_file)
+                # archive the pfam file and the tophit file
+                with open(output_hit_file, 'rb') as f_in, gzip.open(output_hit_file + '.gz', 'wb') as f_out:
+                    f_out.writelines(f_in)
+                os.remove(output_hit_file)
+                with open(out_file, 'rb') as f_in, gzip.open(out_file + '.gz', 'wb') as f_out:
+                    f_out.writelines(f_in)
+                os.remove(out_file)
+                with open(tigrfam_tophit_file, 'rb') as f_in, gzip.open(tigrfam_tophit_file + '.gz', 'wb') as f_out:
+                    f_out.writelines(f_in)
+                os.remove(tigrfam_tophit_file)
 
                 # create symlink in prodigal_folder
                 new_hit_link = os.path.join(assembly_dir, filename.replace(
-                    self.protein_file_ext, symlink_tigrfam_extension))
+                    self.protein_file_ext, symlink_tigrfam_extension_gz))
                 new_tophit_link = os.path.join(assembly_dir, filename.replace(
-                    self.protein_file_ext, symlink_tigrfam_tophit_extension))
+                    self.protein_file_ext, symlink_tigrfam_tophit_extension_gz))
+                new_out_link = os.path.join(assembly_dir, filename.replace(
+                    self.protein_file_ext, symlink_tigrfam_out_gz))
 
                 # Symlink needs to be relative to avoid pointing to previous version of Tigrfam when we copy folder
                 output_hit_file_relative = os.path.join('.', tigrfam_version, filename.replace(
-                    self.protein_file_ext, tigrfam_extension))
+                    self.protein_file_ext, tigrfam_extension_gz))
                 tigrfam_tophit_file_relative = os.path.join('.', tigrfam_version, filename.replace(
-                    self.protein_file_ext, tigrfam_tophit_extension))
+                    self.protein_file_ext, tigrfam_tophit_extension_gz))
+                out_file_relative = os.path.join('.', tigrfam_version, filename.replace(
+                    self.protein_file_ext, tigrfam_out_gz))
 
-                if not Path(new_hit_link).is_symlink():
-                    os.symlink(output_hit_file_relative, new_hit_link)
-                if not Path(new_tophit_link).is_symlink():
-                    os.symlink(tigrfam_tophit_file_relative, new_tophit_link)
+                symlink(output_hit_file_relative, new_hit_link,True)
+                symlink(tigrfam_tophit_file_relative, new_tophit_link,True)
+                symlink(out_file_relative, new_out_link,True)
 
             #we can now delete the temporary directory
             finally:

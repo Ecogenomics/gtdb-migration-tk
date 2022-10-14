@@ -54,7 +54,7 @@ class GenericFeatureParser():
         if gff_file.endswith('.gz'):
             open_file = gzip.open
 
-        for line in open_file(gff_file):
+        for line in open_file(gff_file,'rt'):
             if line[0] == '#':
                 continue
 

@@ -340,9 +340,6 @@ class FTPTools(object):
                     status.append("unmodified")
 
 
-
-
-
                     # We check if all other file of this folder are the same.
                     checksum_changed = False
 

@@ -1,0 +1,22 @@
+#gtdb-migration-tk TOML document
+
+title = "gtdb-migration-tk TOML file"
+
+[owner]
+names = ['Pierre Chaumeil','Aaron Mussig','Donovan Parks']
+
+[general]
+temp_dir = '/tmp'
+
+[hmms_infos]
+pfamhmms.version = '33.1'
+pfamhmms.path = "/srv/db/pfam/33.1/
+pfamhmm_lite.version = '33.1_lite'
+pfamhmm_lite.path = '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/'
+tigrfamhmms.version = '15.0'
+tigrfamhmms.path = '/srv/whitlam/bio/db/tigrfam/15.0/TIGRFAMs_15.0_HMM/tigrfam.hmm'
+tigrfamhmms_lite.version = '15.0_lite'
+tigrfamhmms_lite.path = '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm'
+
+
+
