@@ -469,12 +469,11 @@ class RNA(object):
             genome_file, self.evalue, self.min_len, self.concatenate, output_dir)
 
         if len(best_hits):
-            #self.logger.info('Extracting rRNA genes.')
             seq_file = self._extract(genome_file, best_hits, output_dir)
 
-        # ***if db is not None and seq_file:
-        # ***    self.classify(seq_file, db, taxonomy_file,
-        # ***                  self.evalue, output_dir)
+        if db is not None and seq_file:
+            self.classify(seq_file, db, taxonomy_file,
+                           self.evalue, output_dir)
 
         canary_file = os.path.join(output_dir, self.rna_name + '.canary.txt')
         with open(canary_file, 'w') as filehandle:

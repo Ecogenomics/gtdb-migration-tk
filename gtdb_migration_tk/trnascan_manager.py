@@ -1,4 +1,4 @@
-
+import gzip
 ###############################################################################
 #                                                                             #
 #    This program is free software: you can redistribute it and/or modify     #
@@ -18,12 +18,14 @@
 
 
 import os
+import shutil
 import sys
 import ntpath
 import argparse
 import subprocess
 import multiprocessing as mp
 import logging
+import tempfile
 
 from biolib.common import remove_extension
 from biolib.external.execute import check_dependencies
@@ -36,7 +38,7 @@ class tRNAScan(object):
     def __init__(self, gbk_arc_assembly_file, gbk_bac_assembly_file, rfq_arc_assembly_file, rfq_bac_assembly_file,cpus):
         check_dependencies(['tRNAscan-SE'])
 
-        self.genome_file_ext = '_genomic.fna'
+        self.genome_file_ext = '_genomic.fna.gz'
 
         self.logger = logging.getLogger('timestamp')
 
@@ -80,25 +82,38 @@ class tRNAScan(object):
             log_file = os.path.join(trna_dir, genome_id + '_trna.log')
             stats_file = os.path.join(trna_dir, genome_id + '_trna_stats.tsv')
 
-            domain_flag = '-B'
-            if self.domain_dict.get(genome_id) == 'Archaea':
-                domain_flag = '-A'
 
-            #cmd = 'tRNAscan-SE %s -q -Q -o %s -m %s -l %s %s' % (domain_flag, output_file, stats_file, log_file, genome_file)
-            # os.system(cmd)
+            #because the genome_file file is a zipped file, we need to unzip it in a temporary directory
+            temp_dir = tempfile.mkdtemp()
 
-            cmd_to_run = ['tRNAscan-SE', domain_flag, '-q', '-Q', '-o',
-                          output_file, '-m', stats_file, '-l', log_file, genome_file]
-            proc = subprocess.Popen(
-                cmd_to_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = proc.communicate()
-            # print proc.returncode
-            if proc.returncode != 0:
-                raise RuntimeError("%r failed, status code %s stdout %r stderr %r" % (
-                    cmd_to_run, proc.returncode, stdout, stderr))
-            checksum_file = open(output_file + '.sha256', 'w')
-            checksum_file.write('{}\n'.format(sha256(output_file)))
-            checksum_file.close()
+            try:
+                temp_gene_file = os.path.join(temp_dir, filename[0:-3])
+                with gzip.open(genome_file, 'rb') as f_in:
+                    with open(temp_gene_file, 'wb') as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+
+                domain_flag = '-B'
+                if self.domain_dict.get(genome_id) == 'Archaea':
+                    domain_flag = '-A'
+
+                #cmd = 'tRNAscan-SE %s -q -Q -o %s -m %s -l %s %s' % (domain_flag, output_file, stats_file, log_file, genome_file)
+                # os.system(cmd)
+
+                cmd_to_run = ['tRNAscan-SE', domain_flag, '-q', '-Q', '-o',
+                              output_file, '-m', stats_file, '-l', log_file, temp_gene_file]
+                proc = subprocess.Popen(
+                    cmd_to_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = proc.communicate()
+                # print proc.returncode
+                if proc.returncode != 0:
+                    raise RuntimeError("%r failed, status code %s stdout %r stderr %r" % (
+                        cmd_to_run, proc.returncode, stdout, stderr))
+                checksum_file = open(output_file + '.sha256', 'w')
+                checksum_file.write('{}\n'.format(sha256(output_file)))
+                checksum_file.close()
+            # we can now delete the temporary directory
+            finally:
+                shutil.rmtree(temp_dir)
 
             queueOut.put(genome_file)
 
@@ -120,7 +135,7 @@ class tRNAScan(object):
 
         sys.stdout.write('\n')
 
-    def run(self, gtdb_genome_path_file):
+    def run(self, gtdb_genome_path_file,all_genomes=False):
 
         genomes_to_consider = None
 
@@ -146,7 +161,7 @@ class tRNAScan(object):
             trna_dir = os.path.join(gpath, 'trna')
 
             trna_file = os.path.join(trna_dir, gid + '_trna.tsv')
-            if os.path.exists(trna_file):
+            if not all_genomes and os.path.exists(trna_file):
                 # verify checksum
                 checksum_file = trna_file + '.sha256'
                 if os.path.exists(checksum_file):
@@ -162,7 +177,7 @@ class tRNAScan(object):
                 self.logger.warning(f'Genome {gid} has tRNAs called, but an invalid checksum and was not marked for reannotation.')
                 self.logger.warning('[WARNING] Genome will be reannotated.')
 
-            elif genomes_to_consider and (gid not in genomes_to_consider):
+            elif not all_genomes and genomes_to_consider and (gid not in genomes_to_consider):
                 self.logger.warning(f'Genome {gid} has no Pfam annotations, but is also not marked for processing?')
                 self.logger.warning('Genome will be reannotated!')
 
