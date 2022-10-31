@@ -185,7 +185,7 @@ class OptionsParser():
     def generate_rna_silva(self, options):
         p = RnaManager(options.cpus, options.rna_version,
                        options.rnapath, options.rna_gene)
-        p.generate_rna_silva(options.gtdb_genome_path_file)
+        p.generate_rna_silva(options.gtdb_genome_path_file,options.rerun)
 
     def update_silva(self, options):
         p = RnaManager(1, None, None, None)
@@ -271,7 +271,7 @@ class OptionsParser():
     def generate_trnascan_data(self, options):
         p = tRNAScan(options.ga, options.gb,
                      options.ra, options.rb, options.cpus)
-        p.run(options.gtdb_genome_path_file)
+        p.run(options.gtdb_genome_path_file,options.all_genomes)
 
     def parse_ncbi_dir(self, options):
         p = NCBIMetaDir()

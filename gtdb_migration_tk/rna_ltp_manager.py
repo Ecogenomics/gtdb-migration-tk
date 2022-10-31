@@ -120,7 +120,7 @@ class RnaLTPManager(object):
                 canary_file = os.path.join(gpath, self.ltp_output_dir, 'ltp.canary.txt')
                 if not all_genomes and os.path.exists(canary_file):
                     continue
-                genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
+                genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
                 input_files.append((genome_file, ssu_file))
 
         self.logger.info(f'{len(input_files)} ssu files to analyse.')

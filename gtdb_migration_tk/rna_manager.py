@@ -83,7 +83,7 @@ class RnaManager(object):
                                                                                   total_items,
                                                                                   round(processed_items * 100.0 / total_items, 2), time_left)
 
-    def generate_rna_silva(self, gtdb_genome_path_file):
+    def generate_rna_silva(self, gtdb_genome_path_file,rerun=False):
         """Create metadata by parsing assembly stats files."""
         # Silva info
         if self.rna_gene == 'ssu':
@@ -115,16 +115,12 @@ class RnaManager(object):
             gpath = line_split[1]
             assembly_id = os.path.basename(os.path.normpath(gpath))
 
-            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna')
+            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
 
             canary_file = os.path.join(
                 gpath, self.output_dir, self.rna_gene + '.canary.txt')
-            if os.path.exists(canary_file):
-                #print(f"{canary_file} exists.")
-                continue
-
-            input_files.append(genome_file)
-
+            if not os.path.exists(canary_file) or rerun:
+                input_files.append(genome_file)
 
         # process each genome
         print('Generating metadata for each genome:')
@@ -140,7 +136,7 @@ class RnaManager(object):
         # sanity check length
         if self.rna_gene == 'lsu_5S' and self.min_len > 120:
             self.logger.error(
-                'Minimum length was set to %d, but LSU 5S genes are ~120 bp.' % options.min_len)
+                'Minimum length was set to %d, but LSU 5S genes are ~120 bp.' % self.min_len)
             sys.exit(-1)
 
         # get HMM directory and HMM models

@@ -31,7 +31,7 @@ from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.external.pfam_search import PfamSearch
-from gtdb_migration_tk.utils.tools import symlink
+from gtdb_migration_tk.utils.tools import symlink, openfile
 
 
 class MarkerManager(object):
@@ -85,7 +85,8 @@ class MarkerManager(object):
                 if attribute == 'new' or attribute == 'modified':
                     genomes_to_consider.add(genome_id)
 
-        self.logger.info(f'Identified {len(genomes_to_consider)} genomes as new or modified.')
+        self.logger.info(
+            f'Identified {len(genomes_to_consider)} genomes as new or modified.')
 
         # get path to all unprocessed genome gene files
         self.logger.info('Checking genomes.')
@@ -169,11 +170,11 @@ class MarkerManager(object):
         extension = ""
         if db == 'pfam':
             marker_version = 'pfam_{}'.format(folder_name)
-            extension = f'_{marker_version}.tsv'
+            extension = f'_{marker_version}.tsv.gz'
             tophit_out = f'_{marker_version}_tophit.tsv'
         elif db == 'tigrfam':
             marker_version = 'tigrfam_{}'.format(folder_name)
-            extension = f'_{marker_version}.tsv'
+            extension = f'_{marker_version}.tsv.gz'
             tophit_out = f'_{marker_version}_tophit.tsv'
 
         countr = 0
@@ -204,7 +205,15 @@ class MarkerManager(object):
                     # determine top hits
                     tophit_file = os.path.join(assembly_dir, marker_version, filename.replace(
                         self.protein_file_ext, tophit_out))
+                    if not os.path.exists(output_hit_file):
+                        self.logger.warning(
+                            f'Output file does not exist: {output_hit_file}')
+                        continue
                     self._parse_top_hit(output_hit_file, tophit_file,db)
+
+                    with open(tophit_file, 'rb') as f_in, gzip.open(tophit_file + '.gz', 'wb') as f_out:
+                        f_out.writelines(f_in)
+                    os.remove(tophit_file)
 
     def __progress(self, num_items, queue_out):
         """Store or write results of worker threads in a single thread."""
@@ -308,8 +317,10 @@ class MarkerManager(object):
         """Identify top Pfam and TIGRfam hits."""
 
         tophits = defaultdict(dict)
-        gene_id = None
-        for line in open(input_file):
+
+
+        for line in openfile(input_file):
+            gene_id = None
             if hmmdb == 'tigrfam':
                 if line[0] == '#' or line[0] == '[':
                     continue
@@ -329,17 +340,17 @@ class MarkerManager(object):
                 bitscore = float(line_split[11])
 
 
-        if gene_id is None:
-            self.logger.warning(
-                f' No gene id found in {input_file} for hmmdb {hmmdb}')
-        elif gene_id in tophits:
-            if hmm_id in tophits[gene_id]:
-                if bitscore > tophits[gene_id][hmm_id][1]:
+            if gene_id is None:
+                self.logger.warning(
+                    f' No gene id found in {input_file} for hmmdb {hmmdb}')
+            elif gene_id in tophits:
+                if hmm_id in tophits[gene_id]:
+                    if bitscore > tophits[gene_id][hmm_id][1]:
+                        tophits[gene_id][hmm_id] = (evalue, bitscore)
+                else:
                     tophits[gene_id][hmm_id] = (evalue, bitscore)
             else:
                 tophits[gene_id][hmm_id] = (evalue, bitscore)
-        else:
-            tophits[gene_id][hmm_id] = (evalue, bitscore)
 
         fout = open(tophit_file, 'w')
         fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')

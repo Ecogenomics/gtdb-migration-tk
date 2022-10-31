@@ -590,6 +590,12 @@ def __hmm_db_path(group, required):
                             "for tigrfam_15.0_lite : '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm')",
                        required=required)
 
+
+def __rerun(group):
+    group.add_argument('--rerun', help='rerun all genomes', action='store_true')
+    pass
+
+
 def get_main_parser():
     # Setup the main, and sub parsers.
     main_parser = argparse.ArgumentParser(prog='gtdb_migration_tk', add_help=False, conflict_handler='resolve')
@@ -629,6 +635,7 @@ def get_main_parser():
             __gtdb_genome_path_file(grp, required=True)
             __log_file(grp, required=True)
             __marker_db(grp, required=True)
+            __folder_suffix(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
             __cpus(grp)
@@ -665,6 +672,7 @@ def get_main_parser():
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __rna_file_path(grp)
+            __rerun(grp)
             __silent(grp)
             __cpus(grp)
 
@@ -675,7 +683,6 @@ def get_main_parser():
             __gtdb_genome_path_file(grp, required=True)
             __ltp_version(grp, required=True)
             __ssu_version(grp, required=True)
-            __rna_gene(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __rna_file_path(grp)
@@ -695,6 +702,7 @@ def get_main_parser():
         with arg_group(parser, 'options arguments') as grp:
             __cpus(grp)
             __silent(grp)
+            __all_genomes(grp)
 
     with subparser(sub_parsers, 'join_checkm',
                    'Join checkm output file for different versions of GTDB') as parser:

@@ -25,6 +25,7 @@ __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
 import errno
+import gzip
 import os
 import sys
 import operator
@@ -579,3 +580,9 @@ def symlink(target, link_name, overwrite=False):
         if os.path.islink(temp_link_name):
             os.remove(temp_link_name)
         raise
+
+def openfile(filename, mode='rt'):
+    if filename.endswith('.gz'):
+        return gzip.open(filename, mode)
+    else:
+        return open(filename, mode)
