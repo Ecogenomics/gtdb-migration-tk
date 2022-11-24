@@ -24,9 +24,9 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
-import errno
 import gzip
 import os
+import subprocess
 import sys
 import operator
 import logging
@@ -34,11 +34,14 @@ import re
 
 import csv
 import tempfile
-from collections import defaultdict, Counter, namedtuple
+from collections import defaultdict, Counter
 from datetime import datetime
 
 from gtdb_migration_tk.strains import Strains
-from gtdb_migration_tk.biolib_lite.common import canonical_gid, select_delimiter
+from gtdb_migration_tk.biolib_lite.common import canonical_gid
+from gtdblib.util.bio.seq_io import read_seq
+from gtdblib.util.shell.filemgmt import select_delimiter, matching_brackets
+from gtdblib.util.shell.gtdbshutil import make_sure_path_exists
 
 csv.field_size_limit(sys.maxsize)
 
@@ -95,7 +98,6 @@ class Tools(object):
         new_delimiter = select_delimiter(new_meta_file)
 
         header_summary = {}
-        new_nested_dict = {}
         # in the new metadata file
         # we check if the genome id exists, and the columns names exist
         # for each common column name we compare the value for each common
@@ -213,7 +215,6 @@ class Tools(object):
                         new_nested_dict[line[0]] = str(
                             line[new_headers.index(metafield)])
 
-        results = []
         outf = open(output_file, 'w')
         outf.write('genome_id\told_value\tnew_value\tsimilarity\n')
         for k, v in new_nested_dict.items():
@@ -542,6 +543,136 @@ class Tools(object):
         for k,v in list_genomes_in_genomedir.items():
             if k not in list_genomes_in_metadata:
                 print(f'{k}\t{v}')
+
+    def generate_ltp_db(self, csv_file,blastdb_file, ltp_fasta_file,output_directory, output_prefix):
+        """Create Living Tree Project (LTP) FASTA and taxonomy file.
+        This is a mofiied version of the original script to generate the LTP database ( in /srv/db/silva ).
+        Because we want to automate the creation of the LTP metadata file, we do not use the original
+        Arb file to export the metadata. Instead, we use the blastdb.fasta and CSV data file downloaded
+         from `LTP Website`_.
+
+         .. _LTP Website: https://imedea.uib-csic.es/mmg/ltp/
+
+         """
+
+        # parse metadata file dumped from LTP ARB database
+        print('Parsing metadata dumped from LTP ARB database:')
+
+        # parse the CSV file to get fields of interest
+        delim = select_delimiter(csv_file)
+        info_dict = {}
+        with open(csv_file, encoding='utf-8') as csvf:
+            csv_reader = csv.reader(csvf, delimiter=delim)
+
+            id_index = 0
+            orgname_index = 1
+            fulltax_index = 2
+            type_strain_index = 4
+
+            for row in csv_reader:
+                info_dict[row[id_index]] = {'orgname': row[orgname_index],
+                                            'fulltax': row[fulltax_index],
+                                            'type_strain': row[type_strain_index]}
+
+        # parse the blastdb.fasta for extra metadata
+        delim_blast = select_delimiter(blastdb_file)
+        with open(blastdb_file, encoding='utf-8') as blastdbf:
+            for line in blastdbf:
+                if line.startswith('>'):
+                    infos = line.strip().split('\|')
+                    fields = matching_brackets(infos[2])
+                    strain = None
+                    accession = None
+                    for field in fields:
+                        if field.startswith('accession='):
+                            accession = field[10:]
+                        if field.startswith('strain='):
+                            strain = field[7:]
+                    if strain is not None:
+                        info_dict[accession]['strain'] = strain
+
+
+        metadata = {}
+        for k,v in  info_dict.items():
+            seq_ids = k
+            fullname_ltp = v['orgname']
+            tax_ltp = v['fulltax']
+            type_ltp = v['type_strain']
+            strain = v.get('strain','')
+
+            for seq_id in seq_ids.split():
+                # LTP uses a single entry for identical 16S sequences with
+                # the different sequence IDs seperated by a space, e.g.:
+                #   SSMG01000000 SSMG01000241
+                metadata[seq_id] = (
+                    fullname_ltp, tax_ltp, type_ltp, strain)
+
+        print(f' - identified {len(metadata):,} sequences')
+
+        # create FASTA file and taxonomy file for each LTP sequence
+        print('Creating FASTA file and taxonomy file for each LTP sequence:')
+        make_sure_path_exists(output_directory)
+        fout_fna = open(os.path.join(output_directory,output_prefix + '.fna'), 'w')
+        fout_taxonomy = open(os.path.join(output_directory,output_prefix + '_taxonomy.tsv'), 'w')
+        num_seqs = 0
+        for seq_id, seq, annotation in read_seq(ltp_fasta_file, keep_annotation=True):
+            # FASTA header line may specify additional LTP sequences
+            # as part of the first token of the annotation, e.g.:
+            #  >SSMG01000000 SSMG01000241      Photobacterium lucens   Bacteria;Pseudomonadota;Gammaproteobacteria;Vibrionales;Vibrionaceae;Photobacterium
+            seq_ids = [seq_id]
+            for token in annotation.split('\t')[0].split():
+                if token in metadata:
+                    seq_ids.append(token)
+
+            # make sure all sequences have identical LTP metadata
+            if len(seq_ids) > 1:
+                for seq_id in seq_ids[1:]:
+                    assert metadata[seq_ids[0]] == metadata[seq_id]
+
+            for seq_id in seq_ids:
+                assert seq_id in metadata
+
+                fullname_ltp, tax_ltp, type_ltp, strain = metadata[seq_id]
+
+                fout_fna.write('>{} {}|{}|{}|{}\n'.format(
+                    seq_id,
+                    fullname_ltp,
+                    tax_ltp,
+                    type_ltp,
+                    strain))
+                fout_fna.write(f'{seq}\n')
+
+                if ';' in type_ltp:
+                    print(seq_id)
+
+                type_ltp = type_ltp.replace(';', ' ')
+                strain = strain.replace(';', ' ')
+                taxonomy_str = f'{tax_ltp};{fullname_ltp};{type_ltp}|{strain}'
+                fout_taxonomy.write(f'{seq_id}\t{taxonomy_str}\n')
+
+                num_seqs += 1
+
+        print(f' - identified {num_seqs:,} sequences')
+
+        assert len(metadata) == num_seqs
+
+        fout_fna.close()
+        fout_taxonomy.close()
+
+        # Time to run makeblastdb on the new fasta file
+        print('Running makeblastdb...')
+
+        cmd_to_run = ['makeblastdb','-in',os.path.join(output_directory,output_prefix + '.fna'),'-dbtype','nucl']
+        proc = subprocess.Popen(
+            cmd_to_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = proc.communicate()
+        # print proc.returncode
+        if proc.returncode != 0:
+            raise RuntimeError("%r failed, status code %s stdout %r stderr %r" % (
+                cmd_to_run, proc.returncode, stdout, stderr))
+
+        print('Done.')
+
 
 def symlink(target, link_name, overwrite=False):
     '''

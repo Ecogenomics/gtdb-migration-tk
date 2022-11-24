@@ -142,14 +142,6 @@ def remove_extension(filename, extension=None):
 
 #### PC ADDED functionalities to common #####
 
-def select_delimiter(metafile):
-    # Parse TSV or CSV file
-    for line in open(metafile):
-        if len(line.split('\t')) >= len(line.split(',')):
-            return '\t'
-        else:
-            return ','
-
 def clean_html(raw_html):
     """
     Remove all HTML tags from HTML line

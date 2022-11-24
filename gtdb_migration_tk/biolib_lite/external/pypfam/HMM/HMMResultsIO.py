@@ -23,6 +23,8 @@ from .HMMResults import HMMResults
 from .HMMSequence import HMMSequence
 from .HMMUnit import HMMUnit
 
+sys.setrecursionlimit(1800)
+
 
 class HMMResultsIO(object):
     """

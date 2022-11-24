@@ -1,3 +1,4 @@
+import gzip
 import os
 import sys
 import re
@@ -75,9 +76,13 @@ class GenomeType(object):
             else:
                 source = 'GBFF file'
                 assembly_id = os.path.basename(os.path.normpath(genome_dir))
-                wgs_file = os.path.join(genome_dir, assembly_id + '_genomic.gbff')
+                wgs_file = os.path.join(genome_dir, assembly_id + '_genomic.gbff.gz')
 
-                for line in open(wgs_file):
+                open_file = open
+                if wgs_file.endswith('.gz'):
+                    open_file = gzip.open
+
+                for line in open_file(wgs_file, 'rt'):
                     if 'metagenome' in line:
                         if ('/metagenome_source' in line
                                 or re.search(metagenome_pattern, line)):

@@ -291,7 +291,7 @@ class NCBIMetaDir(object):
                 continue
 
             protein_file = os.path.join(
-                gpath, "prodigal", gid + "_protein.faa.gz")
+                gpath, "prodigal", gid + "_protein.faa")
             if not os.path.exists(protein_file):
                 continue
 

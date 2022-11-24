@@ -81,7 +81,7 @@ class CheckMManager(object):
 
             for gid in genomes_to_consider:
                 gpath = genome_paths[gid]
-                gene_file = os.path.join(gpath, 'prodigal', gid + '_protein.faa')
+                gene_file = os.path.join(gpath, 'prodigal', gid + '_protein.faa.gz')
                 gene_files.append(gene_file)
 
             print('  Identified %d gene files.' % len(gene_files))
@@ -118,7 +118,7 @@ class CheckMManager(object):
                 continue
 
             os.makedirs(checkm_output_dir)
-            os.system('checkm lineage_wf --pplacer_threads %d --genes -x faa -t %d %s %s' %
+            os.system('checkm lineage_wf --pplacer_threads %d --genes -x faa.gz -t %d %s %s' %
                       (self.cpus, self.cpus, bin_dir, checkm_output_dir))
 
             tree_qa_file = os.path.join(

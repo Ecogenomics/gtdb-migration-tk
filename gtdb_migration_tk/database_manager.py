@@ -30,6 +30,7 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@qfab.org'
 __status__ = 'Development'
 
+import gzip
 import os
 import hashlib
 import re
@@ -50,10 +51,15 @@ from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTP
 
 from atpbar import register_reporter, find_reporter, flush
 
+from gtdblib.util.shell.filemgmt import sha256_rb
+from gtdblib.util.shell.gtdbshutil import make_sure_path_exists
+
 
 class DatabaseManager(object):
 
     def __init__(self, user, hostname, db, password, ftp_download_date, repository, path_to_log, cpus):
+
+        make_sure_path_exists(path_to_log)
 
         self.repository = repository
         # By default we set the id to genbank (it is either 2 or 3 )
@@ -208,10 +214,10 @@ class DatabaseManager(object):
                 # and protein files have changed. We need to re write their
                 # sha256 values
                 genomic_files = glob.glob(
-                    self.genome_dirs_dict[checkm_record] + "/*_genomic.fna")
+                    self.genome_dirs_dict[checkm_record] + "/*_genomic.fna.gz")
                 if len(genomic_files) == 1:
                     genomic_file = genomic_files[0]
-                    new_md5_genomic = self.sha256Calculator(genomic_file)
+                    new_md5_genomic = sha256_rb((gzip.GzipFile(fileobj=open(genomic_file, 'rb'))))
                     query = "update genomes set fasta_file_sha256 = '{0}' where name like '{1}'".format(
                         new_md5_genomic, checkm_record)
                     list_sql.append(query)
@@ -220,10 +226,10 @@ class DatabaseManager(object):
                 genome_id = genome_id[0:genome_id.find('_', 4)]
                 gene_file_path = os.path.join(
                     self.genome_dirs_dict[checkm_record], "prodigal")
-                gene_files = glob.glob(gene_file_path + "/*_protein.faa")
+                gene_files = glob.glob(gene_file_path + "/*_protein.faa.gz")
                 if len(gene_files) == 1:
                     gene_file = gene_files[0]
-                    new_md5_gene = self.sha256Calculator(gene_file)
+                    new_md5_gene = sha256_rb((gzip.GzipFile(fileobj=open(gene_file, 'rb'))))
                     query = "update genomes set genes_file_sha256 = '{0}' where name like '{1}'".format(
                         new_md5_gene, checkm_record)
                     list_sql.append(query)
@@ -430,11 +436,11 @@ class DatabaseManager(object):
         list_genome_details.append(True)
         list_genome_details.append(None)
         fasta_file_path = os.path.join(self.genome_dirs_dict[checkm_record],
-                                       os.path.basename(self.genome_dirs_dict[checkm_record]) + "_genomic.fna")
+                                       os.path.basename(self.genome_dirs_dict[checkm_record]) + "_genomic.fna.gz")
         fasta_file_path_shorten = re.sub(
             r"(.+/)(GCA\/|GCF\/)", r"\g<2>", fasta_file_path)
         list_genome_details.append(fasta_file_path_shorten)
-        list_genome_details.append(self.sha256Calculator(fasta_file_path))
+        list_genome_details.append(sha256_rb(gzip.GzipFile(fileobj=open(fasta_file_path, 'rb'))))
         list_genome_details.append(self.id_database)
         list_genome_details.append(checkm_record)
         list_genome_details.append(self.update_date)
@@ -444,11 +450,11 @@ class DatabaseManager(object):
             self.genome_dirs_dict[checkm_record])
         genome_id = genome_id[0:genome_id.find('_', 4)]
         gene_file_path = os.path.join(
-            self.genome_dirs_dict[checkm_record], "prodigal", genome_id + "_protein.faa")
+            self.genome_dirs_dict[checkm_record], "prodigal", genome_id + "_protein.faa.gz")
         gene_file_path_shorten = re.sub(
             r"(.+/)(GCA\/|GCF\/)", r"\g<2>", gene_file_path)
         list_genome_details.append(gene_file_path_shorten)
-        list_genome_details.append(self.sha256Calculator(gene_file_path))
+        list_genome_details.append(sha256_rb(gzip.GzipFile(fileobj=open(gene_file_path, 'rb'))))
         list_genome_details.append(self.normaliseID(checkm_record))
         if id_record is None:
             list_report.append("{0}\t{1}\tadd\n".format(
