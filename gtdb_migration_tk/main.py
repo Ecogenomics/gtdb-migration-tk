@@ -210,7 +210,7 @@ class OptionsParser():
                             options.db, options.password,
                             options.ftp_download_date,
                             options.repository,
-                            options.report_folder, options.cpus)
+                            options.report_dir, options.cpus)
         p.runUpdate(options.checkm_profile,
                     options.gtdb_genome_path_file, options.ftp_download_date)
 
@@ -309,10 +309,19 @@ class OptionsParser():
         p = Tools()
         p.compare_metadata_genome_dir(options.metadata, options.gtdb_genome_path_file)
 
+    def generate_ltp_db(self, options):
+        check_file_exists(options.fasta)
+        check_file_exists(options.csv)
+        check_file_exists(options.blastdb)
+        p = Tools()
+        p.generate_ltp_db(options.csv, options.blastdb, options.fasta,options.output_dir, options.output_prefix)
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
             self.parse_genome_directory(options)
+        elif options.subparser_name == 'generate_ltp_db':
+            self.generate_ltp_db(options)
         elif options.subparser_name == 'prodigal':
             self.run_prodigal(options)
         elif options.subparser_name == 'clean_ftp':

@@ -77,6 +77,7 @@ class MetadataDatabaseManager(object):
     def update_metadata_db(self,metadata_file,metadata_desc_file,genome_list_file,do_not_null_field):
         # get fields in metadata file
         gtdbimporter = GTDBImporter(self.temp_cur)
+        self.logger.info('Parsing metadata file: %s' % metadata_file)
         with open(metadata_file) as f:
             metadata_fields = f.readline().strip().split('\t')[1:]
         self.logger.info(

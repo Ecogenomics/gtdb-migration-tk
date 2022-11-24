@@ -208,9 +208,9 @@ class NCBIMetaDir(object):
                 if len(line_split) == 6 and (line_split[0] in ['all', 'Primary Assembly']) and (line_split[1] == 'all') and (line_split[3] == 'all'):
                     field = line_split[4]
                     value = line_split[5].strip()
-
-                    metadata_index = self.stats.index(field)
-                    metadata_stats[metadata_index] = value
+                    if field in self.stats:
+                        metadata_index = self.stats.index(field)
+                        metadata_stats[metadata_index] = value
 
         return metadata_fields, metadata_stats
 
@@ -287,9 +287,10 @@ class NCBIMetaDir(object):
                 continue
 
             protein_file = os.path.join(
-                gpath, "prodigal", gid + "_protein.faa")
+                gpath, "prodigal", gid + "_protein.faa.gz")
             if not os.path.exists(protein_file):
                 continue
+
 
             assembly_stat_file = os.path.join(
                 gpath, assembly_id + '_assembly_stats.txt')

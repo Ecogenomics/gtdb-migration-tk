@@ -228,7 +228,6 @@ class Strains(object):
                         standard_strain_ids = [self.standardize_strain_id(sid)
                                                for sid in created_list
                                                if (sid != '' and sid != 'none')]
-
                     metadata[gid] = {
                         'ncbi_organism_name': infos[gtdb_ncbi_organism_name_index],
                         'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
@@ -892,7 +891,7 @@ class Strains(object):
         fout.write(
             "accession\tncbi_species\tncbi_organism_name\tncbi_strain_ids\tncbi_canonical_strain_ids")
         fout.write("\tncbi_taxon_authority\tncbi_type_designation")
-        fout.write("\tgtdb_type_designation\tgtdb_type_designation_sources")
+        fout.write("\tgtdb_type_designation_ncbi_taxa\tgtdb_type_designation_ncbi_taxa_sources")
         fout.write(
             "\tlpsn_type_designation\tlpsn_priority_year")
         fout.write("\tgtdb_type_species_of_genus\n")
