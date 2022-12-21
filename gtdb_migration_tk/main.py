@@ -316,6 +316,10 @@ class OptionsParser():
         p = Tools()
         p.generate_ltp_db(options.csv, options.blastdb, options.fasta,options.output_dir, options.output_prefix)
 
+    def generate_seqcode_table(self,options):
+        p = Tools()
+        p.generate_seqcode_table(options.gtdb_genome_path_file,options.output_dir)
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
@@ -336,6 +340,8 @@ class OptionsParser():
             self.generate_metadata(options)
         elif options.subparser_name == 'create_tables':
             self.create_metadata_tables(options)
+        elif options.subparser_name == 'generate_seqcode_table':
+            self.generate_seqcode_table(options)
         elif options.subparser_name == 'parse_assemblies':
             self.parse_assemblies(options)
         elif options.subparser_name == "parse_ncbi_dir":

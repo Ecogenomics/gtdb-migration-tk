@@ -74,9 +74,10 @@ def print_help():
      update_metadata_db -> Update metadata in database
 
     Metadata:
-      create_tables     -> Create tables with metadata for all genomes (currently only NCBI)
-      parse_assemblies  -> Create tables with metadata for all NCBI genomes from assembly summaries
-      parse_ncbi_dir    -> Create tables with metadata for all NCBI genomes from directories
+      create_tables          -> Create tables with metadata for all genomes (currently only NCBI)
+      generate_seqcode_table -> Generate metadata table for genomes in SeqCode
+      parse_assemblies       -> Create tables with metadata for all NCBI genomes from assembly summaries
+      parse_ncbi_dir         -> Create tables with metadata for all NCBI genomes from directories
 
     NCBI Taxonomy:
       parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file.
@@ -630,6 +631,14 @@ def get_main_parser():
             __tmp_dir(grp)
             __cpus(grp)
             __all_genomes(grp)
+
+    # Generate metadata table for genomes in Seqcode
+    with subparser(sub_parsers, 'generate_seqcode_table', 'Generate metadata table for genomes in Seqcode.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __output_dir(grp, required=True)
+            __gtdb_genome_path_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
 
     with subparser(sub_parsers, 'prodigal_check',
                    'Check if table used by Prodigal is the same as the one indicated in NCBI.') as parser:
