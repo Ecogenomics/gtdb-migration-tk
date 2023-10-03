@@ -32,6 +32,7 @@ __status__ = 'Development'
 import os
 import sys
 import argparse
+import gzip
 from collections import defaultdict
 import multiprocessing as mp
 
@@ -248,6 +249,7 @@ class NCBIMetaDir(object):
         metadata_gbff = [''] * len(self.gbff_fields)
 
         if not os.path.exists(genbank_file):
+            print(f'Missing {genbank_file}')
             return metadata_gbff
 
         for line in openfile(genbank_file):
