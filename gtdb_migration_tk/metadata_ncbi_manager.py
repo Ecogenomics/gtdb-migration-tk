@@ -32,6 +32,7 @@ __status__ = 'Development'
 import os
 import sys
 import argparse
+import gzip
 from collections import defaultdict
 
 from numpy import (zeros as np_zeros)
@@ -65,7 +66,7 @@ class GenericFeatureParser():
           Generic feature file to parse.
         """
 
-        for line in open(gff_file):
+        for line in gzip.open(gff_file, 'rt'):
             if line[0] == '#':
                 continue
 
@@ -209,8 +210,9 @@ class NCBIMetaDir(object):
                     field = line_split[4]
                     value = line_split[5].strip()
 
-                    metadata_index = self.stats.index(field)
-                    metadata_stats[metadata_index] = value
+                    if field in self.stats:
+                        metadata_index = self.stats.index(field)
+                        metadata_stats[metadata_index] = value
 
         return metadata_fields, metadata_stats
 
@@ -241,9 +243,10 @@ class NCBIMetaDir(object):
         metadata_gbff = [''] * len(self.gbff_fields)
 
         if not os.path.exists(genbank_file):
+            print(f'Missing {genbank_file}')
             return metadata_gbff
 
-        for line in open(genbank_file):
+        for line in gzip.open(genbank_file, 'rt'):
             if '/transl_table=' in line:
                 translation_table = line[line.rfind('=') + 1:].strip()
                 metadata_gbff[self.gbff_fields.index(
@@ -271,13 +274,14 @@ class NCBIMetaDir(object):
         countr = 0
         for line in open(gtdb_genome_path_file):
             countr += 1
-            statusStr = '{} lines read.'.format(countr)
+
+            line_split = line.strip().split('\t')
+            gid = line_split[0]
+
+            statusStr = f' - processing {gid} [{countr} lines read]'
             sys.stdout.write('%s\r' % statusStr)
             sys.stdout.flush()
 
-            line_split = line.strip().split('\t')
-
-            gid = line_split[0]
             gpath = line_split[1]
             assembly_id = os.path.basename(os.path.normpath(gpath))
             processed_assemblies[gid].append(gpath)
@@ -287,7 +291,7 @@ class NCBIMetaDir(object):
                 continue
 
             protein_file = os.path.join(
-                gpath, "prodigal", gid + "_protein.faa")
+                gpath, "prodigal", gid + "_protein.faa.gz")
             if not os.path.exists(protein_file):
                 continue
 
@@ -300,13 +304,13 @@ class NCBIMetaDir(object):
                                                      '\t'.join(metadata_stats)))
 
                 gff_file = os.path.join(
-                    gpath, assembly_id + '_genomic.gff')
+                    gpath, assembly_id + '_genomic.gff.gz')
                 gff_stats = self._parse_gff(gff_file)
                 fout.write('\t%s' %
                            ('\t'.join(map(str, gff_stats))))
 
                 genbank_file = os.path.join(
-                    gpath, assembly_id + '_genomic.gbff')
+                    gpath, assembly_id + '_genomic.gbff.gz')
                 gbff_stats = self._parse_gbff(genbank_file)
                 fout.write('\t%s' %
                            ('\t'.join(map(str, gbff_stats))))
