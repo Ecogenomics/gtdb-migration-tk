@@ -50,11 +50,9 @@ def print_help():
       update_genbank -> Update Genbank genomes.
 
     Call genes:
-      call_genes_wf -> Full call genes workflow
-                       (prodigal -> hmmsearch -> top_hit )
+      call_genes_wf  -> Run full gene calling workflow (prodigal -> hmmsearch -> top_hit)
       prodigal       -> Call genes using Prodigal
-      prodigal_check -> Check if table used by Prodigal is the same as the
-                        one indicated in NCBI.
+      prodigal_check -> Check if table used by Prodigal is the same as the one indicated in NCBI.
       hmmsearch      -> Search Tigrfam/Pfam markers genes and generate tophit files
       top_hit        -> generate tophits file
       metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
@@ -65,9 +63,10 @@ def print_help():
       checkm         -> Estimates the quality of the new genomes
       
      Access to Database:
-     update_db          -> Update the gtdb database
+     update_db          -> Update the GTDB database
      update_checkm_db   -> Import CheckM estimates
      update_metadata_db -> Update metadata in database
+     update_reps_db     -> Update species cluter representatives in database
 
     Metadata:
       create_tables     -> Create tables with metadata for all genomes (currently only NCBI)
@@ -278,7 +277,7 @@ if __name__ == '__main__':
     update_db_parser.add_argument('-p', '--password', 
                                   help='password for psql user',  required=True)
     update_db_parser.add_argument('-d', '--db',
-                                  help='database.',  required=True)
+                                  help='database',  required=True)
     update_db_parser.add_argument('--path_to_log',
                                   help='Path to log file.',dest='output_dir',  required=True)
     update_db_parser.add_argument('-c',
@@ -304,7 +303,7 @@ if __name__ == '__main__':
     update_checkm_db_parser.add_argument('-p', '--password',
                                   help='password for psql user', required=True)
     update_checkm_db_parser.add_argument('-d', '--db',
-                                  help='database.', required=True)
+                                  help='database', required=True)
     update_checkm_db_parser.add_argument('--checkm_profiles',
                                   help='CheckM profile file for all genomes of interest',  required=True)
     update_checkm_db_parser.add_argument('-q', '--check_qa',
@@ -324,7 +323,7 @@ if __name__ == '__main__':
     update_metadata_db_parser.add_argument('-p', '--password',
                                   help='password for psql user', required=True)
     update_metadata_db_parser.add_argument('-d', '--db',
-                                  help='database.', required=True)
+                                  help='database', required=True)
     update_metadata_db_parser.add_argument('-i', '--input_folder',
                                   help='Directory folder with all the tables created by metadata.')
     update_metadata_db_parser.add_argument('-f', '--metadata_table',
@@ -338,6 +337,19 @@ if __name__ == '__main__':
     update_metadata_db_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
+    # Update species cluter representatives in database
+    update_reps_db_parser = subparsers.add_parser('update_reps_db', 
+                                                    formatter_class=CustomHelpFormatter, 
+                                                    description='Update species cluter representatives in database.')
+
+    update_reps_db_parser.add_argument('--hostname', required=True)
+    update_reps_db_parser.add_argument('-u', '--user',help='psql user', required=True)
+    update_reps_db_parser.add_argument('-p', '--password', help='password for psql user', required=True)
+    update_reps_db_parser.add_argument('-d', '--db', help='database', required=True)
+    update_reps_db_parser.add_argument('--final_cluster_file', help="clusters for named species", required=True)
+    update_reps_db_parser.add_argument('--silent', help="suppress output", action='store_true')
+
+    # Update Organism name in the database.
     update_ncbitax_db_parser = subparsers.add_parser(
         'update_ncbitax_db', formatter_class=CustomHelpFormatter, description='Update Organism name in the database.')
     update_ncbitax_db_parser.add_argument('--hostname', required=True)
@@ -346,7 +358,7 @@ if __name__ == '__main__':
     update_ncbitax_db_parser.add_argument('-p', '--password',
                                   help='password for psql user', required=True)
     update_ncbitax_db_parser.add_argument('-d', '--db',
-                                  help='database.', required=True)
+                                  help='database', required=True)
     update_ncbitax_db_parser.add_argument('-o','--organism_name_file', help='NCBI Organism name file.', required=True)
     update_ncbitax_db_parser.add_argument('--filtered', help='Filtered taxonomy file.', required=True)
     update_ncbitax_db_parser.add_argument('--unfiltered', help='Unfiltered taxonomy file.', required=True)
@@ -355,7 +367,6 @@ if __name__ == '__main__':
                         action='store_true')
     update_ncbitax_db_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
-
 
     # Search Pfam Tigrfam markers
     hmmsearch_parser = subparsers.add_parser(
