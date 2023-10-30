@@ -21,12 +21,12 @@ import argparse
 import tempfile
 import logging
 import glob
-
 from collections import defaultdict
+
+from gtdb_migration_tk.biolib_lite.common import canonical_gid
 
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
-
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 
 class MetadataDatabaseManager(object):
@@ -182,6 +182,65 @@ class MetadataDatabaseManager(object):
 
             gtdbimporter.importMetadata(table, field, data_type, data_to_commit)
             self.temp_con.commit()
+
+    def update_reps(self, final_cluster_file):
+        """Update representative genomes of species clusters."""
+
+        # clear representative fields
+        self.logger.info('Setting GTDB representative fields to NULL.')
+        q = ("UPDATE metadata_taxonomy SET gtdb_representative = NULL, gtdb_genome_representative = NULL")
+        self.temp_cur.execute(q)
+        self.temp_con.commit()
+
+        # mark all genomes as not being representatives and get translation
+        # between canonical genome IDs and NCBI accessions
+        q = ("SELECT accession FROM metadata_view")
+        self.temp_cur.execute(q)
+
+        gid_to_ncbi_accn = {}
+        is_rep = {}
+        for r in self.temp_cur:
+            ncbi_accn = r[0]
+            gid_to_ncbi_accn[canonical_gid(ncbi_accn)] = ncbi_accn
+            is_rep[ncbi_accn] = False
+
+        # determine representative assignment of genomes
+        genome_rep_data = []
+        num_sp_reps = 0
+        with open(final_cluster_file) as f:
+            headers = f.readline().strip().split('\t')
+
+            rep_index = headers.index('Representative')
+            clustered_genomes_index = headers.index('Clustered genomes')
+
+            for line in f:
+                line_split = line.strip().split('\t')
+
+                rep_accn = gid_to_ncbi_accn[line_split[rep_index]]
+                if len(line_split) > clustered_genomes_index:
+                    gids = [gid.strip() for gid in line_split[clustered_genomes_index].split(',')]
+                    for gid in gids:
+                        ncbi_accn = gid_to_ncbi_accn[gid]
+                        genome_rep_data.append((ncbi_accn, rep_accn))
+
+                genome_rep_data.append((rep_accn, rep_accn))
+
+                is_rep[rep_accn] = True
+                num_sp_reps += 1
+
+        print(f'Identified {num_sp_reps:,} species clusters.')
+        print('Identified {:,} genomes marked as representatives.'.format(sum([1 for rid in is_rep if is_rep[rid]])))
+        gtdbimporter = GTDBImporter(self.temp_cur)
+        gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_genome_representative', 'TEXT', genome_rep_data)
+        self.temp_con.commit()
+ 
+        # mark representative genomes
+        is_rep_data = []
+        for rep_accn, rep_status in is_rep.items():
+            is_rep_data.append((rep_accn, str(rep_status)))
+
+        gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', is_rep_data)
+        self.temp_con.commit()
 
     def add_surveillance_genomes(self,genome_list):
         data_to_commit = []

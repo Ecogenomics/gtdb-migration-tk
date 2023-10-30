@@ -222,6 +222,10 @@ class OptionsParser():
                                  table_folder=options.input_folder, table_file=options.metadata_table,
                                  table_file_desc=options.metadata_table_desc)
 
+    def update_reps_db(self, options):
+        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p.update_reps(options.final_cluster_file)
+
     def update_ncbitax_db(self, options):
         p = NCBITaxDatabaseManager(options.hostname, options.user, options.password, options.db)
         p.update_ncbitax_db(options.organism_name_file, options.filtered, options.unfiltered, options.genome_list,
@@ -349,6 +353,8 @@ class OptionsParser():
             self.ncbi_genome_category(options)
         elif options.subparser_name == 'update_metadata_db':
             self.update_metadata_db(options)
+        elif options.subparser_name == 'update_reps_db':
+            self.update_reps_db(options)
         elif options.subparser_name == 'update_ncbitax_db':
             self.update_ncbitax_db(options)
         elif options.subparser_name == 'update_refseq':
