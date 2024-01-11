@@ -14,6 +14,9 @@ from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 from gtdb_migration_tk.utils.prettytable import PrettyTable
 from gtdb_migration_tk.utils.tools import Tools
 
+import multiprocessing as mp
+
+
 
 class ProdigalManager(object):
     """Create file indicating directory of each genome."""
@@ -76,41 +79,51 @@ class ProdigalManager(object):
 
         tools = Tools()
 
-
+        list_genome_tuples = []
         with open(gtdb_genome_path_file,'r') as ggpf :
             for i,line in enumerate(tqdm(ggpf)):
                 line_split = line.strip().split('\t')
                 gid = line_split[0]
                 gpath = line_split[1]
+                list_genome_tuples.append((gid,gpath,all_genomes))
 
-                aa_gene_file = os.path.join(
-                    gpath, 'prodigal', gid + '_protein.faa.gz')
+        #get top 10 genomes
+        with mp.Pool(processes=self.cpus) as pool:
+            genome_paths = list(tqdm(pool.imap_unordered(self.prodigal_parser, list_genome_tuples),
+                                    total=len(list_genome_tuples), unit='genome'))
 
 
-                if all_genomes:
-                    prodigal_dir = os.path.join(gpath, 'prodigal')
-                    if os.path.exists(prodigal_dir):
-                        shutil.rmtree(prodigal_dir)
-                    genome_paths[gid] = gpath
-                else:
-                    if os.path.exists(aa_gene_file):
-                        # verify checksum
-                        checksum_file = aa_gene_file[0:-3] + '.sha256'
-                        if os.path.exists(checksum_file):
-                            checksum = sha256_rb(gzip.GzipFile(fileobj=open(aa_gene_file, 'rb')))
-                            cur_checksum = open(
-                                checksum_file).readline().strip()
-                            if checksum == cur_checksum:
-                                continue
-                            else:
-                                print(checksum, cur_checksum)
-                        else:
-                            print('No checksum file found for %s' % aa_gene_file)
-                    genome_paths[gid] = gpath
-
-            # run Prodigal
-            self._run_prodigal(genome_paths)
+        # run Prodigal
+        genome_paths = [x for x in genome_paths if x != ('null', 'null')]
+        self._run_prodigal(genome_paths)
         return True
+
+    def prodigal_parser(self, job):
+        gid, gpath,all_genomes = job
+        aa_gene_file = os.path.join(
+            gpath, 'prodigal', gid + '_protein.faa.gz')
+
+        if all_genomes:
+            prodigal_dir = os.path.join(gpath, 'prodigal')
+            if os.path.exists(prodigal_dir):
+                shutil.rmtree(prodigal_dir)
+            return [(gid, gpath)]
+        else:
+            if os.path.exists(aa_gene_file):
+                # verify checksum
+                checksum_file = aa_gene_file[0:-3] + '.sha256'
+                if os.path.exists(checksum_file):
+                    checksum = sha256_rb(gzip.GzipFile(fileobj=open(aa_gene_file, 'rb')))
+                    cur_checksum = open(
+                        checksum_file).readline().strip()
+                    if checksum == cur_checksum:
+                        return ('null', 'null')
+                    else:
+                        print(checksum, cur_checksum)
+                else:
+                    print('No checksum file found for %s' % aa_gene_file)
+            return (gid, gpath)
+
 
     def _run_prodigal(self, genome_paths):
         """Run Prodigal on all genomes to process.
@@ -124,7 +137,9 @@ class ProdigalManager(object):
             f'Determining genomic file and translation table for each of the {len(genome_paths)} genomes.')
         genome_files = []
         translation_table = {}
-        for gid, gpath in genome_paths.items():
+        for gid, gpath in tqdm(genome_paths):
+            if gid == 'null':
+                continue
             assembly_id = os.path.basename(os.path.normpath(gpath))
 
             genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')

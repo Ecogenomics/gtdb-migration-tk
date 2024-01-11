@@ -26,6 +26,7 @@ __status__ = 'Development'
 
 import os
 import glob
+import shutil
 import sys
 import urllib.request
 import re
@@ -35,6 +36,8 @@ import html
 import logging
 import pandas as pd
 import csv
+from requests import get  # to make GET request
+
 
 from sqlalchemy import create_engine
 from bs4 import BeautifulSoup
@@ -61,6 +64,14 @@ class LPSN(object):
         self.download_subspecies_lpsn_html()
         self.parse_html(os.path.join(self.outdir, 'genus_html'))
 
+    def download(self,url, file_name):
+        # open in binary mode
+        with open(file_name, "wb") as file:
+            # get request
+            response = get(url)
+            # write to file
+            file.write(response.content)
+
     def download_rank_lpsn_html(self, rank_name):
         """
 
@@ -76,8 +87,12 @@ class LPSN(object):
             make_sure_path_exists(index_dir)
             for letter in list(string.ascii_uppercase):
                 url = self.base_url + f'{rank_name}?page=' + letter
-                urllib.request.urlretrieve(
-                    url, os.path.join(index_dir, '{}_{}.html'.format(rank_name, letter)))
+                outfile = os.path.join(index_dir, '{}_{}.html'.format(rank_name, letter))
+                self.download(url, outfile)
+                # with urllib.request.urlopen(url) as response, open(outfile, 'wb') as out_file:
+                #     shutil.copyfileobj(response, out_file)
+                # urllib.request.urlretrieve(
+                #     url, os.path.join(index_dir, '{}_{}.html'.format(rank_name, letter)))
 
         # Parse html pages lising all classes
         rank_sites_list = open(os.path.join(
@@ -178,8 +193,9 @@ class LPSN(object):
             self.logger.info('Beginning download of subspecies from LPSN.')
             search_url = 'https://lpsn.dsmz.de/advanced_search?adv%5Btaxon-name%5D=&adv%5Bcategory%5D=subspecies&adv%5Bnomenclature%5D=&adv%5Bvalid-publ%5D=&adv%5Bcandidatus%5D=&adv%5Bcorrect-name%5D=&adv%5Bauthority%5D=&adv%5Bdeposit%5D=&adv%5Betymology%5D=&adv%5Bgender%5D=&adv%5Bdate-option%5D=&adv%5Bdate%5D=&adv%5Bdate-between%5D=&adv%5Briskgroup%5D=&adv%5Bsubmit%5D=submit-adv#results'
             make_sure_path_exists(os.path.join(index_dir))
-            urllib.request.urlretrieve(
-                search_url, os.path.join(index_dir, 'search_subspecies.html'))
+            self.download(search_url, os.path.join(index_dir, 'search_subspecies.html'))
+            # urllib.request.urlretrieve(
+            #     search_url, os.path.join(index_dir, 'search_subspecies.html'))
 
         # Parse html pages listing all subspecies
         species_sites_list = open(os.path.join(

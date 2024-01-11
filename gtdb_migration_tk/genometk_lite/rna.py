@@ -288,6 +288,10 @@ class RNA(object):
         # read HMM hits
         hits_per_domain = {}
         for domain in ['ar', 'bac', 'euk']:
+            if not os.path.isfile(os.path.join(output_dir, self.rna_name + '.' + domain + '.txt')):
+                self.logger.info('No hits for ' + self.rna_name + ' ' + domain + 'for genome ' + genome_file + '.')
+                hits_per_domain[domain] = {}
+                continue
             seq_info = self._read_hits(os.path.join(output_dir, self.rna_name + '.' + domain + '.txt'),
                                        domain, evalue_threshold)
 

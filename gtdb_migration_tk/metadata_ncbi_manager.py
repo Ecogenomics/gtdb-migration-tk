@@ -32,10 +32,14 @@ __status__ = 'Development'
 import os
 import sys
 import argparse
-import gzip
 from collections import defaultdict
+import multiprocessing as mp
+
 
 from numpy import (zeros as np_zeros)
+from tqdm import tqdm
+
+from gtdb_migration_tk.utils.tools import openfile
 
 
 class GenericFeatureParser():
@@ -66,7 +70,7 @@ class GenericFeatureParser():
           Generic feature file to parse.
         """
 
-        for line in gzip.open(gff_file, 'rt'):
+        for line in openfile(gff_file):
             if line[0] == '#':
                 continue
 
@@ -138,7 +142,7 @@ class GenericFeatureParser():
 class NCBIMetaDir(object):
     """Create metadata file from the assembly stats file of each NCBI assembly."""
 
-    def __init__(self):
+    def __init__(self,cpus=1):
         self.fields = ['Assembly name', 'Organism name',
                        'Taxid', 'Submitter', 'Date']
         self.fields.extend(['BioSample', 'Assembly type',
@@ -159,6 +163,8 @@ class NCBIMetaDir(object):
         self.gbff_fields = ['translation_table']
 
         self.stats_info = {}
+
+        self.cpus = cpus
 
     def _parse_assembly_stats(self, assembly_stat_file):
         """Parse data from assembly stats file.
@@ -209,7 +215,6 @@ class NCBIMetaDir(object):
                 if len(line_split) == 6 and (line_split[0] in ['all', 'Primary Assembly']) and (line_split[1] == 'all') and (line_split[3] == 'all'):
                     field = line_split[4]
                     value = line_split[5].strip()
-
                     if field in self.stats:
                         metadata_index = self.stats.index(field)
                         metadata_stats[metadata_index] = value
@@ -243,10 +248,9 @@ class NCBIMetaDir(object):
         metadata_gbff = [''] * len(self.gbff_fields)
 
         if not os.path.exists(genbank_file):
-            print(f'Missing {genbank_file}')
             return metadata_gbff
 
-        for line in gzip.open(genbank_file, 'rt'):
+        for line in openfile(genbank_file):
             if '/transl_table=' in line:
                 translation_table = line[line.rfind('=') + 1:].strip()
                 metadata_gbff[self.gbff_fields.index(
@@ -272,70 +276,81 @@ class NCBIMetaDir(object):
 
         processed_assemblies = defaultdict(list)
         countr = 0
+        line_to_process = []
         for line in open(gtdb_genome_path_file):
             countr += 1
-
-            line_split = line.strip().split('\t')
-            gid = line_split[0]
-
-            statusStr = f' - processing {gid} [{countr} lines read]'
+            statusStr = '{} lines read.'.format(countr)
             sys.stdout.write('%s\r' % statusStr)
             sys.stdout.flush()
+            line_to_process.append(line)
 
-            gpath = line_split[1]
-            assembly_id = os.path.basename(os.path.normpath(gpath))
-            processed_assemblies[gid].append(gpath)
+        with mp.Pool(processes=self.cpus) as pool:
+            list_lines_to_write = list(tqdm(pool.imap_unordered(self.ncbi_parser_worker, line_to_process),
+                                         total=len(line_to_process), unit='genome'))
 
-            if len(processed_assemblies[gid]) >= 2:
-                print('%s\t%s' % (gid, ','.join(processed_assemblies[gid])))
-                continue
 
-            protein_file = os.path.join(
-                gpath, "prodigal", gid + "_protein.faa")
-            if not os.path.exists(protein_file):
-                continue
-
-            assembly_stat_file = os.path.join(
-                gpath, assembly_id + '_assembly_stats.txt')
-            if os.path.exists(assembly_stat_file):
-                metadata_fields, metadata_stats = self._parse_assembly_stats(
-                    assembly_stat_file)
-                fout.write(gid + '\t%s\t%s' % ('\t'.join(metadata_fields),
-                                                     '\t'.join(metadata_stats)))
-
-                gff_file = os.path.join(
-                    gpath, assembly_id + '_genomic.gff.gz')
-                gff_stats = self._parse_gff(gff_file)
-                fout.write('\t%s' %
-                           ('\t'.join(map(str, gff_stats))))
-
-                genbank_file = os.path.join(
-                    gpath, assembly_id + '_genomic.gbff.gz')
-                gbff_stats = self._parse_gbff(genbank_file)
-                fout.write('\t%s' %
-                           ('\t'.join(map(str, gbff_stats))))
-
-            fout.write('\n')
+        for line_to_write in list_lines_to_write:
+            if line_to_write != 'null':
+                fout.write(line_to_write + '\n')
 
         fout.close()
+
+    def ncbi_parser_worker(self,job):
+        line = job
+
+        line_split = line.strip().split('\t')
+
+        gid = line_split[0]
+        gpath = line_split[1]
+        assembly_id = os.path.basename(os.path.normpath(gpath))
+
+
+        protein_file = os.path.join(
+            gpath, "prodigal", gid + "_protein.faa.gz")
+        if not os.path.exists(protein_file):
+            return 'null'
+
+        assembly_stat_file = os.path.join(
+            gpath, assembly_id + '_assembly_stats.txt')
+        line_to_write = gid
+        if os.path.exists(assembly_stat_file):
+            metadata_fields, metadata_stats = self._parse_assembly_stats(
+                assembly_stat_file)
+
+            line_to_write = gid + '\t%s\t%s' % ('\t'.join(metadata_fields),
+                                           '\t'.join(metadata_stats))
+
+            gff_file = os.path.join(
+                gpath, assembly_id + '_genomic.gff.gz')
+            gff_stats = self._parse_gff(gff_file)
+            line_to_write = line_to_write + '\t' + '\t'.join(map(str, gff_stats))
+
+            genbank_file = os.path.join(
+                gpath, assembly_id + '_genomic.gbff.gz')
+            gbff_stats = self._parse_gbff(genbank_file)
+            line_to_write = line_to_write + '\t' + '\t'.join(map(str, gbff_stats))
+
+
+        return line_to_write
+
 
 
 class NCBIMeta(object):
     """Create metadata file from the assembly stats file of each NCBI assembly."""
 
     def __init__(self):
-        self.fields = {'bioproject': 'ncbi_bioproject',
-                       'wgs_master': 'ncbi_wgs_master',
-                       'refseq_category': 'ncbi_refseq_category',
-                       'species_taxid': 'ncbi_species_taxid',
-                       'isolate': 'ncbi_isolate',
-                       'version_status': 'ncbi_version_status',
-                       'seq_rel_date': 'ncbi_seq_rel_date',
-                       'asm_name': 'ncbi_asm_name',
-                       'gbrs_paired_asm': 'ncbi_gbrs_paired_asm',
-                       'paired_asm_comp': 'ncbi_paired_asm_comp',
-                       'relation_to_type_material': 'ncbi_type_material_designation',
-                       'excluded_from_refseq':'ncbi_untrustworthy_as_type'}
+        self.fields = {'bioproject': ['ncbi_bioproject'],
+                       'wgs_master': ['ncbi_wgs_master'],
+                       'refseq_category': ['ncbi_refseq_category'],
+                       'species_taxid': ['ncbi_species_taxid'],
+                       'isolate': ['ncbi_isolate'],
+                       'version_status': ['ncbi_version_status'],
+                       'seq_rel_date': ['ncbi_seq_rel_date'],
+                       'asm_name': ['ncbi_asm_name'],
+                       'gbrs_paired_asm': ['ncbi_gbrs_paired_asm'],
+                       'paired_asm_comp': ['ncbi_paired_asm_comp'],
+                       'relation_to_type_material': ['ncbi_type_material_designation'],
+                       'excluded_from_refseq': ['ncbi_excluded_from_refseq','ncbi_not_used_as_type']}
 
     def parse_assemblies(self, refseq_bacteria_assembly_summary_file,
             refseq_archaea_assembly_summary_file,
@@ -379,7 +394,7 @@ class NCBIMeta(object):
                 for i, header in enumerate(headers):
                     if header in self.fields:
                         if write_header:
-                            fout.write('\t' + self.fields[header])
+                            fout.write('\t' + '\t'.join(self.fields[header]))
                         indices.append(i)
                         if write_header and header == 'excluded_from_refseq':
                             indice_excluded_from_refseq = i
@@ -407,10 +422,14 @@ class NCBIMeta(object):
                                 fout.write(
                                     '\t' + self.format_wgs(line_split[i]))
                             elif indice_excluded_from_refseq == i:
-                                trustworthy = False
-                                if "untrustworthy as type" in line_split[i]:
-                                    trustworthy = True
-                                fout.write('\t' + str(trustworthy))
+                                donttrust = False
+                                excluded_from_refseq_value = line_split[i]
+                                if "not used as type" in line_split[i]:
+                                    donttrust = True
+                                elif line_split[i] == "na":
+                                    excluded_from_refseq_value = ""
+                                fout.write('\t' + excluded_from_refseq_value) #ncbi_excluded_from_refseq
+                                fout.write('\t' + str(donttrust)) #ncbi_not_used_as_type
                             else:
                                 fout.write('\t' + line_split[i])
                         fout.write('\n')
@@ -418,7 +437,7 @@ class NCBIMeta(object):
         fout.close()
 
     def format_wgs(self, wgs_accession):
-        if not wgs_accession:
+        if not wgs_accession or wgs_accession == "na":
             return ""
         wgs_acc, version = wgs_accession.split('.')
         idx = [ch.isdigit() for ch in wgs_acc].index(True)

@@ -39,8 +39,8 @@ def check_format_strain(strain_id):
     """Check if strain ID has an acceptable format."""
     
     # skip IDs within a number
-    if not any(char.isdigit() for char in strain_id):
-        return False
+    # if not any(char.isdigit() for char in strain_id):
+    #     return False
 
     if all(c.isdigit() or c.isupper() for c in strain_id):
         return True

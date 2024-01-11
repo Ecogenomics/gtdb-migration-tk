@@ -16,12 +16,18 @@
 ###############################################################################
 
 import os
+import shutil
 import sys
 import logging
 import ntpath
 import datetime
+import tempfile
 
 from collections import defaultdict
+import multiprocessing as mp
+
+
+from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.genometk_lite.rna import RNA
@@ -64,15 +70,14 @@ class RnaManager(object):
                 print('{} does not exist'.format(item))
                 sys.exit(-1)
 
-    def _producer(self, genome_file):
+    def _producer(self, job):
         """Process each genome."""
-
+        genome_file = job
         full_genome_dir, _ = ntpath.split(genome_file)
-
         output_dir = os.path.join(full_genome_dir, self.silva_output_dir)
 
         rna_runner = self.rna(genome_file, output_dir)
-        return output_dir
+        return (genome_file, 'done')
 
     def _progress(self, processed_items, total_items):
         current_time_utc = datetime.datetime.utcnow().replace(microsecond=0)
@@ -102,33 +107,48 @@ class RnaManager(object):
 
         self.starttime = datetime.datetime.utcnow().replace(microsecond=0)
         input_files = []
-        countr = 0
+        list_genomes_tuples = []
         for line in open(gtdb_genome_path_file):
-            countr += 1
-            statusStr = '{} lines read.'.format(countr)
-            sys.stdout.write('%s\r' % statusStr)
-            sys.stdout.flush()
+            list_genomes_tuples.append((line.strip(),rerun))
 
-            line_split = line.strip().split('\t')
+        with mp.Pool(processes=self.cpus) as pool:
+            genome_paths = list(tqdm(pool.imap_unordered(self.rna_parser, list_genomes_tuples),
+                                     total=len(list_genomes_tuples), unit='genome'))
 
-            gid = line_split[0]
-            gpath = line_split[1]
-            assembly_id = os.path.basename(os.path.normpath(gpath))
-
-            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
-
-            canary_file = os.path.join(
-                gpath, self.output_dir, self.rna_gene + '.canary.txt')
-            if not os.path.exists(canary_file) or rerun:
-                input_files.append(genome_file)
+        input_files = [x for x in genome_paths if x != 'null']
 
         # process each genome
-        print('Generating metadata for each genome:')
-        parallel = Parallel(cpus=self.cpus)
-        parallel.run(self._producer,
-                     None,
-                     input_files,
-                     self._progress)
+        print(f'Generating metadata for each genome: {len(input_files)} genomes')
+        processed_items = []
+        with mp.Pool(processes=self.cpus) as pool:
+            processed_items = list(tqdm(pool.imap_unordered(self._producer, input_files),
+                                     total=len(input_files), unit='genome'))
+
+        # parallel = Parallel(cpus=self.cpus)
+        # parallel.run(self._producer,
+        #              None,
+        #              input_files,
+        #              self._progress)
+
+    def rna_parser(self, job):
+        line,rerun, = job
+        line_split = line.strip().split('\t')
+
+        gid = line_split[0]
+        gpath = line_split[1]
+        assembly_id = os.path.basename(os.path.normpath(gpath))
+
+        genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
+        if rerun:
+            return genome_file
+
+        canary_file = os.path.join(
+            gpath, self.output_dir, self.rna_gene + '.canary.txt')
+        if not os.path.exists(canary_file):
+            return genome_file
+        else:
+            return 'null'
+
 
     def rna(self, genome_file, output_dir):
         #self.logger.info('Identifying, extracting, and classifying rRNA genes.')
@@ -151,14 +171,50 @@ class RnaManager(object):
         ar_model, bac_model, euk_model = rna_models[self.rna_gene]
 
         # run each of the rRNA models
-        rna = RNA(self.cpus, self.rna_gene, self.min_len)
-        rna.run(genome_file,
-                os.path.join(hmm_dir, ar_model + '.hmm'),
-                os.path.join(hmm_dir, bac_model + '.hmm'),
-                os.path.join(hmm_dir, euk_model + '.hmm'),
-                self.db,
-                self.taxonomy,
-                output_dir)
+        rna = RNA(1, self.rna_gene, self.min_len)
+
+        #we move the input file to a temp file
+        temp_dir = tempfile.mkdtemp(suffix=os.path.basename(genome_file))
+        temp_genome_file = os.path.join(temp_dir,os.path.basename(genome_file))
+        shutil.copy(genome_file,temp_genome_file)
+
+        temp_ar_model = os.path.join(temp_dir,os.path.basename(ar_model)+'.hmm')
+        shutil.copy(os.path.join(hmm_dir, ar_model + '.hmm'),temp_ar_model)
+        temp_bac_model = os.path.join(temp_dir,os.path.basename(bac_model)+'.hmm')
+        shutil.copy(os.path.join(hmm_dir, bac_model + '.hmm'),temp_bac_model)
+        temp_euk_model = os.path.join(temp_dir,os.path.basename(euk_model)+'.hmm')
+        shutil.copy(os.path.join(hmm_dir, euk_model + '.hmm'),temp_euk_model)
+
+
+
+        temp_taxonomy = None
+        if self.taxonomy is not None:
+            temp_taxonomy = os.path.join(temp_dir,os.path.basename(self.taxonomy))
+            shutil.copy(self.taxonomy,temp_taxonomy)
+
+
+        temp_output_dir = os.path.join(temp_dir,os.path.basename(output_dir))
+        os.mkdir(temp_output_dir)
+
+        try:
+            rna.run(temp_genome_file,
+                    temp_ar_model,
+                    temp_bac_model,
+                    temp_euk_model,
+                    self.db,
+                    temp_taxonomy,
+                    temp_output_dir)
+
+            #we copy temp_output_dir to output_dir
+            if os.path.exists(output_dir):
+                # we copy the files from temp_output_dir to output_dir
+                for file in os.listdir(temp_output_dir):
+                    shutil.copy(os.path.join(temp_output_dir,file),os.path.join(output_dir,file))
+            else:
+                shutil.copytree(temp_output_dir,output_dir)
+
+        finally:
+            shutil.rmtree(temp_dir)
 
     def update_silva(self,ssu_ref_file,lsu_ref_file,output_dir):
         fout = open(os.path.join(output_dir,'silva_taxonomy.ssu.tsv'), 'w')

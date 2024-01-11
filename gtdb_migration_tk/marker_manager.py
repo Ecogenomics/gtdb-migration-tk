@@ -92,43 +92,21 @@ class MarkerManager(object):
         self.logger.info('Checking genomes.')
         genome_files = []
 
+        list_genomes_tuples = []
         with open(gtdb_genome_path_file,'r') as  ggpf:
             for idx,line in enumerate(tqdm(ggpf)):
                 gid,gpath,*_ = line.strip().split('\t')
+                list_genomes_tuples.append((gid,gpath,marker_folder,full_extension,genomes_to_consider,name))
 
-                prodigal_dir = os.path.join(gpath, 'prodigal')
-                marker_file = os.path.join(prodigal_dir, marker_folder, gid + full_extension)
-                marker_zipped_file = marker_file + '.gz'
-                if os.path.exists(marker_zipped_file):
-                    # verify checksum
-                    checksum_file = marker_file + '.sha256'
-                    if os.path.exists(checksum_file):
-                        checksum = sha256_rb(gzip.GzipFile(fileobj=open(marker_zipped_file, 'rb')))
-                        cur_checksum = open(checksum_file).readline().strip()
-                        if checksum == cur_checksum:
-                            if gid in genomes_to_consider:
-                                self.logger.warning(
-                                    f'Genome {gid} is marked as new or modified, but already has {name} annotations.')
-                                self.logger.warning('Genome is being skipped!')
-                            continue
+            # get top 10 genomes
+            with mp.Pool(processes=self.cpus) as pool:
+                genome_paths = list(tqdm(pool.imap_unordered(self.marker_parser, list_genomes_tuples),
+                                         total=len(list_genomes_tuples), unit='genome'))
 
-                    self.logger.warning(
-                        f'Genome {gid} has {name} annotations, but an invalid checksum and was not marked for reannotation.')
-                    self.logger.warning(f'Genome will be reannotated.')
+            # run Prodigal
+            genome_files = [x for x in genome_paths if x != 'null']
 
-                elif gid not in genomes_to_consider:
-                    print('Already processed', marker_zipped_file)
-                    self.logger.warning(
-                        f'Genome {gid} has no {name} annotations, but is also not marked for processing?')
-                    self.logger.warning(f'Genome will be reannotated!')
 
-                gene_file = os.path.join(
-                    prodigal_dir, gid + self.protein_file_ext)
-                if os.path.exists(gene_file):
-                    if os.stat(gene_file).st_size == 0:
-                        self.logger.warning(f' Protein file appears to be empty: {gene_file}')
-                    else:
-                        genome_files.append(gene_file)
 
         self.logger.info(f'Number of unprocessed genomes: {len(genome_files)}')
 
@@ -164,6 +142,42 @@ class MarkerManager(object):
                 p.terminate()
 
             writeProc.terminate
+
+    def marker_parser(self, job):
+        gid, gpath,marker_folder,full_extension,genomes_to_consider,name = job
+        prodigal_dir = os.path.join(gpath, 'prodigal')
+        marker_file = os.path.join(prodigal_dir, marker_folder, gid + full_extension)
+        marker_zipped_file = marker_file + '.gz'
+        if os.path.exists(marker_zipped_file):
+            # verify checksum
+            checksum_file = marker_file + '.sha256'
+            if os.path.exists(checksum_file):
+                checksum = sha256_rb(gzip.GzipFile(fileobj=open(marker_zipped_file, 'rb')))
+                cur_checksum = open(checksum_file).readline().strip()
+                if checksum == cur_checksum:
+                    if gid in genomes_to_consider:
+                        self.logger.warning(
+                            f'Genome {gid} is marked as new or modified, but already has {name} annotations.')
+                        self.logger.warning('Genome is being skipped!')
+                    return 'null'
+
+            self.logger.warning(
+                f'Genome {gid} has {name} annotations, but an invalid checksum and was not marked for reannotation.')
+            self.logger.warning(f'Genome will be reannotated.')
+
+        elif gid not in genomes_to_consider:
+            print('Already processed', marker_zipped_file)
+            self.logger.warning(
+                f'Genome {gid} has no {name} annotations, but is also not marked for processing?')
+            self.logger.warning(f'Genome will be reannotated!')
+
+        gene_file = os.path.join(
+            prodigal_dir, gid + self.protein_file_ext)
+        if os.path.exists(gene_file):
+            if os.stat(gene_file).st_size == 0:
+                self.logger.warning(f' Protein file appears to be empty: {gene_file}')
+            else:
+                return gene_file
 
     def run_tophit(self, gtdb_genome_path_file, db, folder_name):
 
@@ -209,7 +223,10 @@ class MarkerManager(object):
                         self.logger.warning(
                             f'Output file does not exist: {output_hit_file}')
                         continue
-                    self._parse_top_hit(output_hit_file, tophit_file,db)
+                    if db == 'pfam':
+                        self._pfam_top_hit(output_hit_file, tophit_file)
+                    elif db == 'tigrfam':
+                        self._tigr_top_hit(output_hit_file, tophit_file)
 
                     with open(tophit_file, 'rb') as f_in, gzip.open(tophit_file + '.gz', 'wb') as f_out:
                         f_out.writelines(f_in)
@@ -262,6 +279,13 @@ class MarkerManager(object):
             temp_dir = tempfile.mkdtemp()
             try:
                 temp_gene_file = os.path.join(temp_dir, filename[0:-3])
+                print(temp_gene_file)
+
+                # if size of temp_gene_file is 0, then skip hmmsearch
+                if os.stat(gene_file).st_size == 0:
+                    self.logger.warning('Skipping %s because it is empty' % temp_gene_file)
+                    continue
+
                 with gzip.open(gene_file, 'rb') as f_in:
                     with open(temp_gene_file, 'wb') as f_out:
                         shutil.copyfileobj(f_in, f_out)
@@ -272,7 +296,7 @@ class MarkerManager(object):
                 # determine top hits
                 pfam_tophit_file = os.path.join(assembly_dir, pfam_version, filename.replace(
                     self.protein_file_ext, pfam_tophit_extension))
-                self._parse_top_hit(output_hit_file, pfam_tophit_file,prefix)
+                self._pfam_top_hit(output_hit_file, pfam_tophit_file)
 
 
 
@@ -313,74 +337,37 @@ class MarkerManager(object):
             # allow results to be processed or written to file
             queue_out.put(gene_file)
 
-    def _parse_top_hit(self,input_file,tophit_file,hmmdb):
-        """Identify top Pfam and TIGRfam hits."""
-
-        tophits = defaultdict(dict)
-
-
-        for line in openfile(input_file):
-            gene_id = None
-            if hmmdb == 'tigrfam':
-                if line[0] == '#' or line[0] == '[':
-                    continue
-                line_split = line.split()
-                gene_id = line_split[0]
-                hmm_id = line_split[3]
-                evalue = float(line_split[4])
-                bitscore = float(line_split[5])
-
-            elif hmmdb == 'pfam':
-                if line[0] == '#' or not line.strip():
-                    continue
-                line_split = line.split()
-                gene_id = line_split[0]
-                hmm_id = line_split[5]
-                evalue = float(line_split[12])
-                bitscore = float(line_split[11])
-
-
-            if gene_id is None:
-                self.logger.warning(
-                    f' No gene id found in {input_file} for hmmdb {hmmdb}')
-            elif gene_id in tophits:
-                if hmm_id in tophits[gene_id]:
-                    if bitscore > tophits[gene_id][hmm_id][1]:
-                        tophits[gene_id][hmm_id] = (evalue, bitscore)
-                else:
-                    tophits[gene_id][hmm_id] = (evalue, bitscore)
-            else:
-                tophits[gene_id][hmm_id] = (evalue, bitscore)
-
-        fout = open(tophit_file, 'w')
-        fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
-        for gene_id, hits in tophits.items():
-            hit_str = []
-            for hmm_id, stats in hits.items():
-                hit_str.append(hmm_id + ',' + ','.join(map(str, stats)))
-            fout.write('%s\t%s\n' % (gene_id, ';'.join(hit_str)))
-        fout.close()
-
-        # calculate checksum
-        checksum = sha256(tophit_file)
-        fout = open(tophit_file + '.sha256', 'w')
-        fout.write(checksum)
-        fout.close()
-
-    # def _pfam_top_hit(self, pfam_file, pfam_tophit_file):
-    #     """Identify top Pfam hits."""
+    # def _parse_top_hit(self,input_file,tophit_file,hmmdb):
+    #     """Identify top Pfam and TIGRfam hits."""
     #
     #     tophits = defaultdict(dict)
-    #     for line in open(pfam_file):
-    #         if line[0] == '#' or not line.strip():
-    #             continue
     #
-    #         line_split = line.split()
-    #         gene_id = line_split[0]
-    #         hmm_id = line_split[5]
-    #         evalue = float(line_split[12])
-    #         bitscore = float(line_split[11])
-    #         if gene_id in tophits:
+    #
+    #     for line in openfile(input_file):
+    #         gene_id = None
+    #         if hmmdb == 'tigrfam':
+    #             if line[0] == '#' or line[0] == '[':
+    #                 continue
+    #             line_split = line.split()
+    #             gene_id = line_split[0]
+    #             hmm_id = line_split[3]
+    #             evalue = float(line_split[4])
+    #             bitscore = float(line_split[5])
+    #
+    #         elif hmmdb == 'pfam':
+    #             if line[0] == '#' or not line.strip():
+    #                 continue
+    #             line_split = line.split()
+    #             gene_id = line_split[0]
+    #             hmm_id = line_split[5]
+    #             evalue = float(line_split[12])
+    #             bitscore = float(line_split[11])
+    #
+    #
+    #         if gene_id is None:
+    #             self.logger.warning(
+    #                 f' No gene id found in {input_file} for hmmdb {hmmdb}')
+    #         elif gene_id in tophits:
     #             if hmm_id in tophits[gene_id]:
     #                 if bitscore > tophits[gene_id][hmm_id][1]:
     #                     tophits[gene_id][hmm_id] = (evalue, bitscore)
@@ -389,7 +376,7 @@ class MarkerManager(object):
     #         else:
     #             tophits[gene_id][hmm_id] = (evalue, bitscore)
     #
-    #     fout = open(pfam_tophit_file, 'w')
+    #     fout = open(tophit_file, 'w')
     #     fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
     #     for gene_id, hits in tophits.items():
     #         hit_str = []
@@ -399,42 +386,79 @@ class MarkerManager(object):
     #     fout.close()
     #
     #     # calculate checksum
-    #     checksum = sha256(pfam_tophit_file)
-    #     fout = open(pfam_tophit_file + '.sha256', 'w')
+    #     checksum = sha256(tophit_file)
+    #     fout = open(tophit_file + '.sha256', 'w')
     #     fout.write(checksum)
     #     fout.close()
 
-    # def _tigr_top_hit(self, tigrfam_file, tigrfam_tophit_file):
-    #     """Identify top TIGRfam hits."""
-    #
-    #     tophits = defaultdict(dict)
-    #     for line in open(tigrfam_file):
-    #         if line[0] == '#' or line[0] == '[':
-    #             continue
-    #
-    #         line_split = line.split()
-    #         gene_id = line_split[0]
-    #         hmm_id = line_split[3]
-    #         evalue = float(line_split[4])
-    #         bitscore = float(line_split[5])
-    #         if gene_id in tophits:
-    #             if bitscore > tophits[gene_id][2]:
-    #                 tophits[gene_id] = (hmm_id, evalue, bitscore)
-    #         else:
-    #             tophits[gene_id] = (hmm_id, evalue, bitscore)
-    #
-    #     fout = open(tigrfam_tophit_file, 'w')
-    #     fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
-    #     for gene_id, stats in tophits.items():
-    #         hit_str = ','.join(map(str, stats))
-    #         fout.write('%s\t%s\n' % (gene_id, hit_str))
-    #     fout.close()
-    #
-    #     # calculate checksum
-    #     checksum = sha256(tigrfam_tophit_file)
-    #     fout = open(tigrfam_tophit_file + '.sha256', 'w')
-    #     fout.write(checksum)
-    #     fout.close()
+    def _pfam_top_hit(self, pfam_file, pfam_tophit_file):
+        """Identify top Pfam hits."""
+
+        tophits = defaultdict(dict)
+        for line in openfile(pfam_file):
+            if line[0] == '#' or not line.strip():
+                continue
+
+            line_split = line.split()
+            gene_id = line_split[0]
+            hmm_id = line_split[5]
+            evalue = float(line_split[12])
+            bitscore = float(line_split[11])
+            if gene_id in tophits:
+                if hmm_id in tophits[gene_id]:
+                    if bitscore > tophits[gene_id][hmm_id][1]:
+                        tophits[gene_id][hmm_id] = (evalue, bitscore)
+                else:
+                    tophits[gene_id][hmm_id] = (evalue, bitscore)
+            else:
+                tophits[gene_id][hmm_id] = (evalue, bitscore)
+
+        fout = open(pfam_tophit_file, 'w')
+        fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
+        for gene_id, hits in tophits.items():
+            hit_str = []
+            for hmm_id, stats in hits.items():
+                hit_str.append(hmm_id + ',' + ','.join(map(str, stats)))
+            fout.write('%s\t%s\n' % (gene_id, ';'.join(hit_str)))
+        fout.close()
+
+        # calculate checksum
+        checksum = sha256(pfam_tophit_file)
+        fout = open(pfam_tophit_file + '.sha256', 'w')
+        fout.write(checksum)
+        fout.close()
+
+    def _tigr_top_hit(self, tigrfam_file, tigrfam_tophit_file):
+        """Identify top TIGRfam hits."""
+
+        tophits = defaultdict(dict)
+        for line in openfile(tigrfam_file):
+            if line[0] == '#' or line[0] == '[':
+                continue
+
+            line_split = line.split()
+            gene_id = line_split[0]
+            hmm_id = line_split[3]
+            evalue = float(line_split[4])
+            bitscore = float(line_split[5])
+            if gene_id in tophits:
+                if bitscore > tophits[gene_id][2]:
+                    tophits[gene_id] = (hmm_id, evalue, bitscore)
+            else:
+                tophits[gene_id] = (hmm_id, evalue, bitscore)
+
+        fout = open(tigrfam_tophit_file, 'w')
+        fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
+        for gene_id, stats in tophits.items():
+            hit_str = ','.join(map(str, stats))
+            fout.write('%s\t%s\n' % (gene_id, hit_str))
+        fout.close()
+
+        # calculate checksum
+        checksum = sha256(tigrfam_tophit_file)
+        fout = open(tigrfam_tophit_file + '.sha256', 'w')
+        fout.write(checksum)
+        fout.close()
 
     def __tigrfam_worker(self, queue_in, queue_out,folder_name):
         """Process each data item in parallel."""
@@ -479,6 +503,11 @@ class MarkerManager(object):
                     with open(temp_gene_file, 'wb') as f_out:
                         shutil.copyfileobj(f_in, f_out)
 
+                # if size of temp_gene_file is 0, then skip hmmsearch
+                if os.stat(temp_gene_file).st_size == 0:
+                    self.logger.warning('Skipping %s because it is empty' % temp_gene_file)
+                    continue
+
                 hmmsearch_out = os.path.join(assembly_dir, tigrfam_version, filename.replace(
                     self.protein_file_ext, f'_{tigrfam_version}.out'))
                 cmd = 'hmmsearch -o {} --tblout {} --noali --notextw --cut_nc --cpu 1 {} {}'.format(
@@ -486,13 +515,13 @@ class MarkerManager(object):
                     output_hit_file,
                     self.tigrfam_hmms,
                     temp_gene_file)
-                os.system(cmd)
 
+                os.system(cmd)
 
                 # determine top hits
                 tigrfam_tophit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
                     self.protein_file_ext, tigrfam_tophit_extension))
-                self._parse_top_hit(output_hit_file, tigrfam_tophit_file,prefix)
+                self._tigr_top_hit(output_hit_file, tigrfam_tophit_file)
 
                 # calculate checksum
                 checksum = sha256(output_hit_file)

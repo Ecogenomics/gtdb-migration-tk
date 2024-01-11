@@ -25,6 +25,9 @@ import logging
 
 from collections import defaultdict
 
+from checkm.util.seqUtils import readFasta
+
+
 class CheckMManager(object):
     """Apply CheckM to a large set of genomes.
 
@@ -118,6 +121,13 @@ class CheckMManager(object):
                 continue
 
             os.makedirs(checkm_output_dir)
+            # check if all genomes in bin_dir are nucleotide or amino acid
+            binFiles = self.binFiles(
+                bin_dir,'gz')
+
+            #self.checkProteinSeqs(binFiles)
+
+
             os.system('checkm lineage_wf --pplacer_threads %d --genes -x faa.gz -t %d %s %s' %
                       (self.cpus, self.cpus, bin_dir, checkm_output_dir))
 
@@ -186,6 +196,137 @@ class CheckMManager(object):
         fout.close()
 
         print('CheckM results written to: %s' % checkm_output)
+
+
+    def checkProteinSeqs(self,seq_files):
+        """Check if files contain sequences in amino acid space.
+
+        Parameters
+        ----------
+        seq_files : iterable
+            Sequence files to check.
+
+        Returns
+        -------
+        boolean
+            True if files can be treated as containing amino acid sequences.
+        """
+
+        for seq_file in seq_files:
+            if os.stat(seq_file).st_size == 0:
+                continue
+
+            if self.isNucleotide(seq_file):
+                logger = logging.getLogger('timestamp')
+                logger.warning(
+                    'File %s appears to contain nucleotide sequences. We delete the file from the input directory' % seq_file)
+                os.remove(seq_file)
+
+        return True
+
+    def isNucleotide(self,seq_file, req_perc=0.9, max_seqs_to_read=10):
+        """Check if a file contains sequences in nucleotide space.
+
+        The check is performed by looking for the characters in
+        {a,c,g,t,n,.,-} and confirming that these comprise the
+        majority of a sequences. A set number of sequences are
+        read and the file assumed to be not be in nucleotide space
+        if none of these sequences are comprised primarily of the
+        defined nucleotide set.
+
+        Parameters
+        ----------
+        seq_file : str
+            Name of fasta/q file to read.
+        req_perc : float
+            Percentage of bases in {a,c,g,t,n,.,-} before
+            declaring the sequences as being in nucleotide
+            space.
+        max_seqs_to_read : int
+            Maximum sequences to read before declaring
+            sequence file to not be in nucleotide space.
+
+        Returns
+        -------
+        boolean
+            True is sequences are in nucleotide space, or file
+            contains no sequences.
+
+        """
+
+        nucleotide_bases = {'a', 'c', 'g', 't'}
+        insertion_bases = {'-', '.'}
+
+        seqs = readFasta(seq_file)
+        if len(seqs) == 0:
+            return True
+
+        seq_count = 0
+        for _seq_id, seq in seqs.items():
+            seq = seq.lower()
+
+            nt_bases = 0
+            for c in (nucleotide_bases | {'n'} | insertion_bases):
+                nt_bases += seq.count(c)
+
+            if float(nt_bases) / len(seq) >= req_perc:
+                return True
+
+            seq_count += 1
+            if seq_count == max_seqs_to_read:
+                break
+
+        return False
+
+    def binFiles(self, binInput, binExtension):
+        binFiles = []
+        binIDs = set()
+        isInputDir = True
+        if binInput is not None:
+            if os.path.isdir(binInput):
+                if binExtension[0] != '.':
+                    binExtension = '.' + binExtension
+
+                all_files = os.listdir(binInput)
+                for f in all_files:
+                    if f.endswith(binExtension):
+                        binFile = os.path.join(binInput, f)
+                        if os.stat(binFile).st_size == 0:
+                            self.logger.warning(
+                                "Skipping bin %s as it has a size of 0 bytes." % f)
+                        else:
+                            binFiles.append(binFile)
+                            binIDs.add(os.path.basename(binFile))
+            else:
+                with open(binInput, "r") as oh:
+                    for line in oh:
+                        files = line.strip().split("\t")
+                        binFile = files[1]
+                        if not os.path.exists(binFile):
+                            self.logger.warning(
+                                "Skipping bin %s as it doesn't exists." % binFile)
+                        elif os.stat(binFile).st_size == 0:
+                            self.logger.warning(
+                                "Skipping bin %s as it has a size of 0 bytes." % binFile)
+                        else:
+                            binFiles.append(binFile)
+                            binIDs.add(os.path.basename(binFile))
+
+        if not binFiles:
+            if isInputDir:
+                self.logger.error(
+                    "No bins found. Check the extension (-x) used to identify bins.")
+            else:
+                self.logger.error(
+                    "No bins found. Check the bins input table to verify bins exists.")
+            sys.exit(1)
+
+        if len(binIDs) != len(binFiles):
+            self.logger.error(
+                "There are redundant bin IDs, please check and update.")
+            sys.exit(1)
+
+        return sorted(binFiles)
 
     def joinTables(self, check_tables,check_file):
         self.logger.info('Joining tables containing bin information.')

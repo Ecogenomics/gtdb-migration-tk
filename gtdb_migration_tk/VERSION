@@ -2,8 +2,8 @@
 - Updates to support parsing of data for fungal GTDB
 - Add functionality for running BUSCO on fungal genomes
 0.0.3
-- Added update_reps_db command
-0.0.2
+- We are rewriting the pipeline to use gz files instead of uncompressed files.
+0.0.2b
 - Updates in full pipeline, add new scripts
 0.0.1
 - initial release

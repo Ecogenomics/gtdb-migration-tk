@@ -28,7 +28,7 @@ except ImportError:
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 
 
-def logger_setup(log_dir, log_file, program_name, version, silent):
+def logger_setup(log_dir, log_file, program_name,software_name, version, silent):
     """Setup loggers.
 
     Two logger are setup which both print to the stdout and a
@@ -46,6 +46,8 @@ def logger_setup(log_dir, log_file, program_name, version, silent):
         Desired name of log file.
     program_name : str
         Name of program.
+    software_name : str
+        Name of software.
     version : str
         Program version number.
     silent : boolean
@@ -88,4 +90,4 @@ def logger_setup(log_dir, log_file, program_name, version, silent):
         no_timestamp_logger.addHandler(no_timestamp_file_logger)
 
     timestamp_logger.info('%s v%s' % (program_name, version))
-    timestamp_logger.info(ntpath.basename(sys.argv[0]) + ' ' + ' '.join(sys.argv[1:]))
+    timestamp_logger.info(software_name + ' ' + ' '.join(sys.argv[1:]))
