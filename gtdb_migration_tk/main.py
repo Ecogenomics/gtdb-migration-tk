@@ -67,9 +67,8 @@ class OptionsParser():
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(options.skip_taxa_per_letter_dl, options.output_dir)
-        for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species']:
-
-            p.download_rank_lpsn_html(rk)
+        #for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species']:
+        #    p.download_rank_lpsn_html(rk)
         p.download_subspecies_lpsn_html()
 
     def parse_html(self, options):
@@ -86,7 +85,7 @@ class OptionsParser():
 
     def generate_ncbi_strains_summary(self, options):
         p = NCBIStrainParser(options.gb, options.ga,
-                             options.rb, options.ra)
+                             options.rb, options.ra,options.cpus)
         p.generate_ncbi_strains_summary(
             options.gtdb_genome_path_file, options.output_dir)
 
@@ -126,7 +125,7 @@ class OptionsParser():
     def clean_ftp(self, options):
         p = DirectoryManager()
         p.clean_ftp(options.new_list_genomes,
-                    options.ftp_genome_dir_file,
+                    options.ftp_genome_dirs,
                     options.report_dir,
                     options.taxonomy_file)
 
@@ -137,7 +136,7 @@ class OptionsParser():
     def update_refseq_from_ftp_files(self, options):
         p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
         p.runComparison(
-            options.ftp_refseq, options.output_dir, options.ftp_genome_dirs, options.old_genome_dirs,
+            options.ftp_refseq, options.output_dir, options.ftp_directory_file, options.old_genome_dirs,
             options.arc_assembly_summary, options.bac_assembly_summary)
 
     def update_genbank_from_ftp_files(self, options):
@@ -186,6 +185,7 @@ class OptionsParser():
         p = RnaManager(options.cpus, options.rna_version,
                        options.rnapath, options.rna_gene)
         p.generate_rna_silva(options.gtdb_genome_path_file,options.rerun)
+        self.logger.info('Done.')
 
     def update_silva(self, options):
         p = RnaManager(1, None, None, None)
@@ -252,6 +252,11 @@ class OptionsParser():
         p = Propagate(options.hostname, options.user, options.password, options.db)
         p.add_taxonomy_to_database(options.taxonomy_file, options.metadata, options.truncate_taxonomy)
 
+    def update_type_designation(self, options):
+        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p.update_type_designation()
+        self.logger.info('Done.')
+
     def update_propagated_tax(self, options):
         p = Propagate(options.hostname, options.user, options.password, options.db)
         p.add_propagated_taxonomy(options.taxonomy_file, options.metadata, options.genome_list,
@@ -262,7 +267,7 @@ class OptionsParser():
         p.set_gtdb_domain()
 
     def ncbi_genome_category(self, options):
-        p = GenomeType()
+        p = GenomeType(options.cpus)
         p.run(options.genbank_assembly_summary,
               options.refseq_assembly_summary,
               options.gtdb_genome_path_file,
@@ -274,7 +279,7 @@ class OptionsParser():
         p.run(options.gtdb_genome_path_file,options.all_genomes)
 
     def parse_ncbi_dir(self, options):
-        p = NCBIMetaDir()
+        p = NCBIMetaDir(options.cpus)
         p.parse_ncbi_dir(options.gtdb_genome_path_file, options.output_file)
 
     def parse_ncbi_taxonomy(self, options):
@@ -318,7 +323,7 @@ class OptionsParser():
 
     def generate_seqcode_table(self,options):
         p = Tools()
-        p.generate_seqcode_table(options.gtdb_genome_path_file,options.output_dir)
+        p.generate_seqcode_table(options.gtdb_genome_path_file,options.output_dir,options.cpus)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
@@ -386,6 +391,8 @@ class OptionsParser():
             self.update_metadata_db(options)
         elif options.subparser_name == 'update_ncbitax_db':
             self.update_ncbitax_db(options)
+        elif options.subparser_name == 'update_type_designation':
+            self.update_type_designation(options)
         elif options.subparser_name == 'update_refseq':
             self.update_refseq_from_ftp_files(options)
         elif options.subparser_name == 'update_genbank':

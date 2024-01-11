@@ -341,16 +341,14 @@ class DatabaseManager(object):
         if path_in_db not in path_in_folder:
             path_in_folder = re.sub(
                 r"(^.+\/)(GCA\/|GCF\/)", r"\g<2>", path_in_folder)
-            path_in_folder += "/" + os.path.basename(path_in_folder)
-            path_in_db = re.sub(r"(.+)(_genomic.fna)", r"\g<1>", path_in_db)
-            query = "update genomes set fasta_file_location = replace(fasta_file_location, '{0}', '{1}') where id_at_source like '{2}'".format(
-                    path_in_db, path_in_folder, record)
+            path_in_folder += "/" + os.path.basename(path_in_folder)+"_genomic.fna.gz"
+            query = "update genomes set fasta_file_location = '{0}' where id_at_source like '{1}'".format(path_in_folder, record)
             list_report.append("{0}\t{1}\tupdate path\t{2}\t{3}\n".format(
                 self.repository, record, path_in_db, path_in_folder))
             list_sql.append(query)
             pathinfo = path_in_folder.rsplit('/', 1)
             genes_path = os.path.join(
-                pathinfo[0], 'prodigal', record + "_protein.faa").replace("\\", "/")
+                pathinfo[0], 'prodigal', record + "_protein.faa.gz").replace("\\", "/")
             query = "update genomes set genes_file_location = '{0}' where id_at_source like '{1}'".format(
                 genes_path, record)
             list_sql.append(query)

@@ -41,6 +41,10 @@ import urllib
 from collections import defaultdict, Counter
 from datetime import datetime
 
+from tqdm import tqdm
+import multiprocessing as mp
+
+
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdblib.util.bio.seq_io import read_seq
@@ -56,6 +60,27 @@ class Tools(object):
     def __init__(self):
         """Initialization."""
         self.logger = logging.getLogger()
+
+    class tqdm_log(object):
+        """A basic wrapper for the tqdm progress bar. Automatically reports the
+        runtime statistics after exit.
+        """
+
+        def __init__(self, iterable=None, **kwargs):
+            # Setup reporting information.
+            self.logger = logging.getLogger('timestamp')
+            self.start_ts = None
+
+            # Set default parameters.
+            default = {'leave': False,
+                       'smoothing': 0.1,
+                       'bar_format': '==> Processed {n_fmt}/{total_fmt} {unit}s '
+                                     '({percentage:.0f}%) |{bar:15}| [{rate_fmt}, ETA {remaining}]'}
+            merged = {**default, **kwargs}
+            self.args = merged
+
+            # Instantiate tqdm
+            self.tqdm = tqdm(iterable, **merged)
 
 
 
@@ -572,8 +597,8 @@ class Tools(object):
 
         return ';'.join(string_tax), status_tax, type_status
 
-    def generate_seqcode_table(self, gtdb_genome_path_file, output_dir):
-        mapping_dict = self.generate_seqcode_mapping(gtdb_genome_path_file, output_dir)
+    def generate_seqcode_table(self, gtdb_genome_path_file, output_dir,cpus=1):
+        mapping_dict = self.generate_seqcode_mapping(gtdb_genome_path_file, output_dir,cpus)
 
 
 
@@ -659,7 +684,7 @@ class Tools(object):
 
 
 
-    def generate_seqcode_mapping(self,gtdb_genome_path_file, output_dir):
+    def generate_seqcode_mapping(self,gtdb_genome_path_file, output_dir,cpus=1):
         sequence_infos = {}
         canonical_sequence_infos = {}
         with open(gtdb_genome_path_file) as f:
@@ -675,22 +700,54 @@ class Tools(object):
         #         generate_pkl = False
 
         if generate_pkl:
+            genome_to_process = []
             with open(gtdb_genome_path_file) as f:
                 for idx,line in enumerate(f):
-                    infos = line.strip().split('\t')
-                    assembly_file = os.path.join(infos[1], os.path.basename(infos[1]) + '_assembly_report.txt')
-                    with open(assembly_file) as f2:
-                        wgs_project_id = None
-                        genbank_accs = []
-                        for line2 in f2:
-                            if line2.startswith('# WGS project:'):
-                                wgs_project_id = line2.split(':')[1].strip()
-                            if not line2.startswith('#'):
-                                gbk_acc = line2.split('\t')[4]
-                                if gbk_acc != 'na':
-                                    genbank_accs.append(gbk_acc)
-                        sequence_infos[infos[0]] = (wgs_project_id, genbank_accs)
-                    print(f'{idx}', end='\r')
+                    genome_to_process.append((line))
+
+            print(f"number of cpus used:{cpus}")
+
+            # populate worker queue with data to process
+            workerQueue = mp.Queue()
+            writerQueue = mp.Queue()
+            manager = mp.Manager()
+            return_list = manager.list()
+
+            for f in genome_to_process:
+                workerQueue.put(f)
+
+            for _ in range(cpus):
+                workerQueue.put(None)
+
+            try:
+                workerProc = [mp.Process(target=self.seqcode_parser_worker,
+                                         args=(workerQueue, writerQueue, return_list))
+                              for _ in range(cpus)]
+                writeProc = mp.Process(target=self.__writerThread,
+                                       args=(len(genome_to_process), writerQueue))
+
+                writeProc.start()
+
+                for p in workerProc:
+                    p.start()
+
+                for p in workerProc:
+                    p.join()
+
+                writerQueue.put(None)
+                writeProc.join()
+
+            except:
+                for p in workerProc:
+                    p.terminate()
+
+                writeProc.terminate()
+
+            list_lines_to_write = [x for x in return_list if x != 'null']
+
+            for key, val in list_lines_to_write:
+                sequence_infos.setdefault(key, val)
+
 
             start = time.process_time()
             with open(os.path.join(output_dir,'seq_accessions.pkl'), 'wb') as f:
@@ -747,6 +804,9 @@ class Tools(object):
 
         mapping_dict = {}
 
+        print([ x for x  in reverse_sequence_infos.keys() if 'CP' in x])
+
+
         with urllib.request.urlopen("https://disc-genomics.uibk.ac.at/seqcode/type-genomes.json") as url:
             data = json.load(url)
             for record in data.get("values"):
@@ -768,10 +828,14 @@ class Tools(object):
                         mapping_dict[record.get("type_material").get("nuccore")] = reverse_sequence_infos[m.group(1)]
                         count_found += 1
                     elif str(record.get("type_material").get("nuccore")).startswith('CP'):
-                        mapping_dict[record.get("type_material").get("nuccore")] = reverse_sequence_infos[
-                            str(record.get("type_material").get("nuccore"))]
+                        if record.get("type_material").get("nuccore") in reverse_sequence_infos:
+                            mapping_dict[record.get("type_material").get("nuccore")] = reverse_sequence_infos[
+                                str(record.get("type_material").get("nuccore"))]
+                            count_found += 1
+                        else:
+                            self.logger.info(f'{record.get("type_material").get("nuccore")} -> not found')
+                            count_not_found += 1
 
-                        count_found += 1
                     else:
                         self.logger.info(f'{record.get("type_material").get("nuccore")} -> not found')
                         count_not_found += 1
@@ -784,6 +848,47 @@ class Tools(object):
 
         self.logger.info('Done')
         return mapping_dict
+
+    def seqcode_parser_worker(self, queueIn, writerQueue, return_list):
+        while True:
+            tuple_infos = queueIn.get(block=True, timeout=None)
+
+            if tuple_infos == None:
+                break
+            line=tuple_infos
+
+            infos = line.strip().split('\t')
+            assembly_file = os.path.join(infos[1], os.path.basename(infos[1]) + '_assembly_report.txt')
+            with open(assembly_file) as f2:
+                wgs_project_id = None
+                genbank_accs = []
+                for line2 in f2:
+                    if line2.startswith('# WGS project:'):
+                        wgs_project_id = line2.split(':')[1].strip()
+                    if not line2.startswith('#'):
+                        gbk_acc = line2.split('\t')[4]
+                        if gbk_acc != 'na':
+                            genbank_accs.append(gbk_acc)
+                return_list.append((infos[0],(wgs_project_id, genbank_accs)))
+                writerQueue.put(infos[0])
+
+    def __writerThread(self, numDataItems, writerQueue):
+        """Store or write results of worker threads in a single thread."""
+
+        processedItems = 0
+        while True:
+            a = writerQueue.get(block=True, timeout=None)
+            if a == None:
+                break
+
+            processedItems += 1
+            statusStr = 'Finished processing %d of %d (%.2f%%) items.' % (processedItems,
+                                                                          numDataItems,
+                                                                          float(processedItems) * 100 / numDataItems)
+            sys.stdout.write('%s\r' % statusStr)
+            sys.stdout.flush()
+
+        sys.stdout.write('\n')
 
     def generate_ltp_db(self, csv_file,blastdb_file, ltp_fasta_file,output_directory, output_prefix):
         """Create Living Tree Project (LTP) FASTA and taxonomy file.
@@ -821,6 +926,7 @@ class Tools(object):
             for line in blastdbf:
                 if line.startswith('>'):
                     infos = line.strip().split('\|')
+                    print(f' - {infos}', end='\r')
                     fields = matching_brackets(infos[2])
                     strain = None
                     accession = None

@@ -116,6 +116,8 @@ class CheckMDatabaseManager(object):
                     continue
 
                 sh = line_split[sh_index]
+                if '949373205' in genome_id:
+                    print('949373205: {}'.format(sh))
                 data_to_commit.append(((genome_id, sh)))
 
         db_header = 'checkm_strain_heterogeneity_100'

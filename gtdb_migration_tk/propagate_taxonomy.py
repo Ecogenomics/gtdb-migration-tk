@@ -278,7 +278,7 @@ class Propagate(object):
         len_bac_marker = self.temp_cur.fetchone()[0]
 
         self.temp_cur.execute(
-            "SELECT count(*) from marker_set_contents where set_id = 2;")
+            "SELECT count(*) from marker_set_contents where set_id = 19;")
         len_arc_marker = self.temp_cur.fetchone()[0]
 
 
@@ -305,7 +305,7 @@ class Propagate(object):
             self.temp_cur.execute(query_al_mark, (genome_id, 1))
             aligned_bac_count = self.temp_cur.fetchone()[0]
 
-            self.temp_cur.execute(query_al_mark, (genome_id, 2))
+            self.temp_cur.execute(query_al_mark, (genome_id, 19))
             aligned_arc_count = self.temp_cur.fetchone()[0]
 
             arc_aa_per = (aligned_arc_count * 100.0 / len_arc_marker)

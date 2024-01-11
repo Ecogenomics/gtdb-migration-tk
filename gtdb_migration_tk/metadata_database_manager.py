@@ -22,6 +22,8 @@ import glob
 
 from collections import defaultdict
 
+from tqdm import tqdm
+
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 
@@ -128,6 +130,7 @@ class MetadataDatabaseManager(object):
                     genome_list.add(line.rstrip().split('\t')[0])
                 else:
                     genome_list.add(line.rstrip().split(',')[0])
+        self.logger.info('Processing {} genomes.'.format(len(genome_list)))
 
         # read metadata file
         metadata = defaultdict(lambda: defaultdict(str))
@@ -208,6 +211,56 @@ class MetadataDatabaseManager(object):
         q_add = "INSERT INTO survey_genomes(canonical_gid) VALUES (%s) "
         self.temp_cur.executemany(q_add, data_to_commit)
         self.temp_con.commit()
+
+    def update_type_designation(self):
+        self.temp_cur.execute("SELECT mn.id,seq.seqcode_species_status,mn.ncbi_excluded_from_refseq,"
+                              "mtm.gtdb_type_designation_ncbi_taxa,mtm.gtdb_type_designation_ncbi_taxa_sources "
+                              "from metadata_ncbi mn "
+                              "LEFT JOIN metadata_seqcode seq USING (id) "
+                              "LEFT JOIN metadata_type_material mtm USING (id)")
+
+        dict_records = {key: {"seqcode": seqcode_status, "excluded": excluded,
+                              "typed":typed,"typedsources":typedsources}
+                        for (key, seqcode_status,excluded,typed,typedsources) in self.temp_cur}
+
+        self.logger.info('Loaded {} genomes.'.format(len(dict_records)))
+
+        for key, value in tqdm(dict_records.items(),ncols=20):
+
+            if value.get('seqcode') is not None and "Valid" in value.get('seqcode'):
+                q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa = 'type strain of species' "
+                        "WHERE id = '{}'".format(key))
+                self.logger.info("Updating {} to not used as type".format(key))
+                self.temp_cur.execute(q)
+                self.temp_con.commit()
+
+                # add 'Seqcode' to gtdb_type_designation_ncbi_taxa_sources
+                if value.get('typedsources') is None:
+                    q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa_sources = 'Seqcode' "
+                         "WHERE id = '{}'".format(key))
+                else:
+                    value_to_add = value.get('typedsources').split(';')
+                    value_to_add.append('Seqcode')
+                    #remove duplicates
+                    value_to_add = list(set(value_to_add))
+                    # concatenate with ;
+                    value_to_add = ';'.join(value_to_add)
+                    q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa_sources = '{}' "
+                         "WHERE id = '{}'".format(value_to_add,key))
+                self.logger.info("Updating {} to add Seqcode to gtdb_type_designation_ncbi_taxa_sources".format(key))
+                self.temp_cur.execute(q)
+                self.temp_con.commit()
+
+            if value.get('excluded') is not None and "not used as type" in value.get('excluded') and "derived from metagenome" in value.get('excluded'):
+                # update gtdb_type_designation_ncbi_taxa to "not used as type"
+                q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa = 'not used as type' "
+                        "WHERE id = '{}'".format(key))
+                self.logger.info("Updating {} to not used as type".format(key))
+                self.temp_cur.execute(q)
+                self.temp_con.commit()
+
+
+
 
 class NCBITaxDatabaseManager(object):
     """Add organism name to GTDB."""

@@ -23,12 +23,13 @@ import ntpath
 
 import datetime
 
+from tqdm import tqdm
+
 from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.genometk_lite.rna import RNA
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 
-
-
+import multiprocessing as mp
 
 class RnaLTPManager(object):
     """Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB."""
@@ -102,7 +103,9 @@ class RnaLTPManager(object):
         self.starttime = datetime.datetime.utcnow().replace(microsecond=0)
         input_files = []
         countr = 0
+        list_genomes_to_parse = []
         for line in open(gtdb_genome_path_file):
+
             countr += 1
             status_str = '{} lines read.'.format(countr)
             sys.stdout.write('%s\r' % status_str)
@@ -114,20 +117,32 @@ class RnaLTPManager(object):
             gpath = line_split[1]
             assembly_id = os.path.basename(os.path.normpath(gpath))
 
-            ssu_file = os.path.join(
-                                    gpath, self.silva_output_dir, 'ssu.fna')
-            if os.path.exists(ssu_file):
-                canary_file = os.path.join(gpath, self.ltp_output_dir, 'ltp.canary.txt')
-                if not all_genomes and os.path.exists(canary_file):
-                    continue
-                genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
-                input_files.append((genome_file, ssu_file))
+            list_genomes_to_parse.append((gpath,assembly_id,all_genomes))
 
-        self.logger.info(f'{len(input_files)} ssu files to analyse.')
+        with mp.Pool(processes=self.cpus) as pool:
+            genome_paths = list(tqdm(pool.imap_unordered(self.rnaltp_parser, list_genomes_to_parse),
+                                     total=len(list_genomes_to_parse), unit='genome'))
+
+        genome_paths = [x for x in genome_paths if x != ('null', 'null')]
+
+        self.logger.info(f'{len(genome_paths)} ssu files to analyse.')
         # process each genome
         print('Generating metadata for each genome:')
         parallel = Parallel(cpus=self.cpus)
         parallel.run(self._producer,
                      None,
-                     input_files,
+                     genome_paths,
                      self._progress)
+
+    def rnaltp_parser(self,job):
+        gpath,assembly_id,all_genomes =job
+        ssu_file = os.path.join(
+            gpath, self.silva_output_dir, 'ssu.fna')
+        if os.path.exists(ssu_file):
+            canary_file = os.path.join(gpath, self.ltp_output_dir, 'ltp.canary.txt')
+            if not all_genomes and os.path.exists(canary_file):
+                return('null','null')
+            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
+            return(genome_file, ssu_file)
+        else:
+            return('null','null')

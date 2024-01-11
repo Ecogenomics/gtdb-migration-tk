@@ -269,6 +269,8 @@ class Strains(object):
                 infos = line.rstrip('\n').split('\t')
                 
                 sp = infos[0]
+                if sp=='Natranaerobius thermophilus' or sp=='Brachyspira intermedia':
+                    print(infos)
 
                 if len(infos) ==1 :
                     print("len(infos) < 2 ")
@@ -287,6 +289,8 @@ class Strains(object):
 
                     lpsn_strains_dic[sp] = {
                         'strains': '='.join(set(list_strains)), 'neotypes': '='.join(set(list_neotypes))}
+
+        print(lpsn_strains_dic.get('Natranaerobius thermophilus'))
                         
         self.logger.info(' - identified strain ids for {:,} species on LPSN website.'.format(
                             len(lpsn_strains_dic)))
@@ -294,10 +298,18 @@ class Strains(object):
         # get co-identical strain IDs in LPSN GSS file
         _, lpsn_gss_strain_ids = self.parse_lpsn_gss_metadata(lpsn_gss_file)
         new_strain_ids = 0
+        website_strains_only = 0
         for sp, strain_ids in lpsn_gss_strain_ids.items():
             if sp in lpsn_strains_dic:
                 scraped_strain_ids = set(lpsn_strains_dic[sp]['strains'].split('='))
                 new_strain_ids += len(set(strain_ids) - scraped_strain_ids)
+                website_strains_only += len(scraped_strain_ids - set(strain_ids))
+                # we join the two sets of strain IDs
+                #strain_ids = list(set(strain_ids) | scraped_strain_ids)
+                if sp == 'Natranaerobius thermophilus':
+                    print('scraped_strain_ids', scraped_strain_ids)
+                    print('strain_ids', strain_ids)
+                    print('new_strain_ids', new_strain_ids)
 
                 # GSS file is more reliable so defer to these co-identical strain IDs
                 lpsn_strains_dic[sp] = {'strains': '='.join(strain_ids), 'neotypes': lpsn_strains_dic[sp]['neotypes']}
@@ -312,7 +324,10 @@ class Strains(object):
                             len(set(lpsn_gss_strain_ids) - set(lpsn_strains_dic))))
         self.logger.info(' - identified {:,} strain IDs exclusive to LPSN GSS file (ideally zero!).'.format(
                             new_strain_ids))
-                        
+        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN website. (ideally zero!)'.format(
+                            website_strains_only))
+
+        print(lpsn_strains_dic.get('Natranaerobius thermophilus'))
         return lpsn_strains_dic
     
     def _read_type_species_of_genus(self, species_file):
@@ -1025,7 +1040,7 @@ class Strains(object):
         # expand set of NCBI co-identical strain IDs associated with each
         # genome
         self.logger.info(
-            'Expanding co-indetical strain IDs associated with each genome.')
+            'Expanding co-identical strain IDs associated with each genome.')
         self.expand_ncbi_strain_ids(
             ncbi_coidentical_strain_ids, ncbi_species_of_taxid)
 
@@ -1034,6 +1049,10 @@ class Strains(object):
         self.logger.info('Parsing information in LPSN directory.')
         lpsn_strains_dic = self.load_lpsn_strains_dictionary(lpsn_dir,
                                                                 lpsn_gss_file)
+        print('lpsn_strains_dic',len(lpsn_strains_dic))
+        #print top 10 keys
+        print(lpsn_strains_dic.get('Natranaerobius thermophilus'))
+        print(lpsn_strains_dic.get('Brachyspira intermedia'))
 
         self.logger.info('Processing LPSN data.')
         lpsn_summary_file = os.path.join(self.output_dir, 'lpsn_summary.tsv')

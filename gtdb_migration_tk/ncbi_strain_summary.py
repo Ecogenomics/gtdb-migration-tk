@@ -29,6 +29,7 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
+import logging
 import os
 import sys
 import argparse
@@ -36,17 +37,23 @@ import tempfile
 from collections import defaultdict
 import re
 
+from tqdm import tqdm
+import multiprocessing as mp
+
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
 
 class NCBIStrainParser(object):
     """Extract genes in nucleotide space."""
 
     def __init__(self, assembly_summary_bacteria_genbank, assembly_summary_archaea_genbank,
-                 assembly_summary_bacteria_refseq, assembly_summary_archaea_refseq):
+                 assembly_summary_bacteria_refseq, assembly_summary_archaea_refseq,cpus):
         self.genbank_dictionary = self.parse_summary(
             assembly_summary_bacteria_genbank, assembly_summary_archaea_genbank)
         self.refseq_dictionary = self.parse_summary(
             assembly_summary_bacteria_refseq, assembly_summary_archaea_refseq)
+        self.cpus = cpus
+
+        self.logger = logging.getLogger('timestamp')
 
 
     def parse_summary(self, assembly_bacteria_summary, assembly_archaea_summary):
@@ -56,11 +63,12 @@ class NCBIStrainParser(object):
                 as_file.readline()
                 for line in as_file:
                     if line.startswith('#'):
+
                         line = line.replace('# ', '')
+                        line = line.replace('#', '')
                         headers = line.strip('\n').split('\t')
                         index_genome_id = headers.index('assembly_accession')
-                        relation_to_type_material_index = headers.index(
-                            'relation_to_type_material')
+                        index_excluded_from_refseq = headers.index('excluded_from_refseq')
                     else:
                         line_infos = line.strip('\n').split('\t')
                         assembly_summary_dict[line_infos[index_genome_id]
@@ -75,6 +83,7 @@ class NCBIStrainParser(object):
         pattern_isolate = re.compile('^\s+\/isolate=".+')
         number_of_genomes = get_num_lines(genome_dir_file)
         count = 1
+        lines_to_process = []
         with open(genome_dir_file, 'r') as genomelistfile:
             for line in genomelistfile:
                 sys.stdout.write("{}% complete\r".format(
@@ -82,106 +91,191 @@ class NCBIStrainParser(object):
                 # sys.stdout.write("{}/{}\r".format(count, num_lines))
                 sys.stdout.flush()
                 count += 1
-                line_split = line.strip().split('\t')
+                lines_to_process.append((line,pattern_strain,pattern_isolate))
 
-                genome_id = line_split[0]
-                genome_path = line_split[1]
-                genome_dir_id = os.path.basename(os.path.normpath(genome_path))
 
-                species = ''
-                strains = []
-                isolate = ''
-                typemat = ''
-                wstrain = ''
-                gstrains = []
-                gstrain = ""
-                wsisolate = ''
-                gisolates = []
-                gisolate = ""
+        print(f"number of cpus used:{self.cpus}")
 
-                genbank_file = os.path.join(
-                    line_split[1], genome_dir_id + '_assembly_report.txt')
-                if os.path.exists(genbank_file):
-                    with open(genbank_file, 'r') as gfile:
-                        for gline in gfile:
-                            if gline.startswith('# Organism name: '):
-                                speline = gline.replace("# Organism name:", "")
-                                species = re.sub(
-                                    r'\([^)]*\)', '', speline).strip()
-                            if gline.startswith('# Infraspecific name:'):
-                                strline = gline.replace(
-                                    "# Infraspecific name:", "")
-                                strain_string = strline.replace(
-                                    "strain=", "").strip()
-                                strains.extend([x.strip() for x in re.split(';|,|=|\/', strain_string)])
-                            elif gline.startswith('# Isolate:'):
-                                isoline = gline.replace(
-                                    "# Isolate:", "")
-                                isolate = isoline.replace(
-                                    "strain=", "").strip()
-                            if isolate != '' and len(strains)>0:
-                                break
+        #populate worker queue with data to process
+        workerQueue = mp.Queue()
+        writerQueue = mp.Queue()
+        manager = mp.Manager()
+        return_list = manager.list()
+        substr_return_list = manager.list()
 
-                wgsmaster_file = os.path.join(
-                    line_split[1], genome_dir_id + '_wgsmaster.gbff')
-                if os.path.exists(wgsmaster_file):
-                    with open(wgsmaster_file, 'r') as wfile:
-                        for wline in wfile:
-                            if pattern_strain.match(wline):
-                                wstrain = wline.replace(
-                                    "/strain=", '').replace('"', '').rstrip().lstrip()
-                            elif pattern_isolate.match(wline):
-                                wsisolate = wline.replace(
-                                    "/isolate=", '').replace('"', '').rstrip().lstrip()
-                            if wsisolate != '' and wstrain != '':
-                                break
 
-                genomic_file = os.path.join(
-                    line_split[1], genome_dir_id + '_genomic.gbff')
-                if os.path.exists(genomic_file):
-                    with open(genomic_file, 'r') as gfile:
-                        for gline in gfile:
-                            if pattern_strain.match(gline):
-                                gstrain = gline.replace(
-                                    "/strain=", '').replace('"', '').rstrip().lstrip()
-                                gstrains.append(gstrain)
-                            elif pattern_isolate.match(gline):
-                                gisolate = gline.replace(
-                                    "/isolate=", '').replace('"', '').rstrip().lstrip()
-                                gisolates.append(gisolate)
+        for f in lines_to_process:
+            workerQueue.put(f)
 
-                for idx,potential_train in enumerate(strains):
-                    if 'substr.' in potential_train:
-                        print("{1} strain {0}".format(potential_train, genome_id))
-                        strains[idx] = potential_train.split("substr.")[0].rstrip()
-                if 'substr.' in gstrain:
-                    print("{1} gstrain {0}".format(gstrain, genome_id))
-                    gstrain = gstrain.split("substr.")[0].rstrip()
-                if 'substr.' in wstrain:
-                    print("{1} wstrain {0}".format(wstrain, genome_id))
-                    wstrain = wstrain.split("substr.")[0].rstrip()
+        for _ in range(self.cpus):
+            workerQueue.put(None)
 
-                combined_strain = []
-                combined_strain.extend(self.standardise_strain(strains))
-                combined_strain.extend(self.standardise_strain([isolate]))
-                combined_strain.extend(self.standardise_strain([wstrain]))
-                combined_strain.extend(self.standardise_strain([wsisolate]))
-                combined_strain.extend(self.standardise_strain(gstrains))
-                combined_strain.extend(self.standardise_strain(gisolates))
+        try:
+            workerProc = [mp.Process(target=self.ncbi_strain_worker,
+                                     args=(workerQueue, writerQueue,return_list,substr_return_list))
+                          for _ in range(self.cpus)]
+            writeProc = mp.Process(target=self.__writerThread,
+                                   args=(len(lines_to_process), writerQueue))
 
-                # strip all elements from the list
-                stripped_combined_strain = map(str.strip, combined_strain)
+            writeProc.start()
 
-                if genome_id.startswith('GCA'):
-                    typemat = self.genbank_dictionary.get(genome_id)
-                else:
-                    typemat = self.refseq_dictionary.get(genome_id)
+            for p in workerProc:
+                p.start()
 
-                # filter(None, stripped_combined_strain) remove all empty item
-                # from the list
-                outf.write("{0}\t{1}\t{2}\t{3}\n".format(
-                    genome_id, species, ';'.join(set(filter(None, stripped_combined_strain))), typemat))
+            for p in workerProc:
+                p.join()
+
+            writerQueue.put(None)
+            writeProc.join()
+
+        except:
+            for p in workerProc:
+                p.terminate()
+
+            writeProc.terminate()
+
+
+        list_lines_to_write =[x for x in return_list if x != 'null']
+
+        #Print the substrains of interest:
+        self.logger.info("Substrains of interest:")
+        for substr in substr_return_list:
+            self.logger.info('- '+substr)
+
+        for line_to_write in list_lines_to_write:
+            outf.write(line_to_write)
         outf.close()
+
+    def __writerThread(self, numDataItems, writerQueue):
+        """Store or write results of worker threads in a single thread."""
+
+        processedItems = 0
+        while True:
+            a = writerQueue.get(block=True, timeout=None)
+            if a == None:
+                break
+
+            processedItems += 1
+            statusStr = 'Finished processing %d of %d (%.2f%%) items.' % (processedItems,
+                                                                          numDataItems,
+                                                                          float(processedItems) * 100 / numDataItems)
+            sys.stdout.write('%s\r' % statusStr)
+            sys.stdout.flush()
+
+        sys.stdout.write('\n')
+
+
+    def ncbi_strain_worker(self, queueIn, queueOut,return_list,substr_return_list):
+        while True:
+            tuple_infos = queueIn.get(block=True, timeout=None)
+
+            if tuple_infos == None:
+                break
+            line,pattern_strain,pattern_isolate=tuple_infos
+
+            line_split = line.strip().split('\t')
+
+            genome_id = line_split[0]
+            genome_path = line_split[1]
+            genome_dir_id = os.path.basename(os.path.normpath(genome_path))
+
+            species = ''
+            strains = []
+            isolate = ''
+            typemat = ''
+            wstrain = ''
+            gstrains = []
+            gstrain = ""
+            wsisolate = ''
+            gisolates = []
+            gisolate = ""
+
+            genbank_file = os.path.join(
+                line_split[1], genome_dir_id + '_assembly_report.txt')
+            if os.path.exists(genbank_file):
+                with open(genbank_file, 'r') as gfile:
+                    for gline in gfile:
+                        if gline.startswith('# Organism name: '):
+                            speline = gline.replace("# Organism name:", "")
+                            species = re.sub(
+                                r'\([^)]*\)', '', speline).strip()
+                        if gline.startswith('# Infraspecific name:'):
+                            strline = gline.replace(
+                                "# Infraspecific name:", "")
+                            strain_string = strline.replace(
+                                "strain=", "").strip()
+                            strains.extend([x.strip() for x in re.split(';|,|=|\/', strain_string)])
+                        elif gline.startswith('# Isolate:'):
+                            isoline = gline.replace(
+                                "# Isolate:", "")
+                            isolate = isoline.replace(
+                                "strain=", "").strip()
+                        if isolate != '' and len(strains) > 0:
+                            break
+
+            wgsmaster_file = os.path.join(
+                line_split[1], genome_dir_id + '_wgsmaster.gbff')
+            if os.path.exists(wgsmaster_file):
+                with open(wgsmaster_file, 'r') as wfile:
+                    for wline in wfile:
+                        if pattern_strain.match(wline):
+                            wstrain = wline.replace(
+                                "/strain=", '').replace('"', '').rstrip().lstrip()
+                        elif pattern_isolate.match(wline):
+                            wsisolate = wline.replace(
+                                "/isolate=", '').replace('"', '').rstrip().lstrip()
+                        if wsisolate != '' and wstrain != '':
+                            break
+
+            genomic_file = os.path.join(
+                line_split[1], genome_dir_id + '_genomic.gbff')
+            if os.path.exists(genomic_file):
+                with open(genomic_file, 'r') as gfile:
+                    for gline in gfile:
+                        if pattern_strain.match(gline):
+                            gstrain = gline.replace(
+                                "/strain=", '').replace('"', '').rstrip().lstrip()
+                            gstrains.append(gstrain)
+                        elif pattern_isolate.match(gline):
+                            gisolate = gline.replace(
+                                "/isolate=", '').replace('"', '').rstrip().lstrip()
+                            gisolates.append(gisolate)
+
+            for idx, potential_train in enumerate(strains):
+                if 'substr.' in potential_train:
+                    substr_return_list.append("{1} strain {0}".format(potential_train, genome_id))
+
+                    strains[idx] = potential_train.split("substr.")[0].rstrip()
+            if 'substr.' in gstrain:
+                print("{1} gstrain {0}".format(gstrain, genome_id))
+                gstrain = gstrain.split("substr.")[0].rstrip()
+            if 'substr.' in wstrain:
+                print("{1} wstrain {0}".format(wstrain, genome_id))
+                wstrain = wstrain.split("substr.")[0].rstrip()
+
+            combined_strain = []
+            combined_strain.extend(self.standardise_strain(strains))
+            combined_strain.extend(self.standardise_strain([isolate]))
+            combined_strain.extend(self.standardise_strain([wstrain]))
+            combined_strain.extend(self.standardise_strain([wsisolate]))
+            combined_strain.extend(self.standardise_strain(gstrains))
+            combined_strain.extend(self.standardise_strain(gisolates))
+
+            # strip all elements from the list
+            stripped_combined_strain = map(str.strip, combined_strain)
+
+            if genome_id.startswith('GCA'):
+                typemat = self.genbank_dictionary.get(genome_id)
+            else:
+                typemat = self.refseq_dictionary.get(genome_id)
+
+            # filter(None, stripped_combined_strain) remove all empty item
+            # from the list
+
+            line_to_write= "{0}\t{1}\t{2}\t{3}\n".format(
+                genome_id, species, ';'.join(set(filter(None, stripped_combined_strain))), typemat)
+            queueOut.put(line_to_write)
+            return_list.append(line_to_write)
 
     def standardise_strain(self, list_strain):
         results = []
@@ -204,35 +298,3 @@ class NCBIStrainParser(object):
         return results
 
 
-#=========================================================================
-# if __name__ == '__main__':
-#     print __prog_name__ + ' v' + __version__ + ': ' + __prog_desc__
-#     print '  by ' + __author__ + ' (' + __email__ + ')' + '\n'
-#
-#     parser = argparse.ArgumentParser(
-#         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-#     parser.add_argument('--genome_dir_file',
-#                         help='file indicating path to all genomes directories')
-#     parser.add_argument('--assembly_summary_bacteria_genbank',
-#                         help='assembly_summary_genbank.txt downloaded from NCBI')
-#     parser.add_argument('--assembly_summary_archaea_genbank',
-#                         help='assembly_summary_genbank.txt downloaded from NCBI')
-#     parser.add_argument('--assembly_summary_bacteria_refseq',
-#                         help='assembly_summary_bacteria_refseq.txt downloaded from NCBI')
-#     parser.add_argument('--assembly_summary_archaea_refseq',
-#                         help='assembly_summary_archaea_refseq.txt downloaded from NCBI')
-#
-#     parser.add_argument('--out_dir', help='output directory')
-#
-#     args = parser.parse_args()
-#
-#     try:
-#         p = StrainParser(args.assembly_summary_bacteria_genbank, args.assembly_summary_archaea_genbank,
-#                          args.assembly_summary_bacteria_refseq, args.assembly_summary_archaea_refseq)
-#         p.run(args.genome_dir_file, args.out_dir)
-#     except SystemExit:
-#         print "\nControlled exit resulting from an unrecoverable error or warning."
-#     except:
-#         print "\nUnexpected error:", sys.exc_info()[0]
-#         raise
-#=========================================================================

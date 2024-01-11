@@ -1,3 +1,5 @@
+0.0.4
+- This is a saved version of migration-tk due to data loss in the original repository.
 0.0.3
 - We are rewriting the pipeline to use gz files instead of uncompressed files.
 0.0.2b
