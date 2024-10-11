@@ -37,16 +37,30 @@ def canonical_strain_id(strain_id):
     
 def check_format_strain(strain_id):
     """Check if strain ID has an acceptable format."""
-    
-    # skip IDs within a number
-    # if not any(char.isdigit() for char in strain_id):
-    #     return False
 
-    if all(c.isdigit() or c.isupper() for c in strain_id):
-        return True
+    # run old format check
+    old_format = False
+    if old_format:
+        # print in red
+        print(f'\033[91mWE ARE USING THE OLD PARSING.\033[0m')
+        print("MAKE SURE TO UPDATE THE STRAIN ID FORMAT.")
+
+    # skip IDs without a number
+    if old_format:
+        if not any(char.isdigit() for char in strain_id):
+            return False
+
+        if all(c.isdigit() or c.isupper() for c in strain_id):
+            return True
+    else:
+
+        if all(c.isdigit() or c.isupper() for c in strain_id) and len(strain_id) >=2 :
+            return True
 
     special_characters = ['-', '.', ' ']
     processed_strain = str(strain_id)
+    if len(processed_strain) < 1:
+        return False
     for spechar in special_characters:
         processed_strain = processed_strain.replace(spechar, '')
 
@@ -55,6 +69,7 @@ def check_format_strain(strain_id):
         
     if strain_id.count(' ') == 0 and all(c.isdigit() or c.isupper() or c.lower() for c in processed_strain):
         return True
-        
+
+
     return False
     

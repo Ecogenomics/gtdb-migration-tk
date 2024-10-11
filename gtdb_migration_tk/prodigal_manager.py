@@ -4,6 +4,8 @@ import logging
 import ntpath
 
 import shutil
+import sys
+
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import remove_extension
@@ -107,7 +109,7 @@ class ProdigalManager(object):
             prodigal_dir = os.path.join(gpath, 'prodigal')
             if os.path.exists(prodigal_dir):
                 shutil.rmtree(prodigal_dir)
-            return [(gid, gpath)]
+            return (gid, gpath)
         else:
             if os.path.exists(aa_gene_file):
                 # verify checksum
@@ -137,6 +139,7 @@ class ProdigalManager(object):
             f'Determining genomic file and translation table for each of the {len(genome_paths)} genomes.')
         genome_files = []
         translation_table = {}
+        print('genome_paths',genome_paths)
         for gid, gpath in tqdm(genome_paths):
             if gid == 'null':
                 continue
@@ -172,6 +175,9 @@ class ProdigalManager(object):
             else:
                 translation_table[gid] = None
                 self.logger.warning('GFF appears to be missing: %s' % gff_file)
+
+        print('translation_table',translation_table)
+
 
         # run Prodigal on each genome
         self.logger.info('Running Prodigal on %d genomes.' % len(genome_paths))
@@ -209,6 +215,7 @@ class ProdigalManager(object):
             translation_table_file = os.path.join(
                 prodigal_path, 'prodigal_translation_table.tsv')
             fout = open(translation_table_file, 'w')
+
             if gid in translation_table:
                 fout.write('%s\t%d\t%s\n' % ('best_translation_table',
                                              summary_stats[genome_id].best_translation_table,

@@ -50,25 +50,27 @@ class RnaManager(object):
 
         self.silva_output_dir = 'rna_silva_{}'.format(self.rna_version)
 
-        root_path = os.path.join(rna_path, str(self.rna_version))
+        if self.rna_version:
 
-        self.silva_ssu_taxonomy_file = os.path.join(
-            root_path, 'silva_taxonomy.ssu.tsv')
-        self.silva_ssu_ref_file = os.path.join(root_path, f'SILVA_{rna_version}_SSURef_NR99_tax_silva.fasta')
+            root_path = os.path.join(rna_path, str(self.rna_version))
 
-        file_to_check = [self.silva_ssu_taxonomy_file, self.silva_ssu_ref_file]
+            self.silva_ssu_taxonomy_file = os.path.join(
+                root_path, 'silva_taxonomy.ssu.tsv')
+            self.silva_ssu_ref_file = os.path.join(root_path, f'SILVA_{rna_version}_SSURef_NR99_tax_silva.fasta')
 
-        if rna_gene != 'ssu':
-            self.silva_lsu_ref_file = os.path.join(root_path, f'SILVA_{rna_version}_LSURef_tax_silva.fasta')
-            self.silva_lsu_taxonomy_file = os.path.join(
-                root_path, 'silva_taxonomy.lsu.tsv')
-            file_to_check.append(self.silva_lsu_ref_file)
-            file_to_check.append(self.silva_lsu_taxonomy_file)
+            file_to_check = [self.silva_ssu_taxonomy_file, self.silva_ssu_ref_file]
 
-        for item in file_to_check:
-            if not os.path.exists(item):
-                print('{} does not exist'.format(item))
-                sys.exit(-1)
+            if rna_gene != 'ssu':
+                self.silva_lsu_ref_file = os.path.join(root_path, f'SILVA_{rna_version}_LSURef_tax_silva.fasta')
+                self.silva_lsu_taxonomy_file = os.path.join(
+                    root_path, 'silva_taxonomy.lsu.tsv')
+                file_to_check.append(self.silva_lsu_ref_file)
+                file_to_check.append(self.silva_lsu_taxonomy_file)
+
+            for item in file_to_check:
+                if not os.path.exists(item):
+                    print('{} does not exist'.format(item))
+                    sys.exit(-1)
 
     def _producer(self, job):
         """Process each genome."""
@@ -122,7 +124,7 @@ class RnaManager(object):
         processed_items = []
         with mp.Pool(processes=self.cpus) as pool:
             processed_items = list(tqdm(pool.imap_unordered(self._producer, input_files),
-                                     total=len(input_files), unit='genome'))
+                                     total=len(input_files), unit='genome',ncols=100, smoothing=50/len(input_files)))
 
         # parallel = Parallel(cpus=self.cpus)
         # parallel.run(self._producer,

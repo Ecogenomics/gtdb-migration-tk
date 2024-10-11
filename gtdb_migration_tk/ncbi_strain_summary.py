@@ -69,6 +69,7 @@ class NCBIStrainParser(object):
                         headers = line.strip('\n').split('\t')
                         index_genome_id = headers.index('assembly_accession')
                         index_excluded_from_refseq = headers.index('excluded_from_refseq')
+                        relation_to_type_material_index = headers.index('relation_to_type_material')
                     else:
                         line_infos = line.strip('\n').split('\t')
                         assembly_summary_dict[line_infos[index_genome_id]

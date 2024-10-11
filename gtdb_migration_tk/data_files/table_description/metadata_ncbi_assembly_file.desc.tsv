@@ -9,6 +9,7 @@ ncbi_seq_rel_date	Date assembly was released in the INSDC databases (DDBJ, ENA o
 ncbi_asm_name	Assembly name.	TEXT	metadata_ncbi	
 ncbi_gbrs_paired_asm	Paired assembly identifier in GenBank/RefSeq.	TEXT	metadata_ncbi
 ncbi_paired_asm_comp	Indicates if GenBank and RefSeq assemblies are identifical.	TEXT	metadata_ncbi
-ncbi_untrustworthy_as_type	Indicates if a genome is classified as untrustworthy as type in the excluded_from_refseq column	BOOLEAN	metadata_ncbi
+ncbi_not_used_as_type	Indicates if a genome is classified as untrustworthy as type in the excluded_from_refseq column	BOOLEAN	metadata_ncbi
+ncbi_excluded_from_refseq	Indicates why a genome is excluded from refseq	TEXT	metadata_ncbi
 ncbi_type_material_designation	Indicates if genome was assembled from type, neotype, proxytype, or synonym type material.	TEXT	metadata_taxonomy
 

@@ -171,7 +171,7 @@ class FTPTools(object):
         :param new_directory:base directory leading the new repository for refseq
         '''
 
-        for gcf_record,path_record in tqdm(added_dict.items()):
+        for gcf_record,path_record in tqdm(added_dict.items(), desc='Adding new genomes',ncols=100):
 
             target_dir = os.path.join(
                 new_directory, path_record.replace(ftp_dir, ''))
