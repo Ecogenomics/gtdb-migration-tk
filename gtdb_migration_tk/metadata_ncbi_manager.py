@@ -286,7 +286,8 @@ class NCBIMetaDir(object):
 
         with mp.Pool(processes=self.cpus) as pool:
             list_lines_to_write = list(tqdm(pool.imap_unordered(self.ncbi_parser_worker, line_to_process),
-                                         total=len(line_to_process), unit='genome'))
+                                         total=len(line_to_process),ncols=100,
+                                            smoothing=50/len(line_to_process), unit='genome'))
 
 
         for line_to_write in list_lines_to_write:

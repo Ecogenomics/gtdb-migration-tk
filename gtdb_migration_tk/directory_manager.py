@@ -37,9 +37,9 @@ class DirectoryManager(object):
         fout = open(output_file, 'w')
 
         # initialising progress bar objects
-        high_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:100}{r_bar}')
-        mid_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:100}{r_bar}')
-        low_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:100}{r_bar}')
+        high_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:20}{r_bar}')
+        mid_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:20}{r_bar}')
+        low_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:20}{r_bar}')
 
         for code in [('GCA', 'Genbank'), ('GCF', 'Refseq')]:
             code_dir = os.path.join(database_dir, code[0])

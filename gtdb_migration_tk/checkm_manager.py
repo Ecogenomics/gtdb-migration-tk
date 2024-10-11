@@ -26,6 +26,9 @@ import logging
 from collections import defaultdict
 
 from checkm.util.seqUtils import readFasta
+from tqdm import tqdm
+
+from gtdb_migration_tk.biolib_lite.common import get_num_lines
 
 
 class CheckMManager(object):
@@ -419,4 +422,164 @@ class CheckMManager(object):
         for key in reverse_list:
             outf.write(lines.get(key))
         outf.close()
+
+
+    def prepare_checkm2_batch(self,checkm_summary_genbank, checkm_summary_refseq,
+                              gtdb_metadata_file,gtdb_genome_path_file,output_dir):
+        genome_paths = {}
+        for line in open(gtdb_genome_path_file):
+            line_split = line.strip().split('\t')
+            genome_paths[line_split[0]] = line_split[1]
+
+        # read genbank summary
+        list_genomes_to_consider = []
+        for file in (checkm_summary_genbank, checkm_summary_refseq):
+            if file is not None:
+                with open(file) as f:
+                    headers = f.readline()
+                    for line in f:
+                        #TEMP use comma instead or tab
+                        genome_id = line.strip().split('\t')[0]
+                        # TEMP remove GB_GCA_ from genome_id and RS_GCF_ from genome_id
+                        genome_id = genome_id.replace('GB_GCA_', 'GCA_').replace('RS_GCF_', 'GCF_')
+                        genome_id = genome_id.split('_')[0]+'_'+genome_id.split('_')[1]
+                        list_genomes_to_consider.append(genome_id)
+        print(list_genomes_to_consider[:10])
+        list_genomes_to_consider = set(list_genomes_to_consider)
+
+
+        self.logger.info('Identified %d genomes to consider.' % len(list_genomes_to_consider))
+
+        # get path to genomic FASTA files
+        genomic_files = {}
+        with open(gtdb_genome_path_file) as f:
+            for line in tqdm(f,total=get_num_lines(gtdb_genome_path_file),ncols=100):
+                tokens = line.strip().split('\t')
+
+                gid = tokens[0]
+                if gid in list_genomes_to_consider:
+                    gp = tokens[1]
+                    accn = tokens[1].split('/')[-1]
+                    genomic_files[gid] = os.path.join(gp, f'{accn}_genomic.fna.gz')
+
+        # determine coding table for each genome, seperating
+        # out genomes using table 11 versus tables 4 or 25
+        gid_tt11 = []
+        gid_tt4 = []
+        gid_tt25 = []
+        gid_tt_none = []
+        with open(gtdb_metadata_file, 'rt') as f:
+            header = f.readline().strip().split('\t')
+
+            trans_table_idx = header.index('ncbi_translation_table')
+
+            for line in tqdm(f,total=get_num_lines(gtdb_metadata_file),ncols=100):
+                tokens = [t.strip() for t in line.split('\t')]
+
+                gid = tokens[0]
+                if gid not in genomic_files:
+                    continue
+                trans_table = tokens[trans_table_idx]
+
+                if trans_table == '11':
+                    gid_tt11.append(gid)
+                elif trans_table == '4':
+                    gid_tt4.append(gid)
+                elif trans_table == '25':
+                    gid_tt25.append(gid)
+                elif not trans_table or trans_table == 'none' or trans_table =='':
+                    gid_tt_none.append(gid)
+                else:
+                    print('Error: unrecognized translation table', gid, trans_table)
+
+        print('tt11', len(gid_tt11))
+        print('gid_tt4', len(gid_tt4))
+        print('gid_tt25', len(gid_tt25))
+        print('tt_none', len(gid_tt_none))
+
+        checkm_cmds = []
+
+        #for tt, gid_tt in [('11', gid_tt11), ('4', gid_tt4), ('25', gid_tt25), ('none', gid_tt_none)]:
+        for tt, gid_tt in [('4', gid_tt4), ('25', gid_tt25)]:
+
+            print(tt)
+
+            batch_num = 0
+            num_genomes = 0
+            batch_dir = os.path.join(output_dir,f'checkm2_batch/batch-{batch_num}_tt-{tt}')
+            os.makedirs(batch_dir, exist_ok=True)
+            out_dir = os.path.join(output_dir,f'checkm2/batch-{batch_num}_tt-{tt}')
+            os.makedirs(out_dir, exist_ok=True)
+            for gid in gid_tt:
+                if num_genomes == 5000:
+                    if tt != 'none':
+                        cmd = f'checkm2 predict --input {batch_dir} --output-directory {out_dir} --ttable {tt} -x .gz -t {self.cpus}'
+                    else:
+                        cmd = f'checkm2 predict --input {batch_dir} --output-directory {out_dir} -x .gz -t {self.cpus}'
+
+                    checkm_cmds.append(cmd)
+
+                    num_genomes = 0
+                    batch_num += 1
+                    batch_dir = os.path.join(output_dir,f'checkm2_batch/batch-{batch_num}_tt-{tt}')
+                    os.makedirs(batch_dir, exist_ok=True)
+                    out_dir = os.path.join(output_dir,f'checkm2/batch-{batch_num}_tt-{tt}')
+
+                out_file = os.path.join(batch_dir, f'{gid}.fna.gz')
+                os.system(f'ln -s {genomic_files[gid]} {out_file}')
+                num_genomes += 1
+
+            if tt != 'none':
+                cmd = f'checkm2 predict --input {batch_dir} --output-directory {out_dir} --ttable {tt} -x .gz -t {self.cpus}'
+            else:
+                cmd = f'checkm2 predict --input {batch_dir} --output-directory {out_dir} -x .gz -t {self.cpus}'
+
+            checkm_cmds.append(cmd)
+
+        # run CheckM v2
+        fout = open(os.path.join(output_dir,'checkm_cmds.lst'), 'w')
+        for cmd in checkm_cmds:
+            fout.write(f'{cmd}\n')
+        fout.close()
+
+
+    def join_checkm2_results(self,checkm2_dir,output_dir):
+        checkm2_files = []
+        # list all directories starting with 'batch-'
+        for d in os.listdir(checkm2_dir):
+            if d.startswith('batch-'):
+                # we get the 'quality_report.tsv' file in the directory
+                checkm2_files.append(os.path.join(checkm2_dir, d, 'quality_report.tsv'))
+
+        # join all 'quality_report.tsv' files
+        checkm2_output = os.path.join(output_dir, 'checkm2.quality_report_merged.tsv')
+        for i, file in enumerate(checkm2_files):
+            with open(file) as f:
+                if i != 0:
+                    f.readline()
+                for line in f:
+                    with open(checkm2_output, 'a') as out:
+                        out.write(line)
+        self.logger.info('CheckM2 results written to: %s' % checkm2_output)
+
+        # join only the first 4 columns (Name,Completeness,Contamination,Completeness_Model_Used) of all 'quality_report.tsv' files
+        # and rename them genome_id,checkm2_completeness,checkm2_contamination,checkm2_model
+        checkm2_output = os.path.join(output_dir, 'checkm2.quality_report_for_database.tsv')
+        with open(checkm2_output, 'w') as out:
+            out.write('genome_id\tcheckm2_completeness\tcheckm2_contamination\tcheckm2_model\n')
+            for i, file in enumerate(checkm2_files):
+                with open(file) as f:
+                    f.readline()
+                    for line in f:
+                        infos = line.strip().split('\t')
+                        gid = infos[0].replace('.fna','')
+                        if 'General Model' in infos[3]:
+                            infos[3] = 'General'
+                        elif 'Specific Model' in infos[3]:
+                            infos[3] = 'Specific'
+                        out.write(f'{gid}\t{infos[1]}\t{infos[2]}\t{infos[3]}\n')
+        self.logger.info('CheckM2 results for database written to: %s' % checkm2_output)
+
+
+
 

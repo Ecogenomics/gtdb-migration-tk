@@ -101,7 +101,8 @@ def print_help():
       overview             -> Compare the Metadata file from the previous version with the new one.
       compare_field        -> Compare a specific metadata field between to metadata files.
       check_unique_strains -> Check if a genomes has to different strains from a same collection.
-
+      check_db_population  -> Check if the database is populated with the correct number of genomes.
+      
 
   Use: gtdb_migration_tk <command> -h for command specific help.
 
@@ -516,7 +517,7 @@ def __rfq_bac_assembly_file(group, required):
 
 def __rna_file_path(group):
     group.add_argument('-p', '--rnapath', help='Path to rna Silva file',
-                       default='/srv/whitlam/bio/db/silva/')
+                       default='/srv/db/silva/')
 
 
 def __rna_gene(group, required):
@@ -615,15 +616,29 @@ def __gtdb_sp_clusters_file(group, required):
 def __hmm_db_path(group, required):
     group.add_argument('--hmm_db_path',
                        help="Path to hmm db folder. for pfam_33.1 : '/srv/db/pfam/33.1/' , "
-                            "for pfam_33.1_lite : '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/',"
-                            "for tigrfam_15.0 : '/srv/whitlam/bio/db/tigrfam/15.0/TIGRFAMs_15.0_HMM/tigrfam.hmm',"
-                            "for tigrfam_15.0_lite : '/srv/whitlam/bio/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm')",
+                            "for pfam_33.1_lite : '/srv/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/',"
+                            "for tigrfam_15.0 : '/srv/db/tigrfam/15.0/TIGRFAMs_15.0_HMM/tigrfam.hmm',"
+                            "for tigrfam_15.0_lite : '/srv/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm')",
                        required=required)
 
 def __rerun(group):
     group.add_argument('--rerun', help='rerun all genomes', action='store_true')
     pass
 
+
+def __checkm_summary_refseq(grp, required):
+    grp.add_argument('--checkm_summary_refseq', required=required, help='CheckM summary file for Refseq genomes.')
+
+def __checkm_summary_genbank(grp, required):
+    grp.add_argument('--checkm_summary_genbank', required=required, help='CheckM summary file for Genbank genomes.')
+
+def __checkm2_output_dir(grp, required):
+    grp.add_argument('--checkm2_output_dir', required=required, help='CheckM v2 output directory with batches.')
+
+
+def __id_last_genome(grp, required):
+    grp.add_argument('--id_last_genome', required=required, help='ID of the last genome in the previous release.',
+                        type=int,default= 0)
 
 
 def get_main_parser():
@@ -756,6 +771,28 @@ def get_main_parser():
             __cpus(grp)
             __silent(grp)
 
+    with subparser(sub_parsers, 'prepare_checkm2',
+                      'Prepare files to run CheckM2 for the new release') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __checkm_summary_genbank(grp, required=True)
+            __checkm_summary_refseq(grp, required=True)
+            __gtdb_genome_path_file(grp, required=True)
+            __metadata_file(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
+            __cpus(grp)
+
+    with subparser(sub_parsers, 'join_checkm2',
+                        'Join CheckM2 output files for different batches') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __checkm2_output_dir(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
+            __cpus(grp)
     with subparser(sub_parsers, 'update_db',
                    'Update the Postgres database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
@@ -1164,6 +1201,16 @@ def get_main_parser():
             __output_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
+
+    with subparser(sub_parsers, 'check_db_population',
+                      'Check if the database is populated correctly.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __metadata_file(grp, required=True)
+            __log_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __id_last_genome(grp, required=True)
+            __silent(grp)
+
 
     with subparser(sub_parsers, 'compare_metadata_genome_dir',
                    'Compare list of genomes in metadata file and genome_dirs') as parser:

@@ -89,6 +89,7 @@ class Tools(object):
         old_delimiter = select_delimiter(old_meta_file)
 
         old_nested_dict = {}
+        filled_old_columns_dict = defaultdict(int)
         with open(old_meta_file, 'r') as omf:
             old_headers = omf.readline().split(old_delimiter)
             if old_delimiter == ',':
@@ -100,18 +101,24 @@ class Tools(object):
                         old_nested_dict[id_to_add] = {}
                         for i, j in enumerate(line):
                             old_nested_dict[id_to_add][old_headers[i]] = str(j)
+                            if j not in ['n/a', 'na','none']:
+                                filled_old_columns_dict[old_headers[i]] += 1
+
             else:
-                count = 0
+                count_old = 0
                 for raw_line in omf:
                     line = raw_line.strip('\n').split('\t')
-                    count +=1
-                    print(count,end='\r')
+                    count_old +=1
+                    print(count_old,end='\r')
                     if (only_ncbi and not line[0].startswith('U_')) or not only_ncbi:
                         id_to_add = line[0]
                         if use_formatted_id:
                             id_to_add = 'G' + id_to_add[7:16]
                         old_nested_dict[id_to_add] = {}
                         for i, j in enumerate(line):
+                            if j not in ['n/a', 'na','none']:
+                                filled_old_columns_dict[old_headers[i]] += 1
+
                             if j in ['n/a', 'na']:
                                 j = 'n/a'
                             if old_headers[i] in ('ncbi_ncrna_count', 'ncbi_cds_count','ncbi_trna_count') and j == 'none':
@@ -122,16 +129,24 @@ class Tools(object):
                                 j = datetime.strftime(datetime.strptime(j, '%Y-%m-%d'), '%Y-%m-%d')
                             old_nested_dict[id_to_add][old_headers[i]] = str(j)
 
+
+        for k,v in filled_old_columns_dict.items():
+            filled_old_columns_dict[k] = round(100 * float(v) / count_old)
+
         self.logger.info('{} parsed'.format(old_meta_file))
 
         new_delimiter = select_delimiter(new_meta_file)
 
         header_summary = {}
+        filled_new_columns_dict = defaultdict(int)
+        new_genomes_new_columns_dict = defaultdict(int)
+
         # in the new metadata file
         # we check if the genome id exists, and the columns names exist
         # for each common column name we compare the value for each common
         # genomes and add 1 if they are different
         number_of_genomes = 0
+
         with open(new_meta_file, 'r') as nmf:
             new_headers = nmf.readline().split(new_delimiter)
             if new_delimiter == ',':
@@ -149,11 +164,16 @@ class Tools(object):
                                 else:
                                     header_summary.setdefault(
                                         new_headers[i], []).append(0)
+                                if j not in ['n/a', 'na','none']:
+                                    filled_new_columns_dict
+                                if j not in ['n/a', 'na','none']:
+                                    filled_new_columns_dict[new_headers[i]] += 1
             else:
-                count = 0
+                count_new = 0
+                count_new_genomes = 0
                 for raw_line in nmf:
-                    count +=1
-                    print(count,end='\r')
+                    count_new +=1
+                    print(count_new,end='\r')
                     line = raw_line.strip('\n').split('\t')
                     id_to_add = line[0]
                     if use_formatted_id:
@@ -162,6 +182,8 @@ class Tools(object):
                         number_of_genomes += 1
                         for i, j in enumerate(line):
                             if new_headers[i] in old_headers:
+                                if j not in ['n/a', 'na', 'none']:
+                                    filled_new_columns_dict[new_headers[i]] += 1
                                 if j in ['n/a','na']:
                                     j='n/a'
                                 if new_headers[i] in ('ncbi_ncrna_count','ncbi_cds_count','ncbi_trna_count') and j == 'none':
@@ -177,6 +199,18 @@ class Tools(object):
                                     header_summary.setdefault(
                                         new_headers[i], []).append(0)
 
+                    else:
+                        count_new_genomes += 1
+                        for i, j in enumerate(line):
+                            if j not in ['n/a', 'na','none']:
+                                filled_new_columns_dict[new_headers[i]] += 1
+                                new_genomes_new_columns_dict[new_headers[i]] += 1
+
+                for k,v in filled_new_columns_dict.items():
+                    filled_new_columns_dict[k] = round(100 * float(v) / count_new)
+                for k,v in new_genomes_new_columns_dict.items():
+                    new_genomes_new_columns_dict[k] = round(100 * float(v) / count_new_genomes)
+
         for k, v in header_summary.items():
             header_summary[k] = round(100 * float(sum(v)) / len(v), 2)
 
@@ -184,9 +218,10 @@ class Tools(object):
 
         # We display all common columns from less changes to more changes
         prettyt = PrettyTable()
-        prettyt.field_names = ["Column name", "Difference (%)", "Note"]
+        prettyt.field_names = ["Column name", "Difference (%)","% filled old","% filled new","% filled only new genomes","Note"]
         for coln in sorted_d:
-            prettyt.add_row([coln[0], coln[1], ''])
+            prettyt.add_row([coln[0], coln[1],filled_old_columns_dict[coln[0]],
+                             filled_new_columns_dict[coln[0]],new_genomes_new_columns_dict[coln[0]],''])
 
         print(prettyt)
 
@@ -622,7 +657,7 @@ class Tools(object):
                            ('type_genus_of_class', 'type_genus_of_class'),
                            ('type_genus_of_phylum', 'type_genus_of_phylum'),
                            ('classification', 'classification'),
-                           ('proposed_by', 'proposed_by'),
+                           ('proposed_in', 'proposed_in'),
                            ('created_at', 'created_at'),
                            ('updated_at', 'updated_at'),
                            ('url', 'url')]
@@ -649,6 +684,7 @@ class Tools(object):
                     # print("seqcode_classification -> " + dict_classi)
 
                     for label, scf in seq_code_fields:
+
                         if scf == 'type_material':
                             if scf in record:
                                 if 'assembly' in str(record.get(scf)):
@@ -657,8 +693,10 @@ class Tools(object):
                                     spe_record[seq_code_order_label.index(label)] = mapping_dict.get(str(record.get(scf).get('nuccore')))
                                 else:
                                     self.logger.error(f'Unknown type material {record.get(scf)}')
-                        elif scf == 'proposed_by':
-                            #print(f"seqcode_{label} [{scf}]-> {str(data_spe.get(scf).get('citation'))}")
+                        elif scf == 'proposed_in':
+                            print(data_spe)
+                            print(data_spe.get(scf))
+                            print(f"seqcode_{label} [{scf}]-> {str(data_spe.get(scf).get('citation'))}")
                             spe_record[seq_code_order_label.index(label)] = str(data_spe.get(scf).get('citation'))
                         elif scf == 'classification':
                             #print(f"seqcode_{label} [{scf}]-> {string_classi}")
@@ -804,8 +842,6 @@ class Tools(object):
 
         mapping_dict = {}
 
-        print([ x for x  in reverse_sequence_infos.keys() if 'CP' in x])
-
 
         with urllib.request.urlopen("https://disc-genomics.uibk.ac.at/seqcode/type-genomes.json") as url:
             data = json.load(url)
@@ -925,7 +961,7 @@ class Tools(object):
         with open(blastdb_file, encoding='utf-8') as blastdbf:
             for line in blastdbf:
                 if line.startswith('>'):
-                    infos = line.strip().split('\|')
+                    infos = line.strip().split('|')
                     print(f' - {infos}', end='\r')
                     fields = matching_brackets(infos[2])
                     strain = None
@@ -1020,7 +1056,9 @@ class Tools(object):
 
         print('Done.')
 
-
+    def check_db_population(self, metadata, id_last_genome, log_file):
+        # we parse the metadata file to get the last genome id
+        pass
 
 
 def symlink(target, link_name, overwrite=False):

@@ -67,8 +67,8 @@ class OptionsParser():
         """Pull all genus.html files."""
         make_sure_path_exists(options.output_dir)
         p = LPSN(options.skip_taxa_per_letter_dl, options.output_dir)
-        #for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species']:
-        #    p.download_rank_lpsn_html(rk)
+        for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species']:
+           p.download_rank_lpsn_html(rk)
         p.download_subspecies_lpsn_html()
 
     def parse_html(self, options):
@@ -189,7 +189,8 @@ class OptionsParser():
 
     def update_silva(self, options):
         p = RnaManager(1, None, None, None)
-        p.update_silva(options.ssu_ref, options.lsu_ref, options.out_dir)
+        print(options)
+        p.update_silva(options.ssu_ref, options.lsu_ref, options.output_dir)
 
     def generate_rna_ltp(self, options):
         p = RnaLTPManager(options.cpus, options.ltp_version,
@@ -200,6 +201,15 @@ class OptionsParser():
         p = CheckMManager(options.cpus)
         p.run_checkm(options.gtdb_genome_path_file, options.report,
                      options.output_dir, options.all_genomes)
+
+    def prepare_checkm2_batch(self, options):
+        p = CheckMManager(options.cpus)
+        p.prepare_checkm2_batch(options.checkm_summary_genbank, options.checkm_summary_refseq,options.metadata,
+                                options.gtdb_genome_path_file,options.output_dir)
+
+    def join_checkm2_results(self,options):
+        p = CheckMManager(options.cpus)
+        p.join_checkm2_results(options.checkm2_output_dir,options.output_dir)
 
     def join_checkm_files(self, options):
         p = CheckMManager()
@@ -325,6 +335,10 @@ class OptionsParser():
         p = Tools()
         p.generate_seqcode_table(options.gtdb_genome_path_file,options.output_dir,options.cpus)
 
+    def check_db_population(self, options):
+        p = Tools()
+        p.check_db_population(options.metadata, options.id_last_genome, options.log_file)
+
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
         if options.subparser_name == 'list_genomes':
@@ -367,12 +381,18 @@ class OptionsParser():
             self.join_checkm_files(options)
         elif options.subparser_name == 'checkm':
             self.generate_checkm_data(options)
+        elif options.subparser_name == 'prepare_checkm2':
+            self.prepare_checkm2_batch(options)
+        elif options.subparser_name == 'join_checkm2':
+            self.join_checkm2_results(options)
         elif options.subparser_name == 'update_checkm_db':
             self.update_checkm_db(options)
         elif options.subparser_name == 'add_surveillance_genomes':
             self.add_surveillance_genomes(options)
         elif options.subparser_name == 'add_names_dmp':
             self.add_names_dmp(options)
+        elif options.subparser_name == 'check_db_population':
+            self.check_db_population(options)
         elif options.subparser_name == 'update_db':
             self.update_db(options)
         elif options.subparser_name == 'propagate_gtdb_taxonomy':
@@ -434,3 +454,7 @@ class OptionsParser():
             sys.exit()
 
         return 0
+
+
+
+

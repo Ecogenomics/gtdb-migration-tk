@@ -324,75 +324,72 @@ class MetadataTable(object):
         fout_lsu_5S_count.write('%s\t%s\n' % ('genome_id', 'lsu_5s_count'))
 
         # generate metadata for NCBI assemblies
-        countr = 0
-        for line in open(gtdb_genome_path_file):
-            countr += 1
-            statusStr = '{} lines read.'.format(countr)
-            sys.stdout.write('%s\r' % statusStr)
-            sys.stdout.flush()
+        numlines = get_num_lines(gtdb_genome_path_file)
+        with open(gtdb_genome_path_file) as ggpf:
+            for line in tqdm(ggpf,ncols=100,total=numlines,smoothing=50/numlines):
 
-            line_split = line.strip().split('\t')
+                line_split = line.strip().split('\t')
 
-            gid = line_split[0]
-            gpath = line_split[1]
-            assembly_id = os.path.basename(os.path.normpath(gpath))
-            metadata_nt_file = os.path.join(
-                gpath, self.metadata_nt_file)
-            self._parse_nt(
-                gid, metadata_nt_file, fout_nt)
+                gid = line_split[0]
+                gpath = line_split[1]
+                assembly_id = os.path.basename(os.path.normpath(gpath))
+                metadata_nt_file = os.path.join(
+                    gpath, self.metadata_nt_file)
+                self._parse_nt(
+                    gid, metadata_nt_file, fout_nt)
 
-            metadata_gene_file = os.path.join(
-                gpath, self.metadata_gene_file)
-            self._parse_gene(
-                gid, metadata_gene_file, fout_gene)
+                metadata_gene_file = os.path.join(
+                    gpath, self.metadata_gene_file)
+                self._parse_gene(
+                    gid, metadata_gene_file, fout_gene)
 
-            ssu_gg_taxonomy_file = os.path.join(
-                gpath, self.ssu_gg_taxonomy_file)
-            ssu_gg_fna_file = os.path.join(
-                gpath, self.ssu_gg_fna_file)
-            self._parse_taxonomy_file(
-                gid, ssu_gg_taxonomy_file, fout_gg_taxonomy, 'ssu_gg', ssu_gg_fna_file)
+                ssu_gg_taxonomy_file = os.path.join(
+                    gpath, self.ssu_gg_taxonomy_file)
+                ssu_gg_fna_file = os.path.join(
+                    gpath, self.ssu_gg_fna_file)
+                self._parse_taxonomy_file(
+                    gid, ssu_gg_taxonomy_file, fout_gg_taxonomy, 'ssu_gg', ssu_gg_fna_file)
 
-            ssu_silva_taxonomy_file = os.path.join(
-                gpath, self.ssu_silva_taxonomy_file)
-            ssu_silva_fna_file = os.path.join(
-                gpath, self.ssu_silva_fna_file)
-            ssu_silva_summary_file = os.path.join(
-                gpath, self.ssu_silva_summary_file)
-            ssu_count = self._parse_taxonomy_file(gid,
-                                                  ssu_silva_taxonomy_file,
-                                                  fout_ssu_silva_taxonomy,
-                                                  'ssu_silva',
-                                                  ssu_silva_fna_file,
-                                                  ssu_silva_summary_file)
+                ssu_silva_taxonomy_file = os.path.join(
+                    gpath, self.ssu_silva_taxonomy_file)
+                ssu_silva_fna_file = os.path.join(
+                    gpath, self.ssu_silva_fna_file)
+                ssu_silva_summary_file = os.path.join(
+                    gpath, self.ssu_silva_summary_file)
+                ssu_count = self._parse_taxonomy_file(gid,
+                                                      ssu_silva_taxonomy_file,
+                                                      fout_ssu_silva_taxonomy,
+                                                      'ssu_silva',
+                                                      ssu_silva_fna_file,
+                                                      ssu_silva_summary_file)
 
-            lsu_silva_23s_taxonomy_file = os.path.join(
-                gpath, self.lsu_silva_23s_taxonomy_file)
-            lsu_silva_23s_fna_file = os.path.join(
-                gpath, self.lsu_silva_23s_fna_file)
-            lsu_silva_23s_summary_file = os.path.join(
-                gpath, self.lsu_silva_23s_summary_file)
-            lsu_23s_count = self._parse_taxonomy_file(
-                gid, lsu_silva_23s_taxonomy_file, fout_lsu_silva_23s_taxonomy, 'lsu_silva_23s', lsu_silva_23s_fna_file, lsu_silva_23s_summary_file)
+                lsu_silva_23s_taxonomy_file = os.path.join(
+                    gpath, self.lsu_silva_23s_taxonomy_file)
+                lsu_silva_23s_fna_file = os.path.join(
+                    gpath, self.lsu_silva_23s_fna_file)
+                lsu_silva_23s_summary_file = os.path.join(
+                    gpath, self.lsu_silva_23s_summary_file)
+                lsu_23s_count = self._parse_taxonomy_file(
+                    gid, lsu_silva_23s_taxonomy_file, fout_lsu_silva_23s_taxonomy, 'lsu_silva_23s', lsu_silva_23s_fna_file, lsu_silva_23s_summary_file)
 
-            lsu_5S_fna_file = os.path.join(
-                gpath, self.lsu_5S_fna_file)
-            lsu_5S_summary_file = os.path.join(
-                gpath, self.lsu_5S_summary_file)
-            lsu_5S_count = self._parse_lsu_5S_files(
-                gid, fout_lsu_5S, lsu_5S_fna_file, lsu_5S_summary_file)
+                lsu_5S_fna_file = os.path.join(
+                    gpath, self.lsu_5S_fna_file)
+                lsu_5S_summary_file = os.path.join(
+                    gpath, self.lsu_5S_summary_file)
+                lsu_5S_count = self._parse_lsu_5S_files(
+                    gid, fout_lsu_5S, lsu_5S_fna_file, lsu_5S_summary_file)
 
-            fout_ssu_silva_count.write(
-                '%s\t%d\n' % (gid, ssu_count))
-            fout_lsu_silva_23s_count.write(
-                '%s\t%d\n' % (gid, lsu_23s_count))
-            fout_lsu_5S_count.write(
-                '%s\t%d\n' % (gid, lsu_5S_count))
+                fout_ssu_silva_count.write(
+                    '%s\t%d\n' % (gid, ssu_count))
+                fout_lsu_silva_23s_count.write(
+                    '%s\t%d\n' % (gid, lsu_23s_count))
+                fout_lsu_5S_count.write(
+                    '%s\t%d\n' % (gid, lsu_5S_count))
 
-            trna_file = os.path.join(
-                gpath, 'trna', gid + '_trna_stats.tsv')
-            self._parse_trna_file(
-                gid, trna_file, fout_trna_count)
+                trna_file = os.path.join(
+                    gpath, 'trna', gid + '_trna_stats.tsv')
+                self._parse_trna_file(
+                    gid, trna_file, fout_trna_count)
 
         fout_nt.close()
         fout_gene.close()

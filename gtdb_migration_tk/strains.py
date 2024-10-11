@@ -269,7 +269,7 @@ class Strains(object):
                 infos = line.rstrip('\n').split('\t')
                 
                 sp = infos[0]
-                if sp=='Natranaerobius thermophilus' or sp=='Brachyspira intermedia':
+                if sp == 'Ferroplasma acidiphilum':
                     print(infos)
 
                 if len(infos) ==1 :
@@ -278,6 +278,8 @@ class Strains(object):
                 elif len(infos) == 2:
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
+                    if sp == 'Ferroplasma acidiphilum':
+                        print(list_strains)
                     if len(list_strains) > 0:
                         lpsn_strains_dic[sp] = {'strains': '='.join(set(list_strains)), 'neotypes': ''}
                 else:
@@ -290,8 +292,6 @@ class Strains(object):
                     lpsn_strains_dic[sp] = {
                         'strains': '='.join(set(list_strains)), 'neotypes': '='.join(set(list_neotypes))}
 
-        print(lpsn_strains_dic.get('Natranaerobius thermophilus'))
-                        
         self.logger.info(' - identified strain ids for {:,} species on LPSN website.'.format(
                             len(lpsn_strains_dic)))
 
@@ -306,15 +306,13 @@ class Strains(object):
                 website_strains_only += len(scraped_strain_ids - set(strain_ids))
                 # we join the two sets of strain IDs
                 #strain_ids = list(set(strain_ids) | scraped_strain_ids)
-                if sp == 'Natranaerobius thermophilus':
-                    print('scraped_strain_ids', scraped_strain_ids)
-                    print('strain_ids', strain_ids)
-                    print('new_strain_ids', new_strain_ids)
 
                 # GSS file is more reliable so defer to these co-identical strain IDs
                 lpsn_strains_dic[sp] = {'strains': '='.join(strain_ids), 'neotypes': lpsn_strains_dic[sp]['neotypes']}
             else:
                 lpsn_strains_dic[sp] = {'strains': '='.join(strain_ids), 'neotypes': ''}
+
+
 
         self.logger.info(' - identified strain ids for {:,} species in LPSN GSS file; deferring to LPSN GSS data whenever possible.'.format(
                             len(lpsn_gss_strain_ids)))
@@ -327,7 +325,7 @@ class Strains(object):
         self.logger.info(' - identified {:,} strain IDs exclusive to LPSN website. (ideally zero!)'.format(
                             website_strains_only))
 
-        print(lpsn_strains_dic.get('Natranaerobius thermophilus'))
+
         return lpsn_strains_dic
     
     def _read_type_species_of_genus(self, species_file):
@@ -421,6 +419,7 @@ class Strains(object):
         year_date = ''
         category_name = ''
         matched_strain_id = None
+
         for repository_strain_id in repository_strain_ids.split("="):
             strain_ids = self.metadata[gid]['ncbi_expanded_standardised_strain_ids']
             if repository_strain_id in strain_ids:
@@ -435,18 +434,48 @@ class Strains(object):
                 collapsed_names = {pattern.sub(
                     '', a).upper(): a for a in raw_names}
 
+
                 for name in collapsed_names:
                     if repository_strain_id in name:
                         first_char = repository_strain_id[0]
-                        p = re.compile(' {}'.format(first_char), re.IGNORECASE)
-                        matches_beginning = p.search(collapsed_names[name])
+                        p = re.compile(" {0}|'{0}".format(first_char), re.IGNORECASE)
+                        # search all the matches
+                        all_matches = p.findall(collapsed_names[name])
+                        # Loop to find all matches using re.search
+                        pos = 0
+                        index_beginning = []
+                        while True:
+                            match = p.search(collapsed_names[name], pos)
+                            if not match:
+                                break
+                            index_beginning.append(match.end() - 1)
+                            # Update the position to start the next search after the current match
+                            pos = match.end()
 
                         last_char = repository_strain_id[-1]
-                        q = re.compile('{}(\s|$)'.format(
-                            last_char), re.IGNORECASE)
-                        matches_end = q.search(collapsed_names[name])
-                        if matches_beginning and matches_end:
-                            istype = True
+                        q = re.compile('{}(\s|$)'.format(last_char), re.IGNORECASE)
+                        # Loop to find all matches using re.search
+                        pos = 0
+                        index_end = []
+                        while True:
+                            match = q.search(collapsed_names[name], pos)
+                            if not match:
+                                break
+                            index_end.append(match.start() + 1)
+                            # Update the position to start the next search after the current match
+                            pos = match.end()
+
+                        if index_beginning and index_end:
+                            # we get the substring that matches the matches_beginning and matches_end
+                            for idx_beg in index_beginning:
+                                for idx_end in index_end:
+                                    if idx_end > idx_beg:
+                                        potential = collapsed_names[name][idx_beg:idx_end]
+                                        potential = canonical_strain_id(potential)
+                                        if potential == repository_strain_id:
+                                            istype = True
+                        # if matches_beginning and matches_end:
+                        #     istype = True
 
             if istype:
                 if sourcest == 'lpsn':
@@ -526,6 +555,8 @@ class Strains(object):
                      isofficial):
         """Match species names with stain IDs for a type source (e.g. LPSN) in order to establish if a genome is assembled from type."""
 
+
+
         # Match strain IDs from type sources (e.g. LPSN) associated with each standard
         # species name to strain information at NCBI. Searching is performed on the
         # raw NCBI species designations associated with a standard name as it can be
@@ -536,6 +567,16 @@ class Strains(object):
         for standard_name, raw_names in standard_names.items():
             if standard_name not in strain_dictionary:
                 continue
+            else:
+                if gid == 'GB_GCA_945881865.1':
+                    print('standard_name', standard_name)
+                    print('strain_dictionary', strain_dictionary[standard_name])
+                    print('misspelling_names', misspelling_names)
+                    print('synonyms', synonyms)
+                    print('equivalent_names', equivalent_names)
+                    print('isofficial', isofficial)
+                    print('sourcest', sourcest)
+
 
             if sourcest == 'lpsn':
                 # lpsn has information for both strains and neotype strains
@@ -607,6 +648,8 @@ class Strains(object):
                         match = m
                 else:
                     match = m
+        if gid == 'GB_GCA_945881865.1':
+            print('match', match)
 
         return match
 
@@ -1049,10 +1092,6 @@ class Strains(object):
         self.logger.info('Parsing information in LPSN directory.')
         lpsn_strains_dic = self.load_lpsn_strains_dictionary(lpsn_dir,
                                                                 lpsn_gss_file)
-        print('lpsn_strains_dic',len(lpsn_strains_dic))
-        #print top 10 keys
-        print(lpsn_strains_dic.get('Natranaerobius thermophilus'))
-        print(lpsn_strains_dic.get('Brachyspira intermedia'))
 
         self.logger.info('Processing LPSN data.')
         lpsn_summary_file = os.path.join(self.output_dir, 'lpsn_summary.tsv')
@@ -1207,7 +1246,7 @@ class Strains(object):
                     priorities[taxon] = years[0]
                     strain_ids[taxon] = [canonical_strain_id(strain_id) 
                                             for strain_id in tokens[nom_type_idx].split(';')
-                                            if check_format_strain(canonical_strain_id(strain_id))]
+                                            if check_format_strain(canonical_strain_id(strain_id),)]
         
         return priorities, strain_ids
 

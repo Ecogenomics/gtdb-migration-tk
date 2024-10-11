@@ -198,7 +198,7 @@ class tRNAScan(object):
 
         with mp.Pool(processes=self.cpus) as pool:
             genome_paths = list(tqdm(pool.imap_unordered(self.trnascan_worker, genome_files),
-                                     total=len(genome_files), unit='genome',ncols=100))
+                                     total=len(genome_files), unit='genome',ncols=100,smoothing=50/len(genome_files)))
 
 
             # workerProc = [mp.Process(target=self.__workerThread,
@@ -251,15 +251,15 @@ class tRNAScan(object):
                 if os.path.exists(checksum_file):
                     checksum = sha256(trna_file)
                     cur_checksum = open(checksum_file).readline().strip()
-                    if checksum == cur_checksum:
+                    if str(checksum) == str(cur_checksum):
                         # if genomes_to_consider and gid in genomes_to_consider:
                         #     self.logger.warning(f'Genome {gid} is marked as new or modified, but already has tRNAs called.')
                         #     self.logger.warning('Genome is being skipped!')
                         value='null'
 
-                if value is None:
-                    self.logger.warning(
-                            f'Genome {gid} has tRNAs called, but an invalid checksum ({checksum} for {trna_file} and {cur_checksum} in {checksum_file} and was not flagged.Genome will be reannotated.')
+                    if value is None:
+                        self.logger.warning(
+                                f'Genome {gid} has tRNAs called, but an invalid checksum ({checksum} for {trna_file} and {cur_checksum} in {checksum_file} and was not flagged.Genome will be reannotated.')
 
                     # elif genomes_to_consider and (gid not in genomes_to_consider):
                     #     self.logger.warning(f'Genome {gid} has no Pfam annotations, but is also not marked for processing?')

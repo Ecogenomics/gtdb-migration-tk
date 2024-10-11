@@ -598,7 +598,6 @@ class LPSN(object):
                         raw_list_strain = [
                             x for x in raw_list_strain if (x != 'n/a' and check_format_strain(canonical_strain_id(x)))]
                         break
-                        # print(raw_list_strain)
 
                     elif strain_section and name_section:
                         if line.strip() != '':
