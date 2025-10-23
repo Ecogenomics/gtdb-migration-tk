@@ -36,6 +36,7 @@ from gtdb_migration_tk.rna_manager import RnaManager
 from gtdb_migration_tk.rna_ltp_manager import RnaLTPManager
 from gtdb_migration_tk.trnascan_manager import tRNAScan
 from gtdb_migration_tk.checkm_manager import CheckMManager
+from gtdb_migration_tk.busco_manager import BuscoManager
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.curation_lists import CurationLists
@@ -203,6 +204,15 @@ class OptionsParser():
         p = CheckMManager()
         p.join_checkm_files_releases(options.checkm_files, options.output_file)
 
+    def generate_busco_data(self, options):
+        """Estimate quality of fungal genomes using BUSCO."""
+
+        p = BuscoManager(options.cpus)
+        p.run_busco(options.gtdb_genome_path_file, 
+                    options.report,
+                    options.output_dir, 
+                    options.all_genomes)
+
     def update_db(self, options):
         p = DatabaseManager(options.user, options.hostname,
                             options.db, options.password,
@@ -274,7 +284,11 @@ class OptionsParser():
     def parse_ncbi_taxonomy(self, options):
         p = TaxonomyNCBI()
         p.parse_ncbi_taxonomy(options.taxonomy_dir,
-                              options.ra, options.rb, options.ga, options.gb,
+                              options.ra, 
+                              options.rb, 
+                              options.ga, 
+                              options.gb,
+                              options.keep_subranks,
                               options.output_prefix)
 
     def curation_lists(self, options):
@@ -337,6 +351,8 @@ class OptionsParser():
             self.generate_checkm_data(options)
         elif options.subparser_name == 'update_checkm_db':
             self.update_checkm_db(options)
+        elif options.subparser_name == 'busco':
+            self.generate_busco_data(options)
         elif options.subparser_name == 'add_surveillance_genomes':
             self.add_surveillance_genomes(options)
         elif options.subparser_name == 'add_names_dmp':

@@ -33,7 +33,7 @@ import json
 import os
 import sys
 import traceback
-from collections import namedtuple, defaultdict, Counter
+from collections import namedtuple, Counter
 
 from biolib.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
@@ -51,13 +51,20 @@ class TaxonomyNCBI(object):
         self.bacterial_division = '0'
         self.unassigned_division = '8'
 
-    def _assembly_organism_name(self, refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
-                                genbank_archaea_assembly_file, genbank_bacteria_assembly_file, output_organism_name_file):
+    def _assembly_organism_name(self, 
+                                refseq_archaea_assembly_file, 
+                                refseq_bacteria_assembly_file,
+                                genbank_archaea_assembly_file, 
+                                genbank_bacteria_assembly_file, 
+                                output_organism_name_file):
         """Parse out organism name for each genome."""
 
         fout = open(output_organism_name_file, 'w')
         for assembly_file in [refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
                               genbank_archaea_assembly_file, genbank_bacteria_assembly_file]:
+            if assembly_file is None:
+                continue
+
             with open(assembly_file) as f:
                 f.readline()
                 header = f.readline().strip().split('\t')
@@ -87,7 +94,10 @@ class TaxonomyNCBI(object):
 
         d = {}
         for assembly_file in [refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
-                              genbank_archaea_assembly_file, genbank_bacteria_assembly_file, ]:
+                              genbank_archaea_assembly_file, genbank_bacteria_assembly_file]:
+            if assembly_file is None:
+                continue
+
             with open(assembly_file) as f:
                 headers = f.readline().strip().split('\t')
                 try:
@@ -160,7 +170,7 @@ class TaxonomyNCBI(object):
 
             tax_id = line_split[0]
             name_txt = line_split[1]
-            unique_name = line_split[2]
+            _unique_name = line_split[2]
             name_class = line_split[3]
 
             if name_class == 'scientific name':
@@ -270,8 +280,12 @@ class TaxonomyNCBI(object):
 
         return True, 's__' + sp_name
 
-    def standardize_taxonomy(self, ncbi_taxonomy_file, output_consistent):
-        """Produce standardized 7-rank taxonomy file from NCBI taxonomy strings."""
+    def standardize_taxonomy(self, ncbi_taxonomy_file, keep_subranks, output_consistent):
+        """Produce standardized taxonomy file from NCBI taxonomy strings.
+        
+        This is either a 7 rank taxonomy (domain to species) or the 7 rank taxonomy with
+        subranks.
+        """
 
         fout_consistent = open(output_consistent, 'w')
         failed_filters = set()
@@ -281,26 +295,43 @@ class TaxonomyNCBI(object):
             gid = line_split[0]
             taxonomy = line_split[1].split(';')
 
-            if not ('d__Bacteria' in taxonomy or 'd__Archaea' in taxonomy):
+            if not ('d__Bacteria' in taxonomy 
+                    or 'd__Archaea' in taxonomy 
+                    or 'd__Eukaryota' in taxonomy
+                    or 'd__Fungi' in taxonomy):
                 continue
 
             # remove unrecognized ranks (i.e., 'x__') and strain classification
             revised_taxonomy = []
             for t in taxonomy:
-                if not t.startswith('x__') and not t.startswith('st__') and ' family' not in t.lower() :
+                rank_prefix = t.split('__')[0]
+                if (not t.startswith('x__') 
+                    and ' family' not in t.lower() 
+                    and not rank_prefix == 'sb' 
+                    and (not len(rank_prefix) == 2 or keep_subranks)):
                     revised_taxonomy.append(t)
+
+            rank_prefixes = Taxonomy.rank_prefixes
+            if keep_subranks:
+                rank_prefixes = ['d__', 'sd__', 
+                                 'p__', 'sp__', 
+                                 'c__', 'sc__', 
+                                 'o__', 'so__', 
+                                 'f__', 'sf__',
+                                 'g__', 'sg__',
+                                 's__']
 
             # create longest taxonomy string possible with canonical ranks
             canonical_taxonomy = {}
             for i, taxon in enumerate(revised_taxonomy):
-                rank_prefix = taxon[0:3]
-                if rank_prefix in Taxonomy.rank_prefixes:
+                rank_prefix = taxon.split('__')[0] + '__'
+                if rank_prefix in rank_prefixes:
                     if rank_prefix == 's__':
                         valid_name, canonical_species_name = self._valid_species_name(
                             taxon)
 
                         if valid_name:
-                            canonical_taxonomy[Taxonomy.rank_prefixes.index(
+                            canonical_taxonomy[rank_prefixes.index(
                                 rank_prefix)] = canonical_species_name
                         else:
                             if ('full name' in canonical_species_name and
@@ -312,27 +343,25 @@ class TaxonomyNCBI(object):
                                  or 'phytoplasma' in canonical_species_name)):
                                 failed_filters.add(taxon)
                     else:
-                        canonical_taxonomy[Taxonomy.rank_prefixes.index(
-                            rank_prefix)] = taxon
+                        canonical_taxonomy[rank_prefixes.index(rank_prefix)] = taxon
 
             # fill in missing ranks where possible
             if canonical_taxonomy:
                 for i in range(0, max(canonical_taxonomy.keys())):
                     if i in canonical_taxonomy and (i + 1) not in canonical_taxonomy:
-                        canonical_taxonomy[i +
-                                           1] = Taxonomy.rank_prefixes[i + 1]
+                        canonical_taxonomy[i + 1] = rank_prefixes[i + 1]
 
             cur_taxonomy = []
-            for i in range(0, len(Taxonomy.rank_prefixes)):
+            for i in range(0, len(rank_prefixes)):
                 if i in canonical_taxonomy:
                     cur_taxonomy.append(canonical_taxonomy[i])
                 else:
                     break  # unable to correctly determine a valid taxonomy below this rank
 
             if len(cur_taxonomy) > 0:
-                if len(cur_taxonomy) != len(Taxonomy.rank_prefixes):
+                if len(cur_taxonomy) != len(rank_prefixes):
                     cur_taxonomy = cur_taxonomy + \
-                        list(Taxonomy.rank_prefixes[len(cur_taxonomy):])
+                        list(rank_prefixes[len(cur_taxonomy):])
                 fout_consistent.write('%s\t%s\n' %
                                       (gid, ';'.join(cur_taxonomy)))
 
@@ -352,6 +381,7 @@ class TaxonomyNCBI(object):
             refseq_bacteria_assembly_file,
             genbank_archaea_assembly_file,
             genbank_bacteria_assembly_file,
+            keep_subranks,
             output_prefix):
         """Read NCBI taxonomy information and create summary output files."""
 
@@ -380,7 +410,7 @@ class TaxonomyNCBI(object):
         taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
         fout = open(taxonomy_file, 'w')
 
-        print('Number of assemblies: %d' % len(assembly_to_tax_id))
+        print(f'Number of assemblies: {len(assembly_to_tax_id)}')
         for assembly_accession, tax_id in assembly_to_tax_id.items():
             # traverse taxonomy tree to the root which is 'cellular organism' for genomes,
             # 'other sequences' for plasmids, and 'unclassified sequences' for metagenomic libraries
@@ -388,14 +418,14 @@ class TaxonomyNCBI(object):
             cur_tax_id = tax_id
 
             if cur_tax_id not in name_records:
-                print('[Warning] Assembly %s has an invalid taxid: %s' % (assembly_accession, tax_id))
+                print('[Warning] Assembly {} has an invalid taxid: {}'.format(assembly_accession, tax_id))
                 continue
 
             roots = ['cellular organisms', 'other sequences',
                      'unclassified sequences', 'Viruses', 'Viroids']
             while name_records[cur_tax_id].name_txt not in roots:
                 if cur_tax_id == '1':
-                    print('[Error] TaxId %s reached root of taxonomy tree: %s' % (tax_id, taxonomy))
+                    print('[Error] TaxId {} reached root of taxonomy tree: {}'.format(tax_id, taxonomy))
                     sys.exit(-1)
 
                 try:
@@ -407,11 +437,25 @@ class TaxonomyNCBI(object):
                         rank_prefix = Taxonomy.rank_prefixes[rank_index]
                     elif node_record.rank == 'subspecies':
                         rank_prefix = 'sb__'
+                    elif node_record.rank == 'subkingdom':
+                        # this is a subdomain in the GTDB terminology when
+                        # keeping subranks, otherwise this should be treated
+                        # as a domain since Bacteria and Archaea are subkingdoms
+                        # in the NCBI taxonomy
+                        if keep_subranks:
+                            rank_prefix = 'sd__'
+                        else:
+                            rank_prefix = 'd__'
+                    elif node_record.rank == 'kingdom':
+                        rank_prefix = 'd__'
+                    elif keep_subranks and node_record.rank.startswith('sub'):
+                        base_rank = node_record.rank.replace('sub', '')
+                        base_index = Taxonomy.rank_labels.index(base_rank)
+                        base_prefix = Taxonomy.rank_prefixes[base_index]
+                        rank_prefix = f's{base_prefix}'
                     else:
                         # unrecognized rank
                         rank_prefix = 'x__'
-                        if node_record.rank == 'superkingdom':
-                            rank_prefix = 'd__'
 
                     taxonomy.append(
                         rank_prefix + name_records[cur_tax_id].name_txt)
@@ -428,6 +472,7 @@ class TaxonomyNCBI(object):
         fout.close()
 
         self.standardize_taxonomy(taxonomy_file,
+                                  keep_subranks,
                                   output_prefix + '_standardized.tsv')
 
 
@@ -435,14 +480,13 @@ class TaxonomyNCBI(object):
          refseq_archaea_assembly_file,
          refseq_bacteria_assembly_file,
          genbank_archaea_assembly_file,
-         genbank_bacteria_assembly_file,output_prefix):
+         genbank_bacteria_assembly_file,
+         output_prefix):
+        """Read NCBI taxonomy information and create summary output files."""
 
         temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
             hostname, user, password, db)
         temp_con.MakePostgresConnection()
-        temp_cur = temp_con.cursor()
-
-        """Read NCBI taxonomy information and create summary output files."""
 
         output_prefix ="test"
 
@@ -468,8 +512,6 @@ class TaxonomyNCBI(object):
         print('Read %d name records.' % len(name_records))
 
         # traverse taxonomy tree for each assembly
-        taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
-        #fout = open(taxonomy_file, 'w')
         list_ranks_taxonomy = []
 
         print('Number of assemblies: %d' % len(assembly_to_tax_id))
@@ -517,7 +559,7 @@ class TaxonomyNCBI(object):
 
             list_ranks_taxonomy.extend(taxonomy)
 
-        only_names,only_taxid = zip(*set(list_ranks_taxonomy))
+        only_names, _only_taxid = zip(*set(list_ranks_taxonomy))
         print(Counter(only_names).most_common(5))
 
         with open('taxids.json', 'w') as outfile:

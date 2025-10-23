@@ -17,10 +17,8 @@
 
 import os
 import sys
-import argparse
 import logging
 import ntpath
-
 
 from biolib.common import remove_extension
 from biolib.external.execute import check_dependencies

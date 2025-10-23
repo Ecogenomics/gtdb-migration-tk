@@ -1,3 +1,6 @@
+0.0.4
+- Updates to support parsing of data for fungal GTDB
+- Add functionality for running BUSCO on fungal genomes
 0.0.3
 - Added update_reps_db command
 0.0.2
