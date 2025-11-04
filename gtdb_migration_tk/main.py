@@ -345,9 +345,9 @@ class OptionsParser():
     def generate_ltp_db(self, options):
         check_file_exists(options.fasta)
         check_file_exists(options.csv)
-        check_file_exists(options.blastdb)
+        check_file_exists(options.compressed_fasta)
         p = Tools()
-        p.generate_ltp_db(options.csv, options.blastdb, options.fasta,options.output_dir, options.output_prefix)
+        p.generate_ltp_db(options.csv, options.compressed_fasta, options.fasta,options.output_dir, options.output_prefix)
 
     def generate_seqcode_table(self,options):
         p = Tools()

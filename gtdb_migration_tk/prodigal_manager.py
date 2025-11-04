@@ -83,13 +83,14 @@ class ProdigalManager(object):
 
         list_genome_tuples = []
         with open(gtdb_genome_path_file,'r') as ggpf :
-            for i,line in enumerate(tqdm(ggpf)):
+            for i,line in enumerate(tqdm(ggpf,ncols=100)):
                 line_split = line.strip().split('\t')
                 gid = line_split[0]
                 gpath = line_split[1]
                 list_genome_tuples.append((gid,gpath,all_genomes))
 
         #get top 10 genomes
+        self.logger.info('Running prodigal on genomes ...')
         with mp.Pool(processes=self.cpus) as pool:
             genome_paths = list(tqdm(pool.imap_unordered(self.prodigal_parser, list_genome_tuples),
                                     total=len(list_genome_tuples), unit='genome'))

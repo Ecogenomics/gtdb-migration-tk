@@ -45,11 +45,15 @@ class Strains(object):
         self.year = datetime.datetime.now().year
 
         self.TYPE_SPECIES = 'type strain of species'
+        self.NOMENCLATURAL_TYPE='nomenclatural type of species'
+        self.HOLOTYPE='holotype of species'
         self.TYPE_NEOTYPE = 'type strain of neotype'
         self.TYPE_SUBSPECIES = 'type strain of subspecies'
         self.TYPE_HETERO_SYNONYM = 'type strain of heterotypic synonym'
         self.NOT_TYPE_MATERIAL = 'not type material'
         self.type_priority = [self.TYPE_SPECIES,
+                              self.NOMENCLATURAL_TYPE,
+                              self.HOLOTYPE,
                               self.TYPE_NEOTYPE,
                               self.TYPE_SUBSPECIES,
                               self.TYPE_HETERO_SYNONYM,
@@ -156,7 +160,9 @@ class Strains(object):
                 tokens = [token.strip() for token in line.split('|')]
                 cur_taxid = int(tokens[0])
 
-                if tokens[3] == 'type material':
+                if '<not considered type>' in tokens[2]:
+                    self.logger.warning(f"Ignoring {tokens[1]} as it is not considered type material.")
+                elif tokens[3] == 'type material':
                     for sid in self.fix_common_strain_id_errors([tokens[1]]):
                         type_material[cur_taxid].add(
                             self.standardize_strain_id(sid))
@@ -269,8 +275,6 @@ class Strains(object):
                 infos = line.rstrip('\n').split('\t')
                 
                 sp = infos[0]
-                if sp == 'Ferroplasma acidiphilum':
-                    print(infos)
 
                 if len(infos) ==1 :
                     print("len(infos) < 2 ")
@@ -278,19 +282,29 @@ class Strains(object):
                 elif len(infos) == 2:
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
-                    if sp == 'Ferroplasma acidiphilum':
-                        print(list_strains)
                     if len(list_strains) > 0:
                         lpsn_strains_dic[sp] = {'strains': '='.join(set(list_strains)), 'neotypes': ''}
-                else:
-                    # DHP: I don't think this case every occurs (?)
+                elif len(infos) == 3:
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
-                    list_neotypes = [pattern.sub('', a.strip()).upper(
-                    ) for a in infos[2].split('=') if (a != '' and a != 'none')]
-
-                    lpsn_strains_dic[sp] = {
-                        'strains': '='.join(set(list_strains)), 'neotypes': '='.join(set(list_neotypes))}
+                    if len(list_strains) > 0:
+                        td = ''
+                        if infos[2] == 'Nomenclatural type':
+                            td='nomenclatural type of species'
+                        elif infos[2] == 'Holotype':
+                            td = 'holotype of species'
+                        elif infos[2] == 'Type strain':
+                            td = 'type strain of species'
+                        lpsn_strains_dic[sp] = {'strains': '='.join(set(list_strains)), 'neotypes': '','type_designation': td}
+                # else:
+                #     # DHP: I don't think this case every occurs (?)
+                #     list_strains = [pattern.sub('', a.strip()).upper(
+                #     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
+                #     list_neotypes = [pattern.sub('', a.strip()).upper(
+                #     ) for a in infos[2].split('=') if (a != '' and a != 'none')]
+                #
+                #     lpsn_strains_dic[sp] = {
+                #         'strains': '='.join(set(list_strains)), 'neotypes': '='.join(set(list_neotypes))}
 
         self.logger.info(' - identified strain ids for {:,} species on LPSN website.'.format(
                             len(lpsn_strains_dic)))
@@ -648,7 +662,16 @@ class Strains(object):
                         match = m
                 else:
                     match = m
-        if gid == 'GB_GCA_945881865.1':
+
+        if match and match.gtdb_type_status==self.TYPE_SPECIES:
+            if strain_dictionary.get(match.standard_name) and strain_dictionary.get(match.standard_name).get('type_designation'):
+                td = strain_dictionary.get(match.standard_name).get('type_designation')
+                if td == 'nomenclatural type of species':
+                    match = match._replace(gtdb_type_status=self.NOMENCLATURAL_TYPE)
+                elif td == 'holotype of species':
+                    match = match._replace(gtdb_type_status=self.HOLOTYPE)
+
+        if gid == 'RS_GCF_000952155.1' or gid == 'RS_GCF_000400485.1':
             print('match', match)
 
         return match
@@ -977,6 +1000,8 @@ class Strains(object):
             for sr in [lpsn]:
                 if gid in sr and self.type_priority.index(sr[gid].type_designation) < self.type_priority.index(highest_priority_designation):
                     highest_priority_designation = sr[gid].type_designation
+                if highest_priority_designation == self.NOMENCLATURAL_TYPE or highest_priority_designation == self.HOLOTYPE:
+                    highest_priority_designation = self.TYPE_SPECIES
             fout.write('\t{}'.format(highest_priority_designation))
 
             type_species_of_genus = False
@@ -990,6 +1015,9 @@ class Strains(object):
             gtdb_type_sources = []
             for sr_id, sr in [('LPSN', lpsn)]:
                 if gid in sr and sr[gid].type_designation == highest_priority_designation:
+                    gtdb_type_sources.append(sr_id)
+                elif (gid in sr and sr[gid].type_designation in (self.TYPE_SPECIES,self.NOMENCLATURAL_TYPE,self.HOLOTYPE) and
+                    highest_priority_designation == self.TYPE_SPECIES):
                     gtdb_type_sources.append(sr_id)
             fout.write('\t{}'.format('; '.join(gtdb_type_sources)))
 
