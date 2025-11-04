@@ -326,8 +326,8 @@ def __csv_file(grp, required):
 def __fasta_file(grp, required):
     grp.add_argument('--fasta', required=required, help='FASTA file.')
 
-def __blastdb_file(grp, required):
-    grp.add_argument('--blastdb', required=required, help='BLAST database file.')
+def __compressed_fasta(grp, required):
+    grp.add_argument('--compressed_fasta', required=required, help='Compressed fasta file.')
 
 
 def __lpsn_directory(group, required):
@@ -1004,7 +1004,7 @@ def get_main_parser():
         'Generate blast database based on information from the LTP website.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __csv_file(grp, required=True)
-            __blastdb_file(grp, required=True)
+            __compressed_fasta(grp, required=True)
             __fasta_file(grp, required=True)
             __output_prefix(grp, required=True)
             __output_dir(grp, required=True)
@@ -1281,6 +1281,8 @@ def main():
         except:
             print("\nUnexpected error:", sys.exc_info()[0])
             raise
+
+    raise
 
 
 if __name__ == '__main__':

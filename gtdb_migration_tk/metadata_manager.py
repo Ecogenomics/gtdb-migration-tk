@@ -402,6 +402,140 @@ class MetadataTable(object):
         fout_lsu_5S_count.close()
         fout_trna_count.close()
 
+    def create_metadata_tables_multi(self, gtdb_genome_path_file, output_dir):
+        """Create metadata tables."""
+
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        fout_nt = open(os.path.join(output_dir, 'metadata_nt.tsv'), 'w')
+        fout_gene = open(os.path.join(output_dir, 'metadata_gene.tsv'), 'w')
+        fout_gg_taxonomy = open(os.path.join(
+            output_dir, 'metadata_ssu_gg.tsv'), 'w')
+        fout_ssu_silva_taxonomy = open(os.path.join(
+            output_dir, 'metadata_ssu_silva.tsv'), 'w')
+        fout_lsu_silva_23s_taxonomy = open(os.path.join(
+            output_dir, 'metadata_lsu_silva_23s.tsv'), 'w')
+        fout_lsu_5S = open(os.path.join(
+            output_dir, 'metadata_lsu_5S.tsv'), 'w')
+        fout_ssu_silva_count = open(os.path.join(
+            output_dir, 'metadata_ssu_silva_count.tsv'), 'w')
+        fout_lsu_silva_23s_count = open(os.path.join(
+            output_dir, 'metadata_lsu_silva_23s_count.tsv'), 'w')
+        fout_lsu_5S_count = open(os.path.join(
+            output_dir, 'metadata_lsu_5S_count.tsv'), 'w')
+        fout_trna_count = open(os.path.join(
+            output_dir, 'metadata_trna_count.tsv'), 'w')
+
+        fout_ssu_silva_count.write('%s\t%s\n' % ('genome_id', 'ssu_count'))
+        fout_lsu_silva_23s_count.write(
+            '%s\t%s\n' % ('genome_id', 'lsu_23s_count'))
+        fout_lsu_5S_count.write('%s\t%s\n' % ('genome_id', 'lsu_5s_count'))
+
+        # generate metadata for NCBI assemblies
+        genomes_to_process = []
+
+        with open(gtdb_genome_path_file) as ggpf:
+            for line in ggpf:
+                line_split = line.strip().split('\t')
+                gid = line_split[0]
+                gpath = line_split[1]
+                genomes_to_process.append((gid, gpath))
+
+            with mp.Pool(processes=self.cpus) as pool:
+                genome_paths = list(tqdm(pool.imap_unordered(self.process_genome_worker, genomes_to_process),
+                                         total=len(genomes_to_process), unit='genome'))
+
+
+
+            for line in tqdm(ggpf,ncols=100,total=numlines,smoothing=50/numlines):
+                line_split = line.strip().split('\t')
+
+                gid = line_split[0]
+                gpath = line_split[1]
+                assembly_id = os.path.basename(os.path.normpath(gpath))
+                metadata_nt_file = os.path.join(
+                    gpath, self.metadata_nt_file)
+                self._parse_nt(
+                    gid, metadata_nt_file, fout_nt)
+
+                metadata_gene_file = os.path.join(
+                    gpath, self.metadata_gene_file)
+                self._parse_gene(
+                    gid, metadata_gene_file, fout_gene)
+
+                ssu_gg_taxonomy_file = os.path.join(
+                    gpath, self.ssu_gg_taxonomy_file)
+                ssu_gg_fna_file = os.path.join(
+                    gpath, self.ssu_gg_fna_file)
+                self._parse_taxonomy_file(
+                    gid, ssu_gg_taxonomy_file, fout_gg_taxonomy, 'ssu_gg', ssu_gg_fna_file)
+
+                ssu_silva_taxonomy_file = os.path.join(
+                    gpath, self.ssu_silva_taxonomy_file)
+                ssu_silva_fna_file = os.path.join(
+                    gpath, self.ssu_silva_fna_file)
+                ssu_silva_summary_file = os.path.join(
+                    gpath, self.ssu_silva_summary_file)
+                ssu_count = self._parse_taxonomy_file(gid,
+                                                      ssu_silva_taxonomy_file,
+                                                      fout_ssu_silva_taxonomy,
+                                                      'ssu_silva',
+                                                      ssu_silva_fna_file,
+                                                      ssu_silva_summary_file)
+
+                lsu_silva_23s_taxonomy_file = os.path.join(
+                    gpath, self.lsu_silva_23s_taxonomy_file)
+                lsu_silva_23s_fna_file = os.path.join(
+                    gpath, self.lsu_silva_23s_fna_file)
+                lsu_silva_23s_summary_file = os.path.join(
+                    gpath, self.lsu_silva_23s_summary_file)
+                lsu_23s_count = self._parse_taxonomy_file(
+                    gid, lsu_silva_23s_taxonomy_file, fout_lsu_silva_23s_taxonomy, 'lsu_silva_23s', lsu_silva_23s_fna_file, lsu_silva_23s_summary_file)
+
+                lsu_5S_fna_file = os.path.join(
+                    gpath, self.lsu_5S_fna_file)
+                lsu_5S_summary_file = os.path.join(
+                    gpath, self.lsu_5S_summary_file)
+                lsu_5S_count = self._parse_lsu_5S_files(
+                    gid, fout_lsu_5S, lsu_5S_fna_file, lsu_5S_summary_file)
+
+                fout_ssu_silva_count.write(
+                    '%s\t%d\n' % (gid, ssu_count))
+                fout_lsu_silva_23s_count.write(
+                    '%s\t%d\n' % (gid, lsu_23s_count))
+                fout_lsu_5S_count.write(
+                    '%s\t%d\n' % (gid, lsu_5S_count))
+
+                trna_file = os.path.join(
+                    gpath, 'trna', gid + '_trna_stats.tsv')
+                self._parse_trna_file(
+                    gid, trna_file, fout_trna_count)
+
+        fout_nt.close()
+        fout_gene.close()
+        fout_gg_taxonomy.close()
+        fout_ssu_silva_taxonomy.close()
+        fout_lsu_silva_23s_taxonomy.close()
+        fout_lsu_5S.close()
+        fout_ssu_silva_count.close()
+        fout_lsu_silva_23s_count.close()
+        fout_lsu_5S_count.close()
+        fout_trna_count.close()
+
+    def process_genome_worker(self, job):
+        gid, assembly_id, all_genomes = job
+        ssu_file = os.path.join(
+            gpath, self.silva_output_dir, 'ssu.fna')
+        if os.path.exists(ssu_file):
+            canary_file = os.path.join(gpath, self.ltp_output_dir, 'ltp.canary.txt')
+            if not all_genomes and os.path.exists(canary_file):
+                return ('null', 'null')
+            genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
+            return (genome_file, ssu_file)
+        else:
+            return ('null', 'null')
+
 class MetadataManager(object):
     """Create file indicating directory of each genome."""
 

@@ -620,9 +620,10 @@ class Tools(object):
                                                                      rank_order.index(rank.get('rank'))] + rank.get(
                     'name')
                 status_tax[rank_order.index(rank.get('rank'))] = rank.get('status_name')
-                type_status_temp[rank_order.index(rank.get('rank'))] = int(rank.get('type_accession') or 0)
+                type_status_temp[rank_order.index(rank.get('rank'))] = int(rank.get('nomenclatural_type').get('id') or 0)
             if rank.get('rank') == 'genus':
                 genus_id = int(rank.get('id') or 0)
+
 
         for idx, temp_id in enumerate(type_status_temp[:-2]):
             if temp_id == genus_id:
@@ -640,7 +641,7 @@ class Tools(object):
         rank_order = ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species']
         raw_fields = ['description', 'formal_styling']
         skip_fields = ['register', 'parent', 'children']
-        seq_code_fields = [('type_material_accn', 'type_material'),
+        seq_code_fields = [('type_material_accn', 'nomenclatural_type'),
                            ('id', 'id'),
                            ('name', 'name'),
                            ('rank', 'rank'),
@@ -668,56 +669,63 @@ class Tools(object):
         outf = open(output_file, 'w')
         outf.write('\t'.join([f'seqcode_{x}' for x in seq_code_order_label])+'\n')
 
-
+        # get the number of pages to parse
         with urllib.request.urlopen("https://disc-genomics.uibk.ac.at/seqcode/type-genomes.json") as url:
             data = json.load(url)
-            generic_fields = []
+            total_page=int(data.get('response').get("total_pages"))
 
-            for record in data.get("values"):
-                if record.get("rank") == 'species':
-                    spe_record = [''] * len(seq_code_order_label)
-                    with urllib.request.urlopen(record.get("url")) as url_spe:
-                        data_spe = json.load(url_spe)
-                        #print(record)
-                    string_classi, string_status, type_list = self.get_seqcode_classification(rank_order,record.get("classification"),
-                                                                                 record.get("id"))
-                    # print("seqcode_classification -> " + dict_classi)
+        for page in range(1,total_page+1):
+            self.logger.info(f'Parsing page {page}/{total_page}')
+            with urllib.request.urlopen(f"https://disc-genomics.uibk.ac.at/seqcode/type-genomes.json?page={page}") as url:
+                data = json.load(url)
+                generic_fields = []
 
-                    for label, scf in seq_code_fields:
 
-                        if scf == 'type_material':
-                            if scf in record:
-                                if 'assembly' in str(record.get(scf)):
-                                    spe_record[seq_code_order_label.index(label)] = mapping_dict.get(str(record.get(scf).get('assembly')))
-                                elif 'nuccore' in str(record.get(scf)):
-                                    spe_record[seq_code_order_label.index(label)] = mapping_dict.get(str(record.get(scf).get('nuccore')))
-                                else:
-                                    self.logger.error(f'Unknown type material {record.get(scf)}')
-                        elif scf == 'proposed_in':
-                            print(data_spe)
-                            print(data_spe.get(scf))
-                            print(f"seqcode_{label} [{scf}]-> {str(data_spe.get(scf).get('citation'))}")
-                            spe_record[seq_code_order_label.index(label)] = str(data_spe.get(scf).get('citation'))
-                        elif scf == 'classification':
-                            #print(f"seqcode_{label} [{scf}]-> {string_classi}")
-                            spe_record[seq_code_order_label.index(label)] = string_classi
-                        elif scf in ['genus_status', 'family_status', 'order_status', 'class_status', 'phylum_status']:
-                            rank = scf.split('_')[0]
-                            rk_status = string_status[rank_order.index(rank)]
-                            #print(f"seqcode_{label} [{scf}]-> {rk_status}")
-                            spe_record[seq_code_order_label.index(label)] = rk_status
-                        elif scf in ['type_species_of_genus', 'type_genus_of_family', 'type_genus_of_order',
-                                     'type_genus_of_class', 'type_genus_of_phylum']:
-                            rank = scf.split('_')[3]
-                            rk_type = type_list[rank_order.index(rank)]
-                            #print(f"seqcode_{label} [{scf}]-> {rk_type}")
-                            spe_record[seq_code_order_label.index(label)] = rk_type
-                        else:
-                            #print(f"seqcode_{label} [{scf}]-> " + str(record.get(scf)))
-                            spe_record[seq_code_order_label.index(label)] = str(record.get(scf))
-                    if spe_record[0] != '':
-                        print('\t'.join([str(x) for x in spe_record])+'\n')
-                        outf.write('\t'.join([str(x) for x in spe_record])+'\n')
+                for record in data.get("values"):
+                    if record.get("rank") == 'species':
+                        spe_record = [''] * len(seq_code_order_label)
+                        with urllib.request.urlopen(record.get("url")) as url_spe:
+                            data_spe = json.load(url_spe)
+                            #print(record)
+                        string_classi, string_status, type_list = self.get_seqcode_classification(rank_order,record.get("classification"),
+                                                                                     record.get("id"))
+                        # print("seqcode_classification -> " + dict_classi)
+
+                        for label, scf in seq_code_fields:
+
+                            if scf == 'nomenclatural_type':
+                                if scf in record:
+                                    if 'assembly' in str(record.get(scf)):
+                                        spe_record[seq_code_order_label.index(label)] = mapping_dict.get(str(record.get(scf).get('assembly')))
+                                    elif 'nuccore' in str(record.get(scf)):
+                                        spe_record[seq_code_order_label.index(label)] = mapping_dict.get(str(record.get(scf).get('nuccore')))
+                                    else:
+                                        self.logger.error(f'Unknown type material {record.get(scf)}')
+                            elif scf == 'proposed_in':
+                                print(data_spe)
+                                print(data_spe.get(scf))
+                                print(f"seqcode_{label} [{scf}]-> {str(data_spe.get(scf).get('citation'))}")
+                                spe_record[seq_code_order_label.index(label)] = str(data_spe.get(scf).get('citation'))
+                            elif scf == 'classification':
+                                #print(f"seqcode_{label} [{scf}]-> {string_classi}")
+                                spe_record[seq_code_order_label.index(label)] = string_classi
+                            elif scf in ['genus_status', 'family_status', 'order_status', 'class_status', 'phylum_status']:
+                                rank = scf.split('_')[0]
+                                rk_status = string_status[rank_order.index(rank)]
+                                #print(f"seqcode_{label} [{scf}]-> {rk_status}")
+                                spe_record[seq_code_order_label.index(label)] = rk_status
+                            elif scf in ['type_species_of_genus', 'type_genus_of_family', 'type_genus_of_order',
+                                         'type_genus_of_class', 'type_genus_of_phylum']:
+                                rank = scf.split('_')[3]
+                                rk_type = type_list[rank_order.index(rank)]
+                                #print(f"seqcode_{label} [{scf}]-> {rk_type}")
+                                spe_record[seq_code_order_label.index(label)] = rk_type
+                            else:
+                                #print(f"seqcode_{label} [{scf}]-> " + str(record.get(scf)))
+                                spe_record[seq_code_order_label.index(label)] = str(record.get(scf))
+                        if spe_record[0] != '':
+                            print('\t'.join([str(x) for x in spe_record])+'\n')
+                            outf.write('\t'.join([str(x) for x in spe_record])+'\n')
         outf.close()
 
 
@@ -730,8 +738,11 @@ class Tools(object):
                 genome_id,path,canonid = line.strip().split('\t')
                 canonical_sequence_infos[canonid] = genome_id
 
+        # only pick the first 1000 genomes
+
+
         #if file exists, ask if we should overwrite it
-        generate_pkl = False
+        generate_pkl = True
         # if os.path.exists(os.path.join(output_dir,'seq_accessions.pkl')):
         #     overwrite = input('seq_accessions.pkl already exists. Overwrite? (y/n)')
         #     if overwrite != 'y':
@@ -742,6 +753,9 @@ class Tools(object):
             with open(gtdb_genome_path_file) as f:
                 for idx,line in enumerate(f):
                     genome_to_process.append((line))
+
+            # only pick the first 1000 genomes
+            #genome_to_process = genome_to_process[:1000]
 
             print(f"number of cpus used:{cpus}")
 
@@ -793,12 +807,12 @@ class Tools(object):
             self.logger.info(f'pickle dump step took {time.process_time() - start} seconds')
 
         start = time.process_time()
-        with open('seq_accessions.pkl', 'rb') as f:
+        with open(os.path.join(output_dir,'seq_accessions.pkl'), 'rb') as f:
             sequence_infos = pickle.load(f)
         self.logger.info(f'pickle load step took {time.process_time() - start} seconds')
 
         #if file exists, ask if we should overwrite it
-        generate_reverse_pkl = False
+        generate_reverse_pkl = True
         # if os.path.exists(os.path.join(output_dir,'seq_accessions_reverse.pkl')):
         #     overwrite = input('seq_accessions_reverse.pkl already exists. Overwrite? (y/n)')
         #     if overwrite != 'y':
@@ -842,39 +856,45 @@ class Tools(object):
 
         mapping_dict = {}
 
-
+        # get the number of pages to parse
         with urllib.request.urlopen("https://disc-genomics.uibk.ac.at/seqcode/type-genomes.json") as url:
             data = json.load(url)
-            for record in data.get("values"):
-                number_or_records += 1
-                if 'assembly' in str(record.get("type_material")):
-                    seqcode_assembly_id = str(record.get("type_material").get("assembly"))
-                    canonical_seqcode_id = canonical_gid(seqcode_assembly_id)
-                    if canonical_seqcode_id in canonical_sequence_infos:
-                        mapping_dict[seqcode_assembly_id] = canonical_sequence_infos[canonical_seqcode_id]
-                        #self.logger.info(f'{seqcode_assembly_id} -> {canonical_sequence_infos[canonical_seqcode_id]}')
-                        count_found += 1
-                    else:
-                        self.logger.info(f'{seqcode_assembly_id} -> not found')
-                        count_not_found += 1
+            total_page=int(data.get("response").get("total_pages"))
 
-                elif 'nuccore' in str(record.get("type_material")):
-                    if m := re.match(r'^([A-Z]{4}([A-Z]{2})?)([0-9]{6,})$',
-                                     str(record.get("type_material").get("nuccore"))):
-                        mapping_dict[record.get("type_material").get("nuccore")] = reverse_sequence_infos[m.group(1)]
-                        count_found += 1
-                    elif str(record.get("type_material").get("nuccore")).startswith('CP'):
-                        if record.get("type_material").get("nuccore") in reverse_sequence_infos:
-                            mapping_dict[record.get("type_material").get("nuccore")] = reverse_sequence_infos[
-                                str(record.get("type_material").get("nuccore"))]
+        for page in range(1,total_page+1):
+            self.logger.info(f'Parsing page {page}/{total_page}')
+            with urllib.request.urlopen(f"https://disc-genomics.uibk.ac.at/seqcode/type-genomes.json?page={page}") as url:
+                data = json.load(url)
+                for record in data.get("values"):
+                    number_or_records += 1
+                    if 'assembly' in str(record.get("nomenclatural_type")):
+                        seqcode_assembly_id = str(record.get("nomenclatural_type").get("assembly"))
+                        canonical_seqcode_id = canonical_gid(seqcode_assembly_id)
+                        if canonical_seqcode_id in canonical_sequence_infos:
+                            mapping_dict[seqcode_assembly_id] = canonical_sequence_infos[canonical_seqcode_id]
+                            #self.logger.info(f'{seqcode_assembly_id} -> {canonical_sequence_infos[canonical_seqcode_id]}')
                             count_found += 1
                         else:
-                            self.logger.info(f'{record.get("type_material").get("nuccore")} -> not found')
+                            self.logger.info(f'{seqcode_assembly_id} -> not found')
                             count_not_found += 1
 
-                    else:
-                        self.logger.info(f'{record.get("type_material").get("nuccore")} -> not found')
-                        count_not_found += 1
+                    elif 'nuccore' in str(record.get("nomenclatural_type")):
+                        if m := re.match(r'^([A-Z]{4}([A-Z]{2})?)([0-9]{6,})$',
+                                         str(record.get("nomenclatural_type").get("nuccore"))):
+                            mapping_dict[record.get("nomenclatural_type").get("nuccore")] = reverse_sequence_infos[m.group(1)]
+                            count_found += 1
+                        elif str(record.get("nomenclatural_type").get("nuccore")).startswith('CP'):
+                            if record.get("nomenclatural_type").get("nuccore") in reverse_sequence_infos:
+                                mapping_dict[record.get("nomenclatural_type").get("nuccore")] = reverse_sequence_infos[
+                                    str(record.get("nomenclatural_type").get("nuccore"))]
+                                count_found += 1
+                            else:
+                                self.logger.info(f'{record.get("nomenclatural_type").get("nuccore")} -> not found')
+                                count_not_found += 1
+
+                        else:
+                            self.logger.info(f'{record.get("nomenclatural_type").get("nuccore")} -> not found')
+                            count_not_found += 1
 
         # Summary
         self.logger.info("Summary:")
@@ -926,7 +946,7 @@ class Tools(object):
 
         sys.stdout.write('\n')
 
-    def generate_ltp_db(self, csv_file,blastdb_file, ltp_fasta_file,output_directory, output_prefix):
+    def generate_ltp_db(self, csv_file,compressed_fasta, ltp_fasta_file,output_directory, output_prefix):
         """Create Living Tree Project (LTP) FASTA and taxonomy file.
         This is a mofiied version of the original script to generate the LTP database ( in /srv/db/silva ).
         Because we want to automate the creation of the LTP metadata file, we do not use the original
@@ -957,11 +977,11 @@ class Tools(object):
                                             'type_strain': row[type_strain_index]}
 
         # parse the blastdb.fasta for extra metadata
-        delim_blast = select_delimiter(blastdb_file)
-        with open(blastdb_file, encoding='utf-8') as blastdbf:
-            for line in blastdbf:
+        delim_blast = select_delimiter(compressed_fasta)
+        with open(compressed_fasta, encoding='utf-8') as compfas:
+            for line in compfas:
                 if line.startswith('>'):
-                    infos = line.strip().split('|')
+                    infos = line.strip('\n').split('\t')
                     print(f' - {infos}', end='\r')
                     fields = matching_brackets(infos[2])
                     strain = None

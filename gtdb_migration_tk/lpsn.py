@@ -98,7 +98,9 @@ class LPSN(object):
         rank_sites_list = open(os.path.join(
             self.outdir, f'{rank_name}_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/{}/[^"]+)"'.format(rank_name))
-        rank_name_pattern = re.compile(r'class=\"last-child color-{0}\">\"?([^\"]*)\"?</a>'.format(rank_name))
+        rank_name_pattern = re.compile(
+            rf'class="last-child color-{rank_name}".*?<i>([^<]+)</i>',
+            re.IGNORECASE)
         rank_to_download = []
         self.logger.info(f'Generating a list of all pages that contain {rank_name} information.')
         num_ranks = 0
@@ -107,17 +109,22 @@ class LPSN(object):
             with open(os.path.join(index_dir, '{}_{}.html'.format(rank_name, letter))) as webf:
                 for line in webf:
                     if f'class="last-child color-{rank_name}"' in line:
+
                         line = line.replace("'", '"')
                         result = link_pattern.search(line)
                         if result:
-                            rk_name = rank_name_pattern.search(line).group(1)
-                            rk_name = clean_html(rk_name)
+                            match = rank_name_pattern.search(line)
+                            if match:
+                                rk_name = clean_html(match.group(1))
 
-                            num_ranks += 1
-                            print(' - processed {:,} names ({} level).'.format(num_ranks, rank_name), end='\r')
-                            rank_sites_list.write('{}\t{}\t{}\n'.format(
-                                letter, rk_name, self.base_url + result.group(1)))
-                            rank_to_download.append(rk_name)
+                                num_ranks += 1
+                                print(' - processed {:,} names ({} level).'.format(num_ranks, rank_name), end='\r')
+                                rank_sites_list.write('{}\t{}\t{}\n'.format(
+                                    letter, rk_name, self.base_url + result.group(1)))
+                                rank_to_download.append(rk_name)
+                            else:
+                                print(f"[WARN] No rank_name match for line:\n{line}")
+
         rank_sites_list.close()
 
         # we remove the duplicate names with quotes
@@ -744,7 +751,7 @@ class LPSN(object):
             'lpsn_genus\tlpsn_type_genus_of_family\tlpsn_type_genus_of_order\tlpsn_genus_authority\n')
         fout_type_species.write(
             'lpsn_species\tlpsn_type_species\tlpsn_species_authority\tsource\n')
-        fout_type_strains.write('lpsn_strain\tco-identical strain IDs\n')
+        fout_type_strains.write('lpsn_strain\tco-identical strain IDs\ttype_designation\n')
 
         list_processed_strains = []
         processed_genus = []
@@ -760,6 +767,8 @@ class LPSN(object):
             name_index = headers.index('Name')
 
             type_strains_index = headers.index('Type strain')
+            holotype_index = headers.index('Holotype')
+            nomenclatural_type_index = headers.index('Nomenclatural type')
             priority_index = headers.index('Priority')
 
             for line in lsf:
@@ -798,23 +807,41 @@ class LPSN(object):
                             genus = type_species_genus.get(gss_dict.get(spe_name).get('record_no'))
 
                         strains = gss_dict.get(spe_name).get('strains').split(';')
+                        strains_holotype = []
+                        strains_nomenclatural = []
 
                     else:
                         source = 'HTML'
                         desc = line_split[priority_index]
                         genus = html_type_spe_of_gen.get(spe_name, '')
                         strains = line_split[type_strains_index].split(';')
+                        strains_holotype = line_split[holotype_index].split(';')
+                        strains_nomenclatural = line_split[nomenclatural_type_index].split(';')
 
                     if (species, genus, desc) not in processed_species:
                         fout_type_species.write(f'{species}\t{genus}\t{desc}\t{source}\n')
                         processed_species.append((species, genus, desc))
 
                     # Normalise the strains
-                    for i, strain in enumerate(strains):
-                        if strain != 'n/a':
-                            processed_strains.append(canonical_strain_id(strain))
-                    processed_strain_string = '{0}\t{1}'.format(
-                        spe_name, "=".join(processed_strains))
+                    type_designation = []
+                    if any(s != 'n/a' for s in strains):
+                        type_designation.append("Type strain")
+                    if any(s != 'n/a' for s in strains_holotype):
+                        type_designation.append("Holotype")
+                    if any(s != 'n/a' for s in strains_nomenclatural):
+                        type_designation.append("Nomenclatural type")
+
+                    if spe_name=='Anoxybacteroides tepidamans':
+                        print(strains,type_designation)
+                        print(strains_holotype,type_designation)
+                        print(strains_nomenclatural,type_designation)
+
+                    for temp_strain_list in [strains, strains_holotype, strains_nomenclatural]:
+                        for i, strain in enumerate(temp_strain_list):
+                            if strain != 'n/a':
+                                processed_strains.append(canonical_strain_id(strain))
+                        processed_strain_string = '{0}\t{1}\t{2}'.format(
+                            spe_name, "=".join(processed_strains),";".join(type_designation))
                     if processed_strain_string not in list_processed_strains:
                         fout_type_strains.write(
                             '{0}\n'.format(processed_strain_string))
@@ -834,17 +861,19 @@ class LPSN(object):
         self.logger.info('Parsing all pages.')
         headers_order = ['Rank']
         all_rank = []
-        for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species', 'subspecies']:
-            self.logger.info(f'Parsing {rk}.')
-            headers_order, all_rank = self.parse_rank_html(rk, input_dir, headers_order, all_rank)
+        # for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species', 'subspecies']:
+        # #for rk in ['species']:
+        #     self.logger.info(f'Parsing {rk}.')
+        #     headers_order, all_rank = self.parse_rank_html(rk, input_dir, headers_order, all_rank)
+        #
+        # output_all_ranks = open(os.path.join(self.outdir, 'all_ranks', 'full_parsing_raw.tsv'), 'w')
+        # output_all_ranks.write('\t'.join(headers_order) + '\n')
+        # for item in all_rank:
+        #     output_all_ranks.write(
+        #         '\t'.join([item.get(potential_header, 'n/a') for potential_header in headers_order]) + '\n')
 
-        output_all_ranks = open(os.path.join(self.outdir, 'all_ranks', 'full_parsing_raw.tsv'), 'w')
-        output_all_ranks.write('\t'.join(headers_order) + '\n')
-        for item in all_rank:
-            output_all_ranks.write(
-                '\t'.join([item.get(potential_header, 'n/a') for potential_header in headers_order]) + '\n')
-
-        output_all_ranks.close()
-        parsed_file = self.parse_all_ranks_tsv(output_all_ranks.name)
+        #output_all_ranks.close()
+        #parsed_file = self.parse_all_ranks_tsv(output_all_ranks.name)
+        parsed_file = self.parse_all_ranks_tsv(os.path.join(self.outdir, 'all_ranks', 'full_parsing_raw.tsv'))
 
         self.summarise_parsing(parsed_file.name, gss_file)

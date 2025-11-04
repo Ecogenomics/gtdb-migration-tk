@@ -499,8 +499,8 @@ class CheckMManager(object):
 
         checkm_cmds = []
 
-        #for tt, gid_tt in [('11', gid_tt11), ('4', gid_tt4), ('25', gid_tt25), ('none', gid_tt_none)]:
-        for tt, gid_tt in [('4', gid_tt4), ('25', gid_tt25)]:
+        for tt, gid_tt in [('11', gid_tt11), ('4', gid_tt4), ('25', gid_tt25), ('none', gid_tt_none)]:
+        #for tt, gid_tt in [('4', gid_tt4), ('25', gid_tt25)]:
 
             print(tt)
 
