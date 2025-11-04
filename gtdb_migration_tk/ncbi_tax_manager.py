@@ -67,10 +67,6 @@ class TaxonomyNCBI(object):
                                 output_organism_name_file):
 
 
-    def _assembly_organism_name(self, refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
-                                genbank_archaea_assembly_file, genbank_bacteria_assembly_file, output_organism_name_file):
-        """Parse out organism name for each genome."""
-
         fout = open(output_organism_name_file, 'w')
         for assembly_file in [refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
                               genbank_archaea_assembly_file, genbank_bacteria_assembly_file]:
