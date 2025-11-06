@@ -59,12 +59,14 @@ class TaxonomyNCBI(object):
         self.logger = logging.getLogger('timestamp')
 
 
+
     def _assembly_organism_name(self,
                                 refseq_archaea_assembly_file,
                                 refseq_bacteria_assembly_file,
                                 genbank_archaea_assembly_file,
                                 genbank_bacteria_assembly_file,
                                 output_organism_name_file):
+
 
 
         fout = open(output_organism_name_file, 'w')
@@ -292,12 +294,14 @@ class TaxonomyNCBI(object):
 
         return True, 's__' + sp_name
 
+
     def standardize_taxonomy(self, ncbi_taxonomy_file, keep_subranks, output_consistent):
         """Produce standardized taxonomy file from NCBI taxonomy strings.
 
         This is either a 7 rank taxonomy (domain to species) or the 7 rank taxonomy with
         subranks.
         """
+
 
         fout_consistent = open(output_consistent, 'w')
         failed_filters = set()
@@ -487,7 +491,7 @@ class TaxonomyNCBI(object):
                                   output_prefix + '_standardized.tsv')
 
 
-    def populate_names_dmp_table(self,hostname, user, password, db,taxonomy_dir,
+    def populate_names_dmp_table(self,taxonomy_dir,
          refseq_archaea_assembly_file,
          refseq_bacteria_assembly_file,
          genbank_archaea_assembly_file,
