@@ -1,10 +1,13 @@
 0.0.4
+- Updates to support parsing of data for fungal GTDB
+- Add functionality for running BUSCO on fungal genomes
+0.0.4pc
 - This is a saved version of migration-tk due to data loss in the original repository.
-0.0.3b
-- We are rewriting the pipeline to use gz files instead of uncompressed files.
 0.0.3
 - Added update_reps_db command
-0.0.2b
+0.0.3pc
+- We are rewriting the pipeline to use gz files instead of uncompressed files.
+0.0.2
 - Updates in full pipeline, add new scripts
 0.0.1
 - initial release

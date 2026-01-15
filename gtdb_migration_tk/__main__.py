@@ -64,11 +64,14 @@ def print_help():
       trnascan       -> Identifies tRNAs in genomes.
       join_checkm    -> Join CheckM output files for different releases
       checkm         -> Estimates the quality of the new genomes
+      busco          -> Estimate quality of new fungal genomes
+      
 
      Access to Database:
      update_db          -> Update the gtdb database
      update_checkm_db   -> Import CheckM estimates
      update_metadata_db -> Update metadata in database
+     update_reps_db     -> Update species cluter representatives in database
 
     Metadata:
       create_tables     -> Create tables with metadata for all genomes (currently only NCBI)
@@ -635,10 +638,19 @@ def __checkm_summary_genbank(grp, required):
 def __checkm2_output_dir(grp, required):
     grp.add_argument('--checkm2_output_dir', required=required, help='CheckM v2 output directory with batches.')
 
+def __report(grp, required):
+    grp.add_argument('--report', required=required,
+                     help='report log indicating new, modified, unmodified, ..., genomes')
+
+
 
 def __id_last_genome(grp, required):
     grp.add_argument('--id_last_genome', required=required, help='ID of the last genome in the previous release.',
                         type=int,default= 0)
+    
+def __final_cluster_file(grp, required):
+    grp.add_argument('--final_cluster_file', required=required,
+                     help="clusters for named species")
 
 
 def get_main_parser():
@@ -771,6 +783,19 @@ def get_main_parser():
             __cpus(grp)
             __silent(grp)
 
+    with subparser(sub_parsers, 'busco', 'Estimate quality of new fungal genomes') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __gtdb_genome_path_file(grp, required=True)
+            __report(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __all_genomes(grp)
+            __cpus(grp)
+            __silent(grp)
+
+
+
     with subparser(sub_parsers, 'prepare_checkm2',
                       'Prepare files to run CheckM2 for the new release') as parser:
         with arg_group(parser, 'required named arguments') as grp:
@@ -829,6 +854,13 @@ def get_main_parser():
             __metadata_table_description(grp)
             __do_not_null_field(grp)
             __genome_list(grp, required=False)
+            __silent(grp)
+
+    with subparser(sub_parsers,'update_reps_db', 'Update the species cluster representatives in database.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __database_setup(grp, required=True)
+            __final_cluster_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 
     with subparser(sub_parsers, 'update_type_designation', 'Update type_designation columns when all Seqcode,NCBI and LPSN infos are in the db.') as parser:
