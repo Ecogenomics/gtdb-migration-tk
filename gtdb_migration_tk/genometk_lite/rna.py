@@ -16,84 +16,133 @@
 ###############################################################################
 
 import os
-import logging
 import sys
+import logging
+import subprocess
+from typing import Dict, List, Optional
+from collections import defaultdict
+from dataclasses import dataclass
 
-import biolib.seq_io as seq_io
-from biolib.external.blast import Blast
-from biolib.taxonomy import Taxonomy
-from biolib.common import make_sure_path_exists
+import gtdb_migration_tk.biolib_lite.seq_io as seq_io
+from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
+from gtdb_migration_tk.biolib_lite.external.blast import Blast
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 
 
-def rev_comp(seq):
+@dataclass
+class Hit:
+    score: float
+    evalue: float
+    hmm_from: int
+    hmm_to: int
+    ali_from: int
+    ali_to: int
+    align_len: int
+    rev_comp: bool
+
+
+DNA_COMPLEMENTS = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+
+
+def rev_comp(seq: str) -> str:
     """Reverse complement a sequence."""
-    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
 
-    return "".join(complement.get(base, base) for base in reversed(seq))
+    complement = [DNA_COMPLEMENTS.get(base, base) for base in reversed(seq)]
+    return "".join(complement)
 
 
 class RNA(object):
     """Identify, extract, and classify rRNA genes."""
 
-    def __init__(self, cpus, rna_name, min_len=None):
+    def __init__(self, rna_name: str, domain: str, cpus: int):
         """Initialization."""
 
         self.logger = logging.getLogger('timestamp')
 
+        self.rna_name = rna_name
+        self.domain = domain
         self.cpus = cpus
 
-        # E-value threshold for defining valid hits.
-        self.evalue = 1e-6
-        # Minmum length of rRNA gene.
-        self.min_len = min_len
-        # Concatenate hits within the specified number of base pairs.
-        self.concatenate = 300
+        # E-value threshold for defining valid hits (taken from barrnap 0.9)
+        self.evalue_threshold = 1e-6
 
-        self.rna_name = rna_name
+        # Minmum length of rRNA gene based on minimum proportion of gene length.
+        # (minimum proportion of 0.25 and gene lengths taken from barrnap 0.9)
+        len_16S_rRNA = 1585
+        len_18S_rRNA = 1869
+        len_23S_rRNA = 3232
+        len_5s_rRNA = 119
 
-    def _hmm_search(self, seq_file, evalue, output_dir):
-        """Identify rRNA genes.
-
-        Parameters
-        ----------
-        seq_file : str
-            File with nucleotide sequences in fasta format.
-        evalue : float
-            E-value threshold for defining valid hits.
-        output_dir : str
-            Output directory.
-        """
-
-        if seq_file.endswith('gz'):
-            pipe = 'zcat ' + seq_file + ' | '
+        min_len_by_domain = {}
+        if rna_name == 'ssu':
+            min_len_by_domain['ar'] = 0.25 * len_16S_rRNA
+            min_len_by_domain['bac'] = 0.25 * len_16S_rRNA
+            min_len_by_domain['euk'] = 0.25 * len_18S_rRNA
+        elif rna_name == 'lsu_23S':
+            min_len_by_domain['ar'] = 0.25 * len_23S_rRNA
+            min_len_by_domain['bac'] = 0.25 * len_23S_rRNA
+            min_len_by_domain['euk'] = 0.25 * len_23S_rRNA
+        elif rna_name == 'lsu_5S':
+            min_len_by_domain['ar'] = 0.25 * len_5s_rRNA
+            min_len_by_domain['bac'] = 0.25 * len_5s_rRNA
+            min_len_by_domain['euk'] = 0.25 * len_5s_rRNA
         else:
-            pipe = 'cat ' + seq_file + ' | '
+            self.logger.error(f'Unrecognized RNA gene name: {rna_name}')
+            sys.exit(1)
+
+        self.min_len = min_len_by_domain[domain]
+        self.max_window_len = int(1.2 * len_23S_rRNA)
+
+    def _hmm_search(self, seq_file: str, output_dir: str) -> None:
+        """Identify rRNA genes using nhmmer."""
 
         output_prefix = os.path.join(output_dir, self.rna_name)
+        tblout_file = f"{output_prefix}.{self.domain}.txt"
 
-        #self.logger.info('Identifying bacterial %s rRNA genes.' % self.rna_name)
-        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.bac.txt -E %s %s -' %
-                  (self.cpus, output_prefix, str(evalue), self.bac_model))
+        cmd = [
+            "nhmmer",
+            "--noali",
+            "--cpu", str(self.cpus),
+            "-E", str(self.evalue_threshold),
+            "--w_length", str(self.max_window_len),
+            "-o", os.devnull,
+            "--tblout", tblout_file,
+            self.hmm_model_file,
+            "-"
+        ]
 
-        #self.logger.info('Identifying archaeal %s rRNA genes.' % self.rna_name)
-        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.ar.txt -E %s %s -' %
-                  (self.cpus, output_prefix, str(evalue), self.ar_model))
+        # handle file decompression using zcat if required
+        cat_cmd = ["zcat" if seq_file.endswith(".gz") else "cat", seq_file]
 
-        #self.logger.info('Identifying eukaryotic %s rRNA genes.' % self.rna_name)
-        os.system(pipe + 'nhmmer --noali --cpu %d -o %s.euk.txt -E %s %s -' %
-                  (self.cpus, output_prefix, str(evalue), self.euk_model))
+        try:
+            # start the cat/zcat process
+            with subprocess.Popen(cat_cmd, stdout=subprocess.PIPE) as cat_proc:
+                # pipe output into nhmmer
+                with subprocess.Popen(cmd, stdin=cat_proc.stdout, stderr=subprocess.PIPE) as nhmmer_proc:
+                    # allow cat_proc to receive a SIGPIPE if nhmmer_proc exits early
+                    if cat_proc.stdout is not None:
+                        cat_proc.stdout.close()
 
-    def _read_hits(self, results_file, domain, evalue_threshold):
+                    _, stderr = nhmmer_proc.communicate()
+
+                    if nhmmer_proc.returncode != 0:
+                        error_msg = stderr.decode().strip()
+                        self.logger.error(f"nhmmer failed with return code {nhmmer_proc.returncode}: {error_msg}")
+                        raise RuntimeError(f"nhmmer error: {error_msg}")
+
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Required executable (cat/zcat or nhmmer) not found in PATH.")
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred during HMM search: {e}")
+            raise
+
+    def _read_hits(self, results_file: str) -> Dict[str, List[Hit]]:
         """Parse hits from nhmmer output.
 
         Parameters
         ----------
         results_file : str
             Output file from nhmmer to parse.
-        domain : str
-            Domain of HMM model used.
-        evalue_threshold : float
-            E-value threshold for defining valid hits.
 
         Returns
         -------
@@ -101,178 +150,81 @@ class RNA(object):
             Information about hits for individual sequences.
         """
 
-        seq_info = {}
+        seq_info = defaultdict(list)
 
-        read_hit = False
-        for line in open(results_file):
-            if line[0:2] == '>>':
-                line_split = line.split()
-                seq_id = line_split[1]
-                read_hit = True
-                hit_counter = 0
-            elif line.strip() == '':
-                read_hit = False
-            elif read_hit:
-                hit_counter += 1
-                if hit_counter >= 3:
-                    line_split = line.split()
+        seq_id = None
+        with open(results_file) as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
 
-                    iEvalue = line_split[3]
-                    ali_from = int(line_split[7])
-                    ali_to = int(line_split[8])
+                tokens = line.strip().split()
 
-                    rev_comp = False
-                    if ali_from > ali_to:
-                        rev_comp = True
-                        ali_from, ali_to = ali_to, ali_from
+                seq_id = tokens[0]
 
-                    align_len = int(ali_to) - int(ali_from) + 1
+                hmm_from = int(tokens[4])
+                hmm_to = int(tokens[5])
+                assert hmm_from < hmm_to
 
-                    if float(iEvalue) <= evalue_threshold:
-                        seq_info[seq_id] = seq_info.get(
-                            seq_id, []) + [[domain, iEvalue, str(ali_from), str(ali_to), str(align_len), str(rev_comp)]]
+                ali_from = int(tokens[6])
+                ali_to = int(tokens[7])
+
+                rev_comp = False
+                if ali_from > ali_to:
+                    rev_comp = True
+                    ali_from, ali_to = ali_to, ali_from
+
+                assert ali_from < ali_to
+
+                align_len = int(ali_to) - int(ali_from) + 1
+
+                evalue = float(tokens[12])
+                score = float(tokens[13])
+
+                if float(evalue) <= self.evalue_threshold:
+                    seq_info[seq_id].append(Hit(
+                        score, evalue, hmm_from, hmm_to, ali_from, ali_to, align_len, rev_comp
+                    ))
 
         return seq_info
 
-    def _add_hit(self, hits, seq_id, info, concatenate_threshold):
-        """Add hits from individual HMMs and concatenate nearby hits.
+    def _add_hit(self, seq_hits: Dict[str, Hit], seq_id: str, cur_hit: Hit) -> None:
+        """Add hits from individual HMMs generating unique sequence names.
 
         Parameters
         ----------
-        hits : d[seq_id] -> information about hit
+        seq_hits : d[seq_id] -> information about hit
             Information about hits for individual sequences.
         seq_id : str
             Sequence identifier with hit to add.
-        info : list
-            Information about hit.
-        concatenate_threshold : int
-            Concatenate hits within the specified number of base pairs.
+        cur_hit : Hit
+            Information about hit to sequence.
         """
 
         # check if this is the first hit to this sequence
-        if seq_id not in hits:
-            hits[seq_id] = info
+        if seq_id not in seq_hits:
+            seq_hits[seq_id] = cur_hit
             return
 
-        # check if hits to sequence are close enough to warrant concatenating them,
-        # otherwise record both hits
+        # add hit generating a unique sequence name
         base_seq_id = seq_id
         index = 1
-        bConcatenate = False
-        concate_seq_id = seq_id
-        while(True):
-            # if hits overlap then retain only the longest
-            start_new = int(info[2])
-            end_new = int(info[3])
-            rev_new = info[5] == 'True'
-
-            start = int(hits[seq_id][2])
-            end = int(hits[seq_id][3])
-            rev = hits[seq_id][5] == 'True'
-
-            # check if hits should be concatenated
-            if abs(start - end_new) < concatenate_threshold and rev_new == rev:
-                # new hit closely preceded old hit and is on same strand
-                del hits[seq_id]
-                info[2] = str(start_new)
-                info[3] = str(end)
-                info[4] = str(end - start_new + 1)
-                hits[concate_seq_id] = info
-                bConcatenate = True
-
-            elif abs(start_new - end) < concatenate_threshold and rev_new == rev:
-                # new hit closely follows old hit and is on same strand
-                del hits[seq_id]
-                info[2] = str(start)
-                info[3] = str(end_new)
-                info[4] = str(end_new - start + 1)
-                hits[concate_seq_id] = info
-                bConcatenate = True
-
-            index += 1
+        while (True):
             new_seq_id = base_seq_id + '-#' + str(index)
-            if bConcatenate:
-                if new_seq_id in hits:
-                    seq_id = new_seq_id  # see if other sequences concatenate
-                else:
-                    break
-            else:
-                # hits are not close enough to concatenate
-                if new_seq_id in hits:
-                    seq_id = new_seq_id  # see if the new hit overlaps with this
-                    concate_seq_id = new_seq_id
-                else:
-                    hits[new_seq_id] = info
-                    break
-
-    def _add_domain_hit(self, hits, seq_id, info):
-        """Add hits from different domain models and concatenate nearby hits.
-
-        Parameters
-        ----------
-        hits : d[seq_id] -> information about hit
-            Information about hits for individual sequences.
-        seq_id : str
-            Sequence identifier with hit to add.
-        info : list
-            Information about hit.
-        """
-
-        if seq_id not in hits:
-            hits[seq_id] = info
-            return
-
-        base_seq_id = seq_id
-        overlap_seq_id = seq_id
-
-        index = 1
-        bOverlap = False
-        while(True):
-            # if hits overlap then retain only the longest
-            start_new = int(info[2])
-            end_new = int(info[3])
-            length_new = int(info[4])
-
-            start = int(hits[seq_id][2])
-            end = int(hits[seq_id][3])
-            length = int(hits[seq_id][4])
-
-            if (start_new <= start and end_new >= start) or (start <= start_new and end >= start_new):
-                bOverlap = True
-
-                if length_new > length:
-                    hits[overlap_seq_id] = info
-                else:
-                    hits[overlap_seq_id] = hits[seq_id]
-
-                if overlap_seq_id != seq_id:
-                    del hits[seq_id]
-
             index += 1
-            new_seq_id = base_seq_id + '-#' + str(index)
-            if new_seq_id in hits:
-                seq_id = new_seq_id  # see if the new hit overlaps with this
-                if not bOverlap:
-                    overlap_seq_id = seq_id
-            else:
+
+            # hits are not close enough to concatenate
+            if new_seq_id not in seq_hits:
+                seq_hits[new_seq_id] = cur_hit
                 break
 
-        if not bOverlap:
-            hits[new_seq_id] = info
-
-    def _identify(self, genome_file, evalue_threshold, min_length, concatenate_threshold, output_dir):
+    def _identify(self, genome_file: str, output_dir: str) -> Dict[str, Hit]:
         """Identify rRNA genes.
 
         Parameters
         ----------
         genome_file : str
             Name of fasta file containing nucleotide sequences.
-        evalue_threshold : float
-            E-value threshold for defining valid hits.
-        min_length : int
-            Minimum length of gene.
-        concatenate_threshold : int
-            Concatenate hits within the specified number of base pairs.
         output_dir : str
             Output directory.
 
@@ -283,50 +235,35 @@ class RNA(object):
         """
 
         # identify rRNAs on contigs/scaffolds
-        self._hmm_search(genome_file, evalue_threshold, output_dir)
+        self._hmm_search(genome_file, output_dir)
 
         # read HMM hits
-        hits_per_domain = {}
-        for domain in ['ar', 'bac', 'euk']:
-            if not os.path.isfile(os.path.join(output_dir, self.rna_name + '.' + domain + '.txt')):
-                self.logger.info('No hits for ' + self.rna_name + ' ' + domain + 'for genome ' + genome_file + '.')
-                hits_per_domain[domain] = {}
-                continue
-            seq_info = self._read_hits(os.path.join(output_dir, self.rna_name + '.' + domain + '.txt'),
-                                       domain, evalue_threshold)
+        hmm_results_file = os.path.join(output_dir, f'{self.rna_name}.{self.domain}.txt')
+        if not os.path.exists(hmm_results_file):
+            return {}
 
-            hits = {}
-            if len(seq_info) > 0:
-                for seq_id, seq_hits in seq_info.items():
-                    for hit in seq_hits:
-                        self._add_hit(hits, seq_id, hit, concatenate_threshold)
+        seq_info = self._read_hits(hmm_results_file)
 
-            hits_per_domain[domain] = hits
-
-        # find best domain hit for each sequence
-        best_hits = {}
-        for _, hits in hits_per_domain.items():
-            for seq_id, info in hits.items():
-                if '-#' in seq_id:
-                    seq_id = seq_id[0:seq_id.rfind('-#')]
-
-                self._add_domain_hit(best_hits, seq_id, info)
+        hits = {}
+        for seq_id, seq_hits in seq_info.items():
+            for hit in seq_hits:
+                self._add_hit(hits, seq_id, hit)
 
         # filter for min size
         filtered_best_hits = {}
-        for seq_id, seq_info in best_hits.items():
-            if int(seq_info[4]) >= min_length:
+        for seq_id, seq_info in hits.items():
+            if seq_info.align_len >= self.min_len:
                 filtered_best_hits[seq_id] = seq_info
 
         return filtered_best_hits
 
-    def _extract(self, genome_file, best_hits, output_dir):
+    def _extract(self, genome_file: str, best_hits: Dict[str, Hit], output_dir: str) -> str:
         """Extract rRNA genes.
 
         Parameters
         ----------
         genome_file : str
-            Name of fasta file containing nucleotide sequences.
+            Name of FASTA file containing nucleotide sequences.
         best_hits : d[seq_id] -> information about best hit
             Information about best hits.
         output_dir : str
@@ -335,15 +272,15 @@ class RNA(object):
         Returns
         -------
         str
-            Name of fasta file containing extractracted sequences.
+            Name of FASTA file containing extractracted sequences.
         """
 
         # write summary file and putative SSU rRNAs to file
         summary_file = os.path.join(
             output_dir, '%s.hmm_summary.tsv' % self.rna_name)
         summary_out = open(summary_file, 'w')
-        summary_out.write(
-            'Sequence Id\tHMM\ti-Evalue\tStart hit\tEnd hit\tSSU gene length\tReverse Complement\tSequence length\n')
+        summary_out.write('Sequence Id\tHMM\tE-value\tHMM start\tHMM end')
+        summary_out.write('\tSequence start\tSequence end\tGene length\tReverse Complement\tSequence length\n')
 
         ssu_seq_file = os.path.join(output_dir, '%s.fna' % self.rna_name)
         seq_out = open(ssu_seq_file, 'w')
@@ -355,16 +292,25 @@ class RNA(object):
             if '-#' in seq_id:
                 seq_id = seq_id[0:seq_id.rfind('-#')]
 
-            seq_info = [orig_seq_id] + best_hits[orig_seq_id]
+            hit = best_hits[orig_seq_id]
 
             seq = seqs[seq_id]
-            summary_out.write('\t'.join(seq_info) +
-                              '\t' + str(len(seq)) + '\n')
+            summary_out.write('{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n'.format(
+                orig_seq_id,
+                self.domain,
+                hit.evalue,
+                hit.hmm_from,
+                hit.hmm_to,
+                hit.ali_from,
+                hit.ali_to,
+                hit.align_len,
+                str(hit.rev_comp),
+                len(seq)))
 
-            seq_out.write('>' + seq_info[0] + '\n')
+            seq_out.write(f'>{orig_seq_id}\n')
 
-            ssu_seq = seq[int(seq_info[3]) - 1:int(seq_info[4])]
-            if seq_info[6] == 'True':
+            ssu_seq = seq[hit.ali_from - 1:hit.ali_to]
+            if hit.rev_comp == True:
                 ssu_seq = rev_comp(ssu_seq)
 
             seq_out.write(ssu_seq + '\n')
@@ -374,7 +320,7 @@ class RNA(object):
 
         return ssu_seq_file
 
-    def classify(self, seq_file, db, taxonomy_file, evalue_threshold, output_dir):
+    def classify(self, seq_file: str, db: str, taxonomy_file: str, output_dir: str) -> None:
         """Classify rRNA genes.
 
         Parameters
@@ -385,27 +331,29 @@ class RNA(object):
             BLAST database of rRNA genes.
         ssu_taxonomy_file : str
             Taxonomy file for genes in the rRNA database.
-        evalue_threshold : float
-            E-value threshold for defining valid hits.
         output_dir : str
             Output directory.
         """
 
         # blast sequences against rRNA database
         blast = Blast(self.cpus)
-        blast_file = os.path.join(output_dir, '%s.blastn.tsv' % self.rna_name)
-        blast.blastn(seq_file, db, blast_file, evalue=evalue_threshold,
-                     max_matches=5, output_fmt='custom')
+        blast_file = os.path.join(output_dir, f'{self.rna_name}.blastn.tsv')
+        blast.blastn(seq_file,
+                     db,
+                     blast_file,
+                     evalue=self.evalue_threshold,
+                     max_matches=5,
+                     output_fmt='custom')
 
         # read taxonomy file
         taxonomy = Taxonomy().read(taxonomy_file)
 
         # write out classification file
         classification_file = os.path.join(
-            output_dir, '%s.taxonomy.tsv' % self.rna_name)
+            output_dir, f'{self.rna_name}.taxonomy.tsv')
         fout = open(classification_file, 'w')
-        fout.write(
-            'query_id\ttaxonomy\tlength\tblast_subject_id\tblast_evalue\tblast_bitscore\tblast_align_len\tblast_perc_identity\n')
+        fout.write('query_id\ttaxonomy\tlength\tblast_subject_id')
+        fout.write('\tblast_evalue\tblast_bitscore\tblast_align_len\tblast_perc_identity\n')
 
         processed_query_ids = set()
         for line in open(blast_file):
@@ -414,7 +362,7 @@ class RNA(object):
 
             if query_id in processed_query_ids:
                 # A query may have multiple hits to different genes or sections
-                # of a gene. Blast results are organized by bitscore so
+                # of a gene. BLAST results are organized by bitscore so
                 # only the first hit is considered.
                 continue
 
@@ -428,18 +376,24 @@ class RNA(object):
 
             taxonomy_str = ';'.join(taxonomy[subject_id])
 
-            fout.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (query_id, taxonomy_str,
-                                                             query_len, subject_id, evalue, bitscore, align_len, perc_identity))
+            fout.write('{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n'.format(
+                query_id,
+                taxonomy_str,
+                query_len,
+                subject_id,
+                evalue,
+                bitscore,
+                align_len,
+                perc_identity))
 
         fout.close()
 
-    def run(self, genome_file,
-            ar_model,
-            bac_model,
-            euk_model,
-            db,
-            taxonomy_file,
-            output_dir):
+    def run(self,
+            genome_file: str,
+            hmm_model_file: str,
+            db: Optional[str],
+            taxonomy_file: Optional[str],
+            output_dir: str) -> None:
         """Identify and extract rRNA gene.
 
         Parameters
@@ -448,12 +402,8 @@ class RNA(object):
             Name of fasta file containing nucleotide sequences.
         rna_name : str
             Name of RNA gene for reporting results and prefixing files.
-        ar_model : str
-            File with archaeal HMM model for RNA gene.
-        bac_model : str
-            File with bacterial HMM model for RNA gene.
-        euk_model : str
-            File with eukaryotic HMM model for RNA gene.
+        hmm_model_file : str
+            File with HMM model for RNA gene.
         db : str
             BLAST database for classifying rRNA genes.
         taxonomy_file : str
@@ -462,22 +412,22 @@ class RNA(object):
             Output directory.
         """
 
-        self.ar_model = ar_model
-        self.bac_model = bac_model
-        self.euk_model = euk_model
+        self.hmm_model_file = hmm_model_file
 
         make_sure_path_exists(output_dir)
 
-        seq_file = None
         best_hits = self._identify(
-            genome_file, self.evalue, self.min_len, self.concatenate, output_dir)
+            genome_file,
+            output_dir)
 
-        if len(best_hits):
+        if len(best_hits) > 0:
             seq_file = self._extract(genome_file, best_hits, output_dir)
 
-        if db is not None and seq_file:
-            self.classify(seq_file, db, taxonomy_file,
-                           self.evalue, output_dir)
+            if db is not None and taxonomy_file is not None and seq_file:
+                self.classify(seq_file,
+                              db,
+                              taxonomy_file,
+                              output_dir)
 
         canary_file = os.path.join(output_dir, self.rna_name + '.canary.txt')
         with open(canary_file, 'w') as filehandle:

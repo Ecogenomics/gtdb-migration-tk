@@ -27,14 +27,7 @@ import logging
 import ntpath
 import mmap
 import re
-import gzip
-from datetime import datetime
-
-from numpy import (abs as np_abs,
-                   array as np_array)
-
-
-
+import shutil
 
 
 def canonical_gid(gid):
@@ -139,6 +132,22 @@ def remove_extension(filename, extension=None):
         f = f[0:-1]
 
     return f
+
+
+def remove_files_in_directory(path_to_directory: str) -> None:
+    """Remove all files and subdirectories in a directory."""
+
+    for filename in os.listdir(path_to_directory):
+        file_path = os.path.join(path_to_directory, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print(f"Failed to delete {file_path}. Reason: {e}")
+
+
 
 #### PC ADDED functionalities to common #####
 
