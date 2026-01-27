@@ -53,12 +53,12 @@ def print_help():
     Call genes:
       call_genes_wf  -> Run full gene calling workflow (prodigal -> hmmsearch -> top_hit)
       prodigal       -> Call genes using Prodigal
-      prodigal_check -> Check if table used by Prodigal is the same as the one indicated in NCBI.
+      prodigal_check -> Check if table used by Prodigal is the same as the one indicated in NCBI
       hmmsearch      -> Search Tigrfam/Pfam markers genes and generate tophit files
       top_hit        -> generate tophits file
-      metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
-      rna_silva      -> Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes against SILVA
-      rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
+      metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files
+      rna_silva      -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA
+      rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB
       trnascan       -> Identifies tRNAs in genomes.
       join_checkm    -> Join CheckM output files for different releases
       checkm         -> Estimates quality of new prokaryotic genomes
@@ -76,28 +76,28 @@ def print_help():
       parse_ncbi_dir    -> Create tables with metadata for all NCBI genomes from directories
 
     NCBI Taxonomy:
-      parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file.
+      parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file
       
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release 
       update_propagate_tax    -> Push propagated taxonomy to new DB
 
     Information from Nomenclatural resources:
-      lpsn     -> Process steps for LPSN.
-      bacdive  -> Process steps for BacDive. [In Dev]
-      strains  -> Set of tools to combined information from LPSN and DSMZ.
+      lpsn     -> Process steps for LPSN
+      bacdive  -> Process steps for BacDive [In Dev]
+      strains  -> Set of tools to combined information from LPSN and DSMZ
       ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find all strain ids
       
     Curation files
       curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names
 
     Miscellaneous commands:
-      list_genomes -> Produce file indicating the directory of each genome.
+      list_genomes -> Produce file indicating the directory of each genome
 
     Test suite for data validation:
-      overview             -> Compare the Metadata file from the previous version with the new one.
-      compare_field        -> Compare a specific metadata field between to metadata files.
-      check_unique_strains -> Check if a genomes has to different strains from a same collection.
+      overview             -> Compare the Metadata file from the previous version with the new one
+      compare_field        -> Compare a specific metadata field between to metadata files
+      check_unique_strains -> Check if a genomes has to different strains from a same collection
 
 
   Use: gtdb_migration_tk <command> -h for command specific help.
@@ -179,7 +179,7 @@ if __name__ == '__main__':
     metadata_parser.add_argument(
         '--silent', help="suppress output", action='store_true')
 
-    update_silva_parser = subparsers.add_parser("update_silva",description="Update the Taxonomy files and Blast database based on the latest Silva release")
+    update_silva_parser = subparsers.add_parser("update_silva",description="Update the Taxonomy files and Blast database based on the latest SILVA release")
     update_silva_parser.add_argument('--ssu_ref', help='SILVA_xxx_SSURef_NR99_tax_silva.fasta file downloaded from Silva.', required=True)
     update_silva_parser.add_argument('--lsu_ref', help='SILVA_xxx_LSURef_tax_silva.fasta file downloaded from Silva.', required=True)
     update_silva_parser.add_argument('-o', '--out_dir',
@@ -189,40 +189,43 @@ if __name__ == '__main__':
         '--silent', help="suppress output", action='store_true')
 
 
-    rna_silva_parser = subparsers.add_parser(
-        'rna_silva', formatter_class=CustomHelpFormatter, description='Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes against SILVA')
-    rna_silva_parser.add_argument('-g',
-                                  '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    rna_silva_parser = subparsers.add_parser('rna_silva', formatter_class=CustomHelpFormatter,
+                                             description='Identify, extract, and taxonomically classify 16S, 23S, or 5S rRNA genes in genomes against SILVA')
+    rna_silva_parser.add_argument('-g', '--gtdb_genome_path_file',
+                                  help='file indicating path to GTDB genomes', required=True)
+    rna_silva_parser.add_argument('-d', '--gtdb_domain_file',
+                                  help='file indicating predicted domain for each GTDB genomes', required=True)
     rna_silva_parser.add_argument('-c', '--cpus', type=int,
                                   help='number of threads', default=1)
     rna_silva_parser.add_argument('-v', '--version',
-                                  help='rna Silva version', default=0)
+                                  help='SILVA version', default=0)
     rna_silva_parser.add_argument('-p', '--rnapath',
-                                  help='path to rna Silva file', default='/srv/whitlam/bio/db/silva/')
-    rna_silva_parser.add_argument('-r','--rna_gene', choices=[
-                        'ssu', 'lsu_23S', 'lsu_5S'], help="rRNA gene to process")
-    rna_silva_parser.add_argument('-l','--log', required=True,help="log file")
-    rna_silva_parser.add_argument(
-        '--silent', help="suppress output", action='store_true')
+                                  help='path to SILVA files', default='/srv/db/silva')
+    rna_silva_parser.add_argument('-r', '--rna_gene', choices=['ssu', 'lsu_23S', 'lsu_5S'], help="rRNA gene to process")
+    rna_silva_parser.add_argument('-l', '--log', required=True, help="log file")
+    rna_silva_parser.add_argument('--all', dest='all_genomes', help="re-run all genomes", action='store_true')
+    rna_silva_parser.add_argument('--remove',
+                                  help="remove all previous results in SILVA directory (use with caution!)", action='store_true')
+    rna_silva_parser.add_argument('--silent', help="suppress output", action='store_true')
 
 
-    rna_ltp_parser = subparsers.add_parser(
-        'rna_ltp', formatter_class=CustomHelpFormatter, description='Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes against SILVA')
-    rna_ltp_parser.add_argument('-g',
-                                  '--gtdb_genome_path_file', help='file indicating path to GTDB genomes.', required=True)
+    rna_ltp_parser = subparsers.add_parser('rna_ltp', formatter_class=CustomHelpFormatter,
+                                           description='Identify, extract, and taxonomically classify 16S rRNA genes in genomes against LTP')
+    rna_ltp_parser.add_argument('-g', '--gtdb_genome_path_file',
+                                help='file indicating path to GTDB genomes', required=True)
+    rna_ltp_parser.add_argument('-d', '--gtdb_domain_file',
+                                help='file indicating predicted domain for each GTDB genomes', required=True)
     rna_ltp_parser.add_argument('-c', '--cpus', type=int,
-                                  help='number of threads', default=1)
-    rna_ltp_parser.add_argument('--ltp_version', type=int,
-                                  help='rna Silva version', default=0)
-    rna_ltp_parser.add_argument('--ssu_version', type=int,
-                                      help='rna Silva version', default=0)
+                                help='number of threads', default=1)
+    rna_ltp_parser.add_argument('--ltp_version', help='LTP version', default=0)
+    rna_ltp_parser.add_argument('--silva_version', help='SILVA version', default=0)
     rna_ltp_parser.add_argument('-p', '--rnapath',
-                                  help='path to rna Silva file', default='/srv/whitlam/bio/db/silva/')
-    rna_ltp_parser.add_argument('-l','--log', required=True,help="log file")
-    rna_ltp_parser.add_argument(
-        '--all', dest='all_genomes', help="re run all genomes", action='store_true')
-    rna_ltp_parser.add_argument(
-        '--silent', help="suppress output", action='store_true')
+                                help='path to LTP files', default='/srv/db/silva/ltp')
+    rna_ltp_parser.add_argument('-l', '--log', required=True, help="log file")
+    rna_ltp_parser.add_argument('--all', dest='all_genomes', help="re-run all genomes", action='store_true')
+    rna_ltp_parser.add_argument('--remove',
+                                help="remove all previous results in LTP directory (use with caution!)", action='store_true')
+    rna_ltp_parser.add_argument('--silent', help="suppress output", action='store_true')
 
 
     trnascan_parser = subparsers.add_parser(

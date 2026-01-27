@@ -25,8 +25,8 @@ import logging
 
 from collections import defaultdict
 
-from checkm.util.seqUtils import readFasta
 from tqdm import tqdm
+from gtdblib.util.bio.seq_io import read_fasta
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
 
@@ -260,7 +260,7 @@ class CheckMManager(object):
         nucleotide_bases = {'a', 'c', 'g', 't'}
         insertion_bases = {'-', '.'}
 
-        seqs = readFasta(seq_file)
+        seqs = read_fasta(seq_file)
         if len(seqs) == 0:
             return True
 
