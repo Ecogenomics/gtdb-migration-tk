@@ -198,6 +198,9 @@ class TaxonomyNCBI(object):
         # candidatus species names
         species_name = species_name.replace("'", "")
 
+        # fix observed mis-spelling of Candidatus
+        species_name = species_name.replace('s__Candidiatus', 's__Candidatus')
+
         # test for prefix
         if require_prefix:
             if not species_name.startswith('s__'):
@@ -345,6 +348,7 @@ class TaxonomyNCBI(object):
                     if rank_prefix == 's__':
                         valid_name, canonical_species_name = self._valid_species_name(
                             taxon)
+
                         if valid_name:
                             canonical_taxonomy[rank_prefixes.index(
                                 rank_prefix)] = canonical_species_name
@@ -461,7 +465,8 @@ class TaxonomyNCBI(object):
                             rank_prefix = 'sd__'
                         else:
                             rank_prefix = 'd__'
-                    elif node_record.rank == 'kingdom':
+                    elif (node_record.rank == 'kingdom' 
+                        and name_records[cur_tax_id].name_txt in ['Bacteria', 'Archaea', 'Eukaryota', 'Fungi']):
                         rank_prefix = 'd__'
                     elif keep_subranks and node_record.rank.startswith('sub'):
                         base_rank = node_record.rank.replace('sub', '')
