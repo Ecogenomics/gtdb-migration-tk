@@ -39,10 +39,8 @@ import pandas as pd
 
 from sqlalchemy import create_engine
 
-
 from biolib.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
-
 
 
 class TaxonomyNCBI(object):
@@ -56,9 +54,7 @@ class TaxonomyNCBI(object):
         self.bacterial_division = '0'
         self.unassigned_division = '8'
 
-        self.logger = logging.getLogger('timestamp')
-
-
+        self.logger = logging.getLogger('rich')
 
     def _assembly_organism_name(self,
                                 refseq_archaea_assembly_file,
@@ -124,7 +120,7 @@ class TaxonomyNCBI(object):
                     taxid = line_split[taxid_index]
 
                     if assembly_accession in d:
-                        print('[Error] Duplicate assembly accession: %s' % assembly_accession)
+                        self.logger.error('Duplicate assembly accession: %s' % assembly_accession)
                         sys.exit(-1)
 
                     d[assembly_accession] = taxid
@@ -216,13 +212,16 @@ class TaxonomyNCBI(object):
             if 'candidatus' in test_name.lower():
                 if len(test_name.split(' ')) <= 2:
                     return False, 'name appears to be missing the generic name'
-            else:
-                if len(test_name.split(' ')) <= 1:
-                    return False, 'name appears to be missing the generic name'
+            elif len(test_name.split(' ')) <= 1:
+                return False, 'name appears to be missing the generic name'
 
-        # get putative binomial name
+        # get putative binomial name, unless this is a hybrid name in 
+        # which case the full name should be retained
         if 'candidatus' in test_name.lower():
             sp_name = ' '.join(test_name.split()[0:3])
+        elif ' x ' in test_name.lower():
+            # hybrid name such as Saccharomyces cerevisiae x Saccharomyces eubayanus
+            sp_name = test_name
         else:
             sp_name = ' '.join(test_name.split()[0:2])
 
@@ -392,7 +391,7 @@ class TaxonomyNCBI(object):
             fout.write(sp + '\n')
         fout.close()
 
-        print('Genomes with a consistent taxonomy written to: %s' % output_consistent)
+        self.logger.info(f'Genomes with a consistent taxonomy written to: {output_consistent}')
 
     def parse_ncbi_taxonomy(self,
             taxonomy_dir,
@@ -429,7 +428,7 @@ class TaxonomyNCBI(object):
         taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
         fout = open(taxonomy_file, 'w')
 
-        print(f'Number of assemblies: {len(assembly_to_tax_id)}')
+        self.logger.info(f'Number of assemblies: {len(assembly_to_tax_id)}')
         for assembly_accession, tax_id in assembly_to_tax_id.items():
             # traverse taxonomy tree to the root which is 'cellular organism' for genomes,
             # 'other sequences' for plasmids, and 'unclassified sequences' for metagenomic libraries
@@ -437,14 +436,14 @@ class TaxonomyNCBI(object):
             cur_tax_id = tax_id
 
             if cur_tax_id not in name_records:
-                print('[Warning] Assembly {} has an invalid taxid: {}'.format(assembly_accession, tax_id))
+                self.logger.warning('Assembly {} has an invalid taxid: {}'.format(assembly_accession, tax_id))
                 continue
 
             roots = ['cellular organisms', 'other sequences',
                      'unclassified sequences', 'Viruses', 'Viroids']
             while name_records[cur_tax_id].name_txt not in roots:
                 if cur_tax_id == '1':
-                    print('[Error] TaxId {} reached root of taxonomy tree: {}'.format(tax_id, taxonomy))
+                    self.logger.error('TaxId {} reached root of taxonomy tree: {}'.format(tax_id, taxonomy))
                     sys.exit(-1)
 
                 try:
@@ -514,16 +513,16 @@ class TaxonomyNCBI(object):
 
         node_records = self._read_nodes(
             os.path.join(taxonomy_dir, 'nodes.dmp'))
-        print('Read %d node records.' % len(node_records))
+        self.logger.info('Read %d node records.' % len(node_records))
 
         name_records = self._read_names(
             os.path.join(taxonomy_dir, 'names.dmp'))
-        print('Read %d name records.' % len(name_records))
+        self.logger.info('Read %d name records.' % len(name_records))
 
         # traverse taxonomy tree for each assembly
         list_ranks_taxonomy = []
 
-        print('Number of assemblies: %d' % len(assembly_to_tax_id))
+        self.logger.info('Number of assemblies: %d' % len(assembly_to_tax_id))
         d={}
         for assembly_accession, tax_id in assembly_to_tax_id.items():
             d[assembly_accession] ={}
@@ -533,14 +532,14 @@ class TaxonomyNCBI(object):
             cur_tax_id = tax_id
 
             if cur_tax_id not in name_records:
-                print('[Warning] Assembly %s has an invalid taxid: %s' % (assembly_accession, tax_id))
+                self.logger.warning('Assembly %s has an invalid taxid: %s' % (assembly_accession, tax_id))
                 continue
 
             roots = ['cellular organisms', 'other sequences',
                      'unclassified sequences', 'Viruses', 'Viroids']
             while name_records[cur_tax_id].name_txt not in roots:
                 if cur_tax_id == '1':
-                    print('[Error] TaxId %s reached root of taxonomy tree: %s' % (tax_id, taxonomy))
+                    self.logger.error('TaxId %s reached root of taxonomy tree: %s' % (tax_id, taxonomy))
                     sys.exit(-1)
 
                 try:
@@ -569,7 +568,6 @@ class TaxonomyNCBI(object):
             list_ranks_taxonomy.extend(taxonomy)
 
         only_names, _only_taxid = zip(*set(list_ranks_taxonomy))
-        print(Counter(only_names).most_common(5))
 
         with open(output_file, 'w') as outfile:
             #json.dump(d, outfile)

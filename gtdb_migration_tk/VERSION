@@ -1,3 +1,5 @@
+0.0.5
+- Improved parse_ncbi_taxonomy subcommand so that hybrid names (e.g. Saccharomyces cerevisiae x Saccharomyces eubayanus) are retained in full
 0.0.4
 - Updates to support parsing of data for fungal GTDB
 - Add functionality for running BUSCO on fungal genomes
