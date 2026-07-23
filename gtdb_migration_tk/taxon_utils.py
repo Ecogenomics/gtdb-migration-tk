@@ -30,7 +30,9 @@ def canonical_strain_id(strain_id):
         
     strain_id = re.sub(r'\(.+\)', ' ', strain_id)
     strain_id = ' '.join(strain_id.split())
-    strain_id = re.sub('[\W_]+', '', strain_id).upper()
+    #strain_id = re.sub('[\W_]+', '', strain_id).upper()
+    # we keep the '/'
+    strain_id = re.sub(r'[^A-Za-z0-9/]+', '', strain_id).upper()
     
     return strain_id
     

@@ -243,6 +243,7 @@ class OptionsParser():
         p.process_metadata_files(options.genome_list, do_not_null_field=options.do_not_null_field,
                                  table_folder=options.input_folder, table_file=options.metadata_table,
                                  table_file_desc=options.metadata_table_desc)
+        self.logger.info('Update metadata Done.')
 
     def update_reps_db(self, options):
         p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)

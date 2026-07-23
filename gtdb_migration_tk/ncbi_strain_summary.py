@@ -205,7 +205,7 @@ class NCBIStrainParser(object):
                                 "# Infraspecific name:", "")
                             strain_string = strline.replace(
                                 "strain=", "").strip()
-                            strains.extend([x.strip() for x in re.split(';|,|=|\/', strain_string)])
+                            strains.extend([x.strip() for x in re.split(';|,|=', strain_string)])
                         elif gline.startswith('# Isolate:'):
                             isoline = gline.replace(
                                 "# Isolate:", "")
@@ -273,9 +273,14 @@ class NCBIStrainParser(object):
             # filter(None, stripped_combined_strain) remove all empty item
             # from the list
 
+            # if genome_id == 'GCF_003287455.1':
+            #     self.logger.info("strains for {0}: {1}".format(genome_id, ';'.join(set(filter(None, stripped_combined_strain)))))
+
             line_to_write= "{0}\t{1}\t{2}\t{3}\n".format(
                 genome_id, species, ';'.join(set(filter(None, stripped_combined_strain))), typemat)
+
             queueOut.put(line_to_write)
+            print(line_to_write.strip())
             return_list.append(line_to_write)
 
     def standardise_strain(self, list_strain):

@@ -65,7 +65,8 @@ class Strains(object):
                                           'gtdb_type_status',
                                           'standard_name',
                                           'strain_id',
-                                          'year_date'])
+                                          'year_date',
+                                          'is_from_standard'])
         self.logger = logging.getLogger('timestamp')
         self.cpus = cpus
         self.output_dir = output_dir
@@ -87,9 +88,10 @@ class Strains(object):
     def standardize_strain_id(self, strain_id):
         """Convert strain ID into standard format."""
 
-        pattern = re.compile('[\W_]+')
+        pattern = re.compile('[^A-Za-z0-9/]+')
         strain_id = strain_id.replace('strain', '')
         standardized_id = pattern.sub('', strain_id.strip()).upper()
+        #print(f'############## {strain_id} -> {standardized_id}')
 
         return standardized_id
 
@@ -231,9 +233,13 @@ class Strains(object):
                             sid.strip() for sid in infos[gtdb_strain_identifiers_index].split(';')]
                         created_list = self.fix_common_strain_id_errors(
                             created_list)
+                        if gid == 'RS_GCF_025234775.1':
+                            print('created_list', created_list)
                         standard_strain_ids = [self.standardize_strain_id(sid)
                                                for sid in created_list
                                                if (sid != '' and sid != 'none')]
+                        if gid == 'RS_GCF_025234775.1':
+                            print('standard_strain_ids', standard_strain_ids)
                     metadata[gid] = {
                         'ncbi_organism_name': infos[gtdb_ncbi_organism_name_index],
                         'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
@@ -267,7 +273,7 @@ class Strains(object):
     def load_lpsn_strains_dictionary(self, lpsn_dir, lpsn_gss_file):
     
         # get co-identical strain IDs found by scraping LPSN website
-        pattern = re.compile('[\W_]+')
+        pattern = re.compile('[^A-Za-z0-9/]+')
         lpsn_strains_dic = {}
         with open(os.path.join(lpsn_dir, 'lpsn_strains.tsv'), encoding='utf-8') as lpstr:
             lpstr.readline()
@@ -444,7 +450,7 @@ class Strains(object):
 
                 # remove all white spaces and underscores, and capitalize, before
                 # looking for match with standardized strain ID
-                pattern = re.compile('[\W_]+')
+                pattern = re.compile('[^A-Za-z0-9/]+')
                 collapsed_names = {pattern.sub(
                     '', a).upper(): a for a in raw_names}
 
@@ -568,6 +574,15 @@ class Strains(object):
                      sourcest,
                      isofficial):
         """Match species names with stain IDs for a type source (e.g. LPSN) in order to establish if a genome is assembled from type."""
+        # print('gid', gid)
+        # print('standard_names', standard_names)
+        # print('official_standard_names', official_standard_names)
+        # print('misspelling_names', misspelling_names)
+        # print('synonyms', synonyms)
+        # print('equivalent_names', equivalent_names)
+        # print('strain_dictionary', strain_dictionary['Desulfobulbus oralis'])
+        # print('sourcest', sourcest)
+        # print('isofficial', isofficial)
 
 
 
@@ -581,15 +596,7 @@ class Strains(object):
         for standard_name, raw_names in standard_names.items():
             if standard_name not in strain_dictionary:
                 continue
-            else:
-                if gid == 'GB_GCA_945881865.1':
-                    print('standard_name', standard_name)
-                    print('strain_dictionary', strain_dictionary[standard_name])
-                    print('misspelling_names', misspelling_names)
-                    print('synonyms', synonyms)
-                    print('equivalent_names', equivalent_names)
-                    print('isofficial', isofficial)
-                    print('sourcest', sourcest)
+
 
 
             if sourcest == 'lpsn':
@@ -639,7 +646,7 @@ class Strains(object):
                         gtdb_type_status = self.TYPE_NEOTYPE
 
             m = self.Match(category, istype, isneotype, gtdb_type_status,
-                           standard_name, matched_strain_id, year_date)
+                           standard_name, matched_strain_id, year_date,False)
 
             if category == 'official_name':
                 if match:
@@ -671,8 +678,11 @@ class Strains(object):
                 elif td == 'holotype of species':
                     match = match._replace(gtdb_type_status=self.HOLOTYPE)
 
-        if gid == 'RS_GCF_000952155.1' or gid == 'RS_GCF_000400485.1':
-            print('match', match)
+        if match :
+            # add the is_from_standard field to the match named tuple to indicate if the match is from a standard name or a synonym/equivalent/misspelling name
+            # This is based on is_official field and category of the match
+            if isofficial and match.category == 'official_name':
+                match = match._replace(is_from_standard=True)
 
         return match
 
@@ -829,10 +839,26 @@ class Strains(object):
                                       strain_dictionary,
                                       sourcest,
                                       True)
+            #if gid == 'RS_GCF_014647695.1':
+            #print('standardized_sp_names', standardized_sp_names)
+            list_year_tables = []
+            for stdname in standardized_sp_names:
+                list_year_tables.append(self.get_lpsn_priority_year(stdname))
+            # remove empty entries
+            list_year_tables = [y for y in list_year_tables if y != '']
+            if len(set(list_year_tables)) > 1:
+                print('WARNING: identified multiple different year of priority for {}: {}'.format(
+                    standardized_sp_names, list_year_tables))
+
+            year_date = list_year_tables[0] if len(list_year_tables) > 0 else ''
+
+            #    print('match', match)
 
             if not match:
                 # check if any of the auxillary names have a species name
                 # and strain ID match with the type repository
+
+
                 match = self.strain_match(gid,
                                           unofficial_standard_names,
                                           standardized_sp_names,
@@ -842,6 +868,15 @@ class Strains(object):
                                           strain_dictionary,
                                           sourcest,
                                           False)
+
+                # if gid == 'RS_GCF_014647695.1':
+                #     print('unofficial_standard_names', unofficial_standard_names)
+                #     print('misspelling_names', misspelling_names)
+                #     print('synonyms', synonyms)
+                #     print('equivalent_names', equivalent_names)
+                #     print('########')
+                #     print('match', match)
+                #     print('########')
 
 
             if match:
@@ -854,14 +889,15 @@ class Strains(object):
 
                 queue_out.put((gid,
                                species_name,
-                               match.year_date,
+                               year_date,
                                match.istype,
                                match.isneotype,
                                match.gtdb_type_status,
                                match.category,
                                match.standard_name,
                                match.strain_id,
-                               set(repository_strain_ids.split('='))))
+                               set(repository_strain_ids.split('=')),
+                               match.is_from_standard))
 
     def _writer(self, sourcest, outfile, writer_queue):
         """Report type material status for each genome."""
@@ -874,7 +910,7 @@ class Strains(object):
         fout.write(
             '\t{0}_match_type\t{0}_match_name\t{0}_match_strain_id\t{0}_strain_ids'.format(sourcest))
         fout.write('\tmissspellings\tequivalent_names\tsynonyms')
-        fout.write('\tneotype\tpriority_year\n')
+        fout.write('\tneotype\tpriority_year\tis_from_standard_name\n')
 
         processed = 0
         while True:
@@ -891,7 +927,8 @@ class Strains(object):
                 category_name,
                 matched_sp_name,
                 matched_strain_id,
-                repository_strain_ids,) = data
+                repository_strain_ids,
+                is_from_standard) = data
 
             info_genomes = self.metadata[gid]
 
@@ -904,26 +941,31 @@ class Strains(object):
                 synonym = '; '.join(
                     self.ncbi_auxiliary_names[info_genomes['ncbi_taxid']]['synonym'])
 
-            fout.write("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
-                gid,
-                info_genomes['ncbi_organism_name'],
-                species_name,
-                info_genomes['ncbi_type_material_designation'],
-                gtdb_type_status,
-                self.metadata[gid]['ncbi_strain_ids'],
-                '; '.join(
-                    self.metadata[gid]['ncbi_expanded_standardised_strain_ids']),
-                matched_strain_id,
-                category_name,
-                matched_sp_name,
-                '; '.join(repository_strain_ids.intersection(
-                    self.metadata[gid]['ncbi_expanded_standardised_strain_ids'])),
-                '; '.join(repository_strain_ids),
-                misspelling,
-                equivalent_name,
-                synonym,
-                neotype,
-                year_date))
+            expanded_ids_str = '; '.join(self.metadata[gid]['ncbi_expanded_standardised_strain_ids'])
+            intersect_ids_str = '; '.join(
+                repository_strain_ids.intersection(self.metadata[gid]['ncbi_expanded_standardised_strain_ids']))
+            repo_ids_str = '; '.join(repository_strain_ids)
+
+            fout.write(
+                f"{gid}\t"
+                f"{info_genomes['ncbi_organism_name']}\t"
+                f"{species_name}\t"
+                f"{info_genomes['ncbi_type_material_designation']}\t"
+                f"{gtdb_type_status}\t"
+                f"{self.metadata[gid]['ncbi_strain_ids']}\t"
+                f"{expanded_ids_str}\t"
+                f"{matched_strain_id}\t"
+                f"{category_name}\t"
+                f"{matched_sp_name}\t"
+                f"{intersect_ids_str}\t"
+                f"{repo_ids_str}\t"
+                f"{misspelling}\t"
+                f"{equivalent_name}\t"
+                f"{synonym}\t"
+                f"{neotype}\t"
+                f"{year_date}\t"
+                f"{is_from_standard}\n"
+            )
 
             processed += 1
             statusStr = '-> Processing {:,} genomes assembled from type material.'.format(
@@ -975,7 +1017,7 @@ class Strains(object):
         fout.write("\tgtdb_type_designation_ncbi_taxa\tgtdb_type_designation_ncbi_taxa_sources")
         fout.write(
             "\tlpsn_type_designation\tlpsn_priority_year")
-        fout.write("\tgtdb_type_species_of_genus\n")
+        fout.write("\tgtdb_type_species_of_genus\tis_from_standard\n")
 
         missing_type_at_ncbi = 0
         missing_type_at_gtdb = 0
@@ -1098,6 +1140,7 @@ class Strains(object):
 
         self.logger.info('Parsing year table.')
         self.lpsn_year_table = self.load_year_dict(year_table)
+        print('Micromonospora andamanensis', self.lpsn_year_table.get('Micromonospora andamanensis', 'not found'))
 
         self.logger.info(
             'Parsing NCBI taxonomy information from names.dmp and nodes.dmp.')

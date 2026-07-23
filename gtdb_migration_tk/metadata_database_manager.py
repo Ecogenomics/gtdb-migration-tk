@@ -64,11 +64,13 @@ class MetadataDatabaseManager(object):
         desc_table_dir = os.path.join(file_dir, 'data_files', 'table_description')
         if table_folder is not None:
             list_tsv_files = glob.glob(os.path.join(table_folder, '*.tsv'))
+            #list_tsv_files = ['metadata_trna_count.tsv']
             for tsv_file in list_tsv_files:
                 if os.path.basename(tsv_file) not in self.description_table:
                     print(f'{os.path.basename(tsv_file)} is not a standard table')
                     sys.exit(-1)
-            for tsv_file in list_tsv_files:
+            for tsv_idx,tsv_file in enumerate(list_tsv_files):
+                self.logger.info(f'Processing file {tsv_idx+1}/{len(list_tsv_files)}: {os.path.basename(tsv_file)}')
                 for desc_file in self.description_table.get(os.path.basename(tsv_file)):
                     metadata_desc_file = os.path.join(desc_table_dir,desc_file)
                     self.update_metadata_db(tsv_file,metadata_desc_file,genome_list_file,do_not_null_field)
@@ -182,8 +184,13 @@ class MetadataDatabaseManager(object):
             self.logger.info('Updating {} for {} genomes.'.format(
                 field, records_to_update))
 
+            # print(f'Committing {len(data_to_commit)} records to database for field {field} in table {table}.')
+            # print(f'Example record: {data_to_commit[0]}')
+            # print(f'Data type: {data_type}')
+
             gtdbimporter.importMetadata(table, field, data_type, data_to_commit)
             self.temp_con.commit()
+            self.logger.info(f'Finished updating {field} for {records_to_update} genomes.')
 
     def update_reps(self, final_cluster_file):
         """Update representative genomes of species clusters."""
