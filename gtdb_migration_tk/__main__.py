@@ -1320,7 +1320,6 @@ def main():
             print("\nUnexpected error:", sys.exc_info()[0])
             raise
 
-    raise
 
 
 if __name__ == '__main__':
