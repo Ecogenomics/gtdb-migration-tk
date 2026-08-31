@@ -31,8 +31,8 @@ from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.marker_manager import MarkerManager
 from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
-from gtdb_migration_tk.rna_manager import RnaManager
-from gtdb_migration_tk.rna_ltp_manager import RnaLTPManager
+from gtdb_migration_tk.rna_manager_silva import RnaManagerSILVA
+from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
 from gtdb_migration_tk.trnascan_manager import tRNAScan
 from gtdb_migration_tk.checkm_manager import CheckMManager
 from gtdb_migration_tk.busco_manager import BuscoManager
@@ -183,20 +183,28 @@ class OptionsParser():
                            options.ga, options.metadata, options.output_file)
 
     def generate_rna_silva(self, options):
-        p = RnaManager(options.cpus, options.rna_version,
-                       options.rnapath, options.rna_gene)
-        p.generate_rna_silva(options.gtdb_genome_path_file,options.rerun)
-        self.logger.info('Done.')
+        p = RnaManagerSILVA(options.version,
+                            options.rnapath, 
+                            options.rna_gene, 
+                            options.cpus)
+        p.generate_rna_silva(options.gtdb_genome_path_file,
+                             options.gtdb_domain_file,
+                             options.all_genomes,
+                             options.remove)
 
     def update_silva(self, options):
-        p = RnaManager(1, None, None, None)
-        print(options)
+        p = RnaManagerSILVA(None, None, None, 1)
         p.update_silva(options.ssu_ref, options.lsu_ref, options.output_dir)
 
     def generate_rna_ltp(self, options):
-        p = RnaLTPManager(options.cpus, options.ltp_version,
-                          options.ssu_version, options.rnapath)
-        p.generate_rna_ltp(options.gtdb_genome_path_file, options.all_genomes)
+        p = RnaManagerLTP(options.ltp_version,
+                          options.silva_version, 
+                          options.rnapath, 
+                          options.cpus, )
+        p.generate_rna_ltp(options.gtdb_genome_path_file,
+                           options.gtdb_domain_file,
+                           options.all_genomes,
+                           options.remove)
 
     def generate_checkm_data(self, options):
         p = CheckMManager(options.cpus)

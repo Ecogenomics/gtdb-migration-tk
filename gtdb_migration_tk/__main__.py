@@ -54,14 +54,13 @@ def print_help():
                        (prodigal -> hmmsearch -> top_hit )
       prodigal       -> Call genes using Prodigal
       prodigal_check -> Check if table used by Prodigal is the same as the
-                        one indicated in NCBI.
+                        one indicated in NCBI
       hmmsearch      -> Search Tigrfam/Pfam markers genes and generate tophit files
-      top_hit        -> generate tophit files.
+      top_hit        -> generate tophit files
       metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
-      rna_silva      -> Identifies, extracts, and taxonomically classifies 16S and 23S rRNA genes in genomes
-                        against SILVA
-      rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
-      trnascan       -> Identifies tRNAs in genomes.
+      rna_silva      -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA
+      rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB
+      trnascan       -> Identifies tRNAs in genomes
       join_checkm    -> Join CheckM output files for different releases
       checkm         -> Estimates the quality of the new genomes
       busco          -> Estimate quality of new fungal genomes
@@ -86,9 +85,9 @@ def print_help():
       update_propagate_tax    -> Push propagated taxonomy to new DB
 
     Information from online resources:
-      lpsn         -> Process steps for LPSN.
-      bacdive      -> Process steps for BacDive. [In Dev]
-      strains      -> Set of tools to combined information from LPSN and DSMZ.
+      lpsn         -> Process steps for LPSN
+      bacdive      -> Process steps for BacDive [In Dev]
+      strains      -> Set of tools to combined information from LPSN and DSMZ
       ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find
                       all strain ids
 
@@ -101,10 +100,10 @@ def print_help():
       generate_ltp_db -> Generate LTP database
 
     Test suite for data validation:
-      overview             -> Compare the Metadata file from the previous version with the new one.
-      compare_field        -> Compare a specific metadata field between to metadata files.
-      check_unique_strains -> Check if a genomes has to different strains from a same collection.
-      check_db_population  -> Check if the database is populated with the correct number of genomes.
+      overview             -> Compare the Metadata file from the previous version with the new one
+      compare_field        -> Compare a specific metadata field between to metadata files
+      check_unique_strains -> Check if a genomes has to different strains from a same collection
+      check_db_population  -> Check if the database is populated with the correct number of genomes
       
 
   Use: gtdb_migration_tk <command> -h for command specific help.
@@ -289,6 +288,11 @@ def __gtdb_decorate_table(group, required):
 
 def __gtdb_genome_path_file(group, required):
     group.add_argument('-g', '--gtdb_genome_path_file', help='genome paths to GTDB genomes.', required=required)
+
+
+def __gtdb_genome_path_file(group, required):
+    group.add_argument('-d', '--gtdb_domain_file',
+                        help='file indicating predicted domain for each GTDB genomes', required=required)
 
 
 def __gtdb_init_taxonomy(group, required):
@@ -709,7 +713,7 @@ def get_main_parser():
             __cpus(grp)
 
     with subparser(sub_parsers, 'update_silva',
-                   'Update the Taxonomy files and Blast database based on the latest Silva release') as parser:
+                   'Update the Taxonomy files and Blast database based on the latest SILVA release') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __ssu_ref(grp, required=True)
             __lsu_ref(grp, required=True)
@@ -720,10 +724,11 @@ def get_main_parser():
 
     with subparser(sub_parsers,
                    'rna_silva',
-                   'Identifies, extracts, and taxonomically classifies 16S '
-                   'and 23S rRNA genes in genomes against SILVA') as parser:
+                   'Identify, extracts and taxonomically classifies 16S '
+                   '23S, and 5S rRNA genes in genomes against SILVA') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
+            __gtdb_domain_file(grp, required=True)
             __rna_version(grp, required=True)
             __rna_gene(grp, required=True)
             __log_file(grp, required=True)
@@ -734,10 +739,11 @@ def get_main_parser():
             __cpus(grp)
 
     with subparser(sub_parsers, 'rna_ltp',
-                   'Identifies, extracts, and taxonomically classifies 16S '
-                   'and 23S rRNA genes in genomes against SILVA') as parser:
+                   'Identify, extracts and taxonomically classifies 16S '
+                   'rRNA genes in genomes against LTP') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
+            __gtdb_domain_file(grp, required=True)
             __ltp_version(grp, required=True)
             __ssu_version(grp, required=True)
             __log_file(grp, required=True)
