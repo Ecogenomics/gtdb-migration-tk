@@ -31,13 +31,14 @@ __status__ = 'Development'
 
 import os
 import sys
-import argparse
-import gzip
+import random
+import string
+import re
 from collections import defaultdict
 import multiprocessing as mp
 
 
-from numpy import (zeros as np_zeros)
+from numpy import (zeros as np_zeros,sum as np_sum)
 from tqdm import tqdm
 
 from gtdb_migration_tk.utils.tools import openfile
@@ -161,11 +162,14 @@ class NCBIMetaDir(object):
         self.gff_fields = ['cds_count', 'tRNA_count',
                            'ncRNA_count', 'rRNA_count', 'ssu_count']
 
-        self.gbff_fields = ['translation_table']
-
+        self.gbff_fields = ['translation_table', 'isolation_source', 'geo_loc_name', 'lat_lon','metagenome_source']
         self.stats_info = {}
 
         self.cpus = cpus
+
+    def _randomword(self, length):
+        """Generate a random string of lowercase letters to mask internal slashes."""
+        return ''.join(random.choice(string.ascii_lowercase) for i in range(length))
 
     def _parse_assembly_stats(self, assembly_stat_file):
         """Parse data from assembly stats file.
@@ -244,20 +248,60 @@ class NCBIMetaDir(object):
         return metadata_gff
 
     def _parse_gbff(self, genbank_file):
-        """Parse statistics from GenBank file."""
-
+        """Parse statistics and metadata from GenBank file."""
         metadata_gbff = [''] * len(self.gbff_fields)
 
         if not os.path.exists(genbank_file):
             print(f'Missing {genbank_file}')
             return metadata_gbff
 
+        pattern_gene = re.compile(r"^\s{0,20}\w")
+        pattern_source = re.compile(r"^\s{5}source\s{10}")
+        source_info_bool = False
+        randomstring = self._randomword(10)
+        source_info = []
+
+        # We read the file line by line using openfile to handle gzipped files
         for line in openfile(genbank_file):
+
+            # 1. Extract Translation Table
             if '/transl_table=' in line:
                 translation_table = line[line.rfind('=') + 1:].strip()
-                metadata_gbff[self.gbff_fields.index(
-                    'translation_table')] = translation_table
-                break
+                metadata_gbff[self.gbff_fields.index('translation_table')] = translation_table
+
+            # 2. Extract Source Metadata
+            if pattern_source.match(line):
+                source_info_bool = True
+            elif pattern_gene.match(line) and source_info_bool:
+                # Stop appending to source_info once we hit the next main feature
+                source_info_bool = False
+            elif source_info_bool:
+                # Replace all '/' characters by a random string except the first one
+                # '/' will be used to separate those metadata later on
+                line = re.sub(r"(?!^\/)\/", randomstring, ' '.join(line.split()))
+                source_info.append("{0} ".format(' '.join(line.split())))
+
+        # Process the source_info array if any metadata was found
+        if source_info:
+            source_info_string = ''.join(x for x in source_info)
+            source_info_array = source_info_string.split("/")
+            source_info_dict = {}
+
+            for info in source_info_array:
+                if "=" in info:
+                    try:
+                        k, v = info.split("=", 1)
+                        source_info_dict[k] = v
+                    except Exception as e:
+                        print(info)
+
+            # Map the extracted dictionary back to the tracked gbff_fields
+            for field in ['isolation_source', 'geo_loc_name', 'lat_lon','metagenome_source']:
+                if field in source_info_dict:
+                    # Replace special characters and restore the masked '/' strings
+                    clean_val = source_info_dict[field].replace('"', '').replace(',', ';').replace("'", " ").replace(
+                        randomstring, "/").rstrip()
+                    metadata_gbff[self.gbff_fields.index(field)] = clean_val
 
         return metadata_gbff
 
