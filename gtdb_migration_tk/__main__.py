@@ -657,6 +657,14 @@ def __final_cluster_file(grp, required):
                      help="clusters for named species")
 
 
+def __gtdb_domain_file(grp, required):
+    grp.add_argument('--gtdb_domain_file', required=required, help='File indicating predicted domain for each GTDB genomes')
+
+
+def __keep_subranks(grp):
+    grp.add_argument('--keep_subranks', action='store_true',help='Keep subranks in canonical taxonomy.')
+
+
 def get_main_parser():
     # Setup the main, and sub parsers.
     main_parser = argparse.ArgumentParser(prog='gtdb_migration_tk', add_help=False, conflict_handler='resolve')
@@ -1320,6 +1328,7 @@ def main():
             print("\nUnexpected error:", sys.exc_info()[0])
             raise
 
+    raise
 
 
 if __name__ == '__main__':
