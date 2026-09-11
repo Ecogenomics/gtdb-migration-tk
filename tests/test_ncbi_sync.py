@@ -15,6 +15,7 @@ most attention:
     header -- the guard against a summary revision mirroring into the wrong directory.
 """
 
+import logging
 import os
 import shutil
 import tempfile
@@ -337,13 +338,21 @@ class LockRoot(TempDirCase):
         root = self.path("mirror")
         first = N.lock_root(root)
         self.assertIsNotNone(first)
-        stderr, sys.stderr = sys.stderr, open(self.path("err"), "w")
+        # the refusal is reported through the toolkit logger, not stderr
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Capture()
+        logger = logging.getLogger("timestamp")
+        logger.addHandler(handler)
         try:
             self.assertIsNone(N.lock_root(root))
         finally:
-            sys.stderr.close(); sys.stderr = stderr
-        with open(self.path("err")) as handle:
-            self.assertIn("pid %d" % os.getpid(), handle.read())
+            logger.removeHandler(handler)
+        self.assertIn("pid %d" % os.getpid(), "\n".join(records))
         first.close()                            # released: can be taken again
         again = N.lock_root(root)
         self.assertIsNotNone(again)
@@ -354,18 +363,30 @@ class MainEndToEndOffline(TempDirCase):
     """main() paths that need no network: argument guards and the empty-table exit."""
 
     def run_main(self, summary, *argv):
-        # the summary is a named argument (-s/--ncbi_summary_file), not a positional
+        # the summary is a named argument (-s/--ncbi_summary_file), not a positional.
+        # ncbi_sync reports through the toolkit logger, so capture that too and return
+        # it alongside stderr -- the progress bar and signal handler still use stderr.
         cwd = os.getcwd(); os.chdir(self.dir)
         stderr, sys.stderr = sys.stderr, open(self.path("stderr"), "w")
         argv_saved, sys.argv = sys.argv, ["ncbi_sync.py", "-s", summary] + list(argv)
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Capture()
+        logger = logging.getLogger("timestamp")
+        logger.addHandler(handler)
         try:
             rc = N.main()
         finally:
+            logger.removeHandler(handler)
             sys.argv = argv_saved
             sys.stderr.close(); sys.stderr = stderr
             os.chdir(cwd)
         with open(self.path("stderr")) as handle:
-            return rc, handle.read()
+            return rc, handle.read() + "\n".join(records)
 
     def test_header_only_table_is_nothing_to_do_exit_0(self):
         write(self.path("retry.fail"), N.FAIL_HEADER)

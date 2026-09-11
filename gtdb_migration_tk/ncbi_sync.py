@@ -235,12 +235,14 @@ All written to the current directory, named after the input with .txt/.tsv strip
 .fail/.bad input keeps its suffix (`x.bad` -> `x.bad.fail`) so a retry run cannot overwrite
 the outputs it is retrying.
 
-The run history is NOT a file of this module's own: argv, per-genome events for anything
-that changed or failed, every row that had no usable ftp_path, a cumulative
-progress/throttling snapshot every 60 s, and the final summary all go to the GTDB
-Migration Tk log (`gtdb_migration_tk --log`, else ./gtdb_migration_tk.log), which appends
-across runs the same way. Unchanged genomes are DEBUG (see LOG_LEVEL) and are not
-recorded there.
+The run history is NOT a file of this module's own: argv, every row that had no usable
+ftp_path, a cumulative progress/throttling snapshot every 60 s, and the final summary all
+go to the GTDB Migration Tk log (`gtdb_migration_tk --log`, else ./gtdb_migration_tk.log),
+which appends across runs the same way. NOTHING is logged per genome -- a ~2M-genome run
+would otherwise bury the log in near-identical lines -- so the log stays bounded by how
+long the run took rather than by how many genomes it covered. Genomes needing action are
+listed in <base>.fail / <base>.bad below, and failures print to the console as they
+happen; set LOG_LEVEL to DEBUG for per-genome detail when debugging.
 
     <base>.fail  genomes the sync could not complete, TSV under a `#assembly_accession
                  ftp_path version_status excluded_from_refseq reason` header. TRUNCATED
@@ -496,16 +498,49 @@ ASSEMBLY_ANOMALIES = frozenset((
 # without this module owning, opening or closing any of them. The logging module is used
 # for its thread safety: workers log concurrently from the pool.
 #
-# Per-genome lines are recorded for genomes that actually CHANGED or failed, so the log
-# grows with real work rather than with list size -- a 1.9M-genome list that is mostly
-# unchanged would otherwise produce ~1.9M near-identical lines. Unchanged genomes are
-# logged at DEBUG (set LOG_LEVEL below to logging.DEBUG for a full record) and are still
-# accounted for in the periodic progress snapshots. The level is set on this logger, not
-# on a handler, so DEBUG records are dropped before they can reach the toolkit's console
-# handler -- keeping an unchanged genome silent exactly as it was.
+# NOTHING PER-GENOME IS LOGGED. A production run covers ~2M genomes, so one line each --
+# synced, failed, status changed, swept, bad -- would dominate the toolkit log and make it
+# useless. Every one of those is logged at DEBUG, which this logger's own level discards
+# before it reaches any handler, so the cost is a dropped call and nothing more.
+#
+# The information is not lost. What actually needs acting on is written to files that are
+# meant to be machine-read and fed back in: <base>.fail lists every genome the sync could
+# not complete, with its reason, and <base>.bad every genome that failed --verify. The
+# console shows failures as they happen through Progress.write(). The log keeps the
+# per-run story: argv, the genome count, a progress/throttling snapshot every 60 s, and
+# the final summary -- bounded by runtime, not by list size.
+#
+# Set LOG_LEVEL to logging.DEBUG to get the per-genome detail back when debugging.
 LOG = logging.getLogger("timestamp.ncbi_sync")
 LOG_LEVEL = logging.INFO
 LOG.setLevel(LOG_LEVEL)
+
+# extra=FILE_ONLY keeps a record out of the toolkit's console handler while still allowing
+# it into the log file. Used for the periodic progress snapshot, which the bar already
+# shows on screen, and carried on the per-genome DEBUG records so that raising LOG_LEVEL
+# for debugging does not start scrolling the progress bar away.
+FILE_ONLY = {"file_only": True}
+
+
+class _FileOnlyFilter(logging.Filter):
+    def filter(self, record):
+        return not getattr(record, "file_only", False)
+
+
+_CONSOLE_FILTER = _FileOnlyFilter()
+
+
+def quiet_console_detail():
+    """Keep FILE_ONLY records off the console, leaving them in the log file.
+
+    Applied to the toolkit's console handlers only; a FileHandler keeps everything.
+    Harmless for other commands -- nothing else sets the file_only flag.
+    """
+    for handler in logging.getLogger("timestamp").handlers:
+        if isinstance(handler, logging.FileHandler):
+            continue
+        if _CONSOLE_FILTER not in handler.filters:
+            handler.addFilter(_CONSOLE_FILTER)
 
 
 def wanted_files(asm):
@@ -1150,8 +1185,9 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
         if present is not None:
             # Zero requests. The summary row may still have moved, and that is local:
             if status_text is not None and write_status(genome_dir, status_text):
-                LOG.info("status changed %s -> %s", url,
-                         status_text.decode().strip().replace("\n", " | "))
+                LOG.debug("status changed %s -> %s", url,
+                          status_text.decode().strip().replace("\n", " | "),
+                          extra=FILE_ONLY)
             return 0, 0, present, [], True, True
 
     status, body, _ = http_get(url_path + "md5checksums.txt")
@@ -1162,7 +1198,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
     os.makedirs(genome_dir, DIR_MODE, exist_ok=True)
     swept = sweep_temps(genome_dir, keep)
     if swept:
-        LOG.info("swept %d stale temp file(s) %s", swept, url)
+        LOG.debug("swept %d stale temp file(s) %s", swept, url, extra=FILE_ONLY)
 
     old_body = None
     if os.path.exists(manifest_path):
@@ -1245,8 +1281,9 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
     if status_text is not None:
         not_fetched.add("assembly_status.txt")
         if write_status(genome_dir, status_text):
-            LOG.info("status changed %s -> %s", url,
-                     status_text.decode().strip().replace("\n", " | "))
+            LOG.debug("status changed %s -> %s", url,
+                      status_text.decode().strip().replace("\n", " | "),
+                      extra=FILE_ONLY)
     enforced = set(name for _, name in entries)
     for name in sorted(keep - enforced - not_fetched):
         # Without a summary status, assembly_status.txt is fetched every run: a genome can
@@ -1281,7 +1318,8 @@ def delete_genome(genome_dir):
         if os.path.exists(manifest):
             os.unlink(manifest)
     except OSError as exc:
-        LOG.error("delete %s: could not remove manifest: %s", genome_dir, exc)
+        LOG.debug("delete %s: could not remove manifest: %s", genome_dir, exc,
+                  extra=FILE_ONLY)
         return False
 
     problems = []
@@ -1297,7 +1335,8 @@ def delete_genome(genome_dir):
     else:
         shutil.rmtree(genome_dir, onerror=on_error)
     if problems:
-        LOG.error("delete %s: incomplete: %s", genome_dir, "; ".join(problems[:5]))
+        LOG.debug("delete %s: incomplete: %s", genome_dir, "; ".join(problems[:5]),
+                  extra=FILE_ONLY)
         return False
     return True
 
@@ -1524,7 +1563,7 @@ class Progress(object):
                  100.0 * self.done / self.total if self.total else 100.0,
                  self.skipped, self.fresh, self.failed, format_duration(elapsed),
                  eta, rate, requests, req_rate, megabytes, probe_404, throttled, trips,
-                 paused, drops)
+                 paused, drops, extra=FILE_ONLY)
 
     def write(self, message):
         """Emit a message without corrupting an active bar."""
@@ -1636,7 +1675,7 @@ def read_assembly_summary(path):
     if bad:
         raise BadInput("%d malformed ftp_path(s):\n%s" % (len(bad), "\n".join(bad[:10])))
     if dupes:
-        sys.stderr.write("note: %d duplicate ftp_path(s) in %s ignored\n" % (dupes, path))
+        LOG.warning("note: %d duplicate ftp_path(s) in %s ignored", dupes, path)
     return genomes, skipped
 
 
@@ -1650,7 +1689,7 @@ def report_rows(headline, details, note):
     LOG.warning(headline)
     for line in details:
         LOG.warning(line)
-    sys.stderr.write(note + "\n")
+    LOG.warning(note)
 
 
 def first_names(names, limit=5):
@@ -1676,8 +1715,7 @@ def run_sync(genomes, args, base, fail_path):
     """
     rc = 0
     status = f"Syncing {base}: {len(genomes)} genomes with {args.jobs}{'' if not args.full else ' (full re-hash)'} jobs in parallel"
-    sys.stderr.write(f"{status}\n")
-    sys.stderr.flush()
+    LOG.info(status)
     prog = Progress("Downloading", len(genomes), args.silent)
     BREAKER.notify = prog.write
     fail_lock = threading.Lock()
@@ -1710,20 +1748,23 @@ def run_sync(genomes, args, base, fail_path):
                 raise                            # surfaces through bounded_map to main()
             except Exception as exc:
                 raise_if_fatal(exc)              # an OSError from install()/write_status()
-                LOG.error("error %s %s", url, exc)
+                LOG.debug("error %s %s", url, exc, extra=FILE_ONLY)
+                prog.write("  FAILED %s: %s" % (url, exc))
                 record(genome, exc)
                 return
             if failures:
-                LOG.warning("failed %s downloaded=%d verified=%d trusted=%d reasons=%s",
-                            url, downloaded, verified, trusted, "; ".join(failures))
+                LOG.debug("failed %s downloaded=%d verified=%d trusted=%d reasons=%s",
+                          url, downloaded, verified, trusted, "; ".join(failures),
+                          extra=FILE_ONLY)
+                prog.write("  FAILED %s: %s" % (url, "; ".join(failures)))
                 record(genome, "; ".join(failures))
             else:
                 if skipped:
                     # the common case on a re-sync: DEBUG so the log tracks work done
                     LOG.debug("fresh %s" if fresh else "unchanged %s", url)
                 else:
-                    LOG.info("synced %s downloaded=%d verified=%d trusted=%d",
-                             url, downloaded, verified, trusted)
+                    LOG.debug("synced %s downloaded=%d verified=%d trusted=%d",
+                              url, downloaded, verified, trusted, extra=FILE_ONLY)
                 prog.tick(skipped=skipped, fresh=fresh)
 
         try:
@@ -1740,7 +1781,6 @@ def run_sync(genomes, args, base, fail_path):
                % (STOP.reason, prog.done - prog.failed, len(genomes), prog.failed,
                   fail_path, remaining))
         LOG.warning(msg)
-        sys.stderr.write(msg + "\n")
         rc = 128 + STOP.signum if STOP.signum else 74
     elif BREAKER.tripped_out:
         remaining = len(genomes) - prog.done
@@ -1751,15 +1791,12 @@ def run_sync(genomes, args, base, fail_path):
                % (BREAKER.consecutive, prog.done - prog.failed, len(genomes), prog.failed,
                   fail_path, remaining))
         LOG.error(msg)
-        sys.stderr.write(msg + "\n")
         rc = 75                              # EX_TEMPFAIL: try again later
     LOG.info("Sync complete: %d genomes, %d unchanged (%d fresh, no request), %d failed, "
              "elapsed=%s", len(genomes), prog.skipped, prog.fresh, n_fail,
              format_duration(time.time() - prog.started))
-    sys.stderr.write("Finished %s: %d unchanged (%d fresh, no request), %d failed\n"
-                     % (base, prog.skipped, prog.fresh, n_fail))
     if n_fail:
-        sys.stderr.write("  -> failures listed in %s\n" % fail_path)
+        LOG.info("failures listed in %s", fail_path)
         if rc == 0:
             rc = 1
 
@@ -1773,10 +1810,8 @@ def run_verify(genomes, args, base, bad_path):
     Returns 1 if any genome failed verification, else 0.
     """
     vjobs = args.verify_jobs
-    sys.stderr.write("Verifying %s: %d genomes, -j%d%s\n"
-                     % (base, len(genomes), vjobs,
-                        " (delete on fail)" if args.delete else ""))
-    sys.stderr.flush()
+    LOG.info("Verifying %s: %d genomes, -j%d%s", base, len(genomes), vjobs,
+             " (delete on fail)" if args.delete else "")
     prog = Progress("verify " + base, len(genomes), args.silent)
     bad_lock = threading.Lock()
     with open(bad_path, "w") as bad_log:
@@ -1787,10 +1822,10 @@ def run_verify(genomes, args, base, bad_path):
             url = genome.url
             ok, reason = verify_genome(url, args.root, args.delete)
             if ok:
-                LOG.debug("verified %s", url)
+                LOG.debug("verified %s", url, extra=FILE_ONLY)
             else:
-                LOG.warning("bad %s %s%s", url, reason,
-                            " (deleted)" if args.delete else "")
+                LOG.debug("bad %s %s%s", url, reason,
+                          " (deleted)" if args.delete else "", extra=FILE_ONLY)
             if not ok:
                 with bad_lock:
                     bad_log.write("%s\t%s\t%s\t%s\n" % (
@@ -1814,16 +1849,14 @@ def run_verify(genomes, args, base, bad_path):
                "--verify-only on the SAME summary." % (STOP.reason, prog.done, len(genomes),
                                                         bad_path))
         LOG.warning(msg)
-        sys.stderr.write(msg + "\n")
         return 128 + STOP.signum if STOP.signum else 74
     if n_bad:
-        sys.stderr.write("Failed verification: %d / %d  ->  %s\n"
-                         % (n_bad, len(genomes), bad_path))
+        LOG.error("Failed verification: %d / %d  ->  %s", n_bad, len(genomes), bad_path)
         if args.delete:
-            sys.stderr.write("  (bad directories deleted; re-run sync on %s)\n" % bad_path)
+            LOG.info("bad directories deleted; re-run sync on %s", bad_path)
         return 1
 
-    sys.stderr.write("All %d genomes verified clean.\n" % len(genomes))
+    LOG.info("All %d genomes verified clean.", len(genomes))
     return 0
 
 
@@ -1846,9 +1879,8 @@ def lock_root(root, name=".ncbi_sync.lock", what="sync"):
         handle.seek(0)
         holder = handle.read().strip()
         handle.close()
-        sys.stderr.write("error: another %s holds %s -- %s. If that run is really dead, "
-                         "remove %s/%s\n"
-                         % (what, root, holder or "holder unknown", root, name))
+        LOG.error("error: another %s holds %s -- %s. If that run is really dead, "
+                  "remove %s/%s", what, root, holder or "holder unknown", root, name)
         return None
     handle.seek(0)
     handle.truncate()
@@ -1937,11 +1969,11 @@ def validate_args(args):
     if args.delete and not (args.verify or args.verify_only):
         return "--delete only acts during verification; add --verify or --verify-only"
     if args.rate <= 0 and args.jobs > 6:
-        sys.stderr.write("warning: -j%d with --rate 0: nothing bounds the request rate. A warm "
-                         "re-sync at -j9 lost 36 of the first 1000 genomes to 503s.\n" % args.jobs)
+        LOG.warning("warning: -j%d with --rate 0: nothing bounds the request rate. A warm "
+                    "re-sync at -j9 lost 36 of the first 1000 genomes to 503s.", args.jobs)
     if args.jobs > 9:
-        sys.stderr.write("warning: -j%d: cold downloads at -j10 throttled even before rate "
-                         "limiting existed; above 9 buys nothing measured.\n" % args.jobs)
+        LOG.warning("warning: -j%d: cold downloads at -j10 throttled even before rate "
+                    "limiting existed; above 9 buys nothing measured.", args.jobs)
     return None
 
 
@@ -1963,7 +1995,7 @@ def main(args=None):
         args = build_parser().parse_args()
     error = validate_args(args)
     if error:
-        sys.stderr.write("error: %s\n" % error)
+        LOG.error("error: %s", error)
         return 2
     LIMITER.configure(args.rate)
     base, fail_path, bad_path, _log_path = output_paths(args)
@@ -1971,8 +2003,8 @@ def main(args=None):
         if os.path.realpath(path) == os.path.realpath(args.summary):
             # it is read fully before being truncated, so the run would work -- and a crash
             # would then have destroyed the only list of what needed retrying
-            sys.stderr.write("error: %s %s is the input file; it would be overwritten\n"
-                             % (flag, path))
+            LOG.error("error: %s %s is the input file; it would be overwritten",
+                      flag, path)
             return 2
 
     # Before ANY file is created -- the log used to be opened under the inherited umask,
@@ -1982,7 +2014,7 @@ def main(args=None):
     try:
         lock = lock_root(args.root)              # held until the process exits
     except OSError as exc:
-        sys.stderr.write("error: cannot use --root %s: %s\n" % (args.root, exc))
+        LOG.error("error: cannot use --root %s: %s", args.root, exc)
         return 2
     if lock is None:
         return 75                                # EX_TEMPFAIL: try again when it is done
@@ -2000,18 +2032,19 @@ def _run(args, started, base, fail_path, bad_path):
     try:
         genomes, skipped = read_assembly_summary(args.summary)
     except (OSError, BadInput) as exc:
-        sys.stderr.write("error: %s\n" % exc)
+        LOG.error("error: %s", exc)
         return 2
     if not genomes and not skipped:
         # a header and no rows: the normal end of a retry loop (an empty .fail), not an
         # error
-        sys.stderr.write("nothing to do: %s lists no genomes\n" % args.summary)
+        LOG.info("nothing to do: %s lists no genomes", args.summary)
         return 0
     if not genomes:
-        sys.stderr.write("error: no genomes with a usable ftp_path in %s (%d rows, all "
-                         "na)\n" % (args.summary, len(skipped)))
+        LOG.error("error: no genomes with a usable ftp_path in %s (%d rows, all na)",
+                  args.summary, len(skipped))
         return 2
 
+    quiet_console_detail()
     LOG.info(shlex.join(sys.argv))
     stale = [g for g in genomes if g.version_status and g.version_status != "latest"]
     LOG.info("summary=%s genomes=%d no_ftp_path=%d not_latest=%d root=%s jobs=%d "
@@ -2055,7 +2088,6 @@ def _run(args, started, base, fail_path, bad_path):
             msg = ("Skipping --verify: the sync did not run to completion (exit %d)"
                    % rtn_code)
             LOG.warning(msg)
-            sys.stderr.write(msg + "\n")
         elif args.verify or args.verify_only:
             # a sync exit code (1, 75, 130...) is never downgraded by a bad verify
             rtn_code = rtn_code or run_verify(genomes, args, base, bad_path)
@@ -2063,7 +2095,6 @@ def _run(args, started, base, fail_path, bad_path):
         msg = ("FATAL: %s -- stopping. Nothing is half-installed; fix the filesystem and "
                "re-run the SAME summary." % exc)
         LOG.error(msg)
-        sys.stderr.write(msg + "\n")
         rtn_code = 74                            # EX_IOERR
 
     throttle = sum(STATS["retry_status"].get(c, 0) for c in (429, 503))
@@ -2074,8 +2105,6 @@ def _run(args, started, base, fail_path, bad_path):
                        STATS["conn_drops"], throttle, (" (%s)" % detail) if detail else "",
                        STATS["breaker_trips"], STATS["paused_s"]))
     runtime = "Total runtime: %s" % format_duration(time.time() - started)
-    sys.stderr.write(http_summary + "\n")
-    sys.stderr.write(runtime + "\n")
     LOG.info(http_summary)
     LOG.info("%s (exit %d)", runtime, rtn_code)
 
