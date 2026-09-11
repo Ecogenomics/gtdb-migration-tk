@@ -1,6 +1,7 @@
 0.0.6
 - Modified bin/gtdb_migration_tk so it simply calls __main__.py instead of re-implementing the CLI
 - Added version numbers for all dependencies
+- Implemented the ncbi_sync command
 0.0.5
 - Improved parse_ncbi_taxonomy subcommand so that hybrid names (e.g. Saccharomyces cerevisiae x Saccharomyces eubayanus) are retained in full
 0.0.4
