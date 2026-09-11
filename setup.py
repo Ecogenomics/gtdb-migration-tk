@@ -22,6 +22,7 @@ setup(
     packages=find_packages(include=['gtdb_migration_tk', 'gtdb_migration_tk.*']),
     scripts=['bin/gtdb_migration_tk'],
     package_data={'gtdb_migration_tk': ['VERSION']},
+    extras_require={'test': ['pytest>=7.0']},
     url='https://github.com/Ecogenomics/gtdb-migration-tk',
     description='Toolkit for updating the GTDB to the next release and test data.',
     install_requires=[
