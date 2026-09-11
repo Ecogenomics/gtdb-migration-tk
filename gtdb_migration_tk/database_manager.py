@@ -51,8 +51,8 @@ from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTP
 
 from atpbar import register_reporter, find_reporter, flush
 
-from gtdblib.util.shell.filemgmt import sha256_rb
-from gtdblib.util.shell.gtdbshutil import make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.checksum import sha256_rb
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 
 
 class DatabaseManager(object):

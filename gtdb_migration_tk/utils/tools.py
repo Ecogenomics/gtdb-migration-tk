@@ -47,9 +47,9 @@ import multiprocessing as mp
 
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
-from gtdblib.util.bio.seq_io import read_seq
-from gtdblib.util.shell.filemgmt import select_delimiter, matching_brackets
-from gtdblib.util.shell.gtdbshutil import make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.seq_io import read_seq
+from gtdb_migration_tk.biolib_lite.filemgmt import select_delimiter, matching_brackets
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 
 csv.field_size_limit(sys.maxsize)
 

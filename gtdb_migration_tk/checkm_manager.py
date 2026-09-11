@@ -26,7 +26,7 @@ import logging
 from collections import defaultdict
 
 from tqdm import tqdm
-from gtdblib.util.bio.seq_io import read_fasta
+from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
 
