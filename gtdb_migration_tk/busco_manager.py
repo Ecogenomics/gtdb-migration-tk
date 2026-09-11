@@ -17,11 +17,11 @@
 
 import os
 import sys
-import logging
 import json
+import logging
+import multiprocessing as mp
 import shutil
 import tempfile
-import multiprocessing as mp
 
 from gtdb_migration_tk.biolib_lite.external.execute import run_bash, check_on_path
 

@@ -27,9 +27,9 @@ import logging
 import re
 from collections import defaultdict
 
-from gtdb_migration_tk.biolib_lite.common import is_float, check_file_exists, canonical_gid
-
 import dendropy
+
+from gtdb_migration_tk.biolib_lite.common import is_float, check_file_exists, canonical_gid
 
 """
 To do:

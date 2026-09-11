@@ -15,12 +15,6 @@
 #                                                                             #
 ###############################################################################
 
-import os
-import sys
-import argparse
-import tempfile
-import logging
-from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 
 
 class GTDBImporter(object):
@@ -29,9 +23,9 @@ class GTDBImporter(object):
 
         self.temp_cur = temp_cur
 
-    def importMetadata(self, table=None, field=None, typemeta=None, data_list=None):
+    def import_metadata_to_db(self, table=None, field=None, typemeta=None, data_list=None):
         '''
-        Function importMetadata
+        Function import_metadata_to_db
         import one field of Metadata for a list of Genomes
         :param table: Table where the column is located
         :param field: Name of the Column

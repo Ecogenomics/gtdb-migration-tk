@@ -24,15 +24,11 @@ __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 __status__ = 'Development'
 
-import sys
-import argparse
-import re
-import datetime
 import os
 import logging
+import re
 import time
-import math
-from collections import defaultdict, namedtuple
+from collections import defaultdict
 
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 

@@ -17,16 +17,12 @@
 
 
 import os
-import shutil
-import hashlib
 import glob
 import gzip
-import sys
-import argparse
-import tempfile
-from datetime import datetime
+import hashlib
 import multiprocessing as mp
-import logging
+import shutil
+import tempfile
 from pathlib import Path
 
 from tqdm import tqdm

@@ -19,14 +19,14 @@ import os
 import sys
 import logging
 import subprocess
-from typing import Dict, List, Optional
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 import gtdb_migration_tk.biolib_lite.seq_io as seq_io
-from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
-from gtdb_migration_tk.biolib_lite.external.blast import Blast
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.external.blast import Blast
+from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 
 
 @dataclass

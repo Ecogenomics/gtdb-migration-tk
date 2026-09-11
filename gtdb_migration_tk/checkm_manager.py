@@ -17,18 +17,14 @@
 
 import os
 import sys
-import argparse
-import tempfile
-import ntpath
-import shutil
 import logging
-
+import ntpath
 from collections import defaultdict
 
 from tqdm import tqdm
-from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
+from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 
 
 class CheckMManager(object):

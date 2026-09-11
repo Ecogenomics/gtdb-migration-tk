@@ -1,6 +1,7 @@
 0.0.7
 - Removed dependency on biolib and gtdb-lib
 - Ensured consistent capitalization for GTDB, RefSeq, and GenBank
+- Removed all unused import statements
 0.0.6
 - Modified bin/gtdb_migration_tk so it simply calls __main__.py instead of re-implementing the CLI
 - Added version numbers for all dependencies

@@ -19,30 +19,29 @@ import sys
 import logging
 
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists
-
-from gtdb_migration_tk.lpsn import LPSN
-from gtdb_migration_tk.propagate_taxonomy import Propagate
-from gtdb_migration_tk.strains import Strains
-from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
-from gtdb_migration_tk.utils.tools import Tools
-from gtdb_migration_tk.ncbi_sync import main as ncbi_sync_main
+from gtdb_migration_tk.busco_manager import BuscoManager
+from gtdb_migration_tk.checkm_database_manager import CheckMDatabaseManager
+from gtdb_migration_tk.checkm_manager import CheckMManager
+from gtdb_migration_tk.curation_lists import CurationLists
+from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
 from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
-from gtdb_migration_tk.prodigal_manager import ProdigalManager
+from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_manager import MarkerManager
+from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
 from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
-from gtdb_migration_tk.rna_manager_silva import RnaManagerSILVA
-from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
-from gtdb_migration_tk.trnascan_manager import tRNAScan
-from gtdb_migration_tk.checkm_manager import CheckMManager
-from gtdb_migration_tk.busco_manager import BuscoManager
-from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
-from gtdb_migration_tk.database_manager import DatabaseManager
-from gtdb_migration_tk.curation_lists import CurationLists
-from gtdb_migration_tk.checkm_database_manager import CheckMDatabaseManager
-from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
 from gtdb_migration_tk.ncbi_genome_category import GenomeType
+from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
+from gtdb_migration_tk.ncbi_sync import main as ncbi_sync_main
+from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
+from gtdb_migration_tk.prodigal_manager import ProdigalManager
+from gtdb_migration_tk.propagate_taxonomy import Propagate
+from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
+from gtdb_migration_tk.rna_manager_silva import RnaManagerSILVA
+from gtdb_migration_tk.strains import Strains
+from gtdb_migration_tk.trnascan_manager import tRNAScan
+from gtdb_migration_tk.utils.tools import Tools
 
 
 class OptionsParser():

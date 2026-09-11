@@ -16,12 +16,12 @@
 ###############################################################################
 
 
-import glob
-import logging
 import os
 import sys
-
+import glob
+import logging
 from datetime import datetime
+
 from tqdm import tqdm
 
 from gtdb_migration_tk.ftp_manager_tools import FTPTools

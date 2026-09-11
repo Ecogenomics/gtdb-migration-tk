@@ -16,9 +16,9 @@
 ###############################################################################
 
 import os
+import sys
 import re
 import subprocess
-import sys
 from datetime import datetime
 
 from ..HMM.HMMResults import HMMResults

@@ -17,17 +17,16 @@
 
 import os
 import sys
-import logging
 import glob
+import logging
 from collections import defaultdict
 
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
-
-from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
+from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 
 class MetadataDatabaseManager(object):
 
@@ -188,7 +187,7 @@ class MetadataDatabaseManager(object):
             # print(f'Example record: {data_to_commit[0]}')
             # print(f'Data type: {data_type}')
 
-            gtdbimporter.importMetadata(table, field, data_type, data_to_commit)
+            gtdbimporter.import_metadata_to_db(table, field, data_type, data_to_commit)
             self.temp_con.commit()
             self.logger.info(f'Finished updating {field} for {records_to_update} genomes.')
 
@@ -240,7 +239,7 @@ class MetadataDatabaseManager(object):
         print(f'Identified {num_sp_reps:,} species clusters.')
         print('Identified {:,} genomes marked as representatives.'.format(sum([1 for rid in is_rep if is_rep[rid]])))
         gtdbimporter = GTDBImporter(self.temp_cur)
-        gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_genome_representative', 'TEXT', genome_rep_data)
+        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_genome_representative', 'TEXT', genome_rep_data)
         self.temp_con.commit()
 
         # mark representative genomes
@@ -248,7 +247,7 @@ class MetadataDatabaseManager(object):
         for rep_accn, rep_status in is_rep.items():
             is_rep_data.append((rep_accn, str(rep_status)))
 
-        gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', is_rep_data)
+        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', is_rep_data)
         self.temp_con.commit()
 
     def add_surveillance_genomes(self,genome_list):
@@ -396,7 +395,7 @@ class NCBITaxDatabaseManager(object):
             self.set_field_to_null('metadata_ncbi', 'ncbi_organism_name')
         self.logger.info('Updating {} for {} genomes.'.format(
             'ncbi_organism_name', records_to_update))
-        gtdbimporter.importMetadata('metadata_ncbi', 'ncbi_organism_name', 'TEXT', data_to_commit)
+        gtdbimporter.import_metadata_to_db('metadata_ncbi', 'ncbi_organism_name', 'TEXT', data_to_commit)
         self.temp_con.commit()
 
         taxonomy = Taxonomy().read(filtered_file)
@@ -418,7 +417,7 @@ class NCBITaxDatabaseManager(object):
             self.set_field_to_null('metadata_taxonomy', 'ncbi_taxonomy')
         self.logger.info('Updating {} for {} genomes.'.format(
             'ncbi_taxonomy', records_to_update))
-        gtdbimporter.importMetadata('metadata_taxonomy', 'ncbi_taxonomy', 'TEXT', data_filtered_to_commit)
+        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy', 'TEXT', data_filtered_to_commit)
         self.temp_con.commit()
 
         # read taxonomy file
@@ -443,7 +442,7 @@ class NCBITaxDatabaseManager(object):
             self.set_field_to_null('metadata_taxonomy', 'ncbi_taxonomy_unfiltered')
         self.logger.info('Updating {} for {} genomes.'.format(
             'ncbi_taxonomy_unfiltered', records_to_update))
-        gtdbimporter.importMetadata('metadata_taxonomy', 'ncbi_taxonomy_unfiltered', 'TEXT', data_unfiltered_to_commit)
+        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy_unfiltered', 'TEXT', data_unfiltered_to_commit)
         self.temp_con.commit()
 
 

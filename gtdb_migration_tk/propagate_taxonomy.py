@@ -1,10 +1,6 @@
-import os
 import sys
 import csv
-import argparse
-from collections import defaultdict
 import logging
-
 import re
 
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, canonical_gid
@@ -222,7 +218,7 @@ class Propagate(object):
                     data_to_commit.append((gid, Taxonomy.rank_prefixes[i]))
 
             gtdbimporter = GTDBImporter(self.temp_cur)
-            gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
+            gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
             self.temp_con.commit()
 
     def add_propagated_taxonomy(self, taxonomy_file, metadata_file, genome_list_file, truncate_taxonomy,rep_id_file):
@@ -254,7 +250,7 @@ class Propagate(object):
                 data_to_commit.append((genome_id, rank_str))
 
             gtdbimporter = GTDBImporter(self.temp_cur)
-            gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
+            gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
             self.temp_con.commit()
 
         rep_to_commit = []
@@ -263,7 +259,7 @@ class Propagate(object):
                 genome_id,isrep = line.strip().split('\t')
                 rep_to_commit.append((genome_id,isrep))
         gtdbimporter = GTDBImporter(self.temp_cur)
-        gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', rep_to_commit)
+        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', rep_to_commit)
         self.temp_con.commit()
 
 
@@ -428,5 +424,5 @@ class Propagate(object):
                 data_to_commit.append((genome_id, rank_str))
 
             gtdbimporter = GTDBImporter(self.temp_cur)
-            gtdbimporter.importMetadata('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
+            gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
             self.temp_con.commit()

@@ -23,9 +23,8 @@ __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 
 import os
-import types
-import tempfile
 import argparse
+import tempfile
 
 
 class ChangeTempAction(argparse.Action):

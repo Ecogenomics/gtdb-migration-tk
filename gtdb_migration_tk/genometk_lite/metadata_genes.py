@@ -14,13 +14,14 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
+
 import gzip
 import logging
 
-import gtdb_migration_tk.biolib_lite.seq_io as seq_io
-
 from numpy import (zeros as np_zeros,
                    sum as np_sum)
+
+import gtdb_migration_tk.biolib_lite.seq_io as seq_io
 
 
 class GenericFeatureParser():

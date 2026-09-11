@@ -29,16 +29,11 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
-import logging
 import os
 import sys
-import argparse
-import tempfile
-from collections import defaultdict
-import re
-
-from tqdm import tqdm
+import logging
 import multiprocessing as mp
+import re
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
 

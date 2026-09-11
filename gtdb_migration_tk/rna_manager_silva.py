@@ -17,22 +17,22 @@
 
 import os
 import sys
-import logging
-import gzip
-import shutil
-import ntpath
 import datetime
-import tempfile
-import subprocess
+import gzip
+import logging
+import ntpath
 import re
+import shutil
+import subprocess
+import tempfile
 from typing import Tuple
 
-from gtdb_migration_tk.genometk_lite.rna import RNA
+from gtdb_migration_tk.biolib_lite.common import remove_files_in_directory
+from gtdb_migration_tk.biolib_lite.external.blast import get_blastn_version
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.parallel import Parallel
-from gtdb_migration_tk.biolib_lite.common import remove_files_in_directory
 from gtdb_migration_tk.biolib_lite.seq_io import read_seq
-from gtdb_migration_tk.biolib_lite.external.blast import get_blastn_version
+from gtdb_migration_tk.genometk_lite.rna import RNA
 
 
 class RnaManagerSILVA(object):

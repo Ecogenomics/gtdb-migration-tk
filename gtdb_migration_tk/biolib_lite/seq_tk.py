@@ -23,7 +23,6 @@ __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 
 
-import string
 from collections import Counter
 
 

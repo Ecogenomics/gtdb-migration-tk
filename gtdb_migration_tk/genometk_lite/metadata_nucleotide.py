@@ -17,9 +17,9 @@
 
 import logging
 
+import gtdb_migration_tk.biolib_lite.genome_tk as genome_tk
 import gtdb_migration_tk.biolib_lite.seq_io as seq_io
 import gtdb_migration_tk.biolib_lite.seq_tk as seq_tk
-import gtdb_migration_tk.biolib_lite.genome_tk as genome_tk
 
 
 class MetadataNucleotide():

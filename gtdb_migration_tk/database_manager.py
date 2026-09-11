@@ -30,29 +30,24 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@qfab.org'
 __status__ = 'Development'
 
-import gzip
 import os
-import hashlib
-import re
-import glob
 import datetime
-import ntpath
-import multiprocessing as mp
+import glob
+import gzip
+import hashlib
 import logging
+import multiprocessing as mp
+import ntpath
+import re
+import threading
 
 from atpbar import atpbar
 from atpbar import flush
-import threading
-
-
-from gtdb_migration_tk.biolib_lite.common import remove_extension
 from dateutil.parser import parse
-from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
-
-from atpbar import register_reporter, find_reporter, flush
 
 from gtdb_migration_tk.biolib_lite.checksum import sha256_rb
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
+from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 
 
 class DatabaseManager(object):

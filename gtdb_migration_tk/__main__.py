@@ -25,17 +25,16 @@ __email__ = "uqpchaum@uq.edu.au"
 __status__ = "Development"
 
 import os
-import argparse
 import sys
+import argparse
 from contextlib import contextmanager
 from datetime import datetime
 
-# Specific import
+from gtdb_migration_tk import __version__
+from gtdb_migration_tk.biolib_lite.custom_help_formatter import CustomHelpFormatter
+from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.main import OptionsParser
 from gtdb_migration_tk.ncbi_sync import add_sync_arguments
-from gtdb_migration_tk.biolib_lite.logger import logger_setup
-from gtdb_migration_tk.biolib_lite.custom_help_formatter import CustomHelpFormatter
-from gtdb_migration_tk import __version__
 
 
 def print_help():

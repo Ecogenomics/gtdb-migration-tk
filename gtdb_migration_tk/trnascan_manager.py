@@ -1,4 +1,3 @@
-import gzip
 ###############################################################################
 #                                                                             #
 #    This program is free software: you can redistribute it and/or modify     #
@@ -18,19 +17,18 @@ import gzip
 
 
 import os
-import shutil
 import sys
-import ntpath
-import argparse
-import subprocess
-import multiprocessing as mp
+import gzip
 import logging
+import multiprocessing as mp
+import shutil
+import subprocess
 import tempfile
 
-from gtdb_migration_tk.biolib_lite.common import remove_extension
-from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
-from gtdb_migration_tk.biolib_lite.checksum import sha256
 from tqdm import tqdm
+
+from gtdb_migration_tk.biolib_lite.checksum import sha256
+from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 
 
 class tRNAScan(object):

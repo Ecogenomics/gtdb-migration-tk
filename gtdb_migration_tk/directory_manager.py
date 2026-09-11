@@ -16,9 +16,10 @@
 ###############################################################################
 
 import os
-import shutil
 import logging
+import shutil
 from pathlib import Path
+
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, canonical_gid

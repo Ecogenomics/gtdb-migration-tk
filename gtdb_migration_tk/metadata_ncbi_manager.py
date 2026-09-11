@@ -31,12 +31,11 @@ __status__ = 'Development'
 
 import os
 import sys
-import random
-import string
-import re
-from collections import defaultdict
 import multiprocessing as mp
-
+import random
+import re
+import string
+from collections import defaultdict
 
 from numpy import (zeros as np_zeros,sum as np_sum)
 from tqdm import tqdm
