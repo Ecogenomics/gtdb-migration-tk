@@ -183,7 +183,7 @@ class OptionsParser():
                            options.ga, options.metadata, options.output_file)
 
     def generate_rna_silva(self, options):
-        p = RnaManagerSILVA(options.version,
+        p = RnaManagerSILVA(options.rna_version,
                             options.rnapath, 
                             options.rna_gene, 
                             options.cpus)
@@ -198,7 +198,7 @@ class OptionsParser():
 
     def generate_rna_ltp(self, options):
         p = RnaManagerLTP(options.ltp_version,
-                          options.silva_version, 
+                          options.ssu_version, 
                           options.rnapath, 
                           options.cpus, )
         p.generate_rna_ltp(options.gtdb_genome_path_file,
@@ -341,9 +341,9 @@ class OptionsParser():
     def check_unique_strains(self, options):
         check_file_exists(options.node)
         check_file_exists(options.name)
-        check_file_exists(options.metadata_file)
+        check_file_exists(options.metadata)
         p = Tools()
-        p.parse_ncbi_names_and_nodes(options.name, options.node, options.metadata_file, options.output_file)
+        p.parse_ncbi_names_and_nodes(options.name, options.node, options.metadata, options.output_file)
 
     def compare_metadata_genome_dir(self, options):
         check_file_exists(options.metadata)
@@ -364,7 +364,7 @@ class OptionsParser():
 
     def check_db_population(self, options):
         p = Tools()
-        p.check_db_population(options.metadata, options.id_last_genome, options.log_file)
+        p.check_db_population(options.metadata, options.id_last_genome, options.log)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""

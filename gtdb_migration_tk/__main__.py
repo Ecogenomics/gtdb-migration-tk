@@ -290,7 +290,7 @@ def __gtdb_genome_path_file(group, required):
     group.add_argument('-g', '--gtdb_genome_path_file', help='genome paths to GTDB genomes.', required=required)
 
 
-def __gtdb_genome_path_file(group, required):
+def __gtdb_domain_file(group, required):
     group.add_argument('-d', '--gtdb_domain_file',
                         help='file indicating predicted domain for each GTDB genomes', required=required)
 
@@ -633,6 +633,16 @@ def __rerun(group):
     pass
 
 
+def __remove(group, db_name):
+    group.add_argument('--remove',
+                       help=f'remove all previous results in {db_name} directory (use with caution!)',
+                       action='store_true')
+
+
+def __keep_subranks(group):
+    group.add_argument('--keep_subranks', help='keep subranks in canonical taxonomy', action='store_true')
+
+
 def __checkm_summary_refseq(grp, required):
     grp.add_argument('--checkm_summary_refseq', required=required, help='CheckM summary file for Refseq genomes.')
 
@@ -736,7 +746,9 @@ def get_main_parser():
             __rna_file_path(grp)
             __silent(grp)
             __rerun(grp)
+            __remove(grp, 'SILVA')
             __cpus(grp)
+            __all_genomes(grp)
 
     with subparser(sub_parsers, 'rna_ltp',
                    'Identify, extracts and taxonomically classifies 16S '
@@ -752,6 +764,7 @@ def get_main_parser():
             __silent(grp)
             __cpus(grp)
             __all_genomes(grp)
+            __remove(grp, 'LTP')
 
     with subparser(sub_parsers, 'trnascan',
                    'Identifies tRNAs in genomes') as parser:
@@ -945,6 +958,7 @@ def get_main_parser():
             __rfq_bac_assembly_file(grp, required=True)
             __output_prefix(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __keep_subranks(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'list_genomes', 'Produce file indicating the directory of each genome.') as parser:

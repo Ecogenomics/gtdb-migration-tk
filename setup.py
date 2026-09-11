@@ -2,7 +2,7 @@
 
 import os
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 
 def version():
@@ -19,7 +19,7 @@ setup(
     author_email='p.chaumeil@uq.edu.au',
     maintainer='Pierre-Alain Chaumeil, Aaron Mussig, and Donovan Parks',
     maintainer_email='p.chaumeil@uq.edu.au',
-    packages=['gtdb_migration_tk'],
+    packages=find_packages(include=['gtdb_migration_tk', 'gtdb_migration_tk.*']),
     scripts=['bin/gtdb_migration_tk'],
     package_data={'gtdb_migration_tk': ['VERSION']},
     url='https://github.com/Ecogenomics/gtdb-migration-tk',
