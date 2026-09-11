@@ -1304,7 +1304,9 @@ def main():
             args.log = args.report_dir
 
         try:
-            logger_setup(os.path.dirname(args.log),
+            # dirname('sync.log') is '' and logger_setup() treats a falsy directory as
+            # "no log file", so a bare filename silently produced no log at all
+            logger_setup(os.path.dirname(args.log) or '.',
                          os.path.basename(args.log),
                          'GTDB Migration Tk',
                          software_name,
