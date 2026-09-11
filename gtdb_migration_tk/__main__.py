@@ -32,6 +32,7 @@ from datetime import datetime
 
 # Specific import
 from gtdb_migration_tk.main import OptionsParser
+from gtdb_migration_tk.ncbi_sync import add_sync_arguments
 from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.biolib_lite.custom_help_formatter import CustomHelpFormatter
 from gtdb_migration_tk import __version__
@@ -45,18 +46,19 @@ def print_help():
           __version__ + ' :::...''')
     print('''\
 
+    NCBI data sync:
+      ncbi_sync -> Sync NCBI data to local directory
+
     NCBI folder to GTDB folder:
-      update_refseq  -> Update Refseq genomes.
-      update_genbank -> Update Genbank genomes.
+      update_refseq  -> Update Refseq genomes
+      update_genbank -> Update Genbank genomes
 
     Call genes:
-      call_genes_wf -> Full call genes workflow
-                       (prodigal -> hmmsearch -> top_hit )
+      call_genes_wf  -> Full call genes workflow (prodigal -> hmmsearch -> top_hit)
       prodigal       -> Call genes using Prodigal
-      prodigal_check -> Check if table used by Prodigal is the same as the
-                        one indicated in NCBI
+      prodigal_check -> Check if table used by Prodigal is the same as the one indicated in NCBI
       hmmsearch      -> Search Tigrfam/Pfam markers genes and generate tophit files
-      top_hit        -> generate tophit files
+      top_hit        -> Generate tophit files
       metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
       rna_silva      -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA
       rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB
@@ -65,9 +67,8 @@ def print_help():
       checkm         -> Estimates the quality of the new genomes
       busco          -> Estimate quality of new fungal genomes
       
-
-     Access to Database:
-     update_db          -> Update the gtdb database
+    Access to Database:
+     update_db          -> Update the GTDB database
      update_checkm_db   -> Import CheckM estimates
      update_metadata_db -> Update metadata in database
      update_reps_db     -> Update species cluter representatives in database
@@ -78,7 +79,7 @@ def print_help():
       parse_ncbi_dir    -> Create tables with metadata for all NCBI genomes from directories
 
     NCBI Taxonomy:
-      parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file.
+      parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file
 
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release
@@ -88,15 +89,13 @@ def print_help():
       lpsn         -> Process steps for LPSN
       bacdive      -> Process steps for BacDive [In Dev]
       strains      -> Set of tools to combined information from LPSN and DSMZ
-      ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find
-                      all strain ids
+      ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find all strain ids
 
     Curation files
-      curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes,
-                        and genomes with modified NCBI names
+      curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names
 
     Miscellaneous commands:
-      list_genomes -> Produce file indicating the directory of each genome.
+      list_genomes    -> Produce file indicating the directory of each genome
       generate_ltp_db -> Generate LTP database
 
     Test suite for data validation:
@@ -213,8 +212,8 @@ def __filtered_taxonomy(group, required):
     group.add_argument('--filtered', help='Filtered taxonomy file.', required=required)
 
 
-def __first_domain_report(group):
-    group.add_argument('first_domain_report',
+def __first_domain_report(group, required):
+    group.add_argument('--first_domain_report', required=required,
                        help='File generated from gtdb power domain report from early release.')
 
 
@@ -290,7 +289,7 @@ def __gtdb_genome_path_file(group, required):
     group.add_argument('-g', '--gtdb_genome_path_file', help='genome paths to GTDB genomes.', required=required)
 
 
-def __gtdb_genome_path_file(group, required):
+def __gtdb_domain_file(group, required):
     group.add_argument('-d', '--gtdb_domain_file',
                         help='file indicating predicted domain for each GTDB genomes', required=required)
 
@@ -536,8 +535,8 @@ def __rna_version(group, required):
     group.add_argument('-v', '--rna_version', help='RNA Silva version.', required=required)
 
 
-def __second_domain_report(group):
-    group.add_argument('second_domain_report',
+def __second_domain_report(group, required):
+    group.add_argument('--second_domain_report', required=required,
                        help='File generated from gtdb power domain report from latest release.')
 
 
@@ -566,8 +565,8 @@ def __ssu_version(group, required):
     group.add_argument('-v', '--ssu_version', help='SSu version to use.', required=required)
 
 
-def __surveillance_list(group):
-    group.add_argument('genome_list', help='surveillance genomes.')
+def __surveillance_list(group, required):
+    group.add_argument('--genome_list', required=required, help='surveillance genomes.')
 
 
 def __taxonomy_directory(group, required):
@@ -633,6 +632,16 @@ def __rerun(group):
     pass
 
 
+def __remove(group, db_name):
+    group.add_argument('--remove',
+                       help=f'remove all previous results in {db_name} directory (use with caution!)',
+                       action='store_true')
+
+
+def __keep_subranks(group):
+    group.add_argument('--keep_subranks', help='keep subranks in canonical taxonomy', action='store_true')
+
+
 def __checkm_summary_refseq(grp, required):
     grp.add_argument('--checkm_summary_refseq', required=required, help='CheckM summary file for Refseq genomes.')
 
@@ -655,14 +664,6 @@ def __id_last_genome(grp, required):
 def __final_cluster_file(grp, required):
     grp.add_argument('--final_cluster_file', required=required,
                      help="clusters for named species")
-
-
-def __gtdb_domain_file(grp, required):
-    grp.add_argument('--gtdb_domain_file', required=required, help='File indicating predicted domain for each GTDB genomes')
-
-
-def __keep_subranks(grp):
-    grp.add_argument('--keep_subranks', action='store_true',help='Keep subranks in canonical taxonomy.')
 
 
 def get_main_parser():
@@ -744,7 +745,9 @@ def get_main_parser():
             __rna_file_path(grp)
             __silent(grp)
             __rerun(grp)
+            __remove(grp, 'SILVA')
             __cpus(grp)
+            __all_genomes(grp)
 
     with subparser(sub_parsers, 'rna_ltp',
                    'Identify, extracts and taxonomically classifies 16S '
@@ -760,6 +763,7 @@ def get_main_parser():
             __silent(grp)
             __cpus(grp)
             __all_genomes(grp)
+            __remove(grp, 'LTP')
 
     with subparser(sub_parsers, 'trnascan',
                    'Identifies tRNAs in genomes') as parser:
@@ -953,6 +957,7 @@ def get_main_parser():
             __rfq_bac_assembly_file(grp, required=True)
             __output_prefix(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __keep_subranks(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'list_genomes', 'Produce file indicating the directory of each genome.') as parser:
@@ -961,6 +966,11 @@ def get_main_parser():
             __output_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
+
+    with subparser(sub_parsers, 'ncbi_sync', 'Sync NCBI data to local directory.') as parser:
+        # ncbi_sync owns its own interface; the toolkit's --log is registered into its
+        # "required named arguments" group, beside --ncbi_summary_file
+        add_sync_arguments(parser, lambda grp: __log_file(grp, required=True))
 
     with subparser(sub_parsers, 'update_refseq', 'Update Refseq genomes.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
@@ -1024,7 +1034,7 @@ def get_main_parser():
     with subparser(sub_parsers, 'add_surveillance_genomes', 'Add surveillance genome to a table in GTDB.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __database_setup(grp, required=True)
-            __surveillance_list(grp)
+            __surveillance_list(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 
@@ -1214,8 +1224,8 @@ def get_main_parser():
 
     with subparser(sub_parsers, 'compare_markers', 'Compare marker frequencies between 2 releases.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __first_domain_report(grp)
-            __second_domain_report(grp)
+            __first_domain_report(grp, required=True)
+            __second_domain_report(grp, required=True)
             __output_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __only_ncbi(grp)
@@ -1310,6 +1320,7 @@ def main():
                          silent)
 
         # do what we came here to do
+        rtn_code = 0
         try:
             parser = OptionsParser()
             if False:
@@ -1321,14 +1332,18 @@ def main():
 
                 pdb.run(parser.parse_options(args))
             else:
-                parser.parse_options(args)
+                rtn_code = parser.parse_options(args)
         except SystemExit:
             print("\n  Controlled exit resulting from an unrecoverable error or warning.")
         except:
             print("\nUnexpected error:", sys.exc_info()[0])
             raise
 
-    raise
+        # commands that report a meaningful exit code (ncbi_sync) must not have it
+        # swallowed; everything else returns 0 and exits normally
+        if rtn_code:
+            sys.exit(rtn_code)
+
 
 
 if __name__ == '__main__':

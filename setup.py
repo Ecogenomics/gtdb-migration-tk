@@ -2,7 +2,7 @@
 
 import os
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 
 def version():
@@ -13,16 +13,30 @@ def version():
 
 setup(
     name='gtdb_migration_tk',
-    python_requires='>=3.6',
+    python_requires='>=3.8',
     version=version(),
     author='Pierre-Alain Chaumeil',
     author_email='p.chaumeil@uq.edu.au',
     maintainer='Pierre-Alain Chaumeil, Aaron Mussig, and Donovan Parks',
     maintainer_email='p.chaumeil@uq.edu.au',
-    packages=['gtdb_migration_tk'],
+    packages=find_packages(include=['gtdb_migration_tk', 'gtdb_migration_tk.*']),
     scripts=['bin/gtdb_migration_tk'],
     package_data={'gtdb_migration_tk': ['VERSION']},
     url='https://github.com/Ecogenomics/gtdb-migration-tk',
     description='Toolkit for updating the GTDB to the next release and test data.',
-    install_requires=['requests', 'unidecode', 'biolib>=0.1.0', 'pandas', 'numpy','sqlalchemy','bs4'],
+    install_requires=[
+        'requests>=2.27.1',
+        'unidecode>=1.3.4',
+        'biolib>=0.1.8',
+        'gtdblib>=1.10.1',
+        'pandas>=1.4.1',
+        'numpy>=1.22.3',
+        'sqlalchemy>=1.4.45',
+        'beautifulsoup4>=4.11.1',
+        'dendropy>=4.5.2',
+        'tqdm>=4.63.0',
+        'atpbar>=1.1.4',
+        'python-dateutil>=2.8.2',
+        'psycopg2-binary>=2.9.3',
+    ],
 )

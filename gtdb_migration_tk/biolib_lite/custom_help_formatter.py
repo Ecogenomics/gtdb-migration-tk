@@ -63,7 +63,9 @@ class CustomHelpFormatter(argparse.HelpFormatter):
                             h = '\n'.join(lines)
                         else:
                             h += ' (default: %(default)s)'
-            return h
+        # help that already contains %(default)s is returned as-is: falling off the end
+        # here returned None, which argparse then tried to %-format
+        return h
 
     def _format_action_invocation(self, action):
         """Removes duplicate ALLCAPS with positional arguments."""
