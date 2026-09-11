@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 r"""
 ncbi_sync.py — manifest-driven NCBI genome mirror sync, with optional md5 verification.
 
@@ -355,11 +353,6 @@ USAGE
 
 import os
 import sys
-import re
-import shlex
-import shutil
-import signal
-import time
 import argparse
 import calendar
 import collections
@@ -369,10 +362,16 @@ import fcntl
 import hashlib
 import http.client
 import logging
+import re
+import shlex
+import shutil
+import signal
 import ssl
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+
 from tqdm import tqdm, __version__ as tqdm_version
 
 

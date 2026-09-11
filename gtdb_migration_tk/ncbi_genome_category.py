@@ -1,10 +1,8 @@
-import gzip
 import os
 import sys
-import re
-import argparse
-from collections import defaultdict
+import gzip
 import multiprocessing as mp
+import re
 
 
 

@@ -16,9 +16,10 @@
 ###############################################################################
 
 import os
-import shutil
 import logging
+import shutil
 from pathlib import Path
+
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, canonical_gid
@@ -41,7 +42,7 @@ class DirectoryManager(object):
         mid_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:20}{r_bar}')
         low_loop = tqdm(range(1),bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:20}{r_bar}')
 
-        for code in [('GCA', 'Genbank'), ('GCF', 'Refseq')]:
+        for code in [('GCA', 'GenBank'), ('GCF', 'RefSeq')]:
             code_dir = os.path.join(database_dir, code[0])
             if not os.path.exists(code_dir) or not os.path.isdir(code_dir):
                 print('we skip {}'.format(code[1]))

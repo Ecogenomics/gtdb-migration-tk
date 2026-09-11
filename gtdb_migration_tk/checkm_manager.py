@@ -17,18 +17,14 @@
 
 import os
 import sys
-import argparse
-import tempfile
-import ntpath
-import shutil
 import logging
-
+import ntpath
 from collections import defaultdict
 
 from tqdm import tqdm
-from gtdblib.util.bio.seq_io import read_fasta
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
+from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 
 
 class CheckMManager(object):
@@ -431,7 +427,7 @@ class CheckMManager(object):
             line_split = line.strip().split('\t')
             genome_paths[line_split[0]] = line_split[1]
 
-        # read genbank summary
+        # read GenBank summary
         list_genomes_to_consider = []
         for file in (checkm_summary_genbank, checkm_summary_refseq):
             if file is not None:

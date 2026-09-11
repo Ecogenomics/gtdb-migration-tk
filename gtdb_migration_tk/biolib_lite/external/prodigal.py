@@ -22,20 +22,20 @@ __license__ = 'GPL3'
 __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 
-import gzip
 import os
+import gzip
 import logging
-import tempfile
-import shutil
 import ntpath
+import shutil
+import tempfile
 from collections import defaultdict, namedtuple
 
-from biolib.common import check_file_exists, remove_extension, make_sure_path_exists
-from biolib.seq_io import read_fasta, write_fasta
-from biolib.parallel import Parallel
-from biolib.external.execute import check_on_path
-
 import numpy as np
+
+from gtdb_migration_tk.biolib_lite.common import check_file_exists, remove_extension, make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.external.execute import check_on_path
+from gtdb_migration_tk.biolib_lite.parallel import Parallel
+from gtdb_migration_tk.biolib_lite.seq_io import read_fasta, write_fasta
 
 
 class Prodigal(object):

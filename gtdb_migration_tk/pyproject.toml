@@ -17,6 +17,3 @@ tigrfamhmms.version = '15.0'
 tigrfamhmms.path = '/srv//db/tigrfam/15.0/TIGRFAMs_15.0_HMM/tigrfam.hmm'
 tigrfamhmms_lite.version = '15.0_lite'
 tigrfamhmms_lite.path = '/srv//db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm'
-
-
-

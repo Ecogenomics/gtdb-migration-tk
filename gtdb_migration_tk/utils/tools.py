@@ -24,17 +24,17 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
+import os
+import sys
+import csv
 import gzip
 import json
-import os
-import pickle
-import subprocess
-import sys
-import operator
 import logging
+import multiprocessing as mp
+import operator
+import pickle
 import re
-
-import csv
+import subprocess
 import tempfile
 import time
 import urllib
@@ -42,18 +42,15 @@ from collections import defaultdict, Counter
 from datetime import datetime
 
 from tqdm import tqdm
-import multiprocessing as mp
 
-
+from gtdb_migration_tk.biolib_lite.common import canonical_gid, make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.filemgmt import select_delimiter, matching_brackets
+from gtdb_migration_tk.biolib_lite.seq_io import read_seq
 from gtdb_migration_tk.strains import Strains
-from gtdb_migration_tk.biolib_lite.common import canonical_gid
-from gtdblib.util.bio.seq_io import read_seq
-from gtdblib.util.shell.filemgmt import select_delimiter, matching_brackets
-from gtdblib.util.shell.gtdbshutil import make_sure_path_exists
-
-csv.field_size_limit(sys.maxsize)
-
 from gtdb_migration_tk.utils.prettytable import PrettyTable
+
+# raised before any CSV is parsed; needs only csv and sys from the block above
+csv.field_size_limit(sys.maxsize)
 
 
 class Tools(object):

@@ -18,9 +18,8 @@
 import os
 import sys
 import logging
-import ntpath
 
-try:
+try:                                         # Python 2 fallback; kept in place
     from StringIO import StringIO
 except ImportError:
     from io import StringIO

@@ -31,13 +31,13 @@
 
 __version__ = "0.7.2"
 
+import sys
 import copy
 import csv
+import itertools
 import random
 import re
-import sys
 import textwrap
-import itertools
 import unicodedata
 
 py3k = sys.version_info[0] >= 3

@@ -15,33 +15,14 @@
 #                                                                             #
 ###############################################################################
 
+__author__ = 'Donovan Parks'
+__copyright__ = 'Copyright 2015'
+__credits__ = ['Donovan Parks']
+__license__ = 'GPL3'
+__maintainer__ = 'Donovan Parks'
+__email__ = 'donovan.parks@gmail.com'
 
 
-class GTDBImporter(object):
-
-    def __init__(self,temp_cur):
-
-        self.temp_cur = temp_cur
-
-    def import_metadata_to_db(self, table=None, field=None, typemeta=None, data_list=None):
-        '''
-        Function import_metadata_to_db
-        import one field of Metadata for a list of Genomes
-        :param table: Table where the column is located
-        :param field: Name of the Column
-        :param typemeta: Data type of the column
-        :param metafile: TSV file with the format (Genome_id \t Value)
-        '''
-        try:
-            data_zip = list(zip(*data_list))
-            genome_id = list(data_zip[0])
-            meta_value = list(data_zip[1])
-            for n, i in enumerate(genome_id):
-                new_i = i.split("_", 1)[1]
-                genome_id[n] = new_i
-            query = "SELECT upsert('{0}','{1}','{2}',%s,%s)".format(
-                table, field, typemeta)
-
-            self.temp_cur.execute(query, (genome_id, meta_value))
-        except Exception as e:
-            print(e)
+class BioLibError(Exception):
+    def __init__(self, msg):
+        Exception.__init__(self, msg)

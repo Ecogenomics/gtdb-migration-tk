@@ -14,22 +14,20 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
-import gzip
 import os
-import shutil
 import sys
+import gzip
 import logging
 import multiprocessing as mp
+import shutil
 import tempfile
-
 from collections import defaultdict
-from pathlib import Path
 
-from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
-from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
-from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 from tqdm import tqdm
 
+from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.pfam_search import PfamSearch
 from gtdb_migration_tk.utils.tools import symlink, openfile
 

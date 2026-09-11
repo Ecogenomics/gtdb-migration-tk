@@ -24,17 +24,13 @@ __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 __status__ = 'Development'
 
-import sys
-import argparse
-import re
-import datetime
 import os
 import logging
+import re
 import time
-import math
-from collections import defaultdict, namedtuple
+from collections import defaultdict
 
-from biolib.common import canonical_gid
+from gtdb_migration_tk.biolib_lite.common import canonical_gid
 
 class CurationLists(object):
     """Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names."""

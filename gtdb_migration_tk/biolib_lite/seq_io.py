@@ -21,7 +21,7 @@ import sys
 import gzip
 import traceback
 
-from biolib.exceptions import BioLibError
+from gtdb_migration_tk.biolib_lite.exceptions import BioLibError
 
 
 class InputFileError(BioLibError):

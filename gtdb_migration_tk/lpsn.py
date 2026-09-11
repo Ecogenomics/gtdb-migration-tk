@@ -25,22 +25,21 @@ __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
 import os
-import glob
-import shutil
 import sys
-import urllib.request
-import re
-import unicodedata
-import string
+import csv
+import glob
 import html
 import logging
+import re
+import string
+import unicodedata
+import urllib.request
+
 import pandas as pd
-import csv
-from requests import get  # to make GET request
-
-
-from sqlalchemy import create_engine
 from bs4 import BeautifulSoup
+from requests import get  # to make GET request
+from sqlalchemy import create_engine
+
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, clean_html
 from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
 

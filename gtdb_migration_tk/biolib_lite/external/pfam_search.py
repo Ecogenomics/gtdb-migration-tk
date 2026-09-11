@@ -14,9 +14,9 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
+import os
 import logging
 import multiprocessing as mp
-import os
 
 from gtdb_migration_tk.biolib_lite.external.pypfam.Scan.PfamScan import PfamScan
 

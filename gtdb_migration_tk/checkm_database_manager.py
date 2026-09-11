@@ -15,14 +15,11 @@
 #                                                                             #
 ###############################################################################
 
-import os
 import sys
-import argparse
-import tempfile
 import logging
 
-from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
+from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 
 
 class CheckMDatabaseManager(object):
@@ -94,7 +91,7 @@ class CheckMDatabaseManager(object):
                 print('No genomes identified.')
                 sys.exit(-1)
 
-            gtdbimporter.importMetadata('metadata_genes', db_header, data_type, data_to_commit)
+            gtdbimporter.import_metadata_to_db('metadata_genes', db_header, data_type, data_to_commit)
 
         # add strain heterogeneity results at 100%
         data_to_commit = []
@@ -122,7 +119,7 @@ class CheckMDatabaseManager(object):
 
         db_header = 'checkm_strain_heterogeneity_100'
         data_type = 'FLOAT'
-        gtdbimporter.importMetadata('metadata_genes', db_header, data_type, data_to_commit)
+        gtdbimporter.import_metadata_to_db('metadata_genes', db_header, data_type, data_to_commit)
         self.temp_con.commit()
 
 

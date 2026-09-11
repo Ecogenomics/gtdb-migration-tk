@@ -26,15 +26,13 @@ __status__ = 'Development'
 
 import os
 import sys
-import argparse
-import re
 import csv
 import datetime
 import logging
-import time
-import math
-from collections import defaultdict, namedtuple
 import multiprocessing as mp
+import re
+import time
+from collections import defaultdict, namedtuple
 
 from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
 

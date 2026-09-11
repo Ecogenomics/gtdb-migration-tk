@@ -29,18 +29,17 @@ __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 __status__ = 'Development'
 
-import json
 import os
 import sys
-import traceback
-from collections import namedtuple, defaultdict, Counter
+import json
 import logging
-import pandas as pd
+import traceback
+from collections import namedtuple
 
+import pandas as pd
 from sqlalchemy import create_engine
 
-from biolib.taxonomy import Taxonomy
-from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
+from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 
 
 class TaxonomyNCBI(object):

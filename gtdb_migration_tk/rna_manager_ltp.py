@@ -17,14 +17,14 @@
 
 import os
 import sys
+import datetime
 import logging
 import ntpath
-import datetime
 from typing import Tuple
 
-from gtdb_migration_tk.genometk_lite.rna import RNA
-from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, remove_files_in_directory
+from gtdb_migration_tk.biolib_lite.parallel import Parallel
+from gtdb_migration_tk.genometk_lite.rna import RNA
 
 
 class RnaManagerLTP(object):

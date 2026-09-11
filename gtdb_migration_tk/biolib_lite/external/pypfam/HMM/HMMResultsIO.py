@@ -15,8 +15,8 @@
 #                                                                             #
 ###############################################################################
 
-import re
 import sys
+import re
 from collections import deque
 
 from .HMMResults import HMMResults

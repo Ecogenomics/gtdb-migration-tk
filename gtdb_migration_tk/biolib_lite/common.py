@@ -21,11 +21,11 @@ Those functions are copied from `biolib <https://github.com/dparks1134/biolib>`_
 """
 
 import os
-import errno
 import sys
+import errno
 import logging
-import ntpath
 import mmap
+import ntpath
 import re
 import shutil
 

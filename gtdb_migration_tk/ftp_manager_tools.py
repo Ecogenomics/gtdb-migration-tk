@@ -17,16 +17,12 @@
 
 
 import os
-import shutil
-import hashlib
 import glob
 import gzip
-import sys
-import argparse
-import tempfile
-from datetime import datetime
+import hashlib
 import multiprocessing as mp
-import logging
+import shutil
+import tempfile
 from pathlib import Path
 
 from tqdm import tqdm
@@ -80,7 +76,7 @@ class FTPTools(object):
 
     def compareGenomes(self, intersect_list, old_dict, new_dict, ftp_directory, new_directory, threads):
         '''
-        compare the genomes existing in both folders ( FTP folder and previous gtdb update).
+        compare the genomes existing in both folders ( FTP folder and previous GTDB update).
 
         :param intersect_list:
         :param old_dict:
@@ -167,8 +163,8 @@ class FTPTools(object):
 
 
         :param added_dict: dictionary of genomes to be added (genome_id:path to genome)
-        :param ftp_dir: base directory leading the the FTP repository for refseq
-        :param new_directory:base directory leading the new repository for refseq
+        :param ftp_dir: base directory leading the the FTP repository for RefSeq
+        :param new_directory:base directory leading the new repository for RefSeq
         '''
 
         for gcf_record,path_record in tqdm(added_dict.items(), desc='Adding new genomes',ncols=100):
@@ -182,7 +178,7 @@ class FTPTools(object):
 
     def removeGenomes(self, removed_dict):
         '''
-        removeGenomes function removes all outdated genomes from the gtdb database
+        removeGenomes function removes all outdated genomes from the GTDB database
         In addition it tracks the lists(name and owner) that have been modified while deleting those genomes
 
         :param removed_dict: dictionary of genomes to delete
@@ -259,13 +255,13 @@ class FTPTools(object):
             else:
                 ftp_folder = False
                 # check if genomic.fna.gz and protein.faa.gz are similar between
-                # previous gtdb and ftp
+                # previous GTDB and ftp
                 for key, value in ftpdict_fasta.items():
                     if value != gtdbdict_fasta.get(key):
                         ftp_folder = True
 
                 # if one of the 2 files is different than the previous version , we
-                # use the ftp record over the previous gtdb one , we then need to
+                # use the ftp record over the previous GTDB one , we then need to
                 # re run the metadata generation
                 if ftp_folder:
                     if os.path.exists(target_dir):
@@ -281,7 +277,7 @@ class FTPTools(object):
 
                 else:
                     # The 2 main fasta files haven't changed so we can copy the old
-                    # gtdb folder over
+                    # GTDB folder over
                     extensions_to_ignore = self.ignore_extensions + self.ignore_extensions_not_archived+self.deprecated_folders
                     if os.path.exists(target_dir):
                         shutil.rmtree(target_dir)
@@ -427,7 +423,7 @@ class FTPTools(object):
     def parse_checksum(self, pathtodir):
         '''
         parse_checksum function parses the md5 checksum file.
-        It returns 2 dictionaries {file:size} : one for the fna and faa files, one for the genbank files
+        It returns 2 dictionaries {file:size} : one for the fna and faa files, one for the GenBank files
         :param md5File:
         '''
 

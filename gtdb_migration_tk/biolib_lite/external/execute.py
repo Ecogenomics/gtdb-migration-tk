@@ -101,6 +101,22 @@ def which(program):
     return None
 
 
+def run_bash(command):
+    """Execute command via bash.
+
+    Copied verbatim from gtdblib.util.shell.execute (gtdb-lib).
+    """
+
+    process = subprocess.run(["bash", "-c", command],
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE,
+                             stdin=None,
+                             check=True,
+                             encoding='utf-8')
+
+    return process.stdout
+
+
 def check_on_path(program, exit_on_fail=True):
     """Check if program is on the system path.
 

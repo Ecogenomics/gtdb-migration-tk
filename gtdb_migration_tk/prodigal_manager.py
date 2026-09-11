@@ -1,22 +1,18 @@
-import gzip
 import os
+import gzip
 import logging
+import multiprocessing as mp
 import ntpath
-
 import shutil
-import sys
 
 from tqdm import tqdm
 
+from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 from gtdb_migration_tk.biolib_lite.common import remove_extension
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.prodigal import Prodigal
-from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
-
 from gtdb_migration_tk.utils.prettytable import PrettyTable
 from gtdb_migration_tk.utils.tools import Tools
-
-import multiprocessing as mp
 
 
 
