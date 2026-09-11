@@ -27,9 +27,9 @@ import multiprocessing as mp
 import logging
 import tempfile
 
-from biolib.common import remove_extension
-from biolib.external.execute import check_dependencies
-from biolib.checksum import sha256
+from gtdb_migration_tk.biolib_lite.common import remove_extension
+from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
+from gtdb_migration_tk.biolib_lite.checksum import sha256
 from tqdm import tqdm
 
 

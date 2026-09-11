@@ -39,7 +39,7 @@ import pandas as pd
 
 from sqlalchemy import create_engine
 
-from biolib.taxonomy import Taxonomy
+from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 
 

@@ -34,7 +34,7 @@ import time
 import math
 from collections import defaultdict, namedtuple
 
-from biolib.common import canonical_gid
+from gtdb_migration_tk.biolib_lite.common import canonical_gid
 
 class CurationLists(object):
     """Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names."""

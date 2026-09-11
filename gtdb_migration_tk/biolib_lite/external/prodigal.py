@@ -30,10 +30,10 @@ import shutil
 import ntpath
 from collections import defaultdict, namedtuple
 
-from biolib.common import check_file_exists, remove_extension, make_sure_path_exists
-from biolib.seq_io import read_fasta, write_fasta
-from biolib.parallel import Parallel
-from biolib.external.execute import check_on_path
+from gtdb_migration_tk.biolib_lite.common import check_file_exists, remove_extension, make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.seq_io import read_fasta, write_fasta
+from gtdb_migration_tk.biolib_lite.parallel import Parallel
+from gtdb_migration_tk.biolib_lite.external.execute import check_on_path
 
 import numpy as np
 

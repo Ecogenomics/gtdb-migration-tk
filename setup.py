@@ -27,7 +27,6 @@ setup(
     install_requires=[
         'requests>=2.27.1',
         'unidecode>=1.3.4',
-        'biolib>=0.1.8',
         'gtdblib>=1.10.1',
         'pandas>=1.4.1',
         'numpy>=1.22.3',

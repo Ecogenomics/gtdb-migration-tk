@@ -27,7 +27,7 @@ import logging
 import re
 from collections import defaultdict
 
-from biolib.common import is_float, check_file_exists, canonical_gid
+from gtdb_migration_tk.biolib_lite.common import is_float, check_file_exists, canonical_gid
 
 import dendropy
 

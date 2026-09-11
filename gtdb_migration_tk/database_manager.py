@@ -45,7 +45,7 @@ from atpbar import flush
 import threading
 
 
-from biolib.common import remove_extension
+from gtdb_migration_tk.biolib_lite.common import remove_extension
 from dateutil.parser import parse
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 
