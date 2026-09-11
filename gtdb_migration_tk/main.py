@@ -325,6 +325,7 @@ class OptionsParser():
                               options.gb,
                               options.keep_subranks,
                               options.output_prefix)
+        self.logger.info('Parsing Done.')
 
     def curation_lists(self, options):
         check_file_exists(options.gtdb_init_taxonomy)
