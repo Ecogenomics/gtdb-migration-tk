@@ -62,7 +62,7 @@ class DatabaseManager(object):
         make_sure_path_exists(path_to_log)
 
         self.repository = repository
-        # By default we set the id to genbank (it is either 2 or 3 )
+        # By default we set the id to GenBank (it is either 2 or 3 )
         self.id_database = 3
         if repository == "refseq":
             self.id_database = 2

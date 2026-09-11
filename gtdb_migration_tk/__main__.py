@@ -50,8 +50,8 @@ def print_help():
       ncbi_sync -> Sync NCBI data to local directory
 
     NCBI folder to GTDB folder:
-      update_refseq  -> Update Refseq genomes
-      update_genbank -> Update Genbank genomes
+      update_refseq  -> Update RefSeq genomes
+      update_genbank -> Update GenBank genomes
 
     Call genes:
       call_genes_wf  -> Full call genes workflow (prodigal -> hmmsearch -> top_hit)
@@ -214,7 +214,7 @@ def __filtered_taxonomy(group, required):
 
 def __first_domain_report(group, required):
     group.add_argument('--first_domain_report', required=required,
-                       help='File generated from gtdb power domain report from early release.')
+                       help='File generated from GTDB power domain report from early release.')
 
 
 def __ftp_download_date(group, required):
@@ -224,7 +224,7 @@ def __ftp_download_date(group, required):
 
 def __ftp_genbank_directory(group, required):
     group.add_argument('--ftp_genbank_directory', dest="ftp_genbank", required=required,
-                       help='base directory leading the the FTP repository for genbank')
+                       help='base directory leading the the FTP repository for GenBank')
 
 
 def __ftp_genbank_genome_dirs_file(group, required):
@@ -250,12 +250,12 @@ def __ftp_refseq_directory(group, required):
 
 
 def __gbk_arc_assembly_file(group, required):
-    group.add_argument('--ga','--gbk_arc_assembly_file', required=required, help="Archaeal Assembly summary file from Genbank")
+    group.add_argument('--ga','--gbk_arc_assembly_file', required=required, help="Archaeal Assembly summary file from GenBank")
 
 
 def __gbk_bac_assembly_file(group, required):
     group.add_argument('--gb','--gbk_bac_assembly_file', required=required,
-                       help="Bacterial Assembly summary file from Genbank")
+                       help="Bacterial Assembly summary file from GenBank")
 
 
 def __genbank_assembly_summary(group, required):
@@ -413,7 +413,7 @@ def __ncbi_nodes(group, required):
 
 def __new_genbank_directory(group, required):
     group.add_argument('--new_genbank_directory', dest="output_dir", required=required,
-                       help='base directory leading the new repository for genbank')
+                       help='base directory leading the new repository for GenBank')
 
 
 def __new_list_genomes(group, required):
@@ -429,7 +429,7 @@ def __new_metadata_file(group, required):
 
 def __new_refseq_directory(group, required):
     group.add_argument('--new_refseq_directory', dest="output_dir", required=required,
-                       help='Base directory leading the new repository for Refseq')
+                       help='Base directory leading the new repository for RefSeq')
 
 
 def __new_refseq_genome_dirs_file(group, required):
@@ -514,11 +514,11 @@ def __representative_file(group, required):
 
 
 def __rfq_arc_assembly_file(group, required):
-    group.add_argument('--ra','--rfq_arc_assembly_file', required=required, help="Archaeal Assembly summary file from Refseq")
+    group.add_argument('--ra','--rfq_arc_assembly_file', required=required, help="Archaeal Assembly summary file from RefSeq")
 
 
 def __rfq_bac_assembly_file(group, required):
-    group.add_argument('--rb','--rfq_bac_assembly_file', required=required, help="Bacterial Assembly summary file from Refseq")
+    group.add_argument('--rb','--rfq_bac_assembly_file', required=required, help="Bacterial Assembly summary file from RefSeq")
 
 
 def __rna_file_path(group):
@@ -537,7 +537,7 @@ def __rna_version(group, required):
 
 def __second_domain_report(group, required):
     group.add_argument('--second_domain_report', required=required,
-                       help='File generated from gtdb power domain report from latest release.')
+                       help='File generated from GTDB power domain report from latest release.')
 
 
 def __silent(group):
@@ -643,10 +643,10 @@ def __keep_subranks(group):
 
 
 def __checkm_summary_refseq(grp, required):
-    grp.add_argument('--checkm_summary_refseq', required=required, help='CheckM summary file for Refseq genomes.')
+    grp.add_argument('--checkm_summary_refseq', required=required, help='CheckM summary file for RefSeq genomes.')
 
 def __checkm_summary_genbank(grp, required):
-    grp.add_argument('--checkm_summary_genbank', required=required, help='CheckM summary file for Genbank genomes.')
+    grp.add_argument('--checkm_summary_genbank', required=required, help='CheckM summary file for GenBank genomes.')
 
 def __checkm2_output_dir(grp, required):
     grp.add_argument('--checkm2_output_dir', required=required, help='CheckM v2 output directory with batches.')
@@ -972,7 +972,7 @@ def get_main_parser():
         # "required named arguments" group, beside --ncbi_summary_file
         add_sync_arguments(parser, lambda grp: __log_file(grp, required=True))
 
-    with subparser(sub_parsers, 'update_refseq', 'Update Refseq genomes.') as parser:
+    with subparser(sub_parsers, 'update_refseq', 'Update RefSeq genomes.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __ftp_refseq_directory(grp, required=True)
             __new_refseq_directory(grp, required=True)
@@ -985,7 +985,7 @@ def get_main_parser():
             __dry_run(grp)
             __cpus(grp)
 
-    with subparser(sub_parsers, 'update_genbank', 'Update Genbank genomes.') as parser:
+    with subparser(sub_parsers, 'update_genbank', 'Update GenBank genomes.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __ftp_genbank_directory(grp, required=True)
             __new_genbank_directory(grp, required=True)

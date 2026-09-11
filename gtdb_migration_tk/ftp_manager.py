@@ -52,7 +52,7 @@ class GenericDatabaseManager(object):
     def loadpreviousrecords(self,old_genome_dirs):
 
 
-        # old_dict lists all records from the previous gtdb update
+        # old_dict lists all records from the previous GTDB update
         with open(old_genome_dirs, 'r') as old_file:
             old_dict = {old_line.split("\t")[0]: old_line.split("\t")[1].strip()
                         for old_line in old_file}
@@ -249,13 +249,13 @@ class GenBankManager(GenericDatabaseManager):
                         if not gcf_access.startswith("GCF"):
                             formatted_gcaid = 'G' + full_gca_access[4:13]
                             if formatted_gcaid in dictGCF:
-                                self.select_gca.write("{0} skipped because {1} in Refseq (although {0} has no GCF)\n".format(
+                                self.select_gca.write("{0} skipped because {1} in RefSeq (although {0} has no GCF)\n".format(
                                     full_gca_access, gcf_access))
                                 continue
                             else:
                                 listGCA.append(full_gca_access)
                         else:
-                            # if the Refseq folder is empty, we copy the genbank
+                            # if the RefSeq folder is empty, we copy the GenBank
                             # folder
                             if gcf_access in dictGCF:
                                 protein_files = glob.glob(

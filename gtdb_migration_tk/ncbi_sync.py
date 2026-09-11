@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 r"""
 ncbi_sync.py — manifest-driven NCBI genome mirror sync, with optional md5 verification.
 

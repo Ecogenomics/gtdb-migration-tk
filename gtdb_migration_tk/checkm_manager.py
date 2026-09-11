@@ -431,7 +431,7 @@ class CheckMManager(object):
             line_split = line.strip().split('\t')
             genome_paths[line_split[0]] = line_split[1]
 
-        # read genbank summary
+        # read GenBank summary
         list_genomes_to_consider = []
         for file in (checkm_summary_genbank, checkm_summary_refseq):
             if file is not None:
