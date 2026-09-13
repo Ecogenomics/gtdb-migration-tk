@@ -4,7 +4,7 @@
 The contract that would break silently in production, and nowhere else, is column
 lookup: NCBI has grown assembly_summary.txt from 23 fields to 38, so a reader that
 addresses columns by position starts reading the wrong field whenever the table is
-revised. ncbi_sync then mirrors the wrong files, and ftp_manager builds a release
+revised. ncbi_genome_sync then mirrors the wrong files, and ncbi_ftp_manager builds a release
 from the wrong set of genomes, with nothing to indicate anything went wrong. Those
 tests feed the reader tables whose columns have moved.
 """
@@ -54,9 +54,21 @@ class SummaryColumns(unittest.TestCase):
         self.assertIsNone(U.summary_columns('GCA_000001405.1\tPRJNA31257\tlatest'))
 
     def test_header_is_recognised_by_either_naming_column(self):
-        # the outputs ncbi_sync writes carry a subset of the NCBI columns
+        # the outputs ncbi_genome_sync writes carry a subset of the NCBI columns
         self.assertEqual(U.summary_columns('#ftp_path\tbioproject\tassembly_accession'),
                          {'ftp_path': 0, 'bioproject': 1, 'assembly_accession': 2})
+
+    def test_header_written_with_a_space_after_the_hash_is_read(self):
+        # NCBI wrote the marker as '# assembly_accession' until 2020, and the
+        # archived summary files of earlier releases are still read
+        self.assertEqual(U.summary_columns('# assembly_accession\tbioproject\tftp_path'),
+                         {'assembly_accession': 0, 'bioproject': 1, 'ftp_path': 2})
+
+    def test_an_old_style_header_satisfies_its_required_columns(self):
+        # it names the accession column, so it must not be rejected as missing it
+        cols = U.summary_columns('# assembly_accession\tftp_path',
+                                 required=('assembly_accession',))
+        self.assertEqual(cols['assembly_accession'], 0)
 
     def test_header_missing_a_required_column_is_rejected(self):
         # returning None would leave the caller reading the rest of the file as headerless

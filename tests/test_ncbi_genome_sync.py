@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Offline unit tests for ncbi_sync.py -- no network, no mirror.
+"""Offline unit tests for ncbi_genome_sync.py -- no network, no mirror.
 
 Run with the interpreter that has tqdm (system python3 is 3.6 and cannot import the script):
 
-    /opt/miniforge/bin/python3 -m unittest -v test_ncbi_sync
+    /opt/miniforge/bin/python3 -m unittest -v test_ncbi_genome_sync
 
 Two contracts here would break silently in production and nowhere else, so they get the
 most attention:
@@ -22,7 +22,7 @@ import tempfile
 import types
 import unittest
 
-from gtdb_migration_tk import ncbi_sync as N
+from gtdb_migration_tk import ncbi_genome_sync as N
 
 P = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/"
 
@@ -35,7 +35,7 @@ def write(path, text):
 
 class TempDirCase(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="ncbi_sync_test.")
+        self.dir = tempfile.mkdtemp(prefix="ncbi_genome_sync_test.")
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -227,6 +227,28 @@ class MainHelpers(TempDirCase):
         self.assertEqual((base, fail, log), ("run.bad", "run.bad.fail", "run.bad.log"))
         self.assertEqual(N.output_paths(self.args(fail="f", bad="b"))[1:3], ("f", "b"))
 
+    def test_output_paths_strip_gz(self):
+        # GTDB stores the summaries compressed, and the table select_genomes
+        # writes is gtdb_selected_genomes.tsv.gz; these outputs are plain text,
+        # so they must not be named as though they were gzipped
+        base, fail, bad, log = N.output_paths(
+            self.args(summary="/x/y/gtdb_selected_genomes.tsv.gz"))
+        self.assertEqual((base, fail, bad, log),
+                         ("gtdb_selected_genomes",
+                          "gtdb_selected_genomes.fail",
+                          "gtdb_selected_genomes.bad",
+                          "gtdb_selected_genomes.log"))
+
+    def test_output_paths_strip_gz_before_the_retry_suffix(self):
+        # a gzipped retry file still keeps its .bad, so its outputs sit beside it
+        # rather than overwriting the run that produced it
+        base, fail, _bad, log = N.output_paths(self.args(summary="/x/y/run.bad.gz"))
+        self.assertEqual((base, fail, log), ("run.bad", "run.bad.fail", "run.bad.log"))
+
+    def test_output_paths_strip_a_bare_gz(self):
+        base, _fail, _bad, _log = N.output_paths(self.args(summary="/x/y/summary.gz"))
+        self.assertEqual(base, "summary")
+
     def test_validate_args(self):
         self.assertIsNone(N.validate_args(self.args()))
         self.assertIn("--jobs", N.validate_args(self.args(jobs=0)))
@@ -363,11 +385,11 @@ class MainEndToEndOffline(TempDirCase):
 
     def run_main(self, summary, *argv):
         # the summary is a named argument (-s/--ncbi_summary_file), not a positional.
-        # ncbi_sync reports through the toolkit logger, so capture that too and return
+        # ncbi_genome_sync reports through the toolkit logger, so capture that too and return
         # it alongside stderr -- the progress bar and signal handler still use stderr.
         cwd = os.getcwd(); os.chdir(self.dir)
         stderr, sys.stderr = sys.stderr, open(self.path("stderr"), "w")
-        argv_saved, sys.argv = sys.argv, ["ncbi_sync.py", "-s", summary] + list(argv)
+        argv_saved, sys.argv = sys.argv, ["ncbi_genome_sync.py", "-s", summary] + list(argv)
         records = []
 
         class _Capture(logging.Handler):

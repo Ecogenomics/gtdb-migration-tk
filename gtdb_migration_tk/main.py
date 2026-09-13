@@ -25,7 +25,9 @@ from gtdb_migration_tk.checkm_manager import CheckMManager
 from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
-from gtdb_migration_tk.ftp_manager import RefSeqManager, GenBankManager
+from gtdb_migration_tk.ncbi_ftp_manager import (RefSeqManager, GenBankManager,
+                                                MetadataSyncManager,
+                                                SelectedGenomesManager)
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_manager import MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
@@ -33,7 +35,7 @@ from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeType
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
-from gtdb_migration_tk.ncbi_sync import main as ncbi_sync_main
+from gtdb_migration_tk.ncbi_genome_sync import main as ncbi_genome_sync_main
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.propagate_taxonomy import Propagate
@@ -122,6 +124,18 @@ class OptionsParser():
                                 options.new_metadata_file,
                                 options.field_of_interest,
                                 options.output_file, options.only_ncbi)
+
+    def ncbi_metadata_sync(self, options):
+        make_sure_path_exists(options.output_dir)
+        p = MetadataSyncManager(options.output_dir)
+        p.run(options.release_number)
+
+    def select_genomes(self, options):
+        for assembly_summary in options.new_list_genomes:
+            check_file_exists(assembly_summary)
+        make_sure_path_exists(options.output_dir)
+        p = SelectedGenomesManager(options.output_dir)
+        p.run(options.new_list_genomes)
 
     def clean_ftp(self, options):
         p = DirectoryManager()
@@ -318,17 +332,6 @@ class OptionsParser():
         p = NCBIMetaDir(options.cpus)
         p.parse_ncbi_dir(options.gtdb_genome_path_file, options.output_file)
 
-    def parse_ncbi_taxonomy(self, options):
-        p = TaxonomyNCBI()
-        p.parse_ncbi_taxonomy(options.taxonomy_dir,
-                              options.ra, 
-                              options.rb, 
-                              options.ga, 
-                              options.gb,
-                              options.keep_subranks,
-                              options.output_prefix)
-        self.logger.info('Parsing Done.')
-
     def curation_lists(self, options):
         check_file_exists(options.gtdb_init_taxonomy)
         check_file_exists(options.gtdb_sp_clusters)
@@ -370,24 +373,28 @@ class OptionsParser():
         p = Tools()
         p.check_db_population(options.metadata, options.id_last_genome, options.log)
 
-    def ncbi_sync(self, options):
+    def ncbi_genome_sync(self, options):
         """Sync a local mirror of NCBI genomes from an assembly summary file.
 
-        Returns the exit code from ncbi_sync rather than raising: callers distinguish
+        Returns the exit code from ncbi_genome_sync rather than raising: callers distinguish
         75 (locked, retry later), 130/143 (signalled) and 74 (I/O) from a plain failure.
         """
-        return ncbi_sync_main(options)
+        return ncbi_genome_sync_main(options)
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
-        if options.subparser_name == 'ncbi_sync':
-            return self.ncbi_sync(options)
+        if options.subparser_name == 'ncbi_genome_sync':
+            return self.ncbi_genome_sync(options)
         elif options.subparser_name == 'list_genomes':
             self.parse_genome_directory(options)
         elif options.subparser_name == 'generate_ltp_db':
             self.generate_ltp_db(options)
         elif options.subparser_name == 'prodigal':
             self.run_prodigal(options)
+        elif options.subparser_name == 'ncbi_metadata_sync':
+            self.ncbi_metadata_sync(options)
+        elif options.subparser_name == 'select_genomes':
+            self.select_genomes(options)
         elif options.subparser_name == 'clean_ftp':
             self.clean_ftp(options)
         elif options.subparser_name == 'prodigal_check':
@@ -406,8 +413,6 @@ class OptionsParser():
             self.parse_assemblies(options)
         elif options.subparser_name == "parse_ncbi_dir":
             self.parse_ncbi_dir(options)
-        elif options.subparser_name == 'parse_ncbi_taxonomy':
-            self.parse_ncbi_taxonomy(options)
         elif options.subparser_name == 'update_taxid_to_db':
             self.update_taxid_to_db(options)
         elif options.subparser_name == 'rna_silva':

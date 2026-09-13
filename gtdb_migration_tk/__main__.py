@@ -34,7 +34,7 @@ from gtdb_migration_tk import __version__
 from gtdb_migration_tk.biolib_lite.custom_help_formatter import CustomHelpFormatter
 from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.main import OptionsParser
-from gtdb_migration_tk.ncbi_sync import add_sync_arguments
+from gtdb_migration_tk.ncbi_genome_sync import add_sync_arguments
 
 
 def print_help():
@@ -46,8 +46,10 @@ def print_help():
     print('''\
 
     NCBI data sync:
-      clean_ftp -> Clean the NCBI FTP sync directory by removing suppressed (missing) genomes
-      ncbi_sync -> Sync NCBI data to local directory
+      ncbi_metadata_sync -> Sync NCBI metadata to local directory
+      select_genomes     -> Select NCBI genomes which will comprise the new GTDB release
+      clean_ftp          -> Clean the NCBI FTP sync directory by removing suppressed (missing) genomes
+      ncbi_genome_sync   -> Sync NCBI data to local directory
 
     NCBI folder to GTDB folder:
       list_genomes   -> Produce file indicating the directory of each genome
@@ -78,9 +80,6 @@ def print_help():
       create_tables     -> Create tables with metadata for all genomes (currently only NCBI)
       parse_assemblies  -> Create tables with metadata for all NCBI genomes from assembly summaries
       parse_ncbi_dir    -> Create tables with metadata for all NCBI genomes from directories
-
-    NCBI Taxonomy:
-      parse_ncbi_taxonomy   -> Create summary files of the NCBI taxonomy file
 
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release
@@ -378,6 +377,11 @@ def __metadata_file(group, required):
     group.add_argument('-m', '--metadata', help='Metadata file generated from "gdb metadata export".',
                        required=required)
 
+def __release_number(group, required):
+    group.add_argument('-r', '--release_number', type=int, required=required,
+                       help='GTDB release number, e.g. 237.')
+
+
 def __report_dir(group, required):
     group.add_argument('--report_dir', required=required,
                        help='Output directory to list reports.')
@@ -638,10 +642,6 @@ def __remove(group, db_name):
                        action='store_true')
 
 
-def __keep_subranks(group):
-    group.add_argument('--keep_subranks', help='keep subranks in canonical taxonomy', action='store_true')
-
-
 def __checkm_summary_refseq(grp, required):
     grp.add_argument('--checkm_summary_refseq', required=required, help='CheckM summary file for RefSeq genomes.')
 
@@ -670,6 +670,24 @@ def get_main_parser():
     # Setup the main, and sub parsers.
     main_parser = argparse.ArgumentParser(prog='gtdb_migration_tk', add_help=False, conflict_handler='resolve')
     sub_parsers = main_parser.add_subparsers(help="--", dest='subparser_name')
+
+    # Download the NCBI metadata a release is built from
+    with subparser(sub_parsers, 'ncbi_metadata_sync',
+                   'Sync NCBI metadata to local directory.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __output_dir(grp, required=True)
+            __release_number(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
+
+    # Select the genomes comprising the new release
+    with subparser(sub_parsers, 'select_genomes',
+                   'Select NCBI genomes which will comprise the new GTDB release.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __new_list_genomes(grp, required=True)
+            __output_dir(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
 
     # Clean FTP directory
     with subparser(sub_parsers, 'clean_ftp', 'Clean the FTP directory (remove missing genomes).') as parser:
@@ -947,19 +965,6 @@ def get_main_parser():
             __cpus(grp)
 
     # # Parse NCBI Taxonomy files
-    with subparser(sub_parsers, 'parse_ncbi_taxonomy',
-                   'Parse GTDB directory to generate extra NCBI metadata.') as parser:
-        with arg_group(parser, 'required named arguments') as grp:
-            __taxonomy_directory(grp, required=True)
-            __gbk_arc_assembly_file(grp, required=True)
-            __gbk_bac_assembly_file(grp, required=True)
-            __rfq_arc_assembly_file(grp, required=True)
-            __rfq_bac_assembly_file(grp, required=True)
-            __output_prefix(grp, required=True)
-        with arg_group(parser, 'options arguments') as grp:
-            __keep_subranks(grp)
-            __silent(grp)
-
     with subparser(sub_parsers, 'list_genomes', 'Produce file indicating the directory of each genome.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __genome_directory(grp, required=True)
@@ -971,8 +976,8 @@ def get_main_parser():
             __cpus(grp, default=8)
             __silent(grp)
 
-    with subparser(sub_parsers, 'ncbi_sync', 'Sync NCBI data to local directory.') as parser:
-        # ncbi_sync owns its own interface; the toolkit's --log is registered into its
+    with subparser(sub_parsers, 'ncbi_genome_sync', 'Sync NCBI data to local directory.') as parser:
+        # ncbi_genome_sync owns its own interface; the toolkit's --log is registered into its
         # "required named arguments" group, beside --ncbi_summary_file
         add_sync_arguments(parser, lambda grp: __log_file(grp, required=True))
 
@@ -1310,6 +1315,11 @@ def main():
             # logger_setup() creates that directory before opening the file
             args.log = os.path.join(args.report_dir, 'gtdb_migration_tk.log')
 
+        if args.subparser_name in ('select_genomes', 'ncbi_metadata_sync'):
+            # likewise: the log is part of the output of these commands, recording
+            # what was downloaded, and which genomes the selection rejected and why
+            args.log = os.path.join(args.output_dir, 'gtdb_migration_tk.log')
+
         try:
             # dirname('sync.log') is '' and logger_setup() treats a falsy directory as
             # "no log file", so a bare filename silently produced no log at all
@@ -1347,7 +1357,7 @@ def main():
             print("\nUnexpected error:", sys.exc_info()[0])
             raise
 
-        # commands that report a meaningful exit code (ncbi_sync) must not have it
+        # commands that report a meaningful exit code (ncbi_genome_sync) must not have it
         # swallowed; everything else returns 0 and exits normally
         if rtn_code:
             sys.exit(rtn_code)

@@ -4,6 +4,8 @@ import gzip
 import multiprocessing as mp
 import re
 
+from gtdb_migration_tk.ncbi_utils import open_summary
+
 class GenomeType(object):
     """Identify genomes marked by NCBI as being a MAG or SAG."""
 
@@ -17,7 +19,7 @@ class GenomeType(object):
         print('Parsing GenBank and RefSeq assembly reports.')
         gid_genome_type = {}
         for assembly_summary in [genbank_assembly_summary, refseq_assembly_summary]:
-            with open(assembly_summary, encoding='utf-8') as f:
+            with open_summary(assembly_summary) as f:
                 for line in f:
                     if line.startswith('#assembly_accession'):
                         header = line.strip().split('\t')

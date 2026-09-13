@@ -22,12 +22,15 @@ An assembly summary file (assembly_summary.txt) is the table NCBI publishes
 describing every assembly it holds: a block of '#'-prefixed comments, a
 '#assembly_accession ...' header, then one tab-separated row per genome.
 
-Two parts of this package read those tables. ncbi_sync.py reads ftp_path to
-mirror the genomes from the NCBI FTP site, and ftp_manager.py reads
+Two parts of this package read those tables. ncbi_genome_sync.py reads ftp_path to
+mirror the genomes from the NCBI FTP site, and ncbi_ftp_manager.py reads
 version_status, gbrs_paired_asm, and excluded_from_refseq to decide which of
 the mirrored genomes belong in a GTDB release. Both need the same thing from
 the file, so the reading lives here and the two callers differ only in what
 they do with a row.
+
+A summary file may be gzipped or not, and open_summary() takes either, so no
+caller has to know which it was handed.
 
 Columns are located BY NAME from the header, never by position: NCBI has grown
 assembly_summary.txt from 23 fields to 38, and a positional reader silently
@@ -37,6 +40,7 @@ genomes, with nothing to indicate anything went wrong. For the same reason a
 header is required rather than assumed.
 """
 
+import gzip
 import os
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -48,10 +52,38 @@ class BadInput(ValueError):
 # Column names that identify the header row of an assembly summary file.
 #
 # A summary file is read for either the accession or the FTP path, and the
-# outputs written by ncbi_sync carry a subset of the NCBI columns, so a row is
+# outputs written by ncbi_genome_sync carry a subset of the NCBI columns, so a row is
 # recognised as the header when it names either. Which columns a caller in fact
 # requires is its own business, and is stated through `required`.
 HEADER_FIELDS = ('assembly_accession', 'ftp_path')
+
+
+def open_summary(assembly_summary: str, encoding: str = 'utf-8'):
+    """Open an assembly summary file for reading, gzipped or not.
+
+    GTDB stores these files gzipped -- the GenBank bacteria summary alone is over
+    a gigabyte of highly repetitive text -- while NCBI serves them, and older
+    releases hold them, uncompressed. Every reader of an assembly summary goes
+    through here so that neither form has to be thought about anywhere else.
+
+    The encoding is stated rather than left to the locale: organism names carry
+    non-ASCII characters, and under a C locale the default would be ASCII and the
+    read would fail partway through a perfectly good file.
+
+    Parameters
+    ----------
+    assembly_summary : str
+        NCBI assembly summary file, optionally gzipped.
+    encoding : str
+        Text encoding of the file.
+
+    @return: open text handle.
+    """
+
+    if assembly_summary.endswith('.gz'):
+        return gzip.open(assembly_summary, 'rt', encoding=encoding)
+
+    return open(assembly_summary, encoding=encoding)
 
 
 def summary_columns(line: str,
@@ -62,6 +94,14 @@ def summary_columns(line: str,
     is '#'-prefixed too, so the header is identified by content rather than by
     position: it is the '#' line naming one of the HEADER_FIELDS columns. A
     genome row names neither and is likewise not mistaken for a header.
+
+    The '#' is stripped before the surrounding whitespace, not after, because
+    NCBI has written the marker both ways: '#assembly_accession' in the summary
+    files it publishes today and '# assembly_accession' in those it published
+    until 2020. Stripping in the other order leaves the older spelling as
+    ' assembly_accession', which matches no column name, so the header was
+    recognised through its ftp_path column and then rejected as missing the
+    accession column it in fact carries.
 
     Parameters
     ----------
@@ -79,7 +119,7 @@ def summary_columns(line: str,
         would leave the caller reading the rest of the file as headerless.
     """
 
-    fields = [field.strip().lstrip('#') for field in line.split('\t')]
+    fields = [field.strip('#').strip() for field in line.split('\t')]
     if not any(name in fields for name in HEADER_FIELDS):
         return None
 
@@ -139,7 +179,7 @@ def read_summary_rows(assembly_summary: str,
     """
 
     columns = None
-    with open(assembly_summary) as summary_file:
+    with open_summary(assembly_summary) as summary_file:
         for line_number, line in enumerate(summary_file, 1):
             line = line.rstrip('\n').rstrip('\r')
 

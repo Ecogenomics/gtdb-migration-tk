@@ -36,6 +36,7 @@ import multiprocessing as mp
 import re
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
+from gtdb_migration_tk.ncbi_utils import open_summary
 
 class NCBIStrainParser(object):
     """Extract genes in nucleotide space."""
@@ -54,7 +55,7 @@ class NCBIStrainParser(object):
     def parse_summary(self, assembly_bacteria_summary, assembly_archaea_summary):
         assembly_summary_dict = {}
         for assembly_summary in [assembly_bacteria_summary, assembly_archaea_summary]:
-            with open(assembly_summary) as as_file:
+            with open_summary(assembly_summary) as as_file:
                 as_file.readline()
                 for line in as_file:
                     if line.startswith('#'):

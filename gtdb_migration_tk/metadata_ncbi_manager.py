@@ -40,6 +40,7 @@ from collections import defaultdict
 from numpy import (zeros as np_zeros,sum as np_sum)
 from tqdm import tqdm
 
+from gtdb_migration_tk.ncbi_utils import open_summary
 from gtdb_migration_tk.utils.tools import openfile
 
 
@@ -432,7 +433,7 @@ class NCBIMeta(object):
                               refseq_archaea_assembly_summary_file,
                               genbank_bacteria_assembly_summary_file,
                               genbank_archaea_assembly_summary_file]:
-            with open(assembly_file) as f:
+            with open_summary(assembly_file) as f:
                 f.readline()  # first comment line
                 headers = f.readline().rstrip().split('\t')
 

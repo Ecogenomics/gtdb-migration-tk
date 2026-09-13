@@ -94,25 +94,25 @@ written to `./gtdb_migration_tk.log`. Add `--silent` to suppress console output.
 
 ### Example: mirroring NCBI
 
-`ncbi_sync` mirrors the genomes listed in an NCBI assembly summary, verifying
+`ncbi_genome_sync` mirrors the genomes listed in an NCBI assembly summary, verifying
 every file against the `md5checksums.txt` that NCBI publishes alongside it:
 
 ```bash
 # sync a whole domain
-gtdb_migration_tk ncbi_sync -s assembly_summary_archaea_genbank.txt \
+gtdb_migration_tk ncbi_genome_sync -s assembly_summary_archaea_genbank.txt \
     --root /srv/db/gtdb/genomes -l ./logs/sync.log
 
 # sync, then md5-verify everything that was written
-gtdb_migration_tk ncbi_sync -s assembly_summary.txt --verify -l ./logs/sync.log
+gtdb_migration_tk ncbi_genome_sync -s assembly_summary.txt --verify -l ./logs/sync.log
 
 # retry only the genomes that failed last time
-gtdb_migration_tk ncbi_sync -s assembly_summary.fail -l ./logs/sync.log
+gtdb_migration_tk ncbi_genome_sync -s assembly_summary.fail -l ./logs/sync.log
 ```
 
 Failures are written to `<base>.fail` in the same column format as the input, so
 the failure file can be fed straight back in as the next run's input.
 
-`ncbi_sync` returns meaningful exit codes so it can be driven from a wrapper
+`ncbi_genome_sync` returns meaningful exit codes so it can be driven from a wrapper
 script:
 
 | Code | Meaning |
@@ -132,7 +132,9 @@ Run `gtdb_migration_tk <command> -h` for the arguments of any command.
 
 | Command | Description |
 | --- | --- |
-| `ncbi_sync` | Sync NCBI data to a local directory |
+| `ncbi_metadata_sync` | Download the NCBI taxonomy and assembly summary files a release is built from, and generate the 7 rank NCBI taxonomy |
+| `ncbi_genome_sync` | Sync NCBI data to a local directory |
+| `select_genomes` | Select the NCBI genomes which will comprise the new GTDB release |
 | `update_refseq` | Update RefSeq genomes |
 | `update_genbank` | Update GenBank genomes |
 | `clean_ftp` | Clean the FTP directory (remove missing genomes) |
@@ -170,7 +172,6 @@ Run `gtdb_migration_tk <command> -h` for the arguments of any command.
 | `create_tables` | Create metadata tables for all NCBI genomes |
 | `parse_assemblies` | Parse NCBI assembly summary files to generate metadata |
 | `parse_ncbi_dir` | Parse the GTDB directory for extra NCBI metadata |
-| `parse_ncbi_taxonomy` | Create summary files from the NCBI taxonomy dumps |
 | `add_names_dmp` | Parse an NCBI `names.dmp` file into a table |
 | `ncbi_genome_category` | Identify genomes marked by NCBI as a MAG or SAG |
 | `generate_seqcode_table` | Generate a metadata table for genomes in SeqCode |
@@ -234,14 +235,14 @@ pytest
 are needed. To run a single test file, or a single test:
 
 ```bash
-pytest tests/test_ncbi_sync.py
-pytest tests/test_ncbi_sync.py -k manifest -v
+pytest tests/test_ncbi_genome_sync.py
+pytest tests/test_ncbi_genome_sync.py -k manifest -v
 ```
 
 The suite is plain `unittest`, so it can also be run without installing pytest:
 
 ```bash
-python -m unittest tests.test_ncbi_sync
+python -m unittest tests.test_ncbi_genome_sync
 ```
 
 The tests are offline — they use no network access and no mirror directory.
