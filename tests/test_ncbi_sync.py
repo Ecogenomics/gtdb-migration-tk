@@ -99,20 +99,9 @@ class WriteStatus(TempDirCase):
 
 # ------------------------------------------------------------------ input table
 
-class SummaryColumns(unittest.TestCase):
-    def test_readme_comment_line_is_not_a_header(self):
-        self.assertIsNone(N.summary_columns(
-            "##  See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_summary.txt for ..."))
-
-    def test_header_found_by_name_not_position(self):
-        cols = N.summary_columns("#ftp_path\tbioproject\tassembly_accession")
-        self.assertEqual(cols["ftp_path"], 0)
-        self.assertEqual(cols["assembly_accession"], 2)
-
-    def test_ftp_path_without_accession_is_rejected(self):
-        with self.assertRaises(N.BadInput):
-            N.summary_columns("#ftp_path\tbioproject")
-
+# Locating columns by name is ncbi_utils' job and is tested in tests/test_ncbi_utils.py.
+# What is tested here is this script's own use of it: which columns it declares it cannot
+# sync without, and what it makes of each row.
 
 class ReadAssemblySummary(TempDirCase):
     HEADER = "#assembly_accession\tbioproject\tversion_status\tftp_path\texcluded_from_refseq\n"
@@ -150,6 +139,16 @@ class ReadAssemblySummary(TempDirCase):
         with self.assertRaises(N.BadInput) as ctx:
             self.read("%sGCA_1.1_A/\n" % P, name="legacy.lst")
         self.assertIn("legacy.lst:1", str(ctx.exception))
+
+    def test_header_without_an_accession_column_is_rejected(self):
+        # every row would otherwise sync into a directory named for nothing
+        with self.assertRaises(N.BadInput):
+            self.read("#ftp_path\tbioproject\n%sGCA_1.1_A/\tPRJNA1\n" % P)
+
+    def test_header_without_an_ftp_path_column_is_rejected(self):
+        # every row would otherwise be skipped as having no directory to fetch
+        with self.assertRaises(N.BadInput):
+            self.read("#assembly_accession\tversion_status\nGCA_1.1\tlatest\n")
 
     def test_offsite_url_fails_before_any_download(self):
         with self.assertRaises(N.BadInput):

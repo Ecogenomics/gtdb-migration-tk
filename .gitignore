@@ -130,3 +130,6 @@ dmypy.json
 
 # IntelliJ
 .idea
+
+# Claude Code personal instructions (machine-specific; CLAUDE.md is the shared one)
+CLAUDE.local.md

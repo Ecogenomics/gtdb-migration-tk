@@ -44,10 +44,10 @@ class tRNAScan(object):
 
         self.cpus = cpus
 
-        self.domain_dict = self.parseAssemblySummary(
+        self.domain_dict = self.parse_assembly_summary(
             gbk_arc_assembly_file, gbk_bac_assembly_file, rfq_arc_assembly_file, rfq_bac_assembly_file)
 
-    def parseAssemblySummary(self, gbk_arc_assembly_file, gbk_bac_assembly_file, rfq_arc_assembly_file, rfq_bac_assembly_file):
+    def parse_assembly_summary(self, gbk_arc_assembly_file, gbk_bac_assembly_file, rfq_arc_assembly_file, rfq_bac_assembly_file):
         results = {}
         for arcfile in (gbk_arc_assembly_file, rfq_arc_assembly_file):
             with open(arcfile) as arcf:
