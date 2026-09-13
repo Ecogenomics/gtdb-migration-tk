@@ -61,7 +61,7 @@ class DatabaseManager(object):
         self.id_database = 3
         if repository == "refseq":
             self.id_database = 2
-        self.domains = ["archaea", "bacteria"]
+
         self.report_database_update = open(os.path.join(path_to_log,
                                                         "report_{0}_{1}_update_db.log".format(repository, ftp_download_date)), "w")
 

@@ -204,6 +204,7 @@ The input is an NCBI assembly_summary.txt: the ftp_path column says where each
 assembly lives, and assembly_accession names it. Both are found BY NAME from the
 `#assembly_accession ...` header row, never by column number -- NCBI has grown that file
 from 23 columns to 38, and pinning ftp_path to field 20 breaks silently on the next one.
+The reading of those tables is in ncbi_utils.py, shared with ftp_manager.py.
 
     ftp_path "na" or empty   the assembly has no public directory (suppressed, or
                              not yet released). NOT an error: whole-domain summaries
@@ -375,6 +376,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
+
+from gtdb_migration_tk.ncbi_utils import BadInput, read_summary_rows, summary_field
 
 
 HOST = "ftp.ncbi.nlm.nih.gov"
@@ -890,10 +893,6 @@ def http_get(path, sink=None, headers=None):
             STOP.sleep(min(delay, MAX_BACKOFF))
             delay *= 1.7
     raise HttpError("%s after %d attempts: %s" % (path, MAX_TRIES, last))
-
-
-class BadInput(ValueError):
-    """Rejected input: a URL outside the mirror, or a table without the required header."""
 
 
 def genome_relpath(url):
@@ -1589,37 +1588,16 @@ class Progress(object):
 
 # --------------------------------------------------------------------------- input
 
-def summary_columns(line):
-    """Column name -> index for an assembly_summary header row, or None if not one.
-
-    The comment block above the header ("##  See ftp://...README_assembly_summary.txt")
-    is '#'-prefixed too, so the header is identified by content -- a tab-separated
-    ftp_path field -- rather than by being the first or last '#' line.
-    """
-    fields = [f.strip().lstrip("#") for f in line.split("\t")]
-    if "ftp_path" not in fields:
-        return None
-    if "assembly_accession" not in fields:
-        raise BadInput("header has ftp_path but no assembly_accession column: %s" % line)
-    return {name: i for i, name in enumerate(fields)}
-
-
-def _field(fields, columns, name):
-    """One named column of a row, "" if the row is short or the column is absent."""
-    index = columns.get(name, -1)
-    return fields[index].strip() if 0 <= index < len(fields) else ""
+# Columns this script cannot sync without: the accession names the genome, and
+# ftp_path says where to fetch it from. Both <base>.fail (5 columns) and
+# <base>.bad (4) carry them too, so those are read by this same code path.
+SYNC_COLUMNS = ("assembly_accession", "ftp_path")
 
 
 def read_assembly_summary(path):
     """Read the genomes to sync from an NCBI assembly_summary.txt.
 
-    Columns are located BY NAME from the '#assembly_accession ...' header, so the column
-    count does not matter -- NCBI has grown assembly_summary.txt from 23 fields to 38, and
-    <base>.fail (5 columns) and <base>.bad (4) carry the same names, so they are read by
-    this same code path.
-
-    A header is REQUIRED: without one there is no way to tell which field is ftp_path, and
-    guessing at field 20 is how a summary revision corrupts a mirror silently.
+    Columns are located by name (see ncbi_utils) so the column count does not matter.
     version_status and excluded_from_refseq are read when present -- they are what
     assembly_status.txt is generated from (see render_status) -- and left empty otherwise,
     in which case that file is fetched from NCBI as it used to be.
@@ -1637,41 +1615,29 @@ def read_assembly_summary(path):
     no usable ftp_path.
     """
     genomes, skipped, bad, seen, dupes = [], [], [], set(), 0
-    columns = None
-    with open(path) as handle:
-        for lineno, line in enumerate(handle, 1):
-            line = line.rstrip("\n").rstrip("\r")
-            if not line.strip():
-                continue
-            if line.startswith("#"):
-                columns = summary_columns(line) or columns
-                continue
-            if columns is None:
-                raise BadInput("%s:%d: data before any '#assembly_accession ... ftp_path' "
-                             "header -- this is not an NCBI assembly summary" % (path, lineno))
-            fields = line.split("\t")
-            accession = _field(fields, columns, "assembly_accession")
-            raw = _field(fields, columns, "ftp_path")
-            # a few dozen distinct values between them, but one copy each per row would
-            # be ~40% of the record's memory on a 1.9M-genome summary
-            version_status = sys.intern(_field(fields, columns, "version_status"))
-            excluded = sys.intern(_field(fields, columns, "excluded_from_refseq"))
-            if not raw or raw.lower() == "na":
-                skipped.append((lineno, accession or "?", raw or "(empty)"))
-                continue
-            url = raw.rstrip("/") + "/"
-            if url.startswith(FTP_PREFIX):
-                url = URL_PREFIX + url[len(FTP_PREFIX):]
-            try:
-                genome_relpath(url)
-            except BadInput as exc:
-                bad.append("  %s:%d: %s" % (path, lineno, exc))
-                continue
-            if url in seen:                      # same genome twice would sync twice
-                dupes += 1
-                continue
-            seen.add(url)
-            genomes.append(Genome(accession, url, version_status, excluded))
+    for lineno, fields, columns in read_summary_rows(path, required=SYNC_COLUMNS):
+        accession = summary_field(fields, columns, "assembly_accession")
+        raw = summary_field(fields, columns, "ftp_path")
+        # a few dozen distinct values between them, but one copy each per row would
+        # be ~40% of the record's memory on a 1.9M-genome summary
+        version_status = sys.intern(summary_field(fields, columns, "version_status"))
+        excluded = sys.intern(summary_field(fields, columns, "excluded_from_refseq"))
+        if not raw or raw.lower() == "na":
+            skipped.append((lineno, accession or "?", raw or "(empty)"))
+            continue
+        url = raw.rstrip("/") + "/"
+        if url.startswith(FTP_PREFIX):
+            url = URL_PREFIX + url[len(FTP_PREFIX):]
+        try:
+            genome_relpath(url)
+        except BadInput as exc:
+            bad.append("  %s:%d: %s" % (path, lineno, exc))
+            continue
+        if url in seen:                          # same genome twice would sync twice
+            dupes += 1
+            continue
+        seen.add(url)
+        genomes.append(Genome(accession, url, version_status, excluded))
     if bad:
         raise BadInput("%d malformed ftp_path(s):\n%s" % (len(bad), "\n".join(bad[:10])))
     if dupes:

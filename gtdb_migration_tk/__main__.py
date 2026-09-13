@@ -46,9 +46,11 @@ def print_help():
     print('''\
 
     NCBI data sync:
+      clean_ftp -> Clean the NCBI FTP sync directory by removing suppressed (missing) genomes
       ncbi_sync -> Sync NCBI data to local directory
 
     NCBI folder to GTDB folder:
+      list_genomes   -> Produce file indicating the directory of each genome
       update_refseq  -> Update RefSeq genomes
       update_genbank -> Update GenBank genomes
 
@@ -94,7 +96,6 @@ def print_help():
       curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names
 
     Miscellaneous commands:
-      list_genomes    -> Produce file indicating the directory of each genome
       generate_ltp_db -> Generate LTP database
 
     Test suite for data validation:
@@ -170,8 +171,8 @@ def __checkm_qa(group, required):
                        required=required)
 
 
-def __cpus(group):
-    group.add_argument('-c', '--cpus', type=int ,default=1, help='Number of threads.')
+def __cpus(group, default=1):
+    group.add_argument('-c', '--cpus', type=int ,default=default, help='Number of threads.')
 
 
 def __database_setup(group, required):
@@ -416,8 +417,8 @@ def __new_genbank_directory(group, required):
 
 
 def __new_list_genomes(group, required):
-    group.add_argument('-n','--new_list_genomes', required=required,
-                       help='Files indicating the Gid present in the new release (comma separated).')
+    group.add_argument('-n','--new_list_genomes', required=required, nargs='+',
+                       help='NCBI assembly summary files indicating the genomes present in the new release.')
 
 
 def __new_metadata_file(group, required):
@@ -963,7 +964,11 @@ def get_main_parser():
         with arg_group(parser, 'required named arguments') as grp:
             __genome_directory(grp, required=True)
             __output_file(grp, required=True)
+            __new_list_genomes(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            # the mirror is on NFS, so the walk is bound by round trip latency
+            # rather than by CPU; a handful of threads saturates the client
+            __cpus(grp, default=8)
             __silent(grp)
 
     with subparser(sub_parsers, 'ncbi_sync', 'Sync NCBI data to local directory.') as parser:
@@ -1301,7 +1306,9 @@ def main():
             silent = args.silent
 
         if args.subparser_name == 'clean_ftp':
-            args.log = args.report_dir
+            # clean_ftp has no --log flag, so the log goes in the report directory;
+            # logger_setup() creates that directory before opening the file
+            args.log = os.path.join(args.report_dir, 'gtdb_migration_tk.log')
 
         try:
             # dirname('sync.log') is '' and logger_setup() treats a falsy directory as

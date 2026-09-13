@@ -49,3 +49,18 @@ def read_gtdb_metadata(metadata_file, fields):
             m[genome_id] = gtdb_metadata._make(values)
 
     return m
+
+
+def count_lines(file_path: str) -> int:
+    """Count the lines in a file, in order to size a progress bar.
+
+    Parameters
+    ----------
+    file_path : str
+        File to read.
+
+    @return: number of lines in the file.
+    """
+
+    with open(file_path, 'r') as check_file:
+        return sum(1 for _ in check_file)

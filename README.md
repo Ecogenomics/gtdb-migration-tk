@@ -246,6 +246,28 @@ python -m unittest tests.test_ncbi_sync
 
 The tests are offline — they use no network access and no mirror directory.
 
+## Marker database versions
+
+The Pfam and TIGRFAM releases GTDB annotates against are set in
+[gtdb_migration_tk/config.py](gtdb_migration_tk/config.py):
+
+```python
+PFAM_VERSION = '33.1'
+TIGRFAM_VERSION = '15.0'
+```
+
+Every other name derives from these two — the `pfam_33.1_lite` and
+`tigrfam_15.0_lite` directories written inside each genome directory, the
+suffixes of the search result files they hold, and the HMMER output that is
+gzipped when a genome is taken from the FTP site. Updating a marker database is
+therefore a matter of editing these two values and re-running the annotation
+commands; nothing else in the code carries a version number.
+
+Note that `hmmsearch` and `top_hit` take the marker version on the command line
+(`--hmm_version`), so the value passed there must agree with `config.py`. If
+they disagree, genome directories end up with symlinks pointing at annotation
+files that were never written.
+
 ## Repository layout
 
 ```
@@ -253,6 +275,7 @@ bin/gtdb_migration_tk      executable wrapper; defers to gtdb_migration_tk/__mai
 gtdb_migration_tk/
     __main__.py            command-line interface: argument definitions
     main.py                OptionsParser: dispatches each command to its manager
+    config.py              Pfam/TIGRFAM versions; settings that change per release
     *_manager.py           implementation of each pipeline step
     biolib_lite/           vendored helpers (sequence I/O, taxonomy, parallelism)
     genometk_lite/         vendored genome metadata helpers

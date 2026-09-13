@@ -4,8 +4,6 @@ import gzip
 import multiprocessing as mp
 import re
 
-
-
 class GenomeType(object):
     """Identify genomes marked by NCBI as being a MAG or SAG."""
 

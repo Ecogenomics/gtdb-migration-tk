@@ -132,18 +132,21 @@ class OptionsParser():
 
     def parse_genome_directory(self, options):
         p = DirectoryManager()
-        p.generate_genome_dir_file(options.genome_dir, options.output_file)
+        p.generate_genome_dir_file(options.genome_dir,
+                                   options.output_file,
+                                   options.new_list_genomes,
+                                   options.cpus)
 
     def update_refseq_from_ftp_files(self, options):
         p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
-        p.runComparison(
+        p.run_comparison(
             options.ftp_refseq, options.output_dir, options.ftp_directory_file, options.old_genome_dirs,
             options.arc_assembly_summary, options.bac_assembly_summary)
 
     def update_genbank_from_ftp_files(self, options):
         print(options)
         p = GenBankManager(options.output_dir, options.dry_run, options.cpus)
-        p.runComparison(
+        p.run_comparison(
             options.ftp_genbank, options.output_dir, options.ftp_genbank_genome_dirs,
             options.old_genbank_genome_dirs, options.new_refseq_genome_dirs,
             options.arc_assembly_summary, options.bac_assembly_summary)
@@ -494,6 +497,8 @@ class OptionsParser():
             self.logger.error('Unknown command: ' +
                               options.subparser_name + '\n')
             sys.exit()
+
+        self.logger.info('Done.')
 
         return 0
 
