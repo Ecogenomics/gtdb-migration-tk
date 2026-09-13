@@ -22,10 +22,10 @@ bin/gtdb_migration_tk <command>           # from a source checkout, no install n
 Tests are plain `unittest`, offline, and need no mirror or database:
 
 ```bash
-pytest                                                  # whole suite (testpaths in pyproject.toml)
-pytest tests/test_ncbi_sync.py -k manifest -v           # one file / one match
-python -m unittest discover -s tests                    # without pytest
-python -m unittest -v tests.test_ftp_manager            # one module
+pytest                                                # whole suite (testpaths in pyproject.toml)
+pytest tests/test_ncbi_genome_sync.py -k manifest -v  # one file / one match
+python -m unittest discover -s tests                  # without pytest
+python -m unittest -v tests.test_ncbi_ftp_manager     # one module
 ```
 
 There is no linter or formatter configured. Releases are cut by publishing a
@@ -62,10 +62,10 @@ before dispatching. That creates two named loggers, `'timestamp'` and
 `'no_timestamp'`; every manager does `logging.getLogger('timestamp')` rather
 than creating its own. `--log` sets the log file; without it the log goes to
 `./gtdb_migration_tk.log`. `parse_options()` returns an exit code, and `main()`
-only calls `sys.exit()` when it is non-zero. Today only `ncbi_sync` returns a
+only calls `sys.exit()` when it is non-zero. Today only `ncbi_genome_sync` returns a
 meaningful code (see README for the table); every other command returns 0.
 
-### `ncbi_sync.py` is deliberately self-contained
+### `ncbi_genome_sync.py` is deliberately self-contained
 
 It is a standalone script grafted onto the toolkit. It owns its argparse via
 `add_sync_arguments()`, which both `build_parser()` (standalone) and `__main__.py`
@@ -78,8 +78,8 @@ summary file is `summary`, and the tests depend on that.
 
 ### NCBI assembly summary files are read by column name, never by position
 
-`ncbi_utils.py` is the single reader, shared by `ncbi_sync.py` and
-`ftp_manager.py`. It finds columns from the `#assembly_accession ...` header
+`ncbi_utils.py` is the single reader, shared by `ncbi_genome_sync.py` and
+`ncbi_ftp_manager.py`. It finds columns from the `#assembly_accession ...` header
 row and refuses a table with no header (`BadInput`, a `ValueError`). NCBI has
 grown `assembly_summary.txt` from 23 to 38 columns; a positional reader would
 silently mirror the wrong files or build a release from the wrong genomes. Do
@@ -87,10 +87,10 @@ not slice these tables by index anywhere.
 
 ### Release update: deciding vs. doing
 
-`ftp_manager.py` decides which genomes belong in a release (`RefSeqManager`
+`ncbi_ftp_manager.py` decides which genomes belong in a release (`RefSeqManager`
 wants every "latest" RefSeq assembly; `GenBankManager` wants GenBank assemblies
 only where RefSeq falls short, logging each decision to `gca_selection.log`).
-`ftp_manager_tools.py` `FTPTools` does the resulting copying, comparing and
+`ncbi_ftp_manager_tools.py` `FTPTools` does the resulting copying, comparing and
 reporting, and is the only consumer of `config.py`.
 
 Genome IDs are compared in canonical form via
@@ -142,8 +142,8 @@ shadowed by it and never importable. Put small shared helpers in
 
 - Every source file starts with the GPLv3 header block. Docstrings use
   numpy-style `Parameters` sections and end with an `@return:` line.
-- Module docstrings in the refactored modules (`ftp_manager.py`,
-  `ncbi_utils.py`, `config.py`, `ncbi_sync.py`) explain *why* the code is
+- Module docstrings in the refactored modules (`ncbi_ftp_manager.py`,
+  `ncbi_utils.py`, `config.py`, `ncbi_genome_sync.py`) explain *why* the code is
   shaped as it is, not what it does. Keep that up when touching them.
 - Tests live in `tests/test_<module>.py`, one `TempDirCase` base for anything
   touching disk. Test names read as sentences about the contract that would

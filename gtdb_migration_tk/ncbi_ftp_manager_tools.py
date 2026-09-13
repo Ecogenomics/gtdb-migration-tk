@@ -22,7 +22,9 @@ import gzip
 import hashlib
 import multiprocessing as mp
 import shutil
+import tarfile
 import tempfile
+import urllib.request
 from multiprocessing.queues import Queue
 from pathlib import Path
 from typing import Dict, List, TextIO, Tuple
@@ -32,11 +34,213 @@ from tqdm import tqdm
 from gtdb_migration_tk import config
 
 
+# Table of the genomes selected for a new GTDB release, written by the
+# select_genomes command into its output directory. It is gzipped, as the files
+# of a release are once they are part of GTDB, and because the table runs to one
+# row per genome in NCBI: a few million lines of highly repetitive accessions and
+# FTP paths, which compress to roughly a tenth of their size.
+SELECTED_GENOMES_FILE = 'gtdb_selected_genomes.tsv.gz'
+
+# One row of that table: accession, ftp_path, version_status,
+# excluded_from_refseq, gbrs_paired_asm, notes.
+SelectedRow = Tuple[str, str, str, str, str, str]
+
+# Header of the table. It is '#'-prefixed so the file is read by the same
+# readers as an NCBI assembly summary file, which skip comment lines, while
+# still naming its columns for anyone opening it.
+#
+# The first four columns are exactly the four ncbi_genome_sync reads, in the
+# order it writes its own .fail and .bad files, so this table can be handed
+# straight to it as the list of genomes to mirror. It needs assembly_accession
+# and ftp_path, and renders assembly_status.txt from version_status and
+# excluded_from_refseq; the last two columns it simply ignores, as every reader
+# of these tables locates columns by name.
+#
+# The notes column carries what would otherwise be a per genome warning in the
+# log. It exists because NCBI's summary files routinely pair a GenBank assembly
+# with a RefSeq assembly they do not themselves list: too common to report one
+# line at a time, and too material to drop, since it is the reason a genome that
+# appears to be covered by RefSeq was taken from GenBank instead.
+SELECTED_GENOMES_HEADER = ('#assembly_accession\tftp_path\tversion_status'
+                           '\texcluded_from_refseq\tgbrs_paired_asm\tnotes')
+
+
+# --------------------------------------------------------------- NCBI metadata sync
+
+# Where NCBI publishes the data a GTDB release is built from.
+NCBI_FTP = 'https://ftp.ncbi.nlm.nih.gov'
+TAXDUMP_URL = NCBI_FTP + '/pub/taxonomy/taxdump.tar.gz'
+
+# The two NCBI databases and the two domains GTDB takes from them. Fungal
+# genomes are downloaded by a separate procedure and are not included here.
+NCBI_DATABASES = ('refseq', 'genbank')
+NCBI_DOMAINS = ('archaea', 'bacteria')
+
+# Read a request in 1 MiB blocks: the assembly summary of GenBank bacteria alone
+# is well over a gigabyte, so nothing may be held in memory whole.
+DOWNLOAD_BLOCK = 1024 * 1024
+
+# A download that stalls outright must fail rather than hold the release up
+# overnight; NCBI answers in well under this even when busy.
+DOWNLOAD_TIMEOUT = 300
+
+
+def assembly_summary_downloads() -> List[Tuple[str, str, str, str]]:
+    """The assembly summary files to download, and the names to save them under.
+
+    NCBI calls every one of these files assembly_summary.txt, distinguishing them
+    only by the directory they sit in, so downloading the four into one directory
+    means putting the database and domain back into the name. The names built
+    here are the ones GTDB has always used, and are the names select_genomes
+    reads a file's database from, so the two must agree.
+
+    The database and domain are returned alongside, as the taxonomy step wants
+    these four files individually rather than as a list. The names end in .gz
+    because the files are compressed as they are downloaded; every reader of an
+    assembly summary goes through ncbi_utils.open_summary(), which takes either
+    form.
+
+    @return: list of (database, domain, url, file name), RefSeq before GenBank.
+    """
+
+    return [(database, domain,
+             '{}/genomes/{}/{}/assembly_summary.txt'.format(NCBI_FTP, database, domain),
+             'assembly_summary_{}_{}.txt.gz'.format(domain, database))
+            for database in NCBI_DATABASES
+            for domain in NCBI_DOMAINS]
+
+
+def file_checksum(file_path: str, checksum) -> str:
+    """Feed a file to a hash object a block at a time.
+
+    Parameters
+    ----------
+    file_path : str
+        File to checksum.
+    checksum : hashlib hash
+        Hash object to update.
+
+    @return: hex digest of the file.
+    """
+
+    try:
+        with open(file_path, 'rb') as file_reader:
+            for block in iter(lambda: file_reader.read(DOWNLOAD_BLOCK), b''):
+                checksum.update(block)
+    except OSError as e:
+        raise OSError('cannot read {}'.format(file_path)) from e
+
+    return checksum.hexdigest()
+
+
+def download_file(url: str,
+                  output_file: str,
+                  quiet: bool = False,
+                  compress: bool = False) -> int:
+    """Download a URL to a file, leaving nothing behind if it fails.
+
+    The bytes go to a neighbouring .partial file which is renamed into place only
+    once the transfer has finished, so an interrupted download cannot leave a
+    truncated file that every later step will read as complete. The rename is
+    atomic within a directory, which is why the temporary file is not in /tmp.
+
+    With compress set the file is gzipped as it arrives rather than afterwards,
+    so the uncompressed form never has to exist on disk -- which for the GenBank
+    bacteria summary is a gigabyte and a half that would be written only to be
+    read back and thrown away.
+
+    Parameters
+    ----------
+    url : str
+        URL to download.
+    output_file : str
+        File to write.
+    quiet : bool
+        Suppress the progress bar.
+    compress : bool
+        Gzip the file as it is written.
+
+    @return: number of bytes received, before any compression.
+    """
+
+    partial = output_file + '.partial'
+    written = 0
+    open_output = gzip.open if compress else open
+
+    try:
+        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response:
+            # absent on a chunked response, in which case the bar shows a rate
+            # and a byte count but no percentage
+            total = int(response.headers.get('Content-Length') or 0)
+            with open_output(partial, 'wb') as handle, tqdm(
+                    total=total or None, unit='B', unit_scale=True, unit_divisor=1024,
+                    desc=os.path.basename(output_file), disable=quiet) as progress:
+                for block in iter(lambda: response.read(DOWNLOAD_BLOCK), b''):
+                    handle.write(block)
+                    written += len(block)
+                    progress.update(len(block))
+
+        if total and written != total:
+            raise OSError('expected {:,} bytes but received {:,}'.format(total, written))
+    except Exception:
+        if os.path.exists(partial):
+            os.remove(partial)
+        raise
+
+    os.replace(partial, output_file)
+
+    return written
+
+
+def extract_tarball(tarball: str, output_dir: str) -> None:
+    """Extract a gzipped tarball into a directory.
+
+    Parameters
+    ----------
+    tarball : str
+        Gzipped tar archive to extract.
+    output_dir : str
+        Directory to extract into; created if it does not exist.
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    with tarfile.open(tarball, 'r:gz') as archive:
+        try:
+            # refuses members that would write outside output_dir; the argument
+            # is only available from Python 3.11.4, and is the default from 3.14
+            archive.extractall(path=output_dir, filter='data')
+        except TypeError:
+            archive.extractall(path=output_dir)
+
+
+def write_selected_genomes(selected: List[SelectedRow], output_file: str) -> None:
+    """Write the table of genomes selected for a new GTDB release.
+
+    Rows are sorted by accession rather than left in the order the summary files
+    were read, so that the tables of two releases can be compared directly to
+    see what the new release gained and lost.
+
+    Parameters
+    ----------
+    selected : list
+        Selected genomes as (accession, ftp_path, version_status,
+        excluded_from_refseq, gbrs_paired_asm, notes) rows.
+    output_file : str
+        Gzipped table to write.
+    """
+
+    with gzip.open(output_file, 'wt') as table:
+        table.write(SELECTED_GENOMES_HEADER + '\n')
+        for row in sorted(selected):
+            table.write('\t'.join(row) + '\n')
+
+
 class FTPTools():
     """Carry out the genome directory changes required by a GTDB release.
 
     The decision about which genomes belong in a release is made by the managers
-    in ftp_manager.py; this class performs the resulting work. Genomes new to
+    in ncbi_ftp_manager.py; this class performs the resulting work. Genomes new to
     NCBI are copied into the new release, genomes that have gone are recorded,
     and genomes held by both the previous release and NCBI are compared file by
     file so that only those whose sequence data has actually changed are taken
@@ -645,11 +849,4 @@ class FTPTools():
         @return: hex digest of the file.
         """
 
-        try:
-            with open(file_path, 'rb') as file_reader:
-                for block in iter(lambda: file_reader.read(1024 * 1024), b''):
-                    checksum.update(block)
-        except OSError as e:
-            raise OSError('cannot read {}'.format(file_path)) from e
-
-        return checksum.hexdigest()
+        return file_checksum(file_path, checksum)

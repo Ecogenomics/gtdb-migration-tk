@@ -32,7 +32,7 @@ That file -- the genome_dirs file written by generate_genome_dir_file() and
 consumed by nearly every other command -- is the lingua franca between steps:
 one line per genome, accession, absolute path, canonical accession. Downstream
 readers split on tabs and ignore any further columns (see
-ftp_manager._populate_genomes_dict), so columns may be appended but never
+ncbi_ftp_manager._populate_genomes_dict), so columns may be appended but never
 reordered.
 
 Walking the mirror is also the only way to find out what it does not hold, so

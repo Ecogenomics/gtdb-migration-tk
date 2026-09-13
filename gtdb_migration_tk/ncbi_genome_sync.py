@@ -1,5 +1,5 @@
 r"""
-ncbi_sync.py — manifest-driven NCBI genome mirror sync, with optional md5 verification.
+ncbi_genome_sync.py — manifest-driven NCBI genome mirror sync, with optional md5 verification.
 
 WHY NOT wget
 ------------
@@ -204,7 +204,7 @@ The input is an NCBI assembly_summary.txt: the ftp_path column says where each
 assembly lives, and assembly_accession names it. Both are found BY NAME from the
 `#assembly_accession ...` header row, never by column number -- NCBI has grown that file
 from 23 columns to 38, and pinning ftp_path to field 20 breaks silently on the next one.
-The reading of those tables is in ncbi_utils.py, shared with ftp_manager.py.
+The reading of those tables is in ncbi_utils.py, shared with ncbi_ftp_manager.py.
 
     ftp_path "na" or empty   the assembly has no public directory (suppressed, or
                              not yet released). NOT an error: whole-domain summaries
@@ -336,12 +336,12 @@ EXIT CODES
 
 USAGE
 -----
-    ./ncbi_sync.py assembly_summary_archaea_genbank.txt         # sync a whole domain
-    ./ncbi_sync.py assembly_summary.txt --verify                # sync, then verify
-    ./ncbi_sync.py assembly_summary.txt --verify-only --delete
-    ./ncbi_sync.py assembly_summary.txt --full                  # re-hash + repair all
-    ./ncbi_sync.py assembly_summary.fail                        # retry failures
-    ./ncbi_sync.py assembly_summary.bad                         # re-sync bad genomes
+    ./ncbi_genome_sync.py assembly_summary_archaea_genbank.txt         # sync a whole domain
+    ./ncbi_genome_sync.py assembly_summary.txt --verify                # sync, then verify
+    ./ncbi_genome_sync.py assembly_summary.txt --verify-only --delete
+    ./ncbi_genome_sync.py assembly_summary.txt --full                  # re-hash + repair all
+    ./ncbi_genome_sync.py assembly_summary.fail                        # retry failures
+    ./ncbi_genome_sync.py assembly_summary.bad                         # re-sync bad genomes
 
   A subset is just a subset of the table: keep the '#assembly_accession ...' header line
   and grep/awk out the rows you want.
@@ -496,7 +496,7 @@ ASSEMBLY_ANOMALIES = frozenset((
 
 # Run log. This module does NOT configure logging: it logs into the GTDB Migration Tk
 # log, set up by gtdb_migration_tk.biolib_lite.logger.logger_setup() before the command
-# runs. "timestamp.ncbi_sync" is a child of the 'timestamp' logger that toolkit
+# runs. "timestamp.ncbi_genome_sync" is a child of the 'timestamp' logger that toolkit
 # configures, so records propagate to its handlers (the GTDB log file and the console)
 # without this module owning, opening or closing any of them. The logging module is used
 # for its thread safety: workers log concurrently from the pool.
@@ -514,7 +514,7 @@ ASSEMBLY_ANOMALIES = frozenset((
 # the final summary -- bounded by runtime, not by list size.
 #
 # Set LOG_LEVEL to logging.DEBUG to get the per-genome detail back when debugging.
-LOG = logging.getLogger("timestamp.ncbi_sync")
+LOG = logging.getLogger("timestamp.ncbi_genome_sync")
 LOG_LEVEL = logging.INFO
 LOG.setLevel(LOG_LEVEL)
 
@@ -1826,6 +1826,11 @@ def run_verify(genomes, args, base, bad_path):
     return 0
 
 
+# The lock file keeps its original name though the command is now ncbi_genome_sync:
+# it is mutual exclusion between processes, and two versions of this tool running on
+# one mirror must contend for the SAME file. Renaming it would let a sync started
+# before an upgrade and one started after hold different locks and run concurrently,
+# which is the race lock_root exists to prevent.
 def lock_root(root, name=".ncbi_sync.lock", what="sync"):
     """Hold <root>/<name> for the life of this process; None if another run has it.
 
@@ -1858,7 +1863,7 @@ def lock_root(root, name=".ncbi_sync.lock", what="sync"):
 
 def add_sync_arguments(parser, extra_required=None):
     """Register the sync options on `parser`, which may be a standalone ArgumentParser
-    or a subparser of a larger tool (gtdb_migration_tk ncbi_sync). Kept separate from
+    or a subparser of a larger tool (gtdb_migration_tk ncbi_genome_sync). Kept separate from
     build_parser() so both entry points share one definition of the interface.
 
     Arguments go into the two groups the rest of the toolkit uses -- "required named
@@ -1944,10 +1949,17 @@ def validate_args(args):
 
 
 def output_paths(args):
-    """(base, fail, bad, log) for this run, named after the input. .txt/.tsv are stripped;
-    .fail/.bad deliberately are NOT, so a retry run's outputs sit beside the files it is
-    retrying instead of overwriting them (x.bad -> x.bad.log, x.bad.fail)."""
+    """(base, fail, bad, log) for this run, named after the input. .gz then .txt/.tsv are
+    stripped; .fail/.bad deliberately are NOT, so a retry run's outputs sit beside the files
+    it is retrying instead of overwriting them (x.bad -> x.bad.log, x.bad.fail).
+
+    .gz comes off first because GTDB stores the summaries compressed -- the table
+    select_genomes writes is gtdb_selected_genomes.tsv.gz -- and these outputs are written
+    as plain text, so naming them x.tsv.gz.fail would claim a compression they do not have.
+    Taking it off first also leaves x.bad.gz yielding x.bad.fail, keeping the retry rule."""
     base = os.path.basename(args.summary)
+    if base.endswith(".gz"):
+        base = base[:-len(".gz")]
     for suffix in (".txt", ".tsv"):
         if base.endswith(suffix):
             base = base[:-len(suffix)]

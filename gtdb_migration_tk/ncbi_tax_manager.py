@@ -40,6 +40,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
+from gtdb_migration_tk.ncbi_utils import open_summary
 
 
 class TaxonomyNCBI(object):
@@ -53,7 +54,12 @@ class TaxonomyNCBI(object):
         self.bacterial_division = '0'
         self.unassigned_division = '8'
 
-        self.logger = logging.getLogger('rich')
+        # 'timestamp' is the toolkit's logger, the one logger_setup() attaches the
+        # --log file to. This was the only manager reporting to a logger of its
+        # own, so everything the taxonomy step had to say -- including which
+        # assemblies it skipped -- went to the console and never reached the log
+        # file of the command that ran it.
+        self.logger = logging.getLogger('timestamp')
 
     def _assembly_organism_name(self,
                                 refseq_archaea_assembly_file,
@@ -70,7 +76,7 @@ class TaxonomyNCBI(object):
             if assembly_file is None:
                 continue
 
-            with open(assembly_file) as f:
+            with open_summary(assembly_file) as f:
                 f.readline()
                 header = f.readline().strip().split('\t')
                 org_name_index = header.index('organism_name')
@@ -103,7 +109,7 @@ class TaxonomyNCBI(object):
             if assembly_file is None:
                 continue
 
-            with open(assembly_file) as f:
+            with open_summary(assembly_file) as f:
                 headers = f.readline().strip().split('\t')
                 try:
                     taxid_index = headers.index('taxid')
@@ -384,13 +390,45 @@ class TaxonomyNCBI(object):
 
         fout_consistent.close()
 
-        # Sanity check particular filters
-        fout = open('failed_filters.tsv', 'w')
+        # Sanity check particular filters.
+        #
+        # Written beside the taxonomy it describes rather than to the working
+        # directory. The wiki procedure runs this from inside the output
+        # directory, where the two are the same place; ncbi_metadata_sync runs it
+        # in process and passes absolute paths, and the report was landing
+        # wherever the operator happened to be standing. A relative
+        # output_consistent still yields the working directory, as before.
+        fout = open(os.path.join(os.path.dirname(output_consistent),
+                                 'failed_filters.tsv'), 'w')
         for sp in failed_filters:
             fout.write(sp + '\n')
         fout.close()
 
         self.logger.info(f'Genomes with a consistent taxonomy written to: {output_consistent}')
+
+    def _report_invalid_taxids(self, invalid_taxids):
+        """Report assemblies whose taxid is absent from the NCBI taxonomy.
+
+        Reported as a count rather than a line per assembly. NCBI publishes the
+        assembly summaries and the taxonomy dump independently, so an assembly
+        registered after the dump was built names a taxid the dump does not
+        carry; on a full release that is thousands of genomes, and a line each
+        buries every other warning in the log.
+
+        Parameters
+        ----------
+        invalid_taxids : list
+            (assembly accession, taxid) of each assembly that was skipped.
+        """
+
+        if not invalid_taxids:
+            return
+
+        examples = ', '.join('{} (taxid {})'.format(accession, tax_id)
+                             for accession, tax_id in invalid_taxids[:3])
+        self.logger.warning(
+            '{:,} assemblies have a taxid absent from the NCBI taxonomy and were '
+            'skipped, e.g. {}.'.format(len(invalid_taxids), examples))
 
     def parse_ncbi_taxonomy(self,
             taxonomy_dir,
@@ -428,6 +466,7 @@ class TaxonomyNCBI(object):
         fout = open(taxonomy_file, 'w')
 
         self.logger.info(f'Number of assemblies: {len(assembly_to_tax_id)}')
+        invalid_taxids = []
         for assembly_accession, tax_id in assembly_to_tax_id.items():
             # traverse taxonomy tree to the root which is 'cellular organism' for genomes,
             # 'other sequences' for plasmids, and 'unclassified sequences' for metagenomic libraries
@@ -435,7 +474,7 @@ class TaxonomyNCBI(object):
             cur_tax_id = tax_id
 
             if cur_tax_id not in name_records:
-                self.logger.warning('Assembly {} has an invalid taxid: {}'.format(assembly_accession, tax_id))
+                invalid_taxids.append((assembly_accession, tax_id))
                 continue
 
             roots = ['cellular organisms', 'other sequences',
@@ -489,6 +528,8 @@ class TaxonomyNCBI(object):
 
         fout.close()
 
+        self._report_invalid_taxids(invalid_taxids)
+
         self.standardize_taxonomy(taxonomy_file,
                                   keep_subranks,
                                   output_prefix + '_standardized.tsv')
@@ -523,6 +564,7 @@ class TaxonomyNCBI(object):
 
         self.logger.info('Number of assemblies: %d' % len(assembly_to_tax_id))
         d={}
+        invalid_taxids = []
         for assembly_accession, tax_id in assembly_to_tax_id.items():
             d[assembly_accession] ={}
             # traverse taxonomy tree to the root which is 'cellular organism' for genomes,
@@ -531,7 +573,7 @@ class TaxonomyNCBI(object):
             cur_tax_id = tax_id
 
             if cur_tax_id not in name_records:
-                self.logger.warning('Assembly %s has an invalid taxid: %s' % (assembly_accession, tax_id))
+                invalid_taxids.append((assembly_accession, tax_id))
                 continue
 
             roots = ['cellular organisms', 'other sequences',
@@ -565,6 +607,8 @@ class TaxonomyNCBI(object):
                     print(taxonomy)
 
             list_ranks_taxonomy.extend(taxonomy)
+
+        self._report_invalid_taxids(invalid_taxids)
 
         only_names, _only_taxid = zip(*set(list_ranks_taxonomy))
 

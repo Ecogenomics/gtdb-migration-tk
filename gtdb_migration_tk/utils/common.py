@@ -1,3 +1,4 @@
+import gzip
 from collections import namedtuple
 
 
@@ -54,13 +55,24 @@ def read_gtdb_metadata(metadata_file, fields):
 def count_lines(file_path: str) -> int:
     """Count the lines in a file, in order to size a progress bar.
 
+    Gzipped files are counted too: GTDB stores the NCBI assembly summaries
+    compressed, and reading one as text would decode gzip bytes as UTF-8 and
+    fail rather than merely miscount.
+
+    Newlines are counted in binary blocks rather than by iterating lines, which
+    for a file of this size is several times faster and needs no decoding at all
+    -- the caller only wants a number to size a bar with.
+
     Parameters
     ----------
     file_path : str
-        File to read.
+        File to read, optionally gzipped.
 
     @return: number of lines in the file.
     """
 
-    with open(file_path, 'r') as check_file:
-        return sum(1 for _ in check_file)
+    opener = gzip.open if file_path.endswith('.gz') else open
+
+    with opener(file_path, 'rb') as check_file:
+        return sum(block.count(b'\n')
+                   for block in iter(lambda: check_file.read(1024 * 1024), b''))
