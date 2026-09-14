@@ -100,7 +100,7 @@ copy of the selection. `update_genomes` runs it once per prefix into one output
 directory, with reports named for the prefix (`report_gcf.log`,
 `gcf_to_review.log`, `report_gca.log`, `gca_to_review.log`).
 `ncbi_ftp_manager_tools.py` `FTPTools` does the resulting copying, comparing and
-reporting, and is the only consumer of `config.py`.
+reporting.
 
 Genome IDs are compared in canonical form via
 `biolib_lite.common.canonical_gid()`: `GCF_005435135.1` and `GCA_005435135.1`
@@ -117,17 +117,21 @@ them. Whether a tree holds what it should is `ncbi_genome_sync --verify`.
 
 ### `config.py` is the only place a reference database version lives
 
-`PFAM_VERSION` and `TIGRFAM_VERSION` there derive every directory name, file
-suffix and symlink used for marker annotations, and `SILVA_VERSION` and
-`LTP_VERSION` the directories holding classified rRNA genes; those two, plus
-`prodigal` and `trna`, are `GTDB_DERIVED_DIRS_TO_COPY`, the derived data carried
-across when a genome comes from the previous release rather than from NCBI. `tests/test_config.py` asserts
-the derivation holds. `marker_manager.py` does not read `config.py`: the
-`hmmsearch` and `top_hit` commands take `--folder_suffix` (e.g. `33.1_lite`)
-and build `pfam_<suffix>/` and `_pfam_<suffix>.tsv` from it. That suffix must
-match what `config.py` derives (`pfam_33.1_lite`), otherwise `FTPTools` creates
-symlinks to annotation files that were never written. The same applies to
-`rna_silva` and `rna_ltp`, which take `--silva_version` and `--ltp_version`.
+`PFAM_VERSION`, `TIGRFAM_VERSION`, `SILVA_VERSION` and `LTP_VERSION` each name
+the directory inside a genome directory that database's results are written to.
+Two names derive from them, and `tests/test_config.py` asserts the derivation
+holds: `MARKER_FOLDER_SUFFIX` (`{'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}`)
+is the default `--folder_suffix` of `hmmsearch` and `top_hit`, resolved in
+`main.py`, so those commands write `prodigal/pfam_33.1_lite/` unless told
+otherwise; `GTDB_DERIVED_DIRS_TO_COPY` is the derived data `FTPTools` carries
+across from the previous release when a genome's FASTA is unchanged. The
+Pfam/TIGRFAM results and the version-free symlinks to them
+(`prodigal/<gid>_pfam_lite.tsv.gz -> ./pfam_33.1_lite/...`) live inside
+`prodigal/`, so copying `prodigal/` with `symlinks=True` carries them intact;
+they are not listed separately. `marker_manager.py` itself does not read
+`config.py`; it builds `pfam_<suffix>/` from whatever suffix it is handed.
+`rna_silva` and `rna_ltp` take `--silva_version` and `--ltp_version` on the
+command line, and those must match `config.py`.
 
 ### Database access
 

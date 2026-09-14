@@ -324,7 +324,8 @@ class FTPTools():
             target_dir = os.path.join(new_directory, os.path.relpath(path_record, ftp_dir))
             self.report.write("{0}\tnew\n".format(gid))
             if not self.dry_run:
-                shutil.copytree(path_record, target_dir, ignore = shutil.ignore_patterns(*self.ignore_extensions))
+                shutil.copytree(path_record, target_dir, symlinks=True,
+                                ignore=shutil.ignore_patterns(*self.ignore_extensions))
 
     def remove_genomes(self, removed_genomes: Dict[str, str]) -> None:
         """Record the genomes NCBI no longer offers.
@@ -520,7 +521,7 @@ class FTPTools():
             # FASTA changed, so an existing target is replaced rather than added to
             if os.path.exists(target_dir):
                 shutil.rmtree(target_dir)
-            shutil.copytree(ftp_dir, target_dir)
+            shutil.copytree(ftp_dir, target_dir, symlinks=True)
 
         if ftp_md5 != prev_md5:
             return '{}\t{}\n'.format(genome_record, STATUS_FASTA_CHANGED)
@@ -534,7 +535,10 @@ class FTPTools():
                         genome_record, derived, prev_gtdb_dir))
                 continue
             if not self.dry_run:
-                shutil.copytree(source, os.path.join(target_dir, derived))
+                # symlinks kept as symlinks: prodigal/ holds version-free links to the
+                # marker results beside them, and following them would copy each
+                # Pfam and TIGRFAM file twice
+                shutil.copytree(source, os.path.join(target_dir, derived), symlinks=True)
 
         return '{}\t{}\n'.format(genome_record, STATUS_FASTA_UNCHANGED)
 

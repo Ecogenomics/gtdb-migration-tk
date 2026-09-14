@@ -23,6 +23,7 @@ from gtdb_migration_tk.busco_manager import BuscoManager
 from gtdb_migration_tk.checkm_database_manager import CheckMDatabaseManager
 from gtdb_migration_tk.checkm_manager import CheckMManager
 from gtdb_migration_tk.curation_lists import CurationLists
+from gtdb_migration_tk import config
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
 from gtdb_migration_tk.ncbi_ftp_manager import (GENBANK_PREFIX,
@@ -165,15 +166,35 @@ class OptionsParser():
         p = ProdigalManager()
         p.run_prodigal_check(options.gtdb_genome_path_file)
 
+    def marker_folder_suffix(self, options):
+        """The --folder_suffix given, or the one config.py declares for --db.
+
+        Parameters
+        ----------
+        options : argparse.Namespace
+            Options of hmmsearch or top_hit.
+
+        @return: suffix naming the marker directory and files, e.g. 33.1_lite.
+        """
+
+        if options.folder_suffix:
+            return options.folder_suffix
+
+        folder_suffix = config.MARKER_FOLDER_SUFFIX[options.db]
+        self.logger.info('Using the {} version declared in config.py: --folder_suffix {}'.format(
+            options.db, folder_suffix))
+        return folder_suffix
+
     def run_hmmsearch(self, options):
         p = MarkerManager(options.tmp_dir, options.cpus)
         p.run_hmmsearch(options.gtdb_genome_path_file,
-                        options.report, options.db,options.folder_suffix,options.hmm_db_path)
+                        options.report, options.db, self.marker_folder_suffix(options),
+                        options.hmm_db_path)
         self.logger.info('Done.')
 
     def run_tophit(self, options):
         p = MarkerManager('/tmp', options.cpus)
-        p.run_tophit(options.gtdb_genome_path_file, options.db,options.folder_suffix)
+        p.run_tophit(options.gtdb_genome_path_file, options.db, self.marker_folder_suffix(options))
 
     def generate_metadata(self, options):
         p = MetadataManager(options.cpus)

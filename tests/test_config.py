@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Offline unit tests for config.py.
 
-A marker version left behind in one place produces genome directories whose
-symlinks point at annotation files that were never written, and nothing fails
-loudly when it happens. These tests assert that every name in config.py derives
-from the two version constants, so bumping a version cannot leave part of the
-vocabulary on the old release.
+A database version left behind in one place makes one command write a directory
+another command does not read, and nothing fails loudly when it happens. These
+tests assert that every derived name in config.py follows from the version
+constants, so bumping a version cannot leave part of the vocabulary on the old
+release.
 """
 
 import unittest
@@ -14,25 +14,20 @@ from gtdb_migration_tk import config
 
 
 class DerivedNames(unittest.TestCase):
-    def test_every_name_carries_the_configured_version(self):
-        for name, expected in (('PFAM_MARKER_DIR', config.PFAM_VERSION),
-                               ('PFAM_EXT', config.PFAM_VERSION),
-                               ('PFAM_TOPHIT_EXT', config.PFAM_VERSION),
-                               ('TIGRFAM_MARKER_DIR', config.TIGRFAM_VERSION),
-                               ('TIGRFAM_EXT', config.TIGRFAM_VERSION),
-                               ('TIGRFAM_TOPHIT_EXT', config.TIGRFAM_VERSION),
-                               ('TIGRFAM_OUT_EXT', config.TIGRFAM_VERSION)):
-            self.assertIn(expected, getattr(config, name), name)
+    def test_marker_folder_suffixes_carry_the_configured_versions(self):
+        # hmmsearch and top_hit default to these, so they decide which
+        # pfam_*/tigrfam_* directory a release is annotated into
+        self.assertIn(config.PFAM_VERSION, config.MARKER_FOLDER_SUFFIX['pfam'])
+        self.assertIn(config.TIGRFAM_VERSION, config.MARKER_FOLDER_SUFFIX['tigrfam'])
 
-    def test_symlink_names_carry_no_version(self):
-        # downstream code opens a genome's hits without knowing the release,
-        # so only the symlink target may change when a version is bumped
-        for name in ('PFAM_SYMLINK_EXT', 'PFAM_TOPHIT_SYMLINK_EXT',
-                     'TIGRFAM_SYMLINK_EXT', 'TIGRFAM_TOPHIT_SYMLINK_EXT',
-                     'TIGRFAM_OUT_SYMLINK_EXT'):
-            value = getattr(config, name)
-            self.assertNotIn(config.PFAM_VERSION, value, name)
-            self.assertNotIn(config.TIGRFAM_VERSION, value, name)
+    def test_marker_folder_suffixes_name_the_lite_sets(self):
+        # GTDB searches the reduced marker sets; marker_manager keys the
+        # version-free symlink names off this suffix
+        for suffix in config.MARKER_FOLDER_SUFFIX.values():
+            self.assertTrue(suffix.endswith('_lite'), suffix)
+
+    def test_marker_folder_suffixes_are_keyed_by_the_db_option(self):
+        self.assertEqual(sorted(config.MARKER_FOLDER_SUFFIX), ['pfam', 'tigrfam'])
 
     def test_derived_directories_carry_the_configured_rrna_versions(self):
         # a genome directory may hold the results of several SILVA or LTP
@@ -48,14 +43,9 @@ class DerivedNames(unittest.TestCase):
         for name in ('prodigal', 'trna'):
             self.assertIn(name, config.GTDB_DERIVED_DIRS_TO_COPY)
 
-    def test_hmmer_extensions_track_both_versions(self):
-        joined = ''.join(config.HMMER_EXTS_TO_GZIP)
-        self.assertIn(config.PFAM_VERSION, joined)
-        self.assertIn(config.TIGRFAM_VERSION, joined)
-
     def test_a_version_bump_reaches_every_derived_name(self):
-        # execute config.py with the two version literals rewritten: every name
-        # that follows must change with them, or it repeats a literal instead of
+        # execute config.py with the version literals rewritten: every name that
+        # follows must change with them, or it repeats a literal instead of
         # deriving from the constant, which is the mistake this guards against
         source = open(config.__file__).read()
         source = source.replace("PFAM_VERSION = '33.1'", "PFAM_VERSION = '37.0'")
@@ -66,16 +56,8 @@ class DerivedNames(unittest.TestCase):
         bumped = {}
         exec(compile(source, config.__file__, 'exec'), bumped)
 
-        self.assertEqual(bumped['PFAM_MARKER_DIR'], 'pfam_37.0_lite')
-        self.assertEqual(bumped['PFAM_EXT'], '_pfam_37.0_lite.tsv.gz')
-        self.assertEqual(bumped['PFAM_TOPHIT_EXT'], '_pfam_37.0_lite_tophit.tsv.gz')
-        self.assertEqual(bumped['TIGRFAM_MARKER_DIR'], 'tigrfam_16.0_lite')
-        self.assertEqual(bumped['TIGRFAM_OUT_EXT'], '_tigrfam_16.0_lite.out.gz')
-        self.assertEqual(bumped['HMMER_EXTS_TO_GZIP'],
-                         ('_pfam_37.0.tsv', '_pfam_37.0_tophit.tsv',
-                          '_tigrfam_16.0.out', '_tigrfam_16.0.tsv',
-                          '_tigrfam_16.0_tophit.tsv'))
-
+        self.assertEqual(bumped['MARKER_FOLDER_SUFFIX'],
+                         {'pfam': '37.0_lite', 'tigrfam': '16.0_lite'})
         self.assertEqual(bumped['GTDB_DERIVED_DIRS_TO_COPY'],
                          ('prodigal', 'rna_silva_140.0', 'trna', 'rna_ltp_06_2026'))
 
@@ -83,7 +65,12 @@ class DerivedNames(unittest.TestCase):
         for name, value in bumped.items():
             if name.startswith('_'):
                 continue
-            text = ''.join(value) if isinstance(value, tuple) else str(value)
+            if isinstance(value, dict):
+                text = ''.join(value.values())
+            elif isinstance(value, tuple):
+                text = ''.join(value)
+            else:
+                text = str(value)
             for superseded in ('33.1', '15.0', '138.2', '10_2024'):
                 self.assertNotIn(superseded, text, name)
 
@@ -92,12 +79,8 @@ class CurrentValues(unittest.TestCase):
     """The names in use for the current release, as a guard against typos."""
 
     def test_names_match_the_directories_on_disk(self):
-        self.assertEqual(config.PFAM_MARKER_DIR, 'pfam_33.1_lite')
-        self.assertEqual(config.TIGRFAM_MARKER_DIR, 'tigrfam_15.0_lite')
-        self.assertEqual(config.HMMER_EXTS_TO_GZIP,
-                         ('_pfam_33.1.tsv', '_pfam_33.1_tophit.tsv',
-                          '_tigrfam_15.0.out', '_tigrfam_15.0.tsv',
-                          '_tigrfam_15.0_tophit.tsv'))
+        self.assertEqual(config.MARKER_FOLDER_SUFFIX,
+                         {'pfam': '33.1_lite', 'tigrfam': '15.0_lite'})
         self.assertEqual(config.GTDB_DERIVED_DIRS_TO_COPY,
                          ('prodigal', 'rna_silva_138.2', 'trna', 'rna_ltp_10_2024'))
 

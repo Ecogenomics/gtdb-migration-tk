@@ -281,30 +281,27 @@ SILVA_VERSION = '138.2'
 LTP_VERSION = '10_2024'
 ```
 
-Every other name derives from these four — the `pfam_33.1_lite` and
-`tigrfam_15.0_lite` directories written inside each genome directory, the
-suffixes of the search result files they hold, the HMMER output that is gzipped
-when a genome is taken from the FTP site, and the `rna_silva_138.2` and
-`rna_ltp_10_2024` directories holding the classified rRNA genes. Updating a
-database is therefore a matter of editing one value and re-running the commands
-that use it; nothing else in the code carries a version number.
-
-The derived data a genome directory holds is listed by
-`GTDB_DERIVED_DIRS_TO_COPY`:
+Each names the directory, inside a genome directory, that the results of that
+database are written to. Two names derive from them:
 
 ```python
+MARKER_FOLDER_SUFFIX = {'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}
 GTDB_DERIVED_DIRS_TO_COPY = ('prodigal', 'rna_silva_138.2', 'trna', 'rna_ltp_10_2024')
 ```
 
-These are the directories carried across when a genome comes from the previous
-release rather than from NCBI, which happens when its FASTA files are unchanged
-and the derived data is therefore still valid.
+`MARKER_FOLDER_SUFFIX` is the default `--folder_suffix` of `hmmsearch` and
+`top_hit`, so by default they write `prodigal/pfam_33.1_lite/` and
+`prodigal/tigrfam_15.0_lite/`; pass `--folder_suffix` only to annotate against
+a version other than the declared one. `GTDB_DERIVED_DIRS_TO_COPY` lists the
+derived data `update_genomes` carries across from the previous release when a
+genome's genomic FASTA is unchanged; the Pfam and TIGRFAM results travel inside
+`prodigal/`, so they are not listed separately.
 
-Note that `hmmsearch` and `top_hit` take the marker version on the command line
-(`--folder_suffix`), so the value passed there must agree with `config.py`. If
-they disagree, genome directories end up with symlinks pointing at annotation
-files that were never written. `rna_silva` and `rna_ltp` likewise take their
-database version on the command line.
+`rna_silva` and `rna_ltp` still take their database version on the command line
+(`--silva_version`, `--ltp_version`), and the value passed must match
+`config.py`, or the directories carried across will not be the ones later steps
+read. Updating a database is a matter of editing one value here and re-running
+the commands that use it; nothing else in the code carries a version number.
 
 ## Repository layout
 
