@@ -25,7 +25,9 @@ from gtdb_migration_tk.checkm_manager import CheckMManager
 from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
-from gtdb_migration_tk.ncbi_ftp_manager import (RefSeqManager, GenBankManager,
+from gtdb_migration_tk.ncbi_ftp_manager import (GENBANK_PREFIX,
+                                                REFSEQ_PREFIX,
+                                                GenomeManager,
                                                 MetadataSyncManager,
                                                 SelectedGenomesManager)
 from gtdb_migration_tk.lpsn import LPSN
@@ -35,7 +37,7 @@ from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeType
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
-from gtdb_migration_tk.ncbi_genome_sync import main as ncbi_genome_sync_main
+from gtdb_migration_tk.ncbi_genome_sync import NCBIGenomeSync
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.propagate_taxonomy import Propagate
@@ -137,33 +139,23 @@ class OptionsParser():
         p = SelectedGenomesManager(options.output_dir)
         p.run(options.new_list_genomes)
 
-    def clean_ftp(self, options):
-        p = DirectoryManager()
-        p.clean_ftp(options.new_list_genomes,
-                    options.ftp_genome_dirs,
-                    options.report_dir,
-                    options.taxonomy_file)
-
     def parse_genome_directory(self, options):
         p = DirectoryManager()
+        check_file_exists(options.gtdb_selected_genomes)
         p.generate_genome_dir_file(options.genome_dir,
                                    options.output_file,
-                                   options.new_list_genomes,
+                                   options.gtdb_selected_genomes,
                                    options.cpus)
 
-    def update_refseq_from_ftp_files(self, options):
-        p = RefSeqManager(options.output_dir, options.dry_run, options.cpus)
-        p.run_comparison(
-            options.ftp_refseq, options.output_dir, options.ftp_directory_file, options.old_genome_dirs,
-            options.arc_assembly_summary, options.bac_assembly_summary)
+    def update_genomes(self, options):
+        check_file_exists(options.ftp_genome_dirs)
+        check_file_exists(options.old_genome_dirs)
+        make_sure_path_exists(options.output_dir)
 
-    def update_genbank_from_ftp_files(self, options):
-        print(options)
-        p = GenBankManager(options.output_dir, options.dry_run, options.cpus)
-        p.run_comparison(
-            options.ftp_genbank, options.output_dir, options.ftp_genbank_genome_dirs,
-            options.old_genbank_genome_dirs, options.new_refseq_genome_dirs,
-            options.arc_assembly_summary, options.bac_assembly_summary)
+        # RefSeq then GenBank, each with its own reports in the one output directory
+        for accession_prefix in (REFSEQ_PREFIX, GENBANK_PREFIX):
+            p = GenomeManager(accession_prefix, options.output_dir, options.dry_run, options.cpus)
+            p.run_comparison(options.ftp_dir, options.ftp_genome_dirs, options.old_genome_dirs)
 
     def run_prodigal(self, options):
         p = ProdigalManager(options.tmp_dir, options.cpus)
@@ -374,12 +366,13 @@ class OptionsParser():
         p.check_db_population(options.metadata, options.id_last_genome, options.log)
 
     def ncbi_genome_sync(self, options):
-        """Sync a local mirror of NCBI genomes from an assembly summary file.
+        """Sync a local mirror of NCBI genomes against the selected genomes table.
 
-        Returns the exit code from ncbi_genome_sync rather than raising: callers distinguish
-        75 (locked, retry later), 130/143 (signalled) and 74 (I/O) from a plain failure.
+        Returns the exit code rather than raising: callers distinguish 75 (locked, retry
+        later), 130/143 (signalled) and 74 (I/O) from a plain failure.
         """
-        return ncbi_genome_sync_main(options)
+        p = NCBIGenomeSync(options)
+        return p.run()
 
     def parse_options(self, options):
         """Parse user options and call the correct pipeline(s)"""
@@ -395,8 +388,6 @@ class OptionsParser():
             self.ncbi_metadata_sync(options)
         elif options.subparser_name == 'select_genomes':
             self.select_genomes(options)
-        elif options.subparser_name == 'clean_ftp':
-            self.clean_ftp(options)
         elif options.subparser_name == 'prodigal_check':
             self.run_prodigal_check(options)
         elif options.subparser_name == 'hmmsearch':
@@ -463,10 +454,8 @@ class OptionsParser():
             self.update_ncbitax_db(options)
         elif options.subparser_name == 'update_type_designation':
             self.update_type_designation(options)
-        elif options.subparser_name == 'update_refseq':
-            self.update_refseq_from_ftp_files(options)
-        elif options.subparser_name == 'update_genbank':
-            self.update_genbank_from_ftp_files(options)
+        elif options.subparser_name == 'update_genomes':
+            self.update_genomes(options)
         elif options.subparser_name == 'lpsn':
             if options.lpsn_subparser_name == 'lpsn_wf':
                 self.full_lpsn_wf(options)

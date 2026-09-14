@@ -94,23 +94,47 @@ written to `./gtdb_migration_tk.log`. Add `--silent` to suppress console output.
 
 ### Example: mirroring NCBI
 
-`ncbi_genome_sync` mirrors the genomes listed in an NCBI assembly summary, verifying
-every file against the `md5checksums.txt` that NCBI publishes alongside it:
+`ncbi_genome_sync` keeps a mirror equal to the table `select_genomes` wrote: every
+genome directory under `--root` that the table does not list is removed, then every
+genome it lists is fetched or brought up to date, each file verified against the
+`md5checksums.txt` that NCBI publishes alongside it:
 
 ```bash
-# sync a whole domain
-gtdb_migration_tk ncbi_genome_sync -s assembly_summary_archaea_genbank.txt \
+S=/srv/db/gtdb/metadata/release237/ncbi/gtdb_selected_genomes.tsv.gz
+
+# see what a run would do: how many directories removed, genomes added, genomes
+# already present -- and the removal list in <base>.rm_dry_run. Changes nothing.
+gtdb_migration_tk ncbi_genome_sync --gtdb_selected_genomes $S \
+    --root /srv/db/gtdb/genomes -l ./logs/sync.log --dry-run
+
+# remove what the selection does not list, then sync what it does
+gtdb_migration_tk ncbi_genome_sync --gtdb_selected_genomes $S \
     --root /srv/db/gtdb/genomes -l ./logs/sync.log
 
-# sync, then md5-verify everything that was written
-gtdb_migration_tk ncbi_genome_sync -s assembly_summary.txt --verify -l ./logs/sync.log
-
-# retry only the genomes that failed last time
-gtdb_migration_tk ncbi_genome_sync -s assembly_summary.fail -l ./logs/sync.log
+# retry only the genomes that failed last time; a retry never removes anything
+gtdb_migration_tk ncbi_genome_sync --retry ./logs/gtdb_selected_genomes.fail \
+    --root /srv/db/gtdb/genomes -l ./logs/sync.log
 ```
 
-Failures are written to `<base>.fail` in the same column format as the input, so
-the failure file can be fed straight back in as the next run's input.
+`<base>.fail`, `<base>.bad` and `<base>.rm` (what was removed, each directory recorded
+before it is deleted) are written to the `--log` directory. A failure file carries the
+same columns as the input, so it can be fed back in with `--retry`. Never give a `.fail`
+or any subset of the table to `--gtdb_selected_genomes`: the table defines what the
+mirror should hold, and everything it leaves out would be removed. An empty table is
+refused for that reason.
+
+A genome NCBI lists but serves no directory for (`ftp_path` is `na`) is not selected from
+either database — there would be nothing to mirror. Because RefSeq covers a genome only
+when the RefSeq assembly was itself selected, an unserved RefSeq genome does not suppress
+its GenBank counterpart: that copy is selected instead, with the `notes` column naming the
+RefSeq assembly it stands in for and why. Without this the genome would leave the release
+entirely, even though NCBI holds it under its GenBank accession.
+
+`--verify` and `--verify-only` check both halves of "the mirror equals the selection":
+every listed genome present and md5-clean (failures to `<base>.bad`), and nothing else
+present (directories the selection does not list to `<base>.extra`). Either fails the
+verification; `--delete` removes both. Given `--retry`, only the listed genomes are
+verified.
 
 `ncbi_genome_sync` returns meaningful exit codes so it can be driven from a wrapper
 script:
@@ -118,7 +142,7 @@ script:
 | Code | Meaning |
 | --- | --- |
 | `0` | everything synced / verified clean |
-| `1` | some genomes failed — see `<base>.fail` / `<base>.bad` |
+| `1` | some genomes failed — see `<base>.fail` / `<base>.bad` — or verification found directories the selection does not list — see `<base>.extra` |
 | `2` | usage error, or a malformed assembly summary |
 | `74` | filesystem refused the write (disk full, quota, read-only) |
 | `75` | NCBI is throttling this host, or another sync holds `--root` — retry later |
@@ -135,9 +159,7 @@ Run `gtdb_migration_tk <command> -h` for the arguments of any command.
 | `ncbi_metadata_sync` | Download the NCBI taxonomy and assembly summary files a release is built from, and generate the 7 rank NCBI taxonomy |
 | `ncbi_genome_sync` | Sync NCBI data to a local directory |
 | `select_genomes` | Select the NCBI genomes which will comprise the new GTDB release |
-| `update_refseq` | Update RefSeq genomes |
-| `update_genbank` | Update GenBank genomes |
-| `clean_ftp` | Clean the FTP directory (remove missing genomes) |
+| `update_genomes` | Update RefSeq and GenBank genomes from the NCBI FTP mirror, carrying derived data across where the genomic FASTA is unchanged |
 | `list_genomes` | Produce file indicating the directory of each genome |
 
 ### Gene calling and annotation
@@ -247,27 +269,42 @@ python -m unittest tests.test_ncbi_genome_sync
 
 The tests are offline — they use no network access and no mirror directory.
 
-## Marker database versions
+## Reference database versions
 
-The Pfam and TIGRFAM releases GTDB annotates against are set in
+The releases of the marker and rRNA databases GTDB annotates against are set in
 [gtdb_migration_tk/config.py](gtdb_migration_tk/config.py):
 
 ```python
 PFAM_VERSION = '33.1'
 TIGRFAM_VERSION = '15.0'
+SILVA_VERSION = '138.2'
+LTP_VERSION = '10_2024'
 ```
 
-Every other name derives from these two — the `pfam_33.1_lite` and
+Every other name derives from these four — the `pfam_33.1_lite` and
 `tigrfam_15.0_lite` directories written inside each genome directory, the
-suffixes of the search result files they hold, and the HMMER output that is
-gzipped when a genome is taken from the FTP site. Updating a marker database is
-therefore a matter of editing these two values and re-running the annotation
-commands; nothing else in the code carries a version number.
+suffixes of the search result files they hold, the HMMER output that is gzipped
+when a genome is taken from the FTP site, and the `rna_silva_138.2` and
+`rna_ltp_10_2024` directories holding the classified rRNA genes. Updating a
+database is therefore a matter of editing one value and re-running the commands
+that use it; nothing else in the code carries a version number.
+
+The derived data a genome directory holds is listed by
+`GTDB_DERIVED_DIRS_TO_COPY`:
+
+```python
+GTDB_DERIVED_DIRS_TO_COPY = ('prodigal', 'rna_silva_138.2', 'trna', 'rna_ltp_10_2024')
+```
+
+These are the directories carried across when a genome comes from the previous
+release rather than from NCBI, which happens when its FASTA files are unchanged
+and the derived data is therefore still valid.
 
 Note that `hmmsearch` and `top_hit` take the marker version on the command line
-(`--hmm_version`), so the value passed there must agree with `config.py`. If
+(`--folder_suffix`), so the value passed there must agree with `config.py`. If
 they disagree, genome directories end up with symlinks pointing at annotation
-files that were never written.
+files that were never written. `rna_silva` and `rna_ltp` likewise take their
+database version on the command line.
 
 ## Repository layout
 
@@ -276,7 +313,7 @@ bin/gtdb_migration_tk      executable wrapper; defers to gtdb_migration_tk/__mai
 gtdb_migration_tk/
     __main__.py            command-line interface: argument definitions
     main.py                OptionsParser: dispatches each command to its manager
-    config.py              Pfam/TIGRFAM versions; settings that change per release
+    config.py              Pfam/TIGRFAM/SILVA/LTP versions; settings that change per release
     *_manager.py           implementation of each pipeline step
     biolib_lite/           vendored helpers (sequence I/O, taxonomy, parallelism)
     genometk_lite/         vendored genome metadata helpers

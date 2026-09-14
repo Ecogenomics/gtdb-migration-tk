@@ -27,14 +27,26 @@ below is the whole of that change.
 
 Note that the search results themselves are produced by the hmmsearch and
 top_hit commands, which take the marker version on the command line rather than
-from here (see --hmm_version). The values below describe what the genome
+from here (see --folder_suffix). The values below describe what the genome
 directories are expected to contain once those commands have run, and they must
 agree with what was passed to them.
+
+The SILVA and LTP releases the rRNA genes of a genome are classified against
+change on the same footing, and for the same reason: their version numbers name
+the directory the results are written to inside each genome directory. Those
+directories are taken on the command line too, by rna_silva and rna_ltp
+(--silva_version, --ltp_version).
 """
 
 # Version of each marker database GTDB currently annotates against.
 PFAM_VERSION = '33.1'
 TIGRFAM_VERSION = '15.0'
+
+# Version of each rRNA database GTDB currently classifies against. These name the
+# directory holding the results, as several releases of a database may sit side
+# by side in a genome directory.
+SILVA_VERSION = '138.2'
+LTP_VERSION = '10_2024'
 
 # Directory within a genome directory holding its search results. GTDB searches
 # the reduced ("lite") marker sets, hence the suffix.
@@ -66,4 +78,16 @@ HMMER_EXTS_TO_GZIP = (
     '_tigrfam_{}.out'.format(TIGRFAM_VERSION),
     '_tigrfam_{}.tsv'.format(TIGRFAM_VERSION),
     '_tigrfam_{}_tophit.tsv'.format(TIGRFAM_VERSION),
+)
+
+# Directories of derived data within a genome directory, carried across when a
+# genome is taken from the previous release rather than from NCBI. A genome is
+# only carried across when its FASTA files are unchanged, which is what makes the
+# derived data still valid; copying it is what saves the release from calling
+# genes and searching rRNA databases again for every genome GTDB already holds.
+GTDB_DERIVED_DIRS_TO_COPY = (
+    'prodigal',
+    'rna_silva_{}'.format(SILVA_VERSION),
+    'trna',
+    'rna_ltp_{}'.format(LTP_VERSION),
 )

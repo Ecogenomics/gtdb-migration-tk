@@ -22,17 +22,17 @@ the GTDB genome directories to match.
 Each GTDB release is built by comparing the genomes held by the previous release
 with the genomes NCBI currently offers on its FTP site. Genomes NCBI no longer
 offers are removed, genomes new to NCBI are copied across, and genomes held by
-both are checked for files that have changed since the previous release. The
-copying, deleting, and checksumming is done by FTPTools in ncbi_ftp_manager_tools.py;
-what lives here is the decision about which genomes are wanted in the first place.
+both are checked for a changed genomic FASTA since the previous release. The
+copying and comparing is done by FTPTools in ncbi_ftp_manager_tools.py; what
+lives here is the bookkeeping of which genomes fall into which of those three
+groups, done by GenomeManager.
 
-RefSeq and GenBank are handled separately, by RefSeqManager and GenBankManager,
-because that decision differs between them. Every RefSeq assembly flagged by NCBI
-as the latest version is wanted. GenBank is only consulted where RefSeq falls
-short, so a GenBank assembly is wanted when it has no RefSeq counterpart, or when
-that counterpart is missing from the FTP site or holds no genome assembly. Each
-GenBank decision is recorded in gca_selection.log, as the selection is the part of
-a release that is hardest to reconstruct after the fact.
+GenomeManager decides nothing beyond what the genome directory files of the
+mirror and of the previous release already say. The mirror is built from the
+selection, and the selection is where a genome is accepted or passed over, so
+every genome the mirror holds is wanted. RefSeq and GenBank are handled in
+separate runs of the same code, told apart by the accession prefix (GCF or GCA),
+because the update of each is reported separately; nothing else differs.
 
 MetadataSyncManager comes before any of that: it downloads the NCBI taxonomy and
 the assembly summary files a release is selected from, and decides nothing.
@@ -64,13 +64,9 @@ from gtdb_migration_tk.ncbi_ftp_manager_tools import (
     assembly_summary_downloads, download_file, extract_tarball, file_checksum,
     write_selected_genomes)
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
-from gtdb_migration_tk.ncbi_utils import genome_assembly_file, read_assembly_summary
+from gtdb_migration_tk.ncbi_utils import count_summary_rows, read_assembly_summary
 from gtdb_migration_tk.utils.common import count_lines
 
-
-# Domain labels held in the genome domain map passed to FTPTools.
-ARCHAEA = 'Archaea'
-BACTERIA = 'Bacteria'
 
 # Accession prefixes of the two NCBI databases.
 REFSEQ_PREFIX = 'GCF'
@@ -108,6 +104,30 @@ TAXONOMY_DIR = 'taxonomy'
 STANDARDISED_TAXONOMY_DIR = 'standardised_taxonomy'
 
 
+def has_ftp_path(ftp_path: str) -> bool:
+    """Report whether NCBI serves a directory for an assembly.
+
+    NCBI writes 'na' in ftp_path for an assembly it lists but does not serve, and the
+    column can be empty in an older file. Such a genome cannot be mirrored, so it is not
+    selected: the table select_genomes writes is the list ncbi_genome_sync fetches from,
+    and a row with nothing to fetch would be reported as skipped by every run of it
+    forever.
+
+    This is deliberately the same test ncbi_genome_sync.read_assembly_summary() applies
+    when deciding a row has "no usable ftp_path". The two must agree, or the selection
+    would promise genomes the sync then refuses.
+
+    Parameters
+    ----------
+    ftp_path : str
+        Value of the ftp_path column of an assembly summary file.
+
+    @return: True if the assembly has a directory at NCBI.
+    """
+
+    return bool(ftp_path) and ftp_path.lower() != 'na'
+
+
 def is_multi_isolate(excluded_from_refseq: str) -> bool:
     """Report whether an assembly belongs to a large multi-isolate project.
 
@@ -122,78 +142,92 @@ def is_multi_isolate(excluded_from_refseq: str) -> bool:
     return any(tag in excluded_from_refseq for tag in MULTI_ISOLATE_TAGS)
 
 
-class GenericManager:
-    """Base class for comparing a GTDB release to the genomes held at NCBI.
+class GenomeManager:
+    """Update the GTDB copy of one NCBI database (RefSeq or GenBank) from the mirror.
 
-    Subclasses (RefSeqManager, GenBankManager) are responsible for deciding
-    which accessions at NCBI are of interest for the new release. This class
-    provides the operations common to both: reading the genomes of the previous
-    release and of the FTP site, and determining which genomes must be removed,
-    added, or checked for updates relative to that release. Genomes are tracked
-    as dictionaries mapping an accession to its genome directory.
+    Every genome held by the FTP mirror is of interest, the mirror being a copy
+    of the genomes selected for the release, so genome selection is simply a
+    matter of reading its genome directory file. Genomes are then added,
+    removed, or compared relative to the previous GTDB release. Genomes are
+    tracked as dictionaries mapping an accession to its genome directory.
+
+    One instance handles one database, named by the accession prefix it is
+    given: only genomes with that prefix are read from either genome directory
+    file, and the reports carry the prefix in their names so the RefSeq and
+    GenBank runs of a release sit side by side in one output directory.
     """
 
-    def __init__(self):
-        """Initialise the domain map shared with the FTP tools."""
+    def __init__(self,
+                 accession_prefix: str,
+                 new_genome_dir: str,
+                 dry_run: bool = False,
+                 cpus: int = 1) -> None:
+        """Record which database is handled and where the release is written.
 
-        self.genome_domain_dict = {}
+        Parameters
+        ----------
+        accession_prefix : str
+            Accession prefix of the database of interest, REFSEQ_PREFIX or
+            GENBANK_PREFIX.
+        new_genome_dir : str
+            Output directory for the new release, where reports are written.
+        dry_run : bool
+            Report the changes that would be made without modifying any files.
+        cpus : int
+            Number of processes used when comparing genomes.
+        """
+
+        self.accession_prefix = accession_prefix
+        self.new_genome_dir = new_genome_dir
+        self.dry_run = dry_run
+        self.cpus = cpus
         self.logger = logging.getLogger('timestamp')
 
-    def load_previous_records(self, old_genome_dirs: str) -> Dict[str, str]:
-        """Read the genome directory file of the previous GTDB release.
+    def report_file(self) -> str:
+        """Report recording the fate of every genome of this database.
+
+        @return: path of the report, named for the accession prefix.
+        """
+
+        return os.path.join(self.new_genome_dir,
+                            'report_{}.log'.format(self.accession_prefix.lower()))
+
+    def review_file(self) -> str:
+        """Report recording genomes of this database needing manual attention.
+
+        @return: path of the report, named for the accession prefix.
+        """
+
+        return os.path.join(self.new_genome_dir,
+                            '{}_to_review.log'.format(self.accession_prefix.lower()))
+
+    def load_genome_dirs(self, genome_dirs_file: str) -> Dict[str, str]:
+        """Read the genomes of this database from a genome directory file.
+
+        The file describes a whole release, RefSeq and GenBank together; only
+        the genomes with this manager's accession prefix are kept.
 
         Parameters
         ----------
-        old_genome_dirs : str
-            Genome directory file (accession, path) for the previous release.
+        genome_dirs_file : str
+            Genome directory file (accession, path) of the mirror or of a release.
 
-        @return: dict of accession to genome directory for the previous release.
+        @return: dict of accession to genome directory.
         """
 
-        with open(old_genome_dirs, 'r') as old_file:
-            old_genomes = {}
-            for old_line in old_file:
-                accession, path, *_ = old_line.split('\t')
-                old_genomes[accession] = path.strip()
+        self.logger.info('Reading {} genomes from {}:'.format(
+            self.accession_prefix, genome_dirs_file))
 
-        self.logger.info('Previous release: {:,} genomes.'.format(len(old_genomes)))
+        genome_paths = {}
+        with open(genome_dirs_file, 'r') as f:
+            for line in tqdm(f, total=count_lines(genome_dirs_file)):
+                gid, path, *_ = line.split('\t')
+                if gid.startswith(self.accession_prefix):
+                    genome_paths[gid] = path.strip()
 
-        return old_genomes
+        self.logger.info(' - identified {:,} genomes'.format(len(genome_paths)))
 
-    def load_ftp_records(self,
-                         ftp_genome_dirs: str,
-                         accession_prefix: str,
-                         accessions: Set[str]) -> Dict[str, str]:
-        """Read the genome directory file of the NCBI FTP site.
-
-        Only genomes selected for the new release are retained, so this is the
-        intersection of the genomes held on the FTP site with the accessions
-        identified from the NCBI assembly summary files.
-
-        Parameters
-        ----------
-        ftp_genome_dirs : str
-            Genome directory file (accession, path) for the FTP mirror.
-        accession_prefix : str
-            Accession prefix of the database of interest, i.e. GCF or GCA.
-        accessions : set
-            Accessions selected for the new release.
-
-        @return: dict of accession to genome directory for genomes on the FTP site.
-        """
-
-        self.logger.info('Reading genomes on the FTP site.')
-
-        new_genomes = {}
-        with open(ftp_genome_dirs, 'r') as new_genome_dirs_file:
-            for new_line in tqdm(new_genome_dirs_file, total=count_lines(ftp_genome_dirs)):
-                gid, path, *_ = new_line.split('\t')
-                if gid.startswith(accession_prefix) and gid in accessions:
-                    new_genomes[gid] = path.strip()
-
-        self.logger.info('FTP site: {:,} genomes.'.format(len(new_genomes)))
-
-        return new_genomes
+        return genome_paths
 
     def generate_genomes_to_remove(self,
                                    new_genomes: Dict[str, str],
@@ -210,12 +244,11 @@ class GenericManager:
         @return: dict of accession to genome directory for genomes to remove.
         """
 
-        self.logger.info('Remove Genome Step')
-        removed_dict = {gid: old_genomes[gid]
-                        for gid in old_genomes.keys() - new_genomes.keys()}
-        self.logger.info('{0:,} genomes to remove'.format(len(removed_dict)))
+        removed_genomes = {gid: path for gid, path in old_genomes.items()
+                           if gid not in new_genomes}
+        self.logger.info('Identified {:,} genomes to remove.'.format(len(removed_genomes)))
 
-        return removed_dict
+        return removed_genomes
 
     def generate_genomes_to_add(self,
                                 new_genomes: Dict[str, str],
@@ -232,12 +265,11 @@ class GenericManager:
         @return: dict of accession to genome directory for genomes to add.
         """
 
-        self.logger.info('Add Genome Step')
-        added_dict = {gid: new_genomes[gid]
-                      for gid in new_genomes.keys() - old_genomes.keys()}
-        self.logger.info('{0:,} genomes to add'.format(len(added_dict)))
+        added_genomes = {gid: path for gid, path in new_genomes.items()
+                         if gid not in old_genomes}
+        self.logger.info('Identified {:,} genomes to add.'.format(len(added_genomes)))
 
-        return added_dict
+        return added_genomes
 
     def generate_genomes_to_compare(self,
                                     new_genomes: Dict[str, str],
@@ -257,350 +289,82 @@ class GenericManager:
         @return: list of accessions to compare between the two releases.
         """
 
-        self.logger.info('Update Genome Step')
-        intersect_list = list(old_genomes.keys() & new_genomes.keys())
-        self.logger.info('{:,} genomes to compare'.format(len(intersect_list)))
+        shared_genomes = list(old_genomes.keys() & new_genomes.keys())
+        self.logger.info('Identified {:,} genomes to compare.'.format(len(shared_genomes)))
 
-        return intersect_list
-
-
-class RefSeqManager(GenericManager):
-    """Update the GTDB copy of RefSeq (GCF) genomes from the NCBI FTP site.
-
-    All RefSeq assemblies flagged as the latest version are of interest, so
-    genome selection is simply a matter of reading the NCBI assembly summary
-    files. Genomes are then added, removed, or refreshed relative to the
-    previous GTDB release.
-    """
-
-    def __init__(self,
-                 new_refseq_dir: str,
-                 dry_run: bool = False,
-                 cpus: int = 1) -> None:
-        """Record where the new release and its reports are to be written.
-
-        Parameters
-        ----------
-        new_refseq_dir : str
-            Output directory for the new release, where reports are written.
-        dry_run : bool
-            Report the changes that would be made without modifying any files.
-        cpus : int
-            Number of processes used when comparing genomes.
-        """
-
-        super().__init__()
-        self.new_refseq_dir = new_refseq_dir
-        self.dry_run = dry_run
-        self.cpus = cpus
-
-    def parse_assembly_summary(self, assembly_summary: str) -> List[str]:
-        """Identify the latest assembly version of each RefSeq genome.
-
-        Parameters
-        ----------
-        assembly_summary : str
-            NCBI assembly summary file for a single domain.
-
-        @return: list of accessions flagged by NCBI as the latest version.
-        """
-
-        records = read_assembly_summary(assembly_summary,
-                                        'assembly_accession',
-                                        'version_status')
-
-        return [accession for accession, version_status in records
-                if version_status == 'latest']
+        return shared_genomes
 
     def run_comparison(self,
-                       ftp_refseq: str,
-                       new_refseq: str,
+                       ftp_dir: str,
                        ftp_genome_dirs: str,
-                       old_genome_dirs: str,
-                       archaea_assembly_summary: str,
-                       bacteria_assembly_summary: str) -> None:
-        """Update the GTDB genome directories to reflect the current RefSeq holdings.
+                       old_genome_dirs: str) -> None:
+        """Update the GTDB genome directories of this database to match the mirror.
 
-        Genomes on the FTP site that are flagged as the latest version are
-        compared to the previous GTDB release. Genomes no longer at NCBI are
-        removed, new genomes are copied across, and genomes common to both are
-        checked for changed files. Only directories containing
-        latest_assembly_versions, and not _assembly_structure, are of interest.
+        The genomes of the mirror are compared to those of the previous GTDB
+        release. Genomes no longer at NCBI are recorded as removed, new genomes
+        are copied across, and genomes common to both are checked for a changed
+        genomic FASTA and carried over with their derived data when it is not.
 
         Parameters
         ----------
-        ftp_refseq : str
-            Local mirror of the RefSeq portion of the NCBI FTP site.
-        new_refseq : str
-            Output directory for the new release.
+        ftp_dir : str
+            Root of the NCBI FTP mirror, replaced by the new release directory
+            to place each genome.
         ftp_genome_dirs : str
-            Genome directory file (accession, path) for the FTP mirror.
+            Genome directory file (accession, path) for the mirror.
         old_genome_dirs : str
             Genome directory file (accession, path) for the previous release.
-        archaea_assembly_summary : str
-            NCBI assembly summary file for archaeal genomes.
-        bacteria_assembly_summary : str
-            NCBI assembly summary file for bacterial genomes.
         """
+
+        self.logger.info('Updating {} genomes.'.format(self.accession_prefix))
 
         # reports are opened for the duration of the update so they are closed,
         # and their contents kept, if the update fails part way through
         with ExitStack() as reports:
-            self.report_gcf = reports.enter_context(
-                open(os.path.join(self.new_refseq_dir, 'report_gcf.log'), 'w', 1))
-            self.genomes_to_review = reports.enter_context(
-                open(os.path.join(self.new_refseq_dir, 'gid_to_review.log'), 'w', 1))
+            report = reports.enter_context(open(self.report_file(), 'w', 1))
+            genomes_to_review = reports.enter_context(open(self.review_file(), 'w', 1))
 
-            old_genomes = self.load_previous_records(old_genome_dirs)
+            old_genomes = self.load_genome_dirs(old_genome_dirs)
+            new_genomes = self.load_genome_dirs(ftp_genome_dirs)
 
-            # all genomes flagged by NCBI as the latest assembly version are of interest
-            for assembly_summary, domain in ((archaea_assembly_summary, ARCHAEA),
-                                             (bacteria_assembly_summary, BACTERIA)):
-                for accession in self.parse_assembly_summary(assembly_summary):
-                    self.genome_domain_dict[accession] = domain
-            self.logger.info('NCBI: {:,} latest assemblies.'.format(len(self.genome_domain_dict)))
+            ftptools = FTPTools(report, genomes_to_review, self.dry_run)
 
-            new_genomes = self.load_ftp_records(ftp_genome_dirs,
-                                                'GCF',
-                                                set(self.genome_domain_dict))
+            removed_genomes = self.generate_genomes_to_remove(new_genomes, old_genomes)
+            ftptools.remove_genomes(removed_genomes)
 
-            ftptools = FTPTools(self.report_gcf,
-                                self.genomes_to_review,
-                                self.genome_domain_dict,
-                                self.dry_run)
+            added_genomes = self.generate_genomes_to_add(new_genomes, old_genomes)
+            ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir)
 
-            # delete genomes from the Database
-            removed_dict = self.generate_genomes_to_remove(new_genomes, old_genomes)
-            ftptools.remove_genomes(removed_dict)
-
-            # new genomes in FTP
-            added_dict = self.generate_genomes_to_add(new_genomes, old_genomes)
-            ftptools.add_genomes(added_dict, ftp_refseq, new_refseq, self.genome_domain_dict)
-
-            intersect_list = self.generate_genomes_to_compare(new_genomes, old_genomes)
-            ftptools.compare_genomes(intersect_list, old_genomes, new_genomes,
-                                     ftp_refseq, new_refseq, self.cpus)
-
-
-class GenBankManager(GenericManager):
-    """Update the GTDB copy of GenBank (GCA) genomes from the NCBI FTP site.
-
-    RefSeq is preferred over GenBank, so only a subset of GenBank assemblies
-    are of interest: those with no RefSeq counterpart, and those whose RefSeq
-    counterpart is missing or incomplete on the FTP site. Selection decisions
-    are recorded in the gca_selection.log report.
-    """
-
-    def __init__(self,
-                 new_genbank_dir: str,
-                 dry_run: bool = False,
-                 cpus: int = 1) -> None:
-        """Record where the new release and its reports are to be written.
-
-        Parameters
-        ----------
-        new_genbank_dir : str
-            Output directory for the new release, where reports are written.
-        dry_run : bool
-            Report the changes that would be made without modifying any files.
-        cpus : int
-            Number of processes used when comparing genomes.
-        """
-
-        super().__init__()
-        self.new_genbank_dir = new_genbank_dir
-        self.dry_run = dry_run
-        self.cpus = cpus
-
-    def select_genbank_genomes(self,
-                               gbk_arc_assembly: str,
-                               gbk_bac_assembly: str,
-                               new_refseq_genome_dirs: str) -> List[str]:
-        """Identify GenBank genomes required to supplement the RefSeq genomes.
-
-        A GenBank assembly is retained when it is flagged by NCBI as the latest
-        version, is not a surveillance genome, and either has no RefSeq
-        counterpart, or has a counterpart that is absent from the FTP site. Each 
-        decision is written to gca_selection.log.
-
-        Parameters
-        ----------
-        gbk_arc_assembly : str
-            NCBI GenBank assembly summary file for archaeal genomes.
-        gbk_bac_assembly : str
-            NCBI GenBank assembly summary file for bacterial genomes.
-        new_refseq_genome_dirs : str
-            Genome directory file for the RefSeq genomes in the new release.
-
-        @return: list of GenBank accessions to include in the new release.
-        """
-
-        selected_gca = []
-        refseq_dirs = self._populate_genomes_dict(new_refseq_genome_dirs)
-        self.logger.info('Indexed {:,} RefSeq genome directories.'.format(len(refseq_dirs)))
-
-        for domain, assembly_file in ((ARCHAEA, gbk_arc_assembly),
-                                      (BACTERIA, gbk_bac_assembly)):
-            records = read_assembly_summary(assembly_file,
-                                            'assembly_accession',
-                                            'version_status',
-                                            'gbrs_paired_asm',
-                                            'excluded_from_refseq')
-
-            for gca_accession, version_status, paired_asm, excluded_from_refseq in tqdm(
-                    records,
-                    total=count_lines(assembly_file),
-                    desc='Selecting {} genomes'.format(domain.lower())):
-
-                if 'surveillance' in excluded_from_refseq:
-                    continue
-                elif version_status == 'latest':
-                    paired_gcf = canonical_gid(paired_asm)
-
-                    if paired_asm.startswith('GCF'):
-                        if paired_gcf in refseq_dirs:
-                            # if the RefSeq directory does not contain a genome assembly, we copy the GenBank directory instead
-                            if not os.path.exists(genome_assembly_file(refseq_dirs[paired_gcf])):
-                                self.select_gca.write(
-                                    '[Unexpected] {0} associated with {1}: {1} missed files in NCBI FTP directory\n'.format(gca_accession, paired_gcf))
-                                selected_gca.append(gca_accession)
-                        else:
-                            # if the RefSeq directory is not present, we copy the GenBank directory instead
-                            self.select_gca.write(
-                                '[Unexpected] {0} associated with {1}: {1} not present in NCBI FTP directory\n'.format(
-                                    gca_accession, paired_gcf))
-                            selected_gca.append(gca_accession)
-                    else:
-                        if canonical_gid(gca_accession) in refseq_dirs:
-                            # THIS SEEMS LIKE A LOGICAL ERROR SINCE WE DON'T REMOVE GENOMES FROM THE NCBI DIRECTORY!
-                            self.select_gca.write(
-                                '[Unexpected - Logical Error?] {0} skipped because {1} in RefSeq (although {0} has no paired assembly)\n'.format(
-                                    gca_accession, paired_gcf))
-                            continue
-                        else:
-                            # this is the expected case where the GenBank assembly does not have a paired RefSeq assembly
-                            # so we must use the GenBank assembly
-                            selected_gca.append(gca_accession)
-
-                self.genome_domain_dict[gca_accession] = domain
-
-        self.logger.info('Selected {:,} GenBank genomes.'.format(len(selected_gca)))
-
-        return selected_gca
-
-    def run_comparison(self,
-                       ftp_genbank: str,
-                       new_genbank: str,
-                       ftp_genbank_genome_dirs: str,
-                       old_genbank_genome_dirs: str,
-                       new_refseq_genome_dirs: str,
-                       gbk_arc_assembly: str,
-                       gbk_bac_assembly: str) -> None:
-        """Update the GTDB genome directories to reflect the current GenBank holdings.
-
-        GenBank genomes not already covered by RefSeq are compared to the
-        previous GTDB release. Genomes no longer at NCBI are removed, new
-        genomes are copied across, and genomes common to both are checked for
-        changed files. Only directories containing latest_assembly_versions,
-        and not _assembly_structure, are of interest.
-
-        Parameters
-        ----------
-        ftp_genbank : str
-            Local mirror of the GenBank portion of the NCBI FTP site.
-        new_genbank : str
-            Output directory for the new release.
-        ftp_genbank_genome_dirs : str
-            Genome directory file (accession, path) for the FTP mirror.
-        old_genbank_genome_dirs : str
-            Genome directory file (accession, path) for the previous release.
-        new_refseq_genome_dirs : str
-            Genome directory file for the RefSeq genomes in the new release.
-        gbk_arc_assembly : str
-            NCBI GenBank assembly summary file for archaeal genomes.
-        gbk_bac_assembly : str
-            NCBI GenBank assembly summary file for bacterial genomes.
-        """
-
-        # reports are opened for the duration of the update so they are closed,
-        # and their contents kept, if the update fails part way through
-        with ExitStack() as reports:
-            self.report = reports.enter_context(
-                open(os.path.join(self.new_genbank_dir, 'extra_gbk_report_gcf.log'), 'w', 1))
-            self.genomes_to_review = reports.enter_context(
-                open(os.path.join(self.new_genbank_dir, 'gcaid_to_review.log'), 'w', 1))
-            self.select_gca = reports.enter_context(
-                open(os.path.join(self.new_genbank_dir, 'gca_selection.log'), 'w', 1))
-
-            old_genomes = self.load_previous_records(old_genbank_genome_dirs)
-
-            selected_gca = self.select_genbank_genomes(gbk_arc_assembly,
-                                                       gbk_bac_assembly,
-                                                       new_refseq_genome_dirs)
-
-            new_genomes = self.load_ftp_records(ftp_genbank_genome_dirs,
-                                                'GCA',
-                                                set(selected_gca))
-
-            ftptools = FTPTools(self.report,
-                                self.genomes_to_review,
-                                self.genome_domain_dict,
-                                self.dry_run)
-
-            # delete genomes from the Database
-            removed_dict = self.generate_genomes_to_remove(new_genomes, old_genomes)
-            ftptools.remove_genomes(removed_dict)
-
-            # new genomes in FTP
-            added_dict = self.generate_genomes_to_add(new_genomes, old_genomes)
-            ftptools.add_genomes(added_dict, ftp_genbank, new_genbank, self.genome_domain_dict)
-
-            intersect_list = self.generate_genomes_to_compare(new_genomes, old_genomes)
-            ftptools.compare_genomes(intersect_list, old_genomes, new_genomes,
-                                     ftp_genbank, new_genbank, self.cpus)
-
-    def _populate_genomes_dict(self, genome_dirs_file: str) -> Dict[str, str]:
-        """Index genome directories by their canonical accession.
-
-        NCBI gives paired GenBank and RefSeq assemblies the same 9 digit number,
-        so reducing an accession to its canonical form (GCF_005435135.1 and
-        GCA_005435135.1 both become G005435135) is what allows a GenBank genome
-        to be matched to its RefSeq counterpart, and vice versa.
-
-        Parameters
-        ----------
-        genome_dirs_file : str
-            Genome directory file (accession, path).
-
-        @return: dict of canonical accession to genome directory.
-        """
-
-        genome_dirs = {}
-        with open(genome_dirs_file, 'r') as list_dirs:
-            for line in list_dirs:
-                accession, path, *_ = line.split('\t')
-                genome_dirs[canonical_gid(accession)] = path.rstrip()
-
-        return genome_dirs
+            shared_genomes = self.generate_genomes_to_compare(new_genomes, old_genomes)
+            ftptools.compare_genomes(shared_genomes, old_genomes, new_genomes,
+                                     ftp_dir, self.new_genome_dir, self.cpus)
 
 
 class SelectedGenomesManager:
     """Select the NCBI genomes belonging in a GTDB release, from the summary files alone.
 
-    This answers the same question as RefSeqManager and GenBankManager, but
-    without reference to a previous release or to the FTP mirror: the NCBI
-    assembly summary files are the only input, and the answer is a table of the
-    genomes wanted. Nothing is copied, compared, or deleted, so the selection can
-    be produced and reviewed before any part of a release is built.
+    This is the one decision in a release about which genomes are wanted, and
+    it is made without reference to a previous release or to the FTP mirror: the
+    NCBI assembly summary files are the only input, and the answer is a table of
+    the genomes wanted. Nothing is copied, compared, or deleted, so the selection
+    can be produced and reviewed before any part of a release is built; the sync
+    then mirrors exactly this table, and GenomeManager updates the release from
+    that mirror without deciding anything further.
 
-    The rule is the one GenBankManager applies, reduced to what a summary file
-    alone can support. Every RefSeq assembly is wanted. A GenBank assembly is
-    wanted only where RefSeq does not already cover the genome and the assembly
-    is not part of a large multi-isolate project, those projects being the
-    thousands of near-identical isolates NCBI excludes from RefSeq and which
-    GTDB does not want either. The checks GenBankManager makes against the
-    contents of a RefSeq genome directory have no counterpart here, as no
-    directory is consulted.
+    Every RefSeq assembly is wanted. A GenBank assembly is wanted only where
+    RefSeq does not already cover the genome and the assembly is not part of a
+    large multi-isolate project, those projects being the thousands of
+    near-identical isolates NCBI excludes from RefSeq and which GTDB does not
+    want either.
+
+    A genome NCBI lists but does not serve -- ftp_path 'na' -- is not selected
+    from either database: there is nothing to mirror, and the table this writes
+    is what ncbi_genome_sync fetches from. That cuts both ways, and the second
+    way is the point: RefSeq covers a genome only if the RefSeq assembly was
+    itself selected, so a GenBank assembly whose RefSeq counterpart has no
+    ftp_path is NOT covered and is selected in its place. The alternative would
+    drop the genome from the release entirely -- NCBI holds it, under its
+    GenBank accession, and nothing else would carry it.
 
     Two assumptions the rule rests on are verified rather than trusted, since a
     summary file that breaks either yields a plausible looking but wrong
@@ -617,12 +381,16 @@ class SelectedGenomesManager:
     selection is directly the list of genomes to mirror: nothing has to be joined
     back against the NCBI summary files to sync what was chosen.
 
-    A third discrepancy is recorded but not acted on. NCBI regularly pairs a
+A third discrepancy is recorded but not acted on. NCBI regularly pairs a
     GenBank assembly with a RefSeq assembly that its own summary files do not
     list, which is an error in those files rather than anything about the genome.
     The genome is selected, since nothing else covers it, and the pairing is
     written to the notes column of its row: reporting each one in the log would
-    bury the failures that do need attention.
+    bury the failures that do need attention. A GenBank assembly taken in place
+    of a RefSeq assembly that WAS listed but not selected carries a note too, and
+    a different one, naming the reason the RefSeq assembly was passed over --
+    those two look identical in the table otherwise, and only one of them is
+    NCBI's mistake.
     """
 
     def __init__(self, output_dir: str) -> None:
@@ -657,7 +425,7 @@ class SelectedGenomesManager:
                                         'ftp_path')
 
         return tqdm(records,
-                    total=count_lines(assembly_summary),
+                    total=count_summary_rows(assembly_summary),
                     desc='Selecting genomes from {}'.format(
                         os.path.basename(assembly_summary)))
 
@@ -734,7 +502,8 @@ class SelectedGenomesManager:
         return refseq_files, genbank_files
 
     def select_refseq(self,
-                      refseq_files: List[str]) -> Tuple[List[SelectedRow], Set[str]]:
+                      refseq_files: List[str]
+                      ) -> Tuple[List[SelectedRow], Set[str], Dict[str, str]]:
         """Select the RefSeq genomes of the new release.
 
         Every RefSeq assembly is wanted, so this is a matter of reading the
@@ -751,14 +520,20 @@ class SelectedGenomesManager:
             NCBI RefSeq assembly summary files describing the new release.
 
         @return: tuple of the selected rows (accession, ftp_path, version_status,
-            excluded_from_refseq, gbrs_paired_asm, notes) and the canonical
-            accessions they cover.
+            excluded_from_refseq, gbrs_paired_asm, notes), the canonical accessions
+            they cover, and the canonical accession of every RefSeq genome that was
+            read but NOT selected, mapped to why. select_genbank needs both: the
+            first says which genomes need no GenBank copy, the second explains, in
+            the notes column, why a genome that appears to have a RefSeq assembly
+            was taken from GenBank anyway.
         """
 
         selected = []
         covered = set()
+        dropped = {}
         read = 0
         misfiled = 0
+        no_ftp_path = 0
 
         for assembly_summary in refseq_files:
             for accession, version_status, paired_asm, excluded, ftp_path in self._read_summary(
@@ -772,29 +547,46 @@ class SelectedGenomesManager:
 
                 read += 1
 
+                gid = canonical_gid(accession)
+
                 if not self._is_latest(accession, version_status):
+                    dropped[gid] = 'version_status is "{}"'.format(version_status or 'na')
                     continue
 
                 if is_multi_isolate(excluded):
                     self.logger.warning(
                         '[Unexpected] RefSeq genome {} is annotated as "{}" and was not '
                         'selected.'.format(accession, excluded))
+                    dropped[gid] = 'annotated as "{}"'.format(excluded)
+                    continue
+
+                if not has_ftp_path(ftp_path):
+                    # NCBI lists it but serves no directory, so there is nothing to
+                    # mirror. Recorded in `dropped` so that its GenBank counterpart,
+                    # which may well have a directory, is selected in its place.
+                    no_ftp_path += 1
+                    dropped[gid] = 'NCBI serves no directory for it'
                     continue
 
                 selected.append((accession, ftp_path, version_status, excluded,
                                  paired_asm, NO_NOTE))
-                covered.add(canonical_gid(accession))
+                covered.add(gid)
 
         self.logger.info('RefSeq: selected {:,} of {:,} genomes.'.format(len(selected), read))
+        if no_ftp_path:
+            self.logger.warning('RefSeq: {:,} genomes ignored, NCBI serves no directory for '
+                                'them (ftp_path is na); where a GenBank assembly exists it is '
+                                'selected instead.'.format(no_ftp_path))
         if misfiled:
             self.logger.warning('RefSeq: {:,} rows in the RefSeq assembly summary files are '
                                 'not RefSeq assemblies and were ignored.'.format(misfiled))
 
-        return selected, covered
+        return selected, covered, dropped
 
     def select_genbank(self,
                        genbank_files: List[str],
-                       covered: Set[str]) -> List[SelectedRow]:
+                       covered: Set[str],
+                       dropped: Dict[str, str]) -> List[SelectedRow]:
         """Select the GenBank genomes needed to supplement the RefSeq genomes.
 
         A GenBank assembly is wanted when RefSeq does not already cover the
@@ -802,7 +594,9 @@ class SelectedGenomesManager:
         Coverage is decided by canonical accession against the RefSeq genomes
         actually selected above, not by the gbrs_paired_asm field, so a GenBank
         assembly paired with a RefSeq assembly that is absent from the new
-        release is still selected. Where the two disagree NCBI describes a RefSeq
+        release is still selected -- including when that assembly was read and
+        passed over because NCBI serves no directory for it, which is the case
+        this rule exists to catch. Where the two disagree NCBI describes a RefSeq
         assembly its own summary files do not list; that is common enough to be
         recorded in the notes column of the affected row rather than reported
         genome by genome.
@@ -813,6 +607,8 @@ class SelectedGenomesManager:
             NCBI GenBank assembly summary files describing the new release.
         covered : set
             Canonical accessions of the selected RefSeq genomes.
+        dropped : dict
+            Canonical accession to the reason its RefSeq assembly was not selected.
 
         @return: list of selected rows (accession, ftp_path, version_status,
             excluded_from_refseq, gbrs_paired_asm, notes).
@@ -823,6 +619,8 @@ class SelectedGenomesManager:
         multi_isolate = 0
         unpaired = 0
         misfiled = 0
+        no_ftp_path = 0
+        rescued = 0
 
         for assembly_summary in genbank_files:
             for accession, version_status, paired_asm, excluded, ftp_path in self._read_summary(
@@ -834,10 +632,18 @@ class SelectedGenomesManager:
 
                 read += 1
 
+                gid = canonical_gid(accession)
+
                 if not self._is_latest(accession, version_status):
                     continue
 
-                if canonical_gid(accession) in covered:
+                if gid in covered:
+                    continue
+
+                if not has_ftp_path(ftp_path):
+                    # nothing to mirror. Unlike the RefSeq case this rescues
+                    # nothing: RefSeq was already asked first and did not cover it
+                    no_ftp_path += 1
                     continue
 
                 if is_multi_isolate(excluded):
@@ -846,13 +652,23 @@ class SelectedGenomesManager:
 
                 note = NO_NOTE
                 if paired_asm.startswith(REFSEQ_PREFIX):
-                    # NCBI names a RefSeq assembly that its own summary files do
-                    # not list. The GenBank genome is selected regardless, as
-                    # nothing else covers the genome, but the row says why it is
-                    # here despite appearing to have a RefSeq counterpart.
-                    unpaired += 1
-                    note = ('paired RefSeq assembly {} absent from the assembly '
-                            'summary files'.format(paired_asm))
+                    # The row appears to have a RefSeq counterpart, yet here it is
+                    # being taken from GenBank; the note says why, and the two
+                    # reasons are not the same kind of thing.
+                    reason = dropped.get(gid)
+                    if reason is None:
+                        # NCBI names a RefSeq assembly that its own summary files
+                        # do not list: an error in those files, nothing about the
+                        # genome
+                        unpaired += 1
+                        note = ('paired RefSeq assembly {} absent from the assembly '
+                                'summary files'.format(paired_asm))
+                    else:
+                        # the RefSeq assembly was listed and passed over, so the
+                        # GenBank copy is the only one this release can carry
+                        rescued += 1
+                        note = ('paired RefSeq assembly {} was not selected: {}'
+                                .format(paired_asm, reason))
 
                 selected.append((accession, ftp_path, version_status, excluded,
                                  paired_asm, note))
@@ -860,6 +676,13 @@ class SelectedGenomesManager:
         self.logger.info('GenBank: selected {:,} of {:,} genomes.'.format(len(selected), read))
         self.logger.info('GenBank: {:,} genomes skipped as part of a large multi-isolate '
                          'project.'.format(multi_isolate))
+        if no_ftp_path:
+            self.logger.warning('GenBank: {:,} genomes ignored, NCBI serves no directory for '
+                                'them (ftp_path is na).'.format(no_ftp_path))
+        if rescued:
+            self.logger.info('GenBank: {:,} genomes selected in place of a RefSeq assembly '
+                             'that was read but not selected; the reason is in the notes '
+                             'column of each.'.format(rescued))
         if misfiled:
             self.logger.warning('GenBank: {:,} rows in the GenBank assembly summary files are '
                                 'not GenBank assemblies and were ignored.'.format(misfiled))
@@ -885,8 +708,8 @@ class SelectedGenomesManager:
         self.logger.info('Reading {:,} RefSeq and {:,} GenBank assembly summary file(s).'.format(
             len(refseq_files), len(genbank_files)))
 
-        refseq, covered = self.select_refseq(refseq_files)
-        genbank = self.select_genbank(genbank_files, covered)
+        refseq, covered, dropped = self.select_refseq(refseq_files)
+        genbank = self.select_genbank(genbank_files, covered, dropped)
 
         output_file = os.path.join(self.output_dir, SELECTED_GENOMES_FILE)
         write_selected_genomes(refseq + genbank, output_file)

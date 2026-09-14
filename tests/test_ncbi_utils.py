@@ -41,6 +41,45 @@ class TempDirCase(unittest.TestCase):
         return path
 
 
+# -------------------------------------------------------------------- counting rows
+
+class CountSummaryRows(TempDirCase):
+    """The total a progress bar is sized from must count what the reader yields."""
+
+    def summary(self, *rows):
+        return self.write('s.txt', COMMENT + '\n' + HEADER + '\n'
+                          + ''.join(row + '\n' for row in rows))
+
+    def test_counts_genomes_not_lines(self):
+        # the '#' comment and header are not genomes; counting lines instead is what
+        # left the bar two short of its own total and never reaching 100%
+        path = self.summary('GCA_1.1\tftp://a\tlatest', 'GCA_2.1\tftp://b\tlatest')
+        self.assertEqual(U.count_summary_rows(path), 2)
+
+    def test_a_summary_with_no_genomes_counts_zero(self):
+        self.assertEqual(U.count_summary_rows(self.summary()), 0)
+
+    def test_blank_lines_are_not_genomes(self):
+        path = self.write('s.txt', COMMENT + '\n' + HEADER + '\n\nGCA_1.1\tftp://a\tlatest\n\n')
+        self.assertEqual(U.count_summary_rows(path), 1)
+
+    def test_it_counts_exactly_what_the_reader_yields(self):
+        # the contract: bar total == iterations, whatever the file's shape
+        path = self.write('s.txt', COMMENT + '\n' + HEADER + '\n'
+                          + 'GCA_1.1\tftp://a\tlatest\n\n'
+                          + COMMENT + '\n' + HEADER + '\n'      # a concatenated table
+                          + 'GCA_2.1\tftp://b\tlatest\n')
+        yielded = sum(1 for _ in U.read_assembly_summary(path, 'assembly_accession'))
+        self.assertEqual(U.count_summary_rows(path), yielded)
+
+    def test_a_gzipped_summary_is_counted_too(self):
+        import gzip
+        path = os.path.join(self.dir, 's.txt.gz')
+        with gzip.open(path, 'wt') as handle:
+            handle.write(COMMENT + '\n' + HEADER + '\nGCA_1.1\tftp://a\tlatest\n')
+        self.assertEqual(U.count_summary_rows(path), 1)
+
+
 # ------------------------------------------------------------------ column lookup
 
 class SummaryColumns(unittest.TestCase):
@@ -159,17 +198,6 @@ class ReadSummaryRows(TempDirCase):
                                                  header='#assembly_accession\tversion_status'))
         with self.assertRaises(U.BadInput):
             list(U.read_summary_rows(path, required=('ftp_path',)))
-
-
-# ------------------------------------------------------------------ genome layout
-
-class GenomeAssemblyFile(unittest.TestCase):
-    def test_name_follows_from_the_directory(self):
-        # NCBI names every file of an assembly after the directory holding it
-        self.assertEqual(
-            U.genome_assembly_file('/gtdb/GCF/002/287/175/GCF_002287175.1_ASM228717v1'),
-            '/gtdb/GCF/002/287/175/GCF_002287175.1_ASM228717v1/'
-            'GCF_002287175.1_ASM228717v1_genomic.fna.gz')
 
 
 if __name__ == '__main__':

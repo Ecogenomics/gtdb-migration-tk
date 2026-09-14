@@ -69,8 +69,13 @@ meaningful code (see README for the table); every other command returns 0.
 
 It is a standalone script grafted onto the toolkit. It owns its argparse via
 `add_sync_arguments()`, which both `build_parser()` (standalone) and `__main__.py`
-(as a subcommand, with `--log` injected) call, so the interface has one
-definition. It has its own module logger and its own exit codes. The ~340 line
+(as a subcommand) call, so the interface has one definition, `-l/--log` included.
+Orchestration lives in `NCBIGenomeSync`, whose `run()` `main.py` calls like any
+other manager; `main()` remains only as the script entry point, parsing argv and
+opening the log when there is no toolkit to have done it. The workers it drives
+(`sync_genome`, `verify_genome`, `http_get`, `prune_mirror`) stay module-level
+functions, as do the rate limiter, circuit breaker and stop flag they share:
+they run on `-j` threads at once and hold no per-run state. It has its own module logger and its own exit codes. The ~340 line
 module docstring is the design document, with named sections (RATE LIMITING,
 RESTART AND FRESHNESS, TUNING, SHARED OPERATION) that the inline comments refer
 back to. Read it before changing sync behaviour. The argparse `dest` for the
@@ -87,9 +92,13 @@ not slice these tables by index anywhere.
 
 ### Release update: deciding vs. doing
 
-`ncbi_ftp_manager.py` decides which genomes belong in a release (`RefSeqManager`
-wants every "latest" RefSeq assembly; `GenBankManager` wants GenBank assemblies
-only where RefSeq falls short, logging each decision to `gca_selection.log`).
+`ncbi_ftp_manager.py` `GenomeManager` sorts the genomes of one database (given
+as an accession prefix, `REFSEQ_PREFIX` or `GENBANK_PREFIX`) into removed, new
+and shared by comparing the mirror's and the previous release's genome_dirs
+files, filtered to that prefix; it reads no summary file, since the mirror is a
+copy of the selection. `update_genomes` runs it once per prefix into one output
+directory, with reports named for the prefix (`report_gcf.log`,
+`gcf_to_review.log`, `report_gca.log`, `gca_to_review.log`).
 `ncbi_ftp_manager_tools.py` `FTPTools` does the resulting copying, comparing and
 reporting, and is the only consumer of `config.py`.
 
@@ -100,20 +109,25 @@ counterpart. Use it rather than slicing accessions.
 
 The lingua franca between commands is the **genome_dirs file**: a TSV of
 `accession<TAB>path`, one genome per line. `list_genomes` writes it
-(`directory_manager.py`), and the update, comparison and validation commands
-consume old, new and FTP variants of it.
+(`directory_manager.py`) by walking a tree and keeping the genomes named by
+`--gtdb_selected_genomes`, and the update, comparison and validation commands
+consume old, new and FTP variants of it. It says where each genome of a release
+is held locally; the selection table says which genomes and where NCBI serves
+them. Whether a tree holds what it should is `ncbi_genome_sync --verify`.
 
-### `config.py` is the only place a marker database version lives
+### `config.py` is the only place a reference database version lives
 
 `PFAM_VERSION` and `TIGRFAM_VERSION` there derive every directory name, file
-suffix and symlink used for marker annotations. `tests/test_config.py` asserts
+suffix and symlink used for marker annotations, and `SILVA_VERSION` and
+`LTP_VERSION` the directories holding classified rRNA genes; those two, plus
+`prodigal` and `trna`, are `GTDB_DERIVED_DIRS_TO_COPY`, the derived data carried
+across when a genome comes from the previous release rather than from NCBI. `tests/test_config.py` asserts
 the derivation holds. `marker_manager.py` does not read `config.py`: the
 `hmmsearch` and `top_hit` commands take `--folder_suffix` (e.g. `33.1_lite`)
 and build `pfam_<suffix>/` and `_pfam_<suffix>.tsv` from it. That suffix must
 match what `config.py` derives (`pfam_33.1_lite`), otherwise `FTPTools` creates
-symlinks to annotation files that were never written. The README and the
-`config.py` docstring call this flag `--hmm_version`; that name is stale, the
-flag is `--folder_suffix`.
+symlinks to annotation files that were never written. The same applies to
+`rna_silva` and `rna_ltp`, which take `--silva_version` and `--ltp_version`.
 
 ### Database access
 

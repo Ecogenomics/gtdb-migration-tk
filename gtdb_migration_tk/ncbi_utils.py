@@ -41,7 +41,6 @@ header is required rather than assumed.
 """
 
 import gzip
-import os
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 
@@ -199,6 +198,31 @@ def read_summary_rows(assembly_summary: str,
             yield line_number, line.split('\t'), columns
 
 
+def count_summary_rows(assembly_summary: str) -> int:
+    """Count the genome rows of an assembly summary file.
+
+    This counts what read_summary_rows() yields, and so must skip exactly what it skips:
+    blank lines, and the '#' block of comments and the header. Counting LINES instead --
+    which is what a general purpose line counter does -- overstates the total by the size
+    of that block, so a progress bar sized from it stops two short of its own total and
+    never reaches 100%. The genomes were all read; only the total was wrong.
+
+    It costs one pass over the file, as counting lines did, and the caller is about to
+    make a second, far more expensive one.
+
+    Parameters
+    ----------
+    assembly_summary : str
+        NCBI assembly summary file, optionally gzipped.
+
+    @return: number of genome rows in the file.
+    """
+
+    with open_summary(assembly_summary) as summary_file:
+        return sum(1 for line in summary_file
+                   if line.strip() and not line.startswith('#'))
+
+
 def read_assembly_summary(assembly_summary: str,
                           *field_names: str) -> Iterator[Tuple[str, ...]]:
     """Read the requested fields of each genome in an NCBI assembly summary file.
@@ -219,23 +243,3 @@ def read_assembly_summary(assembly_summary: str,
     for _, fields, columns in read_summary_rows(assembly_summary,
                                                 required=('assembly_accession',)):
         yield tuple(summary_field(fields, columns, name) for name in field_names)
-
-
-def genome_assembly_file(genome_dir: str) -> str:
-    """Path of the genomic FASTA file expected within a genome directory.
-
-    NCBI names every file of an assembly after the directory holding it, e.g.
-    GCF_002287175.1_ASM228717v1/GCF_002287175.1_ASM228717v1_genomic.fna.gz, and
-    the GTDB directories mirror the NCBI layout. The name of the genomic FASTA
-    file therefore follows from the directory alone, without consulting the
-    assembly summary file. Files are gzipped once they are part of GTDB.
-
-    Parameters
-    ----------
-    genome_dir : str
-        Genome directory, named for the assembly it holds.
-
-    @return: path of the genomic FASTA file the directory should contain.
-    """
-
-    return os.path.join(genome_dir, os.path.basename(genome_dir) + '_genomic.fna.gz')

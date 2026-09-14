@@ -34,6 +34,20 @@ class DerivedNames(unittest.TestCase):
             self.assertNotIn(config.PFAM_VERSION, value, name)
             self.assertNotIn(config.TIGRFAM_VERSION, value, name)
 
+    def test_derived_directories_carry_the_configured_rrna_versions(self):
+        # a genome directory may hold the results of several SILVA or LTP
+        # releases side by side, so the wrong version here copies the wrong one
+        self.assertIn('rna_silva_{}'.format(config.SILVA_VERSION),
+                      config.GTDB_DERIVED_DIRS_TO_COPY)
+        self.assertIn('rna_ltp_{}'.format(config.LTP_VERSION),
+                      config.GTDB_DERIVED_DIRS_TO_COPY)
+
+    def test_unversioned_derived_directories_are_listed(self):
+        # prodigal and trna results are not named for a database release, but
+        # are carried across with the rest and must not be dropped from the list
+        for name in ('prodigal', 'trna'):
+            self.assertIn(name, config.GTDB_DERIVED_DIRS_TO_COPY)
+
     def test_hmmer_extensions_track_both_versions(self):
         joined = ''.join(config.HMMER_EXTS_TO_GZIP)
         self.assertIn(config.PFAM_VERSION, joined)
@@ -46,6 +60,8 @@ class DerivedNames(unittest.TestCase):
         source = open(config.__file__).read()
         source = source.replace("PFAM_VERSION = '33.1'", "PFAM_VERSION = '37.0'")
         source = source.replace("TIGRFAM_VERSION = '15.0'", "TIGRFAM_VERSION = '16.0'")
+        source = source.replace("SILVA_VERSION = '138.2'", "SILVA_VERSION = '140.0'")
+        source = source.replace("LTP_VERSION = '10_2024'", "LTP_VERSION = '06_2026'")
 
         bumped = {}
         exec(compile(source, config.__file__, 'exec'), bumped)
@@ -60,13 +76,16 @@ class DerivedNames(unittest.TestCase):
                           '_tigrfam_16.0.out', '_tigrfam_16.0.tsv',
                           '_tigrfam_16.0_tophit.tsv'))
 
+        self.assertEqual(bumped['GTDB_DERIVED_DIRS_TO_COPY'],
+                         ('prodigal', 'rna_silva_140.0', 'trna', 'rna_ltp_06_2026'))
+
         # no name may still mention the superseded releases
         for name, value in bumped.items():
             if name.startswith('_'):
                 continue
             text = ''.join(value) if isinstance(value, tuple) else str(value)
-            self.assertNotIn('33.1', text, name)
-            self.assertNotIn('15.0', text, name)
+            for superseded in ('33.1', '15.0', '138.2', '10_2024'):
+                self.assertNotIn(superseded, text, name)
 
 
 class CurrentValues(unittest.TestCase):
@@ -79,6 +98,8 @@ class CurrentValues(unittest.TestCase):
                          ('_pfam_33.1.tsv', '_pfam_33.1_tophit.tsv',
                           '_tigrfam_15.0.out', '_tigrfam_15.0.tsv',
                           '_tigrfam_15.0_tophit.tsv'))
+        self.assertEqual(config.GTDB_DERIVED_DIRS_TO_COPY,
+                         ('prodigal', 'rna_silva_138.2', 'trna', 'rna_ltp_10_2024'))
 
 
 if __name__ == '__main__':

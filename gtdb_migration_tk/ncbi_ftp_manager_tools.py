@@ -17,21 +17,18 @@
 
 
 import os
-import glob
 import gzip
-import hashlib
 import multiprocessing as mp
 import shutil
 import tarfile
-import tempfile
 import urllib.request
 from multiprocessing.queues import Queue
-from pathlib import Path
 from typing import Dict, List, TextIO, Tuple
 
 from tqdm import tqdm
 
 from gtdb_migration_tk import config
+from gtdb_migration_tk.ncbi_genome_sync import MD5_LINE_RE
 
 
 # Table of the genomes selected for a new GTDB release, written by the
@@ -63,6 +60,21 @@ SelectedRow = Tuple[str, str, str, str, str, str]
 # appears to be covered by RefSeq was taken from GenBank instead.
 SELECTED_GENOMES_HEADER = ('#assembly_accession\tftp_path\tversion_status'
                            '\texcluded_from_refseq\tgbrs_paired_asm\tnotes')
+
+
+# Outcomes a genome held by both the previous release and NCBI can have, as
+# written to the report. Constants rather than literals so the tests, and any
+# reader of the report, name the same strings this module writes. A dry run
+# reports the same outcomes as a real one; it only refrains from copying.
+STATUS_FASTA_UNCHANGED = 'genomic FASTA file unchanged'
+STATUS_FASTA_CHANGED = 'genomic FASTA file changed'
+
+# NCBI's manifest of the files it serves for a genome, one "<md5>  ./<name>"
+# line per file. Both the mirror and the previous release carry a copy.
+MD5_MANIFEST = 'md5checksums.txt'
+
+# Suffix NCBI appends to the assembly name for the genome assembly itself.
+GENOMIC_FASTA_EXT = '_genomic.fna.gz'
 
 
 # --------------------------------------------------------------- NCBI metadata sync
@@ -242,22 +254,14 @@ class FTPTools():
     The decision about which genomes belong in a release is made by the managers
     in ncbi_ftp_manager.py; this class performs the resulting work. Genomes new to
     NCBI are copied into the new release, genomes that have gone are recorded,
-    and genomes held by both the previous release and NCBI are compared file by
-    file so that only those whose sequence data has actually changed are taken
-    from NCBI again. Everything else is carried over from the previous release,
-    which preserves the derived files (Prodigal, Pfam, TIGRFAM) that took the
-    most effort to produce.
+    and for genomes held by both the previous release and NCBI the mirror's copy
+    is taken and, if the genomic FASTA is unchanged, the derived data of the
+    previous release (config.GTDB_DERIVED_DIRS_TO_COPY) is carried across with
+    it, as that data took the most effort to produce and is still valid.
 
-    Every genome handled is described in the report file, and the outcome of a
-    comparison is one or more of:
-
-        incomplete    the two directories do not hold the same FASTA files
-        modified      sequence data has changed, so NCBI's copy is taken
-        unmodified    sequence data is unchanged, so the GTDB copy is carried over
-        new_metadata  a non-sequence file has changed and was refreshed
-        new_hashes    the FTP directory gained a hashes file
-        old_folder_dir  neither directory has a hashes file
-        to_curate     the directories do not match any expected arrangement
+    Every genome handled is described in the report file. A genome held by both
+    sides has one of the outcomes named by the STATUS_* constants above, or
+    'to_curate;<exception>' if it could not be compared at all.
 
     Set dry_run to describe the changes in the reports without touching any file.
     """
@@ -265,7 +269,6 @@ class FTPTools():
     def __init__(self,
                  report: TextIO,
                  genomes_to_review: TextIO,
-                 genome_domain_dict: Dict[str, str],
                  dry_run: bool) -> None:
         """Set up the file suffix vocabulary and the reports to be written.
 
@@ -275,85 +278,92 @@ class FTPTools():
             Open file recording the fate of every genome in the release.
         genomes_to_review : file
             Open file recording genomes needing manual attention.
-        genome_domain_dict : dict
-            Accession to domain, used to label rows of the report.
         dry_run : bool
             Report the changes that would be made without modifying any files.
         """
 
-        self.genomic_ext = ("_genomic.fna",)
-        self.from_genomic_ext= ("_cds_from_genomic.fna","_rna_from_genomic.fna")
-
-        self.extensions = ("_genomic.gbff", "_genomic.gff", "_wgsmaster.gbff")
-        self.reports = ("_assembly_report.txt", "_assembly_stats.txt", "_hashes.txt")
-
-        self.hmmer_exts_to_gzip = config.HMMER_EXTS_TO_GZIP
-        self.prodigal_exts_to_gzip = ("_protein.faa", "_protein.fna", "_protein.gff")
-        self.exts_to_gzip = self.genomic_ext + self.extensions + self.hmmer_exts_to_gzip + self.prodigal_exts_to_gzip
-        self.all_but_fasta = self.extensions + self.reports
-
         self.report = report
         self.genomes_to_review = genomes_to_review
-        self.genome_domain_dict = genome_domain_dict
         self.dry_run = dry_run
 
-        self.ignore_extensions = ["*_assembly_structure","*_cds_from_genomic.fna.gz","*_genomic_gaps.txt.gz",
+        # this is being maintained for backwards compatibility with previous GTDB releases, but it is not 
+        # required starting with GTDB r237 as we now only sync the exact files required by GTDB
+        self.ignore_extensions_compressed = ["*_assembly_structure","*_cds_from_genomic.fna.gz","*_genomic_gaps.txt.gz",
                                 "*_genomic.gtf.gz","*_rna_from_genomic.fna.gz","*_translated_cds.faa.gz",
                                 "*_protein.faa.gz","*_feature_count.txt.gz","*_feature_table.txt.gz",
                                 "*_protein.gpff.gz"]
 
-        self.ignore_extensions_not_archived = ["*_cds_from_genomic.fna","*_genomic_gaps.txt",
+        self.ignore_extensions_uncompressed = ["*_cds_from_genomic.fna","*_genomic_gaps.txt",
                                 "*_genomic.gtf","*_rna_from_genomic.fna","*_translated_cds.faa",
                                 "*_protein.faa","*_feature_count.txt","*_feature_table.txt",
                                 "*_protein.gpff"]
 
-        # We can ignore to copy folders that are no longer in use for the current GTDB release
-        self.deprecated_folders=['rna_silva','pfam_27','rna_silva_132','lsu_5S','rna_silva_138',
-                                 'ssu_gg','ssu_gg_2013_08','ssu_silva_199_gg_taxonomy','prokka','*ltp_132_deprecated.tar.gz']
+        self.ignore_extensions = self.ignore_extensions_compressed + self.ignore_extensions_uncompressed
 
-    def rreplace(self, s: str, old: str, new: str, occurrence: int) -> str:
-        """Replace the last occurrences of a substring, rather than the first.
+    def add_genomes(self,
+                    added_genomes: Dict[str, str],
+                    ftp_dir: str,
+                    new_directory: str) -> None:
+        """Copy genomes new to NCBI into the new release.
 
-        str.replace() works from the left, which is wrong for file names: some
-        assembly directories carry a .gz in the middle of their name, so only
-        the final .gz denotes compression and may be stripped.
+        These genomes are on the FTP site but were not in the previous release,
+        so there is nothing to compare against and the NCBI directory is taken
+        whole, less the files GTDB does not keep.
 
         Parameters
         ----------
-        s : str
-            String to modify.
-        old : str
-            Substring to replace.
-        new : str
-            Replacement substring.
-        occurrence : int
-            Number of occurrences to replace, counting from the right.
-
-        @return: string with the trailing occurrences replaced.
+        added_genomes : dict
+            Accession to genome directory for the genomes to add.
+        ftp_dir : str
+            Base directory of the FTP mirror, replaced to form the target path.
+        new_directory : str
+            Base directory of the new release.
         """
-        li = s.rsplit(old, occurrence)
-        return new.join(li)
+
+        for gid, path_record in tqdm(added_genomes.items(), desc='Adding new genomes', ncols=100):
+            target_dir = os.path.join(new_directory, os.path.relpath(path_record, ftp_dir))
+            self.report.write("{0}\tnew\n".format(gid))
+            if not self.dry_run:
+                shutil.copytree(path_record, target_dir, ignore = shutil.ignore_patterns(*self.ignore_extensions))
+
+    def remove_genomes(self, removed_genomes: Dict[str, str]) -> None:
+        """Record the genomes NCBI no longer offers.
+
+        These genomes are in the previous release but have gone from the FTP
+        site. Nothing is deleted here: the new release is assembled in a fresh
+        directory, so a genome is dropped by not being copied into it, and this
+        report is the record of which genomes that applies to.
+
+        Parameters
+        ----------
+        removed_genomes : dict
+            Accession to genome directory for the genomes to drop.
+        """
+
+        for gid in removed_genomes:
+            self.report.write("{0}\tremoved\n".format(gid))
 
     def compare_genomes(self,
-                        intersect_list: List[str],
-                        old_dict: Dict[str, str],
-                        new_dict: Dict[str, str],
+                        shared_genomes: List[str],
+                        old_genome_dirs: Dict[str, str],
+                        new_genome_dirs: Dict[str, str],
                         ftp_directory: str,
                         new_directory: str,
                         threads: int) -> None:
         """Compare genomes held by both the previous release and the NCBI FTP site.
 
-        Each genome is examined by a worker process, which decides whether the
-        NCBI copy or the previous GTDB copy should form the new release, and the
-        outcome is written to the report by a single listener process.
+        Each genome is examined by a worker process which decides whether the
+        derived data (e.g. Prodigal results) from the previous GTDB release should
+        be retained. All NCBI data files are always copied from the NCBI FTP mirror 
+        as these are the latest versions of these files.
 
         Parameters
         ----------
-        intersect_list : list
+        shared_genomes : list
             Accessions held by both the previous release and the FTP site.
-        old_dict : dict
+        old_genome_dirs : dict
             Accession to genome directory for the previous release.
-        new_dict : dict
+        new_genome_dirs : dict
             Accession to genome directory for the FTP mirror.
         ftp_directory : str
             Base directory of the FTP mirror, replaced to form the target path.
@@ -367,14 +377,12 @@ class FTPTools():
         worker_queue = mp.Queue()
         writer_queue = mp.Queue()
 
-        for gca_record in intersect_list:
-            gtdb_dir = old_dict.get(gca_record)
-            ftp_dir = new_dict.get(gca_record)
-            target_dir = os.path.join(
-                new_directory, os.path.relpath(ftp_dir, ftp_directory))
+        for gca_record in shared_genomes:
+            gtdb_dir = old_genome_dirs.get(gca_record)
+            ftp_dir = new_genome_dirs.get(gca_record)
+            target_dir = os.path.join(new_directory, os.path.relpath(ftp_dir, ftp_directory))
 
-            worker_queue.put((gtdb_dir, ftp_dir, target_dir,
-                             gca_record))
+            worker_queue.put((gtdb_dir, ftp_dir, target_dir, gca_record))
 
         for _ in range(threads):
             worker_queue.put((None, None, None, None))
@@ -386,7 +394,7 @@ class FTPTools():
         try:
             worker_proc = [mp.Process(target=self.__worker_thread, args=(
                 worker_queue, writer_queue)) for _ in range(threads)]
-            write_proc = mp.Process(target=self.__listener, args=(len(intersect_list), writer_queue))
+            write_proc = mp.Process(target=self.__listener, args=(len(shared_genomes), writer_queue))
             write_proc.start()
 
             for p in worker_proc:
@@ -437,16 +445,13 @@ class FTPTools():
             # a genome that cannot be compared is reported for curation; letting
             # it kill the worker silently drops every genome queued behind it
             try:
-                status_gca = self.compare_genome_directories(
-                    gtdb_dir, ftp_dir, target_dir, gca_record)
+                status_gca = self.compare_genome_directories(gtdb_dir, ftp_dir, target_dir, gca_record)
             except Exception as e:
-                status_gca = "{0}\t{1}\tto_curate;{2}\n".format(
-                    self.genome_domain_dict.get(gca_record, 'UNDEFINED').upper(),
-                    gca_record, type(e).__name__)
+                status_gca = "{0}\tto_curate;{1}\n".format(gca_record, type(e).__name__)
 
             queue_out.put(status_gca)
 
-    def __listener(self, numgenometoprocess: int, writer_queue: Queue) -> None:
+    def __listener(self, num_genomes: int, writer_queue: Queue) -> None:
         """Write the outcome of every comparison to the report.
 
         The report is written by this process alone, so rows from the workers
@@ -454,96 +459,48 @@ class FTPTools():
 
         Parameters
         ----------
-        numgenometoprocess : int
+        num_genomes : int
             Number of genomes being compared, used to size the progress bar.
         writer_queue : multiprocessing.Queue
             Report rows from the workers, terminated by None.
         """
 
-        pbar = tqdm(total=numgenometoprocess)
+        pbar = tqdm(total=num_genomes, desc='Comparing shared genomes', ncols=100)
         for item in iter(writer_queue.get, None):
             self.report.write(item)
             pbar.update()
 
-    def add_genomes(self,
-                    added_dict: Dict[str, str],
-                    ftp_dir: str,
-                    new_directory: str,
-                    genome_domain_dict: Dict[str, str]) -> None:
-        """Copy genomes new to NCBI into the new release.
-
-        These genomes are on the FTP site but were not in the previous release,
-        so there is nothing to compare against and the NCBI directory is taken
-        whole, less the files GTDB does not keep.
-
-        :TODO: Check if the new genome is a new version of an existing genome. in
-        that case we overwrite the previous one and keep the same database id.
-        This will cause a conflict with the remove_genomes function.
-
-        Parameters
-        ----------
-        added_dict : dict
-            Accession to genome directory for the genomes to add.
-        ftp_dir : str
-            Base directory of the FTP mirror, replaced to form the target path.
-        new_directory : str
-            Base directory of the new release.
-        genome_domain_dict : dict
-            Accession to domain, used to label rows of the report.
-        """
-
-        for gcf_record,path_record in tqdm(added_dict.items(), desc='Adding new genomes',ncols=100):
-
-            target_dir = os.path.join(
-                new_directory, os.path.relpath(path_record, ftp_dir))
-            self.report.write("{0}\t{1}\tnew\n".format(
-                genome_domain_dict.get(gcf_record, 'UNDEFINED').upper(), gcf_record))
-            if not self.dry_run:
-                shutil.copytree(path_record, target_dir, ignore=shutil.ignore_patterns(*self.ignore_extensions))
-
-    def remove_genomes(self, removed_dict: Dict[str, str]) -> None:
-        """Record the genomes NCBI no longer offers.
-
-        These genomes are in the previous release but have gone from the FTP
-        site. Nothing is deleted here: the new release is assembled in a fresh
-        directory, so a genome is dropped by not being copied into it, and this
-        report is the record of which genomes that applies to.
-
-        Parameters
-        ----------
-        removed_dict : dict
-            Accession to genome directory for the genomes to drop.
-        """
-
-        for gca_record in removed_dict:
-            self.report.write("UNDEFINED\t{0}\tremoved\n".format(gca_record))
-
     def compare_genome_directories(self,
-                          gtdb_dir: str,
-                          ftp_dir: str,
-                          target_dir: str,
-                          genome_record: str) -> str:
-        """Decide whether a genome is taken from NCBI or carried over from GTDB.
+                                   prev_gtdb_dir: str,
+                                   ftp_dir: str,
+                                   target_dir: str,
+                                   genome_record: str) -> str:
+        """Build the new release's copy of a genome held by both GTDB and NCBI.
 
-        Both directories are copied to temporary space and decompressed, so that
-        genomes compare equal whether or not they happen to be gzipped, and the
-        files of each are then checksummed.
+        The mirror's directory is copied whole, md5checksums.txt included: what
+        NCBI serves for a genome is what the new release carries, whether or not
+        anything changed. The question is only whether the derived data of the
+        previous release can come with it, and the genomic FASTA decides that.
+        Its MD5 is read from the md5checksums.txt of each directory rather than
+        computed, so the file is never opened and nothing has to be decompressed;
+        NCBI published both sums, and the sync verified the mirror against its
+        copy. If the two agree the sequence is unchanged, so gene calls, rRNA
+        classifications and tRNA scans made on it still hold and the directories
+        named by config.GTDB_DERIVED_DIRS_TO_COPY are copied across from the
+        previous release. If they differ the derived data is left behind, to be
+        regenerated from the new sequence.
 
-        The FASTA files decide the outcome. If they differ between the two, the
-        NCBI directory becomes the new release and the genome is marked modified,
-        as its derived files must be regenerated. If they match, the previous
-        GTDB directory is carried over instead, keeping the derived files
-        (Prodigal, Pfam, TIGRFAM) that were expensive to produce, and only those
-        non-sequence files whose checksums have changed are refreshed from NCBI.
-        Differing sets of FASTA files mean the genome is incomplete and is
-        recorded for review.
+        A derived directory the previous release lacks is not an error, as a
+        genome may not have had every step run on it; it is noted in the review
+        report so that the step can be run this time.
 
-        Under dry_run nothing is copied or compared, and the genome is reported
-        as an undefined comparison.
+        Under dry_run the comparison is made in full and reported, so the report
+        of a dry run is the report the real run would write; only the copying is
+        withheld, from the mirror and from the previous release alike.
 
         Parameters
         ----------
-        gtdb_dir : str
+        prev_gtdb_dir : str
             Genome directory in the previous GTDB release.
         ftp_dir : str
             Genome directory on the NCBI FTP mirror.
@@ -552,301 +509,65 @@ class FTPTools():
         genome_record : str
             Accession of the genome.
 
-        @return: report row of domain, accession, and the outcomes observed.
+        @return: report row of accession and outcome, one of the STATUS_* constants.
         """
 
-        pathftpmd5 = os.path.join(ftp_dir, "md5checksums.txt")
-        pathgtdbmd5 = os.path.join(gtdb_dir, "md5checksums.txt")
-        target_pathnewmd5 = os.path.join(target_dir, "md5checksums.txt")
-        status = []
+        ftp_md5 = self.genomic_fasta_md5(ftp_dir)
+        prev_md5 = self.genomic_fasta_md5(prev_gtdb_dir)
+
         if not self.dry_run:
-            # 12: a context manager, so the two genome copies are removed
-            # even if the comparison below raises
-            with tempfile.TemporaryDirectory() as tmp_ftp_dir:
-                tmp_ftp_target = os.path.join(tmp_ftp_dir,'ftp', os.path.basename(target_dir))
-                tmp_existing_target = os.path.join(tmp_ftp_dir, 'previous_release', os.path.basename(target_dir))
+            # a rerun must not inherit derived data from a run made before the
+            # FASTA changed, so an existing target is replaced rather than added to
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir)
+            shutil.copytree(ftp_dir, target_dir)
 
-                shutil.copytree(ftp_dir, tmp_ftp_target, symlinks=True,
-                                ignore=shutil.ignore_patterns("*_assembly_structure",'prokka','*_deprecated.tar.gz'))
-                shutil.copytree(gtdb_dir, tmp_existing_target, symlinks=True,
-                                ignore=shutil.ignore_patterns("*_assembly_structure",'prokka','*_deprecated.tar.gz'))
-                for tmp_target in [tmp_ftp_target, tmp_existing_target]:
-                    for compressed_file in glob.glob(tmp_target + "/*.gz"):
-                        if os.path.isdir(compressed_file) is False:
-                            try:
-                                with gzip.open(compressed_file, 'rb') as f_in:
-                                    with open(self.rreplace(compressed_file, ".gz", "", 1), 'wb') as f_out:
-                                        shutil.copyfileobj(f_in, f_out)
-                            except OSError as e:
-                                raise OSError('failed to decompress {}'.format(
-                                    compressed_file)) from e
+        if ftp_md5 != prev_md5:
+            return '{}\t{}\n'.format(genome_record, STATUS_FASTA_CHANGED)
 
-                            os.remove(compressed_file)
+        for derived in config.GTDB_DERIVED_DIRS_TO_COPY:
+            source = os.path.join(prev_gtdb_dir, derived)
+            if not os.path.isdir(source):
+                # noted on a dry run too: it is part of what the run would report
+                self.genomes_to_review.write(
+                    '{}\tno {} directory in the previous release: {}\n'.format(
+                        genome_record, derived, prev_gtdb_dir))
+                continue
+            if not self.dry_run:
+                shutil.copytree(source, os.path.join(target_dir, derived))
 
-                ftpdict, ftpdict_fasta = self.checksum_genome_dir(tmp_ftp_target)
-                gtdbdict, gtdbdict_fasta = self.checksum_genome_dir(tmp_existing_target)
+        return '{}\t{}\n'.format(genome_record, STATUS_FASTA_UNCHANGED)
 
-                # if the genomic.fna.gz or the protein.faa.gz are missing, we set this
-                # record as incomplete
-                if len(list(set(ftpdict_fasta.keys()).symmetric_difference(set(gtdbdict_fasta.keys())))) > 0:
-                    self.genomes_to_review.write(
-                        "ftp_dir:{}\nftpdict_fasta.keys():{}\n"
-                        "gtdb_dir:{}\ngtdbdict_fasta.keys():{}\n\n".format(
-                            ftp_dir, sorted(ftpdict_fasta), gtdb_dir, sorted(gtdbdict_fasta)))
-                    status.append("incomplete")
-                    shutil.copytree(ftp_dir, target_dir, symlinks=True, dirs_exist_ok=True,
-                                    ignore=shutil.ignore_patterns(*self.ignore_extensions))
-                else:
-                    ftp_folder = False
-                    # check if genomic.fna.gz and protein.faa.gz are similar between
-                    # previous GTDB and ftp
-                    for key, value in ftpdict_fasta.items():
-                        if value != gtdbdict_fasta.get(key):
-                            ftp_folder = True
+    def genomic_fasta_md5(self, genome_dir: str) -> str:
+        """Read the MD5 NCBI publishes for the genomic FASTA of a genome.
 
-                    # if one of the 2 files is different than the previous version , we
-                    # use the ftp record over the previous GTDB one , we then need to
-                    # re run the metadata generation
-                    if ftp_folder:
-                        if os.path.exists(target_dir):
-                            shutil.rmtree(target_dir)
-                        shutil.copytree(
-                            ftp_dir, target_dir, symlinks=True,
-                            ignore=shutil.ignore_patterns(*self.ignore_extensions))
-                        for name in glob.glob(os.path.join(target_dir, '*')):
-                            if name.endswith(self.exts_to_gzip):
-                                with open(name, 'rb') as f_in, gzip.open(name+'.gz','wb') as f_out:
-                                    f_out.writelines(f_in)
-                                os.remove(name)
-                        status.append("modified")
-
-                    else:
-                        # The 2 main fasta files haven't changed so we can copy the old
-                        # GTDB folder over
-                        extensions_to_ignore = self.ignore_extensions + self.ignore_extensions_not_archived+self.deprecated_folders
-                        if os.path.exists(target_dir):
-                            shutil.rmtree(target_dir)
-                        shutil.copytree(
-                            gtdb_dir, target_dir, symlinks=True,
-                            ignore=shutil.ignore_patterns(*extensions_to_ignore))
-                        # little hack here, there is 2 _protein.faa files in each folder one from NCBI, one generated by
-                        # prodigal,we want to copy the one from prodigal
-                        shutil.copyfile(
-                            os.path.join(gtdb_dir,'prodigal',genome_record+'_protein.faa.gz'),
-                            os.path.join(target_dir, 'prodigal', genome_record+'_protein.faa.gz'))
-
-                        for path in Path(target_dir).rglob('*'):
-                            name = str(path)
-                            if name.endswith(self.exts_to_gzip):
-                                with open(name, 'rb') as f_in, gzip.open(name+'.gz','wb') as f_out:
-                                    f_out.writelines(f_in)
-                                try:
-                                    os.remove(name)
-                                except OSError as e:
-                                    print("Failed with:", e.strerror)
-                                    print("Error code:", e.errno)
-                            if os.path.islink(name):
-                                os.unlink(name)
-
-                        """Process each data item in parallel."""
-                        # create symlink in prodigal_folder
-                        new_hit_link = os.path.join(target_dir,'prodigal', genome_record + config.TIGRFAM_SYMLINK_EXT)
-                        new_tophit_link = os.path.join(target_dir,'prodigal', genome_record + config.TIGRFAM_TOPHIT_SYMLINK_EXT)
-                        new_out_link = os.path.join(target_dir,'prodigal', genome_record + config.TIGRFAM_OUT_SYMLINK_EXT)
-
-                        # Symlink needs to be relative to avoid pointing to previous version of Tigrfam when we copy folder
-                        output_hit_file_relative = os.path.join('.', config.TIGRFAM_MARKER_DIR, genome_record + config.TIGRFAM_EXT)
-                        tigrfam_tophit_file_relative = os.path.join('.', config.TIGRFAM_MARKER_DIR, genome_record + config.TIGRFAM_TOPHIT_EXT)
-                        tigrfam_out_file_relative = os.path.join('.', config.TIGRFAM_MARKER_DIR, genome_record + config.TIGRFAM_OUT_EXT)
-
-                        os.symlink(output_hit_file_relative, new_hit_link)
-                        os.symlink(tigrfam_tophit_file_relative, new_tophit_link)
-                        os.symlink(tigrfam_out_file_relative, new_out_link)
-
-                        """Process each data item in parallel."""
-
-                        # create symlink in prodigal_folder
-                        new_hit_link = os.path.join(target_dir,'prodigal', genome_record + config.PFAM_SYMLINK_EXT)
-                        new_tophit_link = os.path.join(target_dir,'prodigal', genome_record + config.PFAM_TOPHIT_SYMLINK_EXT)
-
-                        # Symlink needs to be relative to avoid pointing to previous version of Pfam when we copy folder
-                        output_hit_file_relative = os.path.join('.', config.PFAM_MARKER_DIR, genome_record + config.PFAM_EXT)
-                        pfam_tophit_file_relative = os.path.join('.', config.PFAM_MARKER_DIR, genome_record + config.PFAM_TOPHIT_EXT)
-
-                        os.symlink(output_hit_file_relative, new_hit_link)
-                        os.symlink(pfam_tophit_file_relative, new_tophit_link)
-
-                        status.append("unmodified")
-
-                        # We check if all other file of this folder are the same.
-                        checksum_changed = False
-
-                        for key, value in ftpdict.items():
-                            if value != gtdbdict.get(key):
-                                checksum_changed = True
-                                shutil.copy2(
-                                    os.path.join(tmp_ftp_target, key), os.path.join(target_dir, key))
-                                if key.endswith(self.exts_to_gzip):
-                                    with open(os.path.join(target_dir, key), 'rb') as f_in, gzip.open(os.path.join(target_dir, key+'.gz'),'wb') as f_out:
-                                        f_out.writelines(f_in)
-                                    os.remove(os.path.join(target_dir, key))
-                                status.append("new_metadata")
-
-                        # we copy the new checksum
-                        if checksum_changed:
-                            try:
-                                shutil.copy2(pathftpmd5, target_pathnewmd5)
-                            except IOError:
-                                os.chmod(target_pathnewmd5, 0o664)
-                                shutil.copy2(pathftpmd5, target_pathnewmd5)
-                        # Only reached for an unmodified genome, and deliberately so.
-                        # The target directory here was carried over from the previous
-                        # release, so its copies of these NCBI files may be years old and
-                        # must be checked against the mirror. The modified and incomplete
-                        # branches copy the mirror wholesale, so their copies are current
-                        # by construction and there is nothing to compare. This is also
-                        # why _hashes.txt (NCBI's annotation_hashes.txt) is asked about
-                        # only here: old_folder_dir means the previous release predates
-                        # the file, and new_hashes that NCBI has since added one -- both
-                        # questions about the previous release, not about the mirror.
-                        for report in self.reports:
-                            target_files = glob.glob(
-                                os.path.join(target_dir, "*" + report))
-                            ftp_files = glob.glob(os.path.join(ftp_dir, "*" + report))
-                            if len(target_files) == 1 and len(ftp_files) == 1:
-                                status = self.compare_md5(
-                                    ftp_files[0], target_files[0], status)
-                            elif len(target_files) == 0 and len(ftp_files) == 0 and report == '_hashes.txt':
-                                status.append("old_folder_dir")
-                            elif len(target_files) == 0 and len(ftp_files) == 1 and report == '_hashes.txt':
-                                shutil.copy2(ftp_files[0], target_dir)
-                                status.append("new_hashes")
-                            else:
-                                print("########")
-                                print(target_dir)
-                                print(target_files)
-                                print(ftp_dir)
-                                print(ftp_files)
-                                print(f"IT SHOULDN'T HAPPEN ({target_dir},{ftp_dir}) ")
-                                print("########")
-                                status.append("to_curate")
-
-                # 3: sorted so two runs over the same data produce identical reports
-                status_record = "{0}\t{1}\t{2}\n".format(
-                    self.genome_domain_dict.get(genome_record, 'UNDEFINED').upper(),
-                    genome_record, ';'.join(sorted(set(status))))
-                return status_record
-        
-        return "{0}\t{1}\t{2}\n".format(
-            self.genome_domain_dict.get(genome_record, 'UNDEFINED').upper(),
-            genome_record, 'undefined comparison')
-
-    def compare_md5(self,
-                    ftp_file: str,
-                    target_file: str,
-                    status: List[str]) -> List[str]:
-        """Refresh a report file from NCBI if it has changed.
-
-        Used for the small per-assembly reports NCBI ships alongside a genome.
-        The file is replaced in place when the two copies differ, and the genome
-        is then marked as carrying new metadata.
+        NCBI names the file for the assembly, <accession>_<asm_name>_genomic.fna.gz,
+        and names the genome directory <accession>_<asm_name>, so the entry wanted
+        is known exactly and is looked up by name; this is how the rest of the
+        toolkit finds the file too. The manifest is read with the same line
+        pattern ncbi_genome_sync uses to mirror and verify it.
 
         Parameters
         ----------
-        ftp_file : str
-            File on the NCBI FTP mirror.
-        target_file : str
-            Corresponding file in the new release, overwritten if it differs.
-        status : list
-            Outcomes observed for this genome so far.
+        genome_dir : str
+            Genome directory holding an md5checksums.txt.
 
-        @return: the status list, with new_metadata appended if the file changed.
+        @return: hex MD5 of the genomic FASTA, as recorded in the manifest.
         """
 
-        if self.md5_calculator(ftp_file) != self.md5_calculator(target_file):
-            try:
-                shutil.copy2(ftp_file, target_file)
-            except IOError:
-                os.chmod(target_file, 0o664)
-                shutil.copy2(ftp_file, target_file)
-            status.append("new_metadata")
-        return status
+        assembly = os.path.basename(os.path.normpath(genome_dir))
+        wanted = assembly + GENOMIC_FASTA_EXT
+        manifest = os.path.join(genome_dir, MD5_MANIFEST)
 
-    def checksum_genome_dir(self, pathtodir: str) -> Tuple[Dict[str, str], Dict[str, str]]:
-        """Checksum the files of a genome directory, FASTA apart from the rest.
+        with open(manifest) as handle:
+            for line in handle:
+                match = MD5_LINE_RE.match(line.strip())
+                if not match:
+                    continue
+                name = match.group(2).strip()
+                if name.startswith('./'):
+                    name = name[2:]
+                if name == wanted:
+                    return match.group(1)
 
-        The FASTA files are kept separate because they alone decide whether a
-        genome has really changed; everything else is metadata that can be
-        refreshed on its own. Derived FASTA files (_cds_from_genomic,
-        _rna_from_genomic) are not genome assemblies and are excluded.
-
-        Checksums are computed here rather than read from md5checksums.txt, as
-        the files have been decompressed and no longer match the sums NCBI
-        published for them.
-
-        Parameters
-        ----------
-        pathtodir : str
-            Genome directory to checksum.
-
-        @return: (metadata file to checksum, FASTA file to checksum) dicts.
-        """
-
-        out_dict, out_dict_fasta= {}, {}
-
-        for name in glob.glob(os.path.join(pathtodir, '*')):
-            if name.endswith(self.genomic_ext) and not name.endswith(self.from_genomic_ext):
-                out_dict_fasta[os.path.basename(
-                    name)] = self.sha256_calculator(name)
-                os.chmod(name, 0o664)
-            elif name.endswith(self.all_but_fasta):
-                out_dict[os.path.basename(name)] = self.sha256_calculator(name)
-                os.chmod(name, 0o664)
-        return (out_dict, out_dict_fasta)
-
-    def md5_calculator(self, file_path: str) -> str:
-        """Compute the MD5 checksum of a file.
-
-        Used for the small report files NCBI ships alongside a genome. The file
-        is read a block at a time so that its size never dictates memory use.
-
-        Parameters
-        ----------
-        file_path : str
-            File to checksum.
-
-        @return: hex digest of the file.
-        """
-
-        return self._checksum(file_path, hashlib.md5())
-
-    def sha256_calculator(self, file_path: str) -> str:
-        """Compute the SHA-256 checksum of a file.
-
-        The file is read a line at a time so that genome assemblies too large to
-        hold in memory can be checksummed.
-
-        Parameters
-        ----------
-        file_path : str
-            File to checksum.
-
-        @return: hex digest of the file.
-        """
-
-        return self._checksum(file_path, hashlib.sha256())
-
-    def _checksum(self, file_path: str, checksum) -> str:
-        """Feed a file to a hash object a block at a time.
-
-        Parameters
-        ----------
-        file_path : str
-            File to checksum.
-        checksum : hashlib hash
-            Hash object to update.
-
-        @return: hex digest of the file.
-        """
-
-        return file_checksum(file_path, checksum)
+        raise ValueError('{} has no entry for {}'.format(manifest, wanted))

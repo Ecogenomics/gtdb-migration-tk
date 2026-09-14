@@ -46,10 +46,10 @@ class TempDirCase(unittest.TestCase):
 
 # ------------------------------------------------------------------ release comparison
 
-class GenericManagerTests(TempDirCase):
+class GenomeManagerTests(TempDirCase):
     def setUp(self):
         super().setUp()
-        self.manager = F.GenericManager()
+        self.manager = F.GenomeManager(F.REFSEQ_PREFIX, self.dir)
         self.new_genomes = {'G1': '/ftp/g1', 'G2': '/ftp/g2', 'G3': '/ftp/g3_new'}
         self.old_genomes = {'G2': '/gtdb/g2', 'G3': '/gtdb/g3_old', 'G4': '/gtdb/g4'}
 
@@ -71,137 +71,69 @@ class GenericManagerTests(TempDirCase):
         self.assertEqual(self.manager.generate_genomes_to_add({}, {}), {})
         self.assertEqual(self.manager.generate_genomes_to_compare({}, {}), [])
 
-    def test_load_previous_records(self):
-        path = self.write('old_dirs.tsv', 'GCF_000001405.40\t/gtdb/g1\nGCA_000002305.1\t/gtdb/g2\n')
-        self.assertEqual(self.manager.load_previous_records(path),
-                         {'GCF_000001405.40': '/gtdb/g1', 'GCA_000002305.1': '/gtdb/g2'})
+    def test_load_genome_dirs_keeps_only_the_database_of_the_manager(self):
+        # one genome_dirs file describes a whole release, both databases together
+        path = self.write('dirs.tsv',
+                          'GCF_000000001.1\t/ftp/g1\n'
+                          'GCF_000000002.1\t/ftp/g2\n'
+                          'GCA_000000003.1\t/ftp/g3\n')
+        self.assertEqual(self.manager.load_genome_dirs(path),
+                         {'GCF_000000001.1': '/ftp/g1', 'GCF_000000002.1': '/ftp/g2'})
+        self.assertEqual(F.GenomeManager(F.GENBANK_PREFIX, self.dir).load_genome_dirs(path),
+                         {'GCA_000000003.1': '/ftp/g3'})
 
-    def test_load_ftp_records_keeps_only_selected_genomes_of_the_right_database(self):
-        path = self.write('ftp_dirs.tsv',
-                          'GCF_000000001.1\t/ftp/keep\n'       # selected
-                          'GCF_000000002.1\t/ftp/drop\n'       # not selected
-                          'GCA_000000003.1\t/ftp/wrong_db\n')  # GenBank, not RefSeq
-        selected = {'GCF_000000001.1', 'GCA_000000003.1'}
-        self.assertEqual(self.manager.load_ftp_records(path, 'GCF', selected),
-                         {'GCF_000000001.1': '/ftp/keep'})
-
-
-class RefSeqManagerTests(TempDirCase):
-    def test_only_latest_assemblies_are_selected(self):
-        path = self.write('summary.txt',
-                          summary('GCF_000000001.1\tPRJNA1\tlatest\tGCA_000000001.1\tna\tftp://a',
-                                  'GCF_000000002.1\tPRJNA2\treplaced\tGCA_000000002.1\tna\tftp://b',
-                                  'GCF_000000003.1\tPRJNA3\tsuppressed\tGCA_000000003.1\tna\tftp://c'))
-        manager = F.RefSeqManager(self.dir)
-        self.assertEqual(manager.parse_assembly_summary(path), ['GCF_000000001.1'])
-
-    def test_selection_survives_a_revised_column_layout(self):
-        header = '#assembly_accession\tbioproject\tbiosample\tversion_status'
-        path = self.write('summary.txt',
-                          summary('GCF_000000001.1\tPRJNA1\tSAMN1\tlatest',
-                                  'GCF_000000002.1\tPRJNA2\tSAMN2\treplaced',
-                                  header=header))
-        manager = F.RefSeqManager(self.dir)
-        self.assertEqual(manager.parse_assembly_summary(path), ['GCF_000000001.1'])
+    def test_reports_are_named_for_the_database(self):
+        # the RefSeq and GenBank runs of a release share one output directory
+        refseq = F.GenomeManager(F.REFSEQ_PREFIX, self.dir)
+        genbank = F.GenomeManager(F.GENBANK_PREFIX, self.dir)
+        self.assertEqual(os.path.basename(refseq.report_file()), 'report_gcf.log')
+        self.assertEqual(os.path.basename(refseq.review_file()), 'gcf_to_review.log')
+        self.assertEqual(os.path.basename(genbank.report_file()), 'report_gca.log')
+        self.assertEqual(os.path.basename(genbank.review_file()), 'gca_to_review.log')
 
     def test_construction_writes_nothing(self):
         # reports are opened by run_comparison, so a manager can be built without touching disk
-        F.RefSeqManager(os.path.join(self.dir, 'does_not_exist'))
-        F.GenBankManager(os.path.join(self.dir, 'does_not_exist'))
+        F.GenomeManager(F.REFSEQ_PREFIX, os.path.join(self.dir, 'does_not_exist'))
         self.assertEqual(os.listdir(self.dir), [])
 
 
-class RefSeqDirectoryCompleteness(TempDirCase):
-    """A GenBank genome is rescued when its RefSeq counterpart holds no assembly."""
+class RunComparisonTests(TempDirCase):
+    """The whole update of one database, run dry: compared and reported, nothing copied."""
 
-    def refseq_dir(self, *file_names):
-        genome_dir = os.path.join(self.dir, 'GCF_000000009.1_ASM9v1')
-        os.mkdir(genome_dir)
-        for name in file_names:
-            open(os.path.join(genome_dir, name), 'w').close()
-        return genome_dir
+    def genome(self, root, assembly, fasta_md5):
+        # the two files the comparison reads: a manifest naming the genomic FASTA
+        path = os.path.join(root, assembly)
+        os.makedirs(path)
+        with open(os.path.join(path, 'md5checksums.txt'), 'w') as handle:
+            handle.write('{}  ./{}_genomic.fna.gz\n'.format(fasta_md5, assembly))
+        return path
 
-    def select_against(self, genome_dir):
-        refseq_dirs = self.write('refseq_dirs.tsv', 'GCF_000000009.1\t{}\n'.format(genome_dir))
-        arc = self.write('arc.txt',
-                         summary('GCA_000000009.1\tPRJNA9\tlatest\tGCF_000000009.1\tna\tftp://b'))
-        bac = self.write('bac.txt', summary())
-        manager = F.GenBankManager(self.dir)
-        with open(os.path.join(self.dir, 'gca_selection.log'), 'w') as handle:
-            manager.select_gca = handle
-            return manager.select_genbank_genomes(arc, bac, refseq_dirs)
+    def test_dry_run_reports_every_genome_of_the_database_and_no_other(self):
+        ftp = os.path.join(self.dir, 'mirror')
+        gtdb = os.path.join(self.dir, 'previous')
+        shared_old = self.genome(gtdb, 'GCF_000000001.1_ASM1v1', 'a' * 32)
+        shared_new = self.genome(os.path.join(ftp, 'all', 'GCF', '000', '000', '001'),
+                                 'GCF_000000001.1_ASM1v1', 'b' * 32)
+        old = self.write('old_dirs.tsv',
+                         'GCF_000000001.1\t{}\n'.format(shared_old) +           # shared, FASTA changed
+                         'GCF_000000002.1\t/gtdb/GCF_000000002.1_ASM2v1\n'        # gone from NCBI
+                         'GCA_000000004.1\t/gtdb/GCA_000000004.1_ASM4v1\n')       # other database
+        new = self.write('ftp_dirs.tsv',
+                         'GCF_000000001.1\t{}\n'.format(shared_new) +
+                         'GCF_000000003.1\t{0}/all/GCF/000/000/003/GCF_000000003.1_ASM3v1\n'
+                         'GCA_000000004.1\t{0}/all/GCA/000/000/004/GCA_000000004.1_ASM4v1\n'.format(ftp))
+        out = os.path.join(self.dir, 'release')
+        os.mkdir(out)
 
-    def test_complete_refseq_directory_means_the_genbank_copy_is_not_needed(self):
-        genome_dir = self.refseq_dir('GCF_000000009.1_ASM9v1_genomic.fna.gz')
-        self.assertEqual(self.select_against(genome_dir), [])
+        F.GenomeManager(F.REFSEQ_PREFIX, out, dry_run=True).run_comparison(ftp, new, old)
 
-    def test_derived_files_alone_do_not_count_as_an_assembly(self):
-        # '*_genomic.fna.gz' also matches these two, so a glob reports the directory
-        # as complete and the GenBank genome is never rescued
-        genome_dir = self.refseq_dir('GCF_000000009.1_ASM9v1_cds_from_genomic.fna.gz',
-                                     'GCF_000000009.1_ASM9v1_rna_from_genomic.fna.gz',
-                                     'GCF_000000009.1_ASM9v1_protein.faa.gz')
-        self.assertEqual(self.select_against(genome_dir), ['GCA_000000009.1'])
-
-    def test_empty_refseq_directory_rescues_the_genbank_genome(self):
-        self.assertEqual(self.select_against(self.refseq_dir()), ['GCA_000000009.1'])
-
-    def test_missing_refseq_directory_rescues_the_genbank_genome(self):
-        self.assertEqual(self.select_against(os.path.join(self.dir, 'gone')),
-                         ['GCA_000000009.1'])
-
-
-class GenBankManagerTests(TempDirCase):
-    def select(self, *rows):
-        # a complete RefSeq directory for GCF_000000009.1, so genomes paired with it
-        # are covered by RefSeq and need no GenBank copy
-        genome_dir = os.path.join(self.dir, 'GCF_000000009.1_ASM9v1')
-        os.mkdir(genome_dir)
-        open(os.path.join(genome_dir, 'GCF_000000009.1_ASM9v1_genomic.fna.gz'), 'w').close()
-        refseq_dirs = self.write('refseq_dirs.tsv',
-                                 'GCF_000000009.1\t{}\n'.format(genome_dir))
-        arc = self.write('arc.txt', summary(*rows))
-        bac = self.write('bac.txt', summary())
-        manager = F.GenBankManager(self.dir)
-        with open(os.path.join(self.dir, 'gca_selection.log'), 'w') as handle:
-            manager.select_gca = handle
-            return manager.select_genbank_genomes(arc, bac, refseq_dirs), manager
-
-    def test_genome_without_a_refseq_counterpart_is_selected(self):
-        selected, _ = self.select('GCA_000000001.1\tPRJNA1\tlatest\tna\tna\tftp://a')
-        self.assertEqual(selected, ['GCA_000000001.1'])
-
-    def test_genome_already_covered_by_refseq_is_skipped(self):
-        # G000000009 is in the RefSeq genome directories, so the GenBank copy is redundant
-        selected, _ = self.select('GCA_000000009.1\tPRJNA9\tlatest\tGCF_000000009.1\tna\tftp://b')
-        self.assertEqual(selected, [])
-
-    def test_surveillance_genomes_are_skipped(self):
-        selected, _ = self.select('GCA_000000002.1\tPRJNA2\tlatest\tna\tsurveillance\tftp://c')
-        self.assertEqual(selected, [])
-
-    def test_superseded_genomes_are_skipped(self):
-        selected, _ = self.select('GCA_000000003.1\tPRJNA3\treplaced\tna\tna\tftp://d')
-        self.assertEqual(selected, [])
-
-    def test_domain_is_recorded_for_selected_genomes(self):
-        _, manager = self.select('GCA_000000001.1\tPRJNA1\tlatest\tna\tna\tftp://a')
-        self.assertEqual(manager.genome_domain_dict['GCA_000000001.1'], F.ARCHAEA)
-
-    def test_populate_genomes_dict_keys_on_the_canonical_accession(self):
-        path = self.write('refseq_dirs.tsv', 'GCF_000001405.40\t/gtdb/g1\n')
-        manager = F.GenBankManager(self.dir)
-        self.assertEqual(manager._populate_genomes_dict(path), {'G000001405': '/gtdb/g1'})
-
-    def test_paired_accessions_reduce_to_the_same_key(self):
-        # matching a GenBank genome to its RefSeq counterpart rests on this
-        path = self.write('dirs.tsv', 'GCA_000001405.1\t/gtdb/gca\n')
-        manager = F.GenBankManager(self.dir)
-        self.assertEqual(list(manager._populate_genomes_dict(path)), ['G000001405'])
-
-
-if __name__ == '__main__':
-    unittest.main()
+        with open(os.path.join(out, 'report_gcf.log')) as handle:
+            rows = sorted(line.rstrip('\n').split('\t') for line in handle)
+        self.assertEqual(rows, [['GCF_000000001.1', 'genomic FASTA file changed'],
+                                ['GCF_000000002.1', 'removed'],
+                                ['GCF_000000003.1', 'new']])
+        # a dry run compares but copies nothing: only the two reports appear
+        self.assertEqual(sorted(os.listdir(out)), ['gcf_to_review.log', 'report_gcf.log'])
 
 
 # ------------------------------------------------------------------- release selection
@@ -438,6 +370,123 @@ def sync_required():
     return sync.SYNC_COLUMNS
 
 
+class FtpPathTests(unittest.TestCase):
+    """A genome NCBI lists but does not serve cannot be mirrored."""
+
+    def test_a_served_genome_has_an_ftp_path(self):
+        self.assertTrue(F.has_ftp_path('https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/x'))
+
+    def test_na_is_not_an_ftp_path(self):
+        self.assertFalse(F.has_ftp_path('na'))
+
+    def test_na_is_matched_whatever_its_case(self):
+        self.assertFalse(F.has_ftp_path('NA'))
+
+    def test_an_empty_column_is_not_an_ftp_path(self):
+        # older summary files leave it empty rather than writing na
+        self.assertFalse(F.has_ftp_path(''))
+
+    def test_the_test_agrees_with_the_one_the_sync_applies(self):
+        # the two must agree, or the selection promises genomes the sync refuses
+        import gtdb_migration_tk.ncbi_genome_sync as sync
+        for value in ('na', 'NA', '', 'https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/000/001/x'):
+            sync_usable = bool(value) and value.lower() != 'na'
+            self.assertEqual(F.has_ftp_path(value), sync_usable, value)
+
+
+class UnservedGenomeTests(TempDirCase):
+    """Genomes NCBI serves no directory for, and the GenBank copies that rescue them."""
+
+    SERVED = 'https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/000/001/x'
+
+    def write_summaries(self, refseq=(), genbank=()):
+        return [self.write('assembly_summary_refseq.txt', summary(*refseq)),
+                self.write('assembly_summary_genbank.txt', summary(*genbank))]
+
+    def select(self, refseq=(), genbank=()):
+        F.SelectedGenomesManager(self.dir).run(self.write_summaries(refseq, genbank))
+        with gzip.open(os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz'), 'rt') as handle:
+            return [line.rstrip('\n').split('\t')
+                    for line in handle if not line.startswith('#')]
+
+    def accessions(self, refseq=(), genbank=()):
+        return [row[0] for row in self.select(refseq, genbank)]
+
+    def test_a_refseq_genome_with_no_ftp_path_is_not_selected(self):
+        self.assertEqual(
+            self.accessions(refseq=['GCF_000000001.1\tPRJNA1\tlatest\tna\tna\tna']),
+            [])
+
+    def test_a_genbank_genome_with_no_ftp_path_is_not_selected(self):
+        self.assertEqual(
+            self.accessions(genbank=['GCA_000000002.1\tPRJNA2\tlatest\tna\tna\tna']),
+            [])
+
+    def test_an_empty_ftp_path_column_is_treated_the_same(self):
+        self.assertEqual(
+            self.accessions(genbank=['GCA_000000003.1\tPRJNA3\tlatest\tna\tna\t']),
+            [])
+
+    def test_the_genbank_copy_is_selected_when_refseq_has_no_ftp_path(self):
+        # the case this rule exists for: NCBI holds the genome under its GenBank
+        # accession only, and dropping the unserved RefSeq row must not drop the genome
+        rows = self.select(
+            refseq=['GCF_000000004.1\tPRJNA4\tlatest\tGCA_000000004.1\tna\tna'],
+            genbank=['GCA_000000004.1\tPRJNA4\tlatest\tGCF_000000004.1\tna\t' + self.SERVED])
+        self.assertEqual([row[0] for row in rows], ['GCA_000000004.1'])
+        self.assertEqual(rows[0][-1],
+                         'paired RefSeq assembly GCF_000000004.1 was not selected: '
+                         'NCBI serves no directory for it')
+
+    def test_a_served_refseq_genome_still_covers_its_genbank_copy(self):
+        # the rescue must not fire when RefSeq is perfectly usable
+        self.assertEqual(
+            self.accessions(
+                refseq=['GCF_000000005.1\tPRJNA5\tlatest\tGCA_000000005.1\tna\t' + self.SERVED],
+                genbank=['GCA_000000005.1\tPRJNA5\tlatest\tGCF_000000005.1\tna\t' + self.SERVED]),
+            ['GCF_000000005.1'])
+
+    def test_a_rescue_is_noted_differently_from_a_pairing_ncbi_never_listed(self):
+        # both rows are GenBank copies of an apparently-paired genome, and only one of
+        # them is NCBI's bookkeeping error; the table has to tell them apart
+        rows = self.select(
+            refseq=['GCF_000000006.1\tPRJNA6\tlatest\tGCA_000000006.1\tna\tna'],
+            genbank=['GCA_000000006.1\tPRJNA6\tlatest\tGCF_000000006.1\tna\t' + self.SERVED,
+                     'GCA_000000007.1\tPRJNA7\tlatest\tGCF_000000007.1\tna\t' + self.SERVED])
+        notes = {row[0]: row[-1] for row in rows}
+        self.assertIn('was not selected: NCBI serves no directory',
+                      notes['GCA_000000006.1'])
+        self.assertIn('absent from the assembly summary files', notes['GCA_000000007.1'])
+
+    def test_a_multi_isolate_refseq_genome_also_names_its_reason(self):
+        rows = self.select(
+            refseq=['GCF_000000008.1\tPRJNA8\tlatest\tGCA_000000008.1'
+                    '\tlarge multi-isolate project\t' + self.SERVED],
+            genbank=['GCA_000000008.1\tPRJNA8\tlatest\tGCF_000000008.1\tna\t' + self.SERVED])
+        self.assertEqual([row[0] for row in rows], ['GCA_000000008.1'])
+        self.assertIn('large multi-isolate project', rows[0][-1])
+
+    def test_an_unserved_genbank_genome_does_not_rescue_an_unserved_refseq_one(self):
+        # neither is mirrorable, so the genome is simply not in the release
+        self.assertEqual(
+            self.accessions(
+                refseq=['GCF_000000009.1\tPRJNA9\tlatest\tGCA_000000009.1\tna\tna'],
+                genbank=['GCA_000000009.1\tPRJNA9\tlatest\tGCF_000000009.1\tna\tna']),
+            [])
+
+    def test_every_selected_row_carries_a_usable_ftp_path(self):
+        # the contract the sync depends on
+        rows = self.select(
+            refseq=['GCF_000000010.1\tPRJNA10\tlatest\tna\tna\t' + self.SERVED,
+                    'GCF_000000011.1\tPRJNA11\tlatest\tna\tna\tna'],
+            genbank=['GCA_000000012.1\tPRJNA12\tlatest\tna\tna\t' + self.SERVED,
+                     'GCA_000000013.1\tPRJNA13\tlatest\tna\tna\tna'])
+        self.assertEqual([row[0] for row in rows],
+                         ['GCA_000000012.1', 'GCF_000000010.1'])
+        for row in rows:
+            self.assertTrue(F.has_ftp_path(row[1]), row)
+
+
 class SummaryFileGroupingTests(TempDirCase):
     """Telling a RefSeq summary file from a GenBank one by its name."""
 
@@ -498,3 +547,7 @@ class MisfiledRowTests(TempDirCase):
         with gzip.open(os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz'), 'rt') as handle:
             rows = [line.split('\t')[0] for line in handle if not line.startswith('#')]
         self.assertEqual(rows, ['GCA_000000023.1'])
+
+
+if __name__ == '__main__':
+    unittest.main()
