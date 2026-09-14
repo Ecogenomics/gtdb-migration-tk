@@ -211,48 +211,68 @@ class GenomeRelpath(unittest.TestCase):
 
 class MainHelpers(TempDirCase):
     def args(self, **kw):
-        base = dict(summary="assembly_summary_archaea_genbank.txt", jobs=8, verify_jobs=20,
-                    rate=16.0, max_age=14.0, verify=False, verify_only=False, delete=False,
-                    fail=None, bad=None)
+        base = dict(summary="assembly_summary_archaea_genbank.txt", retry=None, root="genomes",
+                    log="gtdb_migration_tk.log", dry_run=False, jobs=8, verify_jobs=20,
+                    nfs_jobs=8, rate=20.0, max_age=14.0, verify=False, verify_only=False,
+                    delete=False, fail=None, bad=None)
         base.update(kw)
         return types.SimpleNamespace(**base)
 
     def test_output_paths_strip_txt_but_keep_fail_bad(self):
-        self.assertEqual(N.output_paths(self.args()),
+        out = N.output_paths(self.args())
+        self.assertEqual((out.base, out.fail, out.bad),
                          ("assembly_summary_archaea_genbank",
                           "assembly_summary_archaea_genbank.fail",
-                          "assembly_summary_archaea_genbank.bad",
-                          "assembly_summary_archaea_genbank.log"))
-        base, fail, bad, log = N.output_paths(self.args(summary="/x/y/run.bad"))
-        self.assertEqual((base, fail, log), ("run.bad", "run.bad.fail", "run.bad.log"))
-        self.assertEqual(N.output_paths(self.args(fail="f", bad="b"))[1:3], ("f", "b"))
+                          "assembly_summary_archaea_genbank.bad"))
+        out = N.output_paths(self.args(summary="/x/y/run.bad"))
+        self.assertEqual((out.base, out.fail), ("run.bad", "run.bad.fail"))
+        out = N.output_paths(self.args(fail="f", bad="b"))
+        self.assertEqual((out.fail, out.bad), ("f", "b"))
+
+    def test_outputs_are_placed_beside_the_log(self):
+        # one directory, chosen by the operator, holds a mirror's whole run history
+        out = N.output_paths(self.args(summary="/in/gtdb_selected_genomes.tsv.gz",
+                                       log="/logs/sync.log"))
+        self.assertEqual((out.fail, out.bad, out.rm, out.rm_dry_run, out.extra),
+                         ("/logs/gtdb_selected_genomes.fail",
+                          "/logs/gtdb_selected_genomes.bad",
+                          "/logs/gtdb_selected_genomes.rm",
+                          "/logs/gtdb_selected_genomes.rm_dry_run",
+                          "/logs/gtdb_selected_genomes.extra"))
+
+    def test_a_bare_log_name_means_the_working_directory(self):
+        out = N.output_paths(self.args(summary="/in/x.tsv", log="sync.log"))
+        self.assertEqual(out.fail, "x.fail")
+
+    def test_explicit_fail_and_bad_ignore_the_log_directory(self):
+        out = N.output_paths(self.args(fail="/elsewhere/f", bad="/elsewhere/b", log="/logs/s.log"))
+        self.assertEqual((out.fail, out.bad), ("/elsewhere/f", "/elsewhere/b"))
 
     def test_output_paths_strip_gz(self):
         # GTDB stores the summaries compressed, and the table select_genomes
         # writes is gtdb_selected_genomes.tsv.gz; these outputs are plain text,
         # so they must not be named as though they were gzipped
-        base, fail, bad, log = N.output_paths(
-            self.args(summary="/x/y/gtdb_selected_genomes.tsv.gz"))
-        self.assertEqual((base, fail, bad, log),
+        out = N.output_paths(self.args(summary="/x/y/gtdb_selected_genomes.tsv.gz"))
+        self.assertEqual((out.base, out.fail, out.bad, out.rm),
                          ("gtdb_selected_genomes",
                           "gtdb_selected_genomes.fail",
                           "gtdb_selected_genomes.bad",
-                          "gtdb_selected_genomes.log"))
+                          "gtdb_selected_genomes.rm"))
 
     def test_output_paths_strip_gz_before_the_retry_suffix(self):
         # a gzipped retry file still keeps its .bad, so its outputs sit beside it
         # rather than overwriting the run that produced it
-        base, fail, _bad, log = N.output_paths(self.args(summary="/x/y/run.bad.gz"))
-        self.assertEqual((base, fail, log), ("run.bad", "run.bad.fail", "run.bad.log"))
+        out = N.output_paths(self.args(summary="/x/y/run.bad.gz"))
+        self.assertEqual((out.base, out.fail), ("run.bad", "run.bad.fail"))
 
     def test_output_paths_strip_a_bare_gz(self):
-        base, _fail, _bad, _log = N.output_paths(self.args(summary="/x/y/summary.gz"))
-        self.assertEqual(base, "summary")
+        self.assertEqual(N.output_paths(self.args(summary="/x/y/summary.gz")).base, "summary")
 
     def test_validate_args(self):
         self.assertIsNone(N.validate_args(self.args()))
         self.assertIn("--jobs", N.validate_args(self.args(jobs=0)))
         self.assertIn("--rate", N.validate_args(self.args(rate=-1)))
+        self.assertIn("--nfs-jobs", N.validate_args(self.args(nfs_jobs=0)))
         self.assertIn("--max-age", N.validate_args(self.args(max_age=-1)))
         self.assertIsNone(N.validate_args(self.args(max_age=0)))
         self.assertIn("--delete", N.validate_args(self.args(delete=True)))
@@ -380,16 +400,23 @@ class LockRoot(TempDirCase):
         again.close()
 
 
-class MainEndToEndOffline(TempDirCase):
-    """main() paths that need no network: argument guards and the empty-table exit."""
+class MainRunner(TempDirCase):
+    """Drives main() the way the command line does; holds no tests of its own, so the
+    classes built on it do not re-run one another's."""
 
-    def run_main(self, summary, *argv):
-        # the summary is a named argument (-s/--ncbi_summary_file), not a positional.
-        # ncbi_genome_sync reports through the toolkit logger, so capture that too and return
-        # it alongside stderr -- the progress bar and signal handler still use stderr.
+    def run_main(self, table, *argv, retry=False):
+        # The table is --gtdb_selected_genomes (the selection: removes what it does not
+        # list) or --retry (syncs only what it lists). --log is required and places the
+        # .fail/.bad/.rm outputs; under gtdb_migration_tk logger_setup() would create its
+        # directory. ncbi_genome_sync reports through the toolkit logger, so capture that
+        # too and return it alongside stderr -- the progress bar and signal handler still
+        # use stderr.
         cwd = os.getcwd(); os.chdir(self.dir)
+        os.makedirs(self.path("logs"), exist_ok=True)
         stderr, sys.stderr = sys.stderr, open(self.path("stderr"), "w")
-        argv_saved, sys.argv = sys.argv, ["ncbi_genome_sync.py", "-s", summary] + list(argv)
+        flag = "--retry" if retry else "--gtdb_selected_genomes"
+        argv_saved, sys.argv = (sys.argv, ["ncbi_genome_sync.py", flag, table,
+                                           "-l", os.path.join("logs", "sync.log")] + list(argv))
         records = []
 
         class _Capture(logging.Handler):
@@ -409,11 +436,25 @@ class MainEndToEndOffline(TempDirCase):
         with open(self.path("stderr")) as handle:
             return rc, handle.read() + "\n".join(records)
 
-    def test_header_only_table_is_nothing_to_do_exit_0(self):
+class MainEndToEndOffline(MainRunner):
+    """main() paths that need no network: argument guards and the empty-table exits."""
+
+    def test_header_only_retry_is_nothing_to_do_exit_0(self):
+        # the normal end of a retry loop: an empty .fail
         write(self.path("retry.fail"), N.FAIL_HEADER)
-        rc, err = self.run_main("retry.fail", "--root", self.path("mirror"))
+        rc, err = self.run_main("retry.fail", "--root", self.path("mirror"), retry=True)
         self.assertEqual(rc, 0)
         self.assertIn("nothing to do", err)
+
+    def test_header_only_selection_is_refused_exit_2(self):
+        # taken literally an empty selection says the mirror should hold nothing, and the
+        # removal would oblige; the likely cause is an empty .fail given to the wrong flag
+        write(self.path("retry.fail"), N.FAIL_HEADER)
+        os.makedirs(self.path("mirror/all/GCA/000/001/405/GCA_000001405.1_A"))
+        rc, err = self.run_main("retry.fail", "--root", self.path("mirror"))
+        self.assertEqual(rc, 2)
+        self.assertIn("--retry", err)
+        self.assertTrue(os.path.isdir(self.path("mirror/all/GCA/000/001/405/GCA_000001405.1_A")))
 
     def test_rows_but_all_na_is_still_an_error(self):
         write(self.path("t.txt"), "#assembly_accession\tftp_path\nGCA_1.1\tna\n")
@@ -431,8 +472,8 @@ class MainEndToEndOffline(TempDirCase):
         # PyPy does not close a dropped handle promptly: without an explicit close the
         # flock outlived main() and a second run in the same process was refused with 75
         write(self.path("retry.fail"), N.FAIL_HEADER)
-        self.assertEqual(self.run_main("retry.fail", "--root", self.path("mirror"))[0], 0)
-        self.assertEqual(self.run_main("retry.fail", "--root", self.path("mirror"))[0], 0)
+        self.assertEqual(self.run_main("retry.fail", "--root", self.path("mirror"), retry=True)[0], 0)
+        self.assertEqual(self.run_main("retry.fail", "--root", self.path("mirror"), retry=True)[0], 0)
 
     def test_locked_root_exits_75_before_reading(self):
         write(self.path("t.txt"), N.FAIL_HEADER)
@@ -650,3 +691,383 @@ class GroupOperablePermissions(SyncGenomeOffline):
         self.assertEqual(N.FILE_MODE & 0o060, 0o060)
         self.assertEqual(N.FILE_MODE & 0o111, 0)
         self.assertEqual(N.UMASK & 0o020, 0)        # umask must not strip group write
+
+
+# ------------------------------------------------------------------ removal: the selection defines the mirror
+
+GCA_PREFIX = N.URL_PREFIX + "all/GCA/000/001/405/"
+
+
+def selection(*asms, header=N.BAD_HEADER):
+    """A selected-genomes table naming the given assembly directory names."""
+    return header + "".join("%s\t%s%s/\tlatest\tna\n" % (N.accession_of(asm), GCA_PREFIX, asm)
+                            for asm in asms)
+
+
+class AccessionOf(unittest.TestCase):
+    def test_cuts_at_the_first_underscore_after_the_prefix(self):
+        self.assertEqual(N.accession_of("GCA_000001405.28_GRCh38.p13"), "GCA_000001405.28")
+        self.assertEqual(N.accession_of("GCF_000006805.1_ASM680v1"), "GCF_000006805.1")
+
+    def test_assembly_names_with_underscores_do_not_confuse_it(self):
+        self.assertEqual(N.accession_of("GCA_000000001.1_my_odd_name_v2"), "GCA_000000001.1")
+
+    def test_a_name_without_an_assembly_part_is_returned_whole(self):
+        self.assertEqual(N.accession_of("GCA_000000001.1"), "GCA_000000001.1")
+
+
+class MirrorWalk(TempDirCase):
+    """mirror_genome_dirs() trusts the shape of the layout and nothing else."""
+
+    def leaf(self, rel):
+        path = self.path(rel)
+        os.makedirs(path)
+        write(os.path.join(path, "md5checksums.txt"), "")
+        return path
+
+    def test_finds_every_leaf_under_every_archive(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        self.leaf("all/GCA/000/001/405/GCA_000001405.2_B")
+        self.leaf("all/GCF/000/006/805/GCF_000006805.1_ASM680v1")
+        self.assertEqual(N.mirror_genome_dirs(self.dir),
+                         {"all/GCA/000/001/405/GCA_000001405.1_A",
+                          "all/GCA/000/001/405/GCA_000001405.2_B",
+                          "all/GCF/000/006/805/GCF_000006805.1_ASM680v1"})
+
+    def test_files_at_any_level_are_not_genomes(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        write(self.path("all/README.txt"), "")
+        write(self.path("all/GCA/000/001/stray.txt"), "")
+        write(self.path("all/GCA/000/001/405/stray.txt"), "")
+        self.assertEqual(N.mirror_genome_dirs(self.dir), {"all/GCA/000/001/405/GCA_000001405.1_A"})
+
+    def test_a_symlinked_leaf_is_neither_counted_nor_reached(self):
+        # a link into another tree must not be deleted through
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        os.symlink(self.path("all/GCA/000/001/405/GCA_000001405.1_A"),
+                   self.path("all/GCA/000/001/405/GCA_000001405.9_LINK"))
+        self.assertEqual(N.mirror_genome_dirs(self.dir), {"all/GCA/000/001/405/GCA_000001405.1_A"})
+
+    def test_a_root_with_no_all_directory_holds_no_genomes(self):
+        # the first run against a fresh --root
+        self.assertEqual(N.mirror_genome_dirs(self.dir), set())
+
+    def test_whatever_ncbi_adds_under_all_is_walked_alike(self):
+        self.leaf("all/GCX/000/000/001/GCX_000000001.1_NEW")
+        self.assertEqual(N.mirror_genome_dirs(self.dir), {"all/GCX/000/000/001/GCX_000000001.1_NEW"})
+
+
+class PlanMirror(TempDirCase):
+    def genomes(self, *asms):
+        write(self.path("sel.tsv"), selection(*asms))
+        return N.read_assembly_summary(self.path("sel.tsv"))[0]
+
+    def test_matches_on_the_exact_directory_the_ftp_path_maps_to(self):
+        # a renamed assembly (same accession, new name) is to be removed and re-fetched,
+        # not left beside its replacement
+        for rel in ("all/GCA/000/001/405/GCA_000001405.1_OLDNAME",
+                    "all/GCA/000/001/405/GCA_000001405.2_B"):
+            os.makedirs(self.path(rel))
+        to_remove, to_add, present = N.plan_mirror(
+            self.dir, self.genomes("GCA_000001405.1_NEWNAME", "GCA_000001405.2_B"))
+        self.assertEqual(to_remove, ["all/GCA/000/001/405/GCA_000001405.1_OLDNAME"])
+        self.assertEqual((to_add, present), (1, 1))
+
+    def test_an_empty_mirror_has_everything_to_add(self):
+        self.assertEqual(N.plan_mirror(self.dir, self.genomes("GCA_000001405.1_A")), ([], 1, 0))
+
+
+class RemoveGenomeDir(TempDirCase):
+    def leaf(self, rel):
+        os.makedirs(self.path(rel))
+        write(self.path(rel + "/md5checksums.txt"), "")
+
+    def test_prunes_the_triplets_it_empties_but_never_all(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        N.remove_genome_dir(self.dir, "all/GCA/000/001/405/GCA_000001405.1_A")
+        self.assertFalse(os.path.exists(self.path("all/GCA")))
+        self.assertTrue(os.path.isdir(self.path("all")))
+
+    def test_stops_at_the_first_level_that_still_has_contents(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        self.leaf("all/GCA/000/001/999/GCA_000001999.1_C")
+        N.remove_genome_dir(self.dir, "all/GCA/000/001/405/GCA_000001405.1_A")
+        self.assertFalse(os.path.exists(self.path("all/GCA/000/001/405")))
+        self.assertTrue(os.path.isdir(self.path("all/GCA/000/001/999/GCA_000001999.1_C")))
+
+
+class PruneMirror(TempDirCase):
+    def leaf(self, rel):
+        os.makedirs(self.path(rel))
+        write(self.path(rel + "/md5checksums.txt"), "")
+
+    def test_records_each_directory_before_deleting_it(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        self.leaf("all/GCA/000/001/405/GCA_000001405.2_B")
+        record = self.path("run.rm")
+        removed, failed = N.prune_mirror(self.dir, ["all/GCA/000/001/405/GCA_000001405.1_A",
+                                                    "all/GCA/000/001/405/GCA_000001405.2_B"],
+                                         record, silent=True)
+        self.assertEqual((removed, failed), (2, 0))
+        with open(record) as handle:
+            lines = handle.read().splitlines()
+        # rows land in completion order, the removals running on threads
+        self.assertEqual(lines[0], N.RM_HEADER.rstrip("\n"))
+        self.assertEqual(sorted(lines[1:]),
+                         ["GCA_000001405.1\tall/GCA/000/001/405/GCA_000001405.1_A",
+                          "GCA_000001405.2\tall/GCA/000/001/405/GCA_000001405.2_B"])
+        self.assertFalse(os.path.exists(self.path("all/GCA")))
+
+    def test_an_empty_removal_still_truncates_the_record(self):
+        # a stale record from an earlier run must not be mistaken for this run's
+        write(self.path("run.rm"), "GCA_old\tall/x\n")
+        self.assertEqual(N.prune_mirror(self.dir, [], self.path("run.rm"), silent=True), (0, 0))
+        with open(self.path("run.rm")) as handle:
+            self.assertEqual(handle.read(), N.RM_HEADER)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can delete anything")
+    def test_a_directory_that_will_not_delete_is_counted_not_fatal(self):
+        # another member's file (SHARED OPERATION): the sync that follows still runs
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        self.leaf("all/GCA/000/002/405/GCA_000002405.1_B")
+        os.chmod(self.path("all/GCA/000/002/405"), 0o555)      # its parent refuses the rmdir
+        try:
+            removed, failed = N.prune_mirror(
+                self.dir, ["all/GCA/000/001/405/GCA_000001405.1_A",
+                           "all/GCA/000/002/405/GCA_000002405.1_B"], self.path("run.rm"), silent=True)
+        finally:
+            os.chmod(self.path("all/GCA/000/002/405"), 0o755)
+        self.assertEqual((removed, failed), (1, 1))
+        self.assertFalse(os.path.exists(self.path("all/GCA/000/001/405")))
+        with open(self.path("run.rm")) as handle:
+            self.assertEqual(len(handle.read().splitlines()), 3)   # header + both rows
+
+    def test_stops_between_directories_once_a_stop_is_requested(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        stop, N.STOP = N.STOP, N.StopFlag()
+        N.STOP.set("interrupted by SIGINT", 2)
+        try:
+            removed, failed = N.prune_mirror(self.dir, ["all/GCA/000/001/405/GCA_000001405.1_A"],
+                                             self.path("run.rm"), silent=True)
+        finally:
+            N.STOP = stop
+        self.assertEqual((removed, failed), (0, 0))
+        self.assertTrue(os.path.isdir(self.path("all/GCA/000/001/405/GCA_000001405.1_A")))
+
+
+class RemovalEndToEndOffline(MainRunner):
+    """main() with a mirror on disk and FakeNCBI standing in for the network: what the
+    selection does not list goes, what it lists is fetched, and --retry and --dry-run
+    remove nothing."""
+
+    A = "GCA_000001405.1_A"                      # on disk, not in the selection
+    B = "GCA_000001405.2_B"                      # in the selection, served by FakeNCBI
+
+    def setUp(self):
+        super().setUp()
+        self.files = {self.B + "_genomic.fna.gz": b"ACGT" * 50,
+                      self.B + "_assembly_report.txt": b"report",
+                      "annotation_hashes.txt": b"hashes"}
+        self.real_http_get, N.http_get = N.http_get, FakeNCBI(self.B, self.files)
+        self.root = self.path("mirror")
+        os.makedirs(os.path.join(self.root, "all/GCA/000/001/405", self.A))
+        write(os.path.join(self.root, "all/GCA/000/001/405", self.A, "md5checksums.txt"), "")
+
+    def tearDown(self):
+        N.http_get = self.real_http_get
+        super().tearDown()
+
+    def a_exists(self):
+        return os.path.isdir(os.path.join(self.root, "all/GCA/000/001/405", self.A))
+
+    def b_synced(self):
+        return os.path.isfile(os.path.join(self.root, "all/GCA/000/001/405", self.B, "md5checksums.txt"))
+
+    def test_the_selection_removes_what_it_does_not_list_then_syncs_what_it_does(self):
+        write(self.path("sel.tsv"), selection(self.B))
+        rc, err = self.run_main("sel.tsv", "--root", self.root)
+        self.assertEqual(rc, 0, err)
+        self.assertFalse(self.a_exists())
+        self.assertTrue(self.b_synced())
+        self.assertIn("1 genome dir(s) to remove, 1 to add, 0 present", err)
+        with open(self.path("logs/sel.rm")) as handle:
+            self.assertEqual(handle.read(),
+                             N.RM_HEADER + "GCA_000001405.1\tall/GCA/000/001/405/%s\n" % self.A)
+
+    def test_a_retry_syncs_what_it_lists_and_removes_nothing(self):
+        write(self.path("sel.fail"), selection(self.B, header=N.FAIL_HEADER).replace("\tna\n", "\tna\tr\n"))
+        rc, err = self.run_main("sel.fail", "--root", self.root, retry=True)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(self.a_exists())
+        self.assertTrue(self.b_synced())
+        self.assertFalse(os.path.exists(self.path("logs/sel.fail.rm")))
+
+    def test_dry_run_reports_counts_lists_removals_and_changes_nothing(self):
+        write(self.path("sel.tsv"), selection(self.B))
+        calls_before = len(N.http_get.calls)
+        rc, err = self.run_main("sel.tsv", "--root", self.root, "--dry-run")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("DRY RUN: 1 genome dir(s) would be removed", err)
+        self.assertIn("1 added, 0 present", err)
+        self.assertTrue(self.a_exists())
+        self.assertFalse(self.b_synced())
+        self.assertEqual(len(N.http_get.calls), calls_before)          # no request at all
+        with open(self.path("logs/sel.rm_dry_run")) as handle:
+            lines = handle.read().splitlines()
+        self.assertTrue(lines[0].startswith("# DRY RUN"))
+        self.assertEqual(lines[-1], "GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A)
+        for name in ("sel.rm", "sel.fail", "sel.bad"):
+            self.assertFalse(os.path.exists(self.path("logs/" + name)), name)
+
+    def test_dry_run_takes_no_lock_so_it_can_run_beside_a_live_sync(self):
+        write(self.path("sel.tsv"), selection(self.B))
+        held = N.lock_root(self.root)
+        try:
+            rc, err = self.run_main("sel.tsv", "--root", self.root, "--dry-run")
+        finally:
+            held.close()
+        self.assertEqual(rc, 0, err)
+
+    def test_dry_run_against_a_missing_root_is_a_usage_error(self):
+        write(self.path("sel.tsv"), selection(self.B))
+        rc, err = self.run_main("sel.tsv", "--root", self.path("nowhere"), "--dry-run")
+        self.assertEqual(rc, 2)
+        self.assertIn("not a directory", err)
+        self.assertFalse(os.path.exists(self.path("nowhere")))
+
+    def extra_rows(self, name):
+        with open(self.path("logs/" + name)) as handle:
+            return handle.read()
+
+    def test_verify_only_reports_what_the_selection_does_not_list_and_removes_nothing(self):
+        # both halves of "the mirror equals the selection": B listed but absent -> .bad;
+        # A present but unlisted -> .extra; the mirror is untouched without --delete
+        write(self.path("sel.tsv"), selection(self.B))
+        rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only")
+        self.assertEqual(rc, 1)
+        self.assertTrue(self.a_exists())
+        self.assertFalse(os.path.exists(self.path("logs/sel.rm")))
+        self.assertEqual(self.extra_rows("sel.extra"),
+                         N.RM_HEADER + "GCA_000001405.1\tall/GCA/000/001/405/%s\n" % self.A)
+        self.assertIn(self.B, self.extra_rows("sel.bad"))
+        self.assertIn("1 genome dir(s) not in the selection", err)
+        self.assertIn("missing directory", err)
+
+    def test_verify_only_with_delete_removes_what_the_selection_does_not_list(self):
+        write(self.path("sel.tsv"), selection(self.B))
+        rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only", "--delete")
+        self.assertEqual(rc, 1)                                  # B is still missing
+        self.assertFalse(self.a_exists())
+        self.assertIn("GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A, self.extra_rows("sel.rm"))
+        self.assertIn("GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A, self.extra_rows("sel.extra"))
+        self.assertIn("1 removed", err)
+
+    def test_a_mirror_equal_to_the_selection_verifies_clean_exit_0(self):
+        write(self.path("sel.tsv"), selection(self.B))
+        self.assertEqual(self.run_main("sel.tsv", "--root", self.root)[0], 0)   # removes A, fetches B
+        rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.extra_rows("sel.extra"), N.RM_HEADER)
+        self.assertIn("holds nothing else", err)
+
+    def test_a_retry_verifies_only_what_it_lists(self):
+        # a retry file is a subset, so what it does not list is not "extra"
+        write(self.path("sel.fail"), selection(self.B, header=N.FAIL_HEADER).replace("\tna\n", "\tna\tr\n"))
+        self.assertEqual(self.run_main("sel.fail", "--root", self.root, retry=True)[0], 0)  # fetches B
+        rc, err = self.run_main("sel.fail", "--root", self.root, "--verify-only", retry=True)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(self.a_exists())
+        self.assertFalse(os.path.exists(self.path("logs/sel.fail.extra")))
+        self.assertNotIn("holds nothing else", err)
+
+
+class ParserContract(unittest.TestCase):
+    """The interface both entry points share."""
+
+    def parse(self, *argv):
+        return N.build_parser().parse_args(list(argv))
+
+    def test_rate_defaults_to_20(self):
+        self.assertEqual(self.parse("--gtdb_selected_genomes", "s", "--root", "g", "-l", "x.log").rate, 20.0)
+
+    def test_root_and_log_are_required_and_root_has_no_default(self):
+        with self.assertRaises(SystemExit):
+            self.parse("--gtdb_selected_genomes", "s", "-l", "x.log")
+        with self.assertRaises(SystemExit):
+            self.parse("--gtdb_selected_genomes", "s", "--root", "g")
+
+    def test_selection_and_retry_are_mutually_exclusive_and_one_is_required(self):
+        with self.assertRaises(SystemExit):
+            self.parse("--root", "g", "-l", "x.log")
+        with self.assertRaises(SystemExit):
+            self.parse("--gtdb_selected_genomes", "s", "--retry", "r", "--root", "g", "-l", "x.log")
+
+    def test_nfs_jobs_defaults_to_the_measured_knee(self):
+        args = self.parse("--gtdb_selected_genomes", "s", "--root", "g", "-l", "x.log")
+        self.assertEqual(args.nfs_jobs, N.NFS_JOBS)
+        self.assertEqual(args.nfs_jobs, 8)
+
+    def test_nfs_jobs_is_tunable(self):
+        # the mirror is shared, so an operator may need to back off
+        args = self.parse("--gtdb_selected_genomes", "s", "--root", "g", "-l", "x.log",
+                          "--nfs-jobs", "2")
+        self.assertEqual(args.nfs_jobs, 2)
+
+    def test_the_selection_lands_in_summary_as_the_module_expects(self):
+        # the whole module, and these tests, read args.summary
+        self.assertEqual(self.parse("--gtdb_selected_genomes", "s", "--root", "g", "-l", "x.log").summary, "s")
+        args = self.parse("--retry", "r", "--root", "g", "-l", "x.log")
+        self.assertEqual((args.summary, args.retry), (None, "r"))
+
+
+class NfsJobsIsHonoured(TempDirCase):
+    """--nfs-jobs must actually reach the walk and the removal, not just parse."""
+
+    def leaf(self, rel):
+        os.makedirs(self.path(rel))
+        write(self.path(rel + "/md5checksums.txt"), "")
+
+    def test_the_walk_runs_on_the_requested_threads(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        seen = []
+        real = N.ThreadPoolExecutor
+
+        def spy(max_workers=None, **kw):
+            seen.append(max_workers)
+            return real(max_workers=max_workers, **kw)
+
+        N.ThreadPoolExecutor = spy
+        try:
+            N.mirror_genome_dirs(self.dir, silent=True, workers=3)
+        finally:
+            N.ThreadPoolExecutor = real
+        self.assertEqual(seen, [3])
+
+    def test_the_removal_runs_on_the_requested_threads(self):
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        seen = []
+        real = N.bounded_map
+
+        def spy(fn, items, workers):
+            seen.append(workers)
+            return real(fn, items, workers)
+
+        N.bounded_map = spy
+        try:
+            N.prune_mirror(self.dir, ["all/GCA/000/001/405/GCA_000001405.1_A"],
+                           self.path("r.rm"), silent=True, workers=5)
+        finally:
+            N.bounded_map = real
+        self.assertEqual(seen, [5])
+        self.assertFalse(os.path.exists(self.path("all/GCA")))
+
+    def test_one_thread_still_removes_everything(self):
+        # --nfs-jobs 1 is the serial path an operator backs off to
+        self.leaf("all/GCA/000/001/405/GCA_000001405.1_A")
+        self.leaf("all/GCA/000/002/405/GCA_000002405.1_B")
+        removed, failed = N.prune_mirror(
+            self.dir, ["all/GCA/000/001/405/GCA_000001405.1_A",
+                       "all/GCA/000/002/405/GCA_000002405.1_B"],
+            self.path("r.rm"), silent=True, workers=1)
+        self.assertEqual((removed, failed), (2, 0))
+        self.assertFalse(os.path.exists(self.path("all/GCA")))

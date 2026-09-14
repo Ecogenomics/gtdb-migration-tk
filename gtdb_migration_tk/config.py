@@ -18,52 +18,50 @@
 """
 config.py -- settings that change from one GTDB release to the next.
 
-The Pfam and TIGRFAM releases GTDB annotates against change every couple of
-years. Their version numbers appear in the name of the directory each genome's
-search results are written to, and in the name of every file within it, so a
-version number left behind in one place produces genome directories whose
-symlinks point at annotations that are not there. Setting the two constants
-below is the whole of that change.
+The Pfam and TIGRFAM releases GTDB annotates against, and the SILVA and LTP
+releases it classifies rRNA genes against, change every couple of years. Each
+version number names the directory inside a genome directory that the results
+of that database are written to, so a version left behind in one place produces
+a release whose commands read and write different directories. The version
+constants below are the one place each is declared.
 
-Note that the search results themselves are produced by the hmmsearch and
-top_hit commands, which take the marker version on the command line rather than
-from here (see --hmm_version). The values below describe what the genome
-directories are expected to contain once those commands have run, and they must
-agree with what was passed to them.
+The marker versions are the defaults of the --folder_suffix option of hmmsearch
+and top_hit, through MARKER_FOLDER_SUFFIX, so those commands write the
+directories this file declares unless told otherwise. The rRNA versions name the
+directories in GTDB_DERIVED_DIRS_TO_COPY, the derived data carried across from
+the previous release when a genome's sequence is unchanged; the rna_silva and
+rna_ltp commands still take their version on the command line
+(--silva_version, --ltp_version), and the value passed there must agree with
+this file for the carried-over directories to be the ones later steps read.
 """
 
 # Version of each marker database GTDB currently annotates against.
 PFAM_VERSION = '33.1'
 TIGRFAM_VERSION = '15.0'
 
-# Directory within a genome directory holding its search results. GTDB searches
-# the reduced ("lite") marker sets, hence the suffix.
-PFAM_MARKER_DIR = 'pfam_{}_lite'.format(PFAM_VERSION)
-TIGRFAM_MARKER_DIR = 'tigrfam_{}_lite'.format(TIGRFAM_VERSION)
+# Version of each rRNA database GTDB currently classifies against. These name the
+# directory holding the results, as several releases of a database may sit side
+# by side in a genome directory.
+SILVA_VERSION = '138.2'
+LTP_VERSION = '10_2024'
 
-# Suffixes of the search result files held in those directories.
-PFAM_EXT = '_{}.tsv.gz'.format(PFAM_MARKER_DIR)
-PFAM_TOPHIT_EXT = '_{}_tophit.tsv.gz'.format(PFAM_MARKER_DIR)
-TIGRFAM_EXT = '_{}.tsv.gz'.format(TIGRFAM_MARKER_DIR)
-TIGRFAM_TOPHIT_EXT = '_{}_tophit.tsv.gz'.format(TIGRFAM_MARKER_DIR)
-TIGRFAM_OUT_EXT = '_{}.out.gz'.format(TIGRFAM_MARKER_DIR)
+# Default --folder_suffix of hmmsearch and top_hit for each marker database: the
+# directory they write is pfam_<suffix>/ or tigrfam_<suffix>/ inside prodigal/,
+# and the files in it carry the same suffix. GTDB searches the reduced ("lite")
+# marker sets, hence _lite. Keyed by the value of --db.
+MARKER_FOLDER_SUFFIX = {
+    'pfam': '{}_lite'.format(PFAM_VERSION),
+    'tigrfam': '{}_lite'.format(TIGRFAM_VERSION),
+}
 
-# Names of the symlinks pointing at those files. These carry no version number
-# by design: downstream code opens a genome's Pfam hits without knowing which
-# Pfam release produced them, so only the symlink target changes at a release.
-PFAM_SYMLINK_EXT = '_pfam_lite.tsv.gz'
-PFAM_TOPHIT_SYMLINK_EXT = '_pfam_lite_tophit.tsv.gz'
-TIGRFAM_SYMLINK_EXT = '_tigrfam_lite.tsv.gz'
-TIGRFAM_TOPHIT_SYMLINK_EXT = '_tigrfam_lite_tophit.tsv.gz'
-TIGRFAM_OUT_SYMLINK_EXT = '_tigrfam_lite.out.gz'
-
-# Uncompressed HMMER output to gzip when a genome is taken from the FTP site.
-# These name the full marker sets rather than the lite ones, as that is what a
-# genome directory carries before the lite search results are generated.
-HMMER_EXTS_TO_GZIP = (
-    '_pfam_{}.tsv'.format(PFAM_VERSION),
-    '_pfam_{}_tophit.tsv'.format(PFAM_VERSION),
-    '_tigrfam_{}.out'.format(TIGRFAM_VERSION),
-    '_tigrfam_{}.tsv'.format(TIGRFAM_VERSION),
-    '_tigrfam_{}_tophit.tsv'.format(TIGRFAM_VERSION),
+# Directories of derived data within a genome directory, carried across when a
+# genome is taken from the previous release rather than from NCBI. A genome is
+# only carried across when its FASTA files are unchanged, which is what makes the
+# derived data still valid; copying it is what saves the release from calling
+# genes and searching rRNA databases again for every genome GTDB already holds.
+GTDB_DERIVED_DIRS_TO_COPY = (
+    'prodigal',
+    'rna_silva_{}'.format(SILVA_VERSION),
+    'trna',
+    'rna_ltp_{}'.format(LTP_VERSION),
 )

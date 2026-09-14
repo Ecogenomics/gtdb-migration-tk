@@ -69,8 +69,13 @@ meaningful code (see README for the table); every other command returns 0.
 
 It is a standalone script grafted onto the toolkit. It owns its argparse via
 `add_sync_arguments()`, which both `build_parser()` (standalone) and `__main__.py`
-(as a subcommand, with `--log` injected) call, so the interface has one
-definition. It has its own module logger and its own exit codes. The ~340 line
+(as a subcommand) call, so the interface has one definition, `-l/--log` included.
+Orchestration lives in `NCBIGenomeSync`, whose `run()` `main.py` calls like any
+other manager; `main()` remains only as the script entry point, parsing argv and
+opening the log when there is no toolkit to have done it. The workers it drives
+(`sync_genome`, `verify_genome`, `http_get`, `prune_mirror`) stay module-level
+functions, as do the rate limiter, circuit breaker and stop flag they share:
+they run on `-j` threads at once and hold no per-run state. It has its own module logger and its own exit codes. The ~340 line
 module docstring is the design document, with named sections (RATE LIMITING,
 RESTART AND FRESHNESS, TUNING, SHARED OPERATION) that the inline comments refer
 back to. Read it before changing sync behaviour. The argparse `dest` for the
@@ -87,11 +92,15 @@ not slice these tables by index anywhere.
 
 ### Release update: deciding vs. doing
 
-`ncbi_ftp_manager.py` decides which genomes belong in a release (`RefSeqManager`
-wants every "latest" RefSeq assembly; `GenBankManager` wants GenBank assemblies
-only where RefSeq falls short, logging each decision to `gca_selection.log`).
+`ncbi_ftp_manager.py` `GenomeManager` sorts the genomes of one database (given
+as an accession prefix, `REFSEQ_PREFIX` or `GENBANK_PREFIX`) into removed, new
+and shared by comparing the mirror's and the previous release's genome_dirs
+files, filtered to that prefix; it reads no summary file, since the mirror is a
+copy of the selection. `update_genomes` runs it once per prefix into one output
+directory, with reports named for the prefix (`report_gcf.log`,
+`gcf_to_review.log`, `report_gca.log`, `gca_to_review.log`).
 `ncbi_ftp_manager_tools.py` `FTPTools` does the resulting copying, comparing and
-reporting, and is the only consumer of `config.py`.
+reporting.
 
 Genome IDs are compared in canonical form via
 `biolib_lite.common.canonical_gid()`: `GCF_005435135.1` and `GCA_005435135.1`
@@ -100,20 +109,29 @@ counterpart. Use it rather than slicing accessions.
 
 The lingua franca between commands is the **genome_dirs file**: a TSV of
 `accession<TAB>path`, one genome per line. `list_genomes` writes it
-(`directory_manager.py`), and the update, comparison and validation commands
-consume old, new and FTP variants of it.
+(`directory_manager.py`) by walking a tree and keeping the genomes named by
+`--gtdb_selected_genomes`, and the update, comparison and validation commands
+consume old, new and FTP variants of it. It says where each genome of a release
+is held locally; the selection table says which genomes and where NCBI serves
+them. Whether a tree holds what it should is `ncbi_genome_sync --verify`.
 
-### `config.py` is the only place a marker database version lives
+### `config.py` is the only place a reference database version lives
 
-`PFAM_VERSION` and `TIGRFAM_VERSION` there derive every directory name, file
-suffix and symlink used for marker annotations. `tests/test_config.py` asserts
-the derivation holds. `marker_manager.py` does not read `config.py`: the
-`hmmsearch` and `top_hit` commands take `--folder_suffix` (e.g. `33.1_lite`)
-and build `pfam_<suffix>/` and `_pfam_<suffix>.tsv` from it. That suffix must
-match what `config.py` derives (`pfam_33.1_lite`), otherwise `FTPTools` creates
-symlinks to annotation files that were never written. The README and the
-`config.py` docstring call this flag `--hmm_version`; that name is stale, the
-flag is `--folder_suffix`.
+`PFAM_VERSION`, `TIGRFAM_VERSION`, `SILVA_VERSION` and `LTP_VERSION` each name
+the directory inside a genome directory that database's results are written to.
+Two names derive from them, and `tests/test_config.py` asserts the derivation
+holds: `MARKER_FOLDER_SUFFIX` (`{'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}`)
+is the default `--folder_suffix` of `hmmsearch` and `top_hit`, resolved in
+`main.py`, so those commands write `prodigal/pfam_33.1_lite/` unless told
+otherwise; `GTDB_DERIVED_DIRS_TO_COPY` is the derived data `FTPTools` carries
+across from the previous release when a genome's FASTA is unchanged. The
+Pfam/TIGRFAM results and the version-free symlinks to them
+(`prodigal/<gid>_pfam_lite.tsv.gz -> ./pfam_33.1_lite/...`) live inside
+`prodigal/`, so copying `prodigal/` with `symlinks=True` carries them intact;
+they are not listed separately. `marker_manager.py` itself does not read
+`config.py`; it builds `pfam_<suffix>/` from whatever suffix it is handed.
+`rna_silva` and `rna_ltp` take `--silva_version` and `--ltp_version` on the
+command line, and those must match `config.py`.
 
 ### Database access
 
