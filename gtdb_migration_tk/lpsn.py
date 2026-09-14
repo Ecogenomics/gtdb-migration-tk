@@ -149,6 +149,7 @@ class LPSN(object):
 
         num_ranks = 0
         num_already_dl = 0
+        skipped = []
         with open(os.path.join(self.outdir, f'{rank_name}_list.lst')) as gsl:
             for line in gsl:
                 letter, rk_name, rk_url = line.strip().split('\t')
@@ -159,7 +160,8 @@ class LPSN(object):
 
                 num_already_dl = self.download_rank_name(rk_name, rk_url,
                                                          out_file, valid_names,
-                                                         failed_html_file, num_already_dl)
+                                                         failed_html_file, skipped,
+                                                         num_already_dl)
 
                 num_ranks += 1
                 print(
@@ -169,8 +171,17 @@ class LPSN(object):
                         num_already_dl), end='\r')
 
         failed_html_file.close()
+        self.write_skipped(rank_name, skipped)
 
-    def download_rank_name(self, rk_name, rk_url, out_file, valid_names, failed_html_file, num_already_dl):
+    def download_rank_name(self, rk_name, rk_url, out_file, valid_names, failed_html_file,
+                           skipped, num_already_dl):
+        """Download one LPSN page, unless it duplicates a validly published name.
+
+        A name not in valid_names is a quoted, not validly published form of a
+        name LPSN also lists unquoted; the unquoted page is the one wanted, so
+        this one is recorded in `skipped` rather than fetched. It is not a
+        failure and is kept out of the failed list for that reason.
+        """
 
         if rk_name in valid_names:
             if not os.path.exists(out_file):
@@ -182,8 +193,42 @@ class LPSN(object):
             else:
                 num_already_dl += 1
         else:
-            failed_html_file.write('{}\tduplicate_name\n'.format(rk_url))
+            skipped.append((rk_name, rk_url))
         return num_already_dl
+
+    def write_skipped(self, rank_name, skipped):
+        """Record the pages passed over as duplicates of a validly published name.
+
+        Written only when there is something to record, so the presence of
+        <rank>_skipped.lst is itself the signal; a file left by an earlier run
+        is removed when this run skipped nothing, so it cannot be mistaken for
+        this run's result.
+
+        Parameters
+        ----------
+        rank_name : str
+            Rank the pages belong to, e.g. genus or subspecies.
+        skipped : list of (name, url)
+            Pages not downloaded because the name duplicates a validly published one.
+
+        @return: path of the file written, or None if nothing was skipped.
+        """
+
+        skipped_file = os.path.join(self.outdir, f'{rank_name}_skipped.lst')
+
+        if not skipped:
+            if os.path.exists(skipped_file):
+                os.remove(skipped_file)
+            return None
+
+        with open(skipped_file, 'w') as handle:
+            for name, url in skipped:
+                handle.write('{}\t{}\tduplicate_name\n'.format(name, url))
+
+        self.logger.info('Skipped {:,} {} pages whose name duplicates a validly published '
+                         'name; listed in {}'.format(len(skipped), rank_name, skipped_file))
+
+        return skipped_file
 
     def download_subspecies_lpsn_html(self):
         """
@@ -247,6 +292,7 @@ class LPSN(object):
 
         num_subspecies = 0
         num_already_dl = 0
+        skipped = []
         with open(os.path.join(self.outdir, 'subspecies_list.lst')) as gsl:
             for line in gsl:
                 subspecies_name, subspe_url = line.strip().split('\t')
@@ -264,13 +310,14 @@ class LPSN(object):
                     else:
                         num_already_dl += 1
                 else:
-                    failed_html_file.write('{}\tduplicate_name\n'.format(subspe_url))
+                    skipped.append((subspecies_name, subspe_url))
             num_subspecies += 1
             sys.stdout.write(' - processed {:,} subspecies, including {:,} that were previously downloaded\r'.format(
                 num_subspecies, num_already_dl))
             sys.stdout.flush()
         failed_html_file.close()
         sys.stdout.write('\n')
+        self.write_skipped('subspecies', skipped)
 
     def parse_strains(self, list_strains):
         """
