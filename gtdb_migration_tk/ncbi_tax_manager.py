@@ -43,6 +43,16 @@ from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.ncbi_utils import open_summary
 
 
+# NCBI marks a name it holds under the SeqCode by appending the code to the name
+# itself in names.dmp, e.g. "Patescibacteriaceae (SeqCode)". That is an
+# annotation saying which nomenclatural code published the name, not part of the
+# name, and carrying it through would leave GTDB with an f__Patescibacteriaceae
+# (SeqCode) that matches no other spelling of the same taxon; in a species name
+# the brackets also fail the valid character check, dropping the genome from the
+# standardized taxonomy altogether.
+SEQCODE_SUFFIX = '(SeqCode)'
+
+
 class TaxonomyNCBI(object):
     """Parse NCBI taxonomy files to produce a simplified summary file."""
 
@@ -191,9 +201,32 @@ class TaxonomyNCBI(object):
             name_class = line_split[3]
 
             if name_class == 'scientific name':
-                d[tax_id] = self.NameRecord(name_txt)
+                d[tax_id] = self.NameRecord(self._strip_nomenclatural_code(name_txt))
 
         return d
+
+    def _strip_nomenclatural_code(self, name_txt):
+        """Remove the nomenclatural code NCBI appends to a name.
+
+        Done here, where names.dmp is read, so that every rank and every file
+        written from these records carries the name alone.
+
+        Parameters
+        ----------
+        name_txt : str
+          Scientific name as NCBI writes it.
+
+        @return: the name without a trailing code annotation.
+        """
+
+        if name_txt.endswith(SEQCODE_SUFFIX):
+            stripped = name_txt[:-len(SEQCODE_SUFFIX)].strip()
+            # a name that is nothing but the annotation is not a name; leave it
+            # as it stands rather than putting an empty taxon in a lineage
+            if stripped:
+                return stripped
+
+        return name_txt
 
     def _valid_species_name(self, species_name, require_full=True, require_prefix=True):
         """Check if species name is a valid binomial name."""
