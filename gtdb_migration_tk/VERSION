@@ -1,3 +1,6 @@
+0.1.6
+- refactoring release
+- every count ncbi_metadata_sync writes to the log separates thousands: node and name records, assemblies, the files of a taxdump, the files of a standardised taxonomy and the assembly summaries downloaded, so "Read 3,013,402 node records" rather than "Read 3013402 node records". Release numbers, taxids and date stamps are identifiers rather than counts and are still written as they stand
 0.1.5
 - the NCBI taxonomy no longer carries the nomenclatural code NCBI appends to a name it holds under the SeqCode: "Patescibacteriaceae (SeqCode)" in names.dmp is read as Patescibacteriaceae, so f__Patescibacteriaceae matches every other spelling of the taxon. In a species name the brackets also failed the valid character check, which dropped the genome from the standardized taxonomy altogether
 0.1.4

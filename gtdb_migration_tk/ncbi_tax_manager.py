@@ -524,17 +524,17 @@ class TaxonomyNCBI(object):
 
         node_records = self._read_nodes(
             os.path.join(taxonomy_dir, 'nodes.dmp'))
-        self.logger.info('Read %d node records.' % len(node_records))
+        self.logger.info('Read {:,} node records.'.format(len(node_records)))
 
         name_records = self._read_names(
             os.path.join(taxonomy_dir, 'names.dmp'))
-        self.logger.info('Read %d name records.' % len(name_records))
+        self.logger.info('Read {:,} name records.'.format(len(name_records)))
 
         # traverse taxonomy tree for each assembly
         taxonomy_file = output_prefix + '_unfiltered_taxonomy.tsv'
         fout = open(taxonomy_file, 'w')
 
-        self.logger.info(f'Number of assemblies: {len(assembly_to_tax_id)}')
+        self.logger.info('Number of assemblies: {:,}'.format(len(assembly_to_tax_id)))
         invalid_taxids = []
         for assembly_accession, tax_id in assembly_to_tax_id.items():
             # traverse taxonomy tree to the root which is 'cellular organism' for genomes,
@@ -624,16 +624,16 @@ class TaxonomyNCBI(object):
 
         node_records = self._read_nodes(
             os.path.join(taxonomy_dir, 'nodes.dmp'))
-        self.logger.info('Read %d node records.' % len(node_records))
+        self.logger.info('Read {:,} node records.'.format(len(node_records)))
 
         name_records = self._read_names(
             os.path.join(taxonomy_dir, 'names.dmp'))
-        self.logger.info('Read %d name records.' % len(name_records))
+        self.logger.info('Read {:,} name records.'.format(len(name_records)))
 
         # traverse taxonomy tree for each assembly
         list_ranks_taxonomy = []
 
-        self.logger.info('Number of assemblies: %d' % len(assembly_to_tax_id))
+        self.logger.info('Number of assemblies: {:,}'.format(len(assembly_to_tax_id)))
         d={}
         invalid_taxids = []
         for assembly_accession, tax_id in assembly_to_tax_id.items():

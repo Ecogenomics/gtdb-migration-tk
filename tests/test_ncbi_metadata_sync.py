@@ -16,6 +16,7 @@ import hashlib
 import http.server
 import io
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -403,6 +404,90 @@ class NameParsingTests(unittest.TestCase):
                       ('562', 'E. coli', 'equivalent name'),
                       ('562', 'Bacillus coli (SeqCode)', 'synonym')),
             {'562': 'Escherichia coli'})
+
+
+# ------------------------------------------------------------------- log formatting
+
+class LogFormattingTests(unittest.TestCase):
+    """A release is counted in millions of records, and "Read 3013402 node
+    records" cannot be read at a glance; "Read 3,013,402" can."""
+
+    FILLER = 1234                                # enough records to need a comma
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix='ncbi_log_test.')
+        self.messages = []
+        self.parser = ncbi_tax_manager.TaxonomyNCBI()
+        self.parser.logger = type('Log', (), {
+            'info': lambda _self, message: self.messages.append(message),
+            'warning': lambda _self, message: self.messages.append(message),
+            'error': lambda _self, message: self.messages.append(message)})()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def taxonomy_dir(self):
+        """A taxdump of the lineages above, padded out to a readable size."""
+
+        # the filler taxa hang off the root and are named by no assembly; they
+        # are here to be counted, not walked
+        filler = [(str(9000000 + n), '1', 'no rank') for n in range(self.FILLER)]
+        nodes = NODES + filler
+        names = NAMES + [(tax_id, 'Filler taxon {}'.format(tax_id))
+                         for tax_id, _, _ in filler]
+
+        for name, payload in {'nodes.dmp': nodes, 'names.dmp': names}.items():
+            with open(os.path.join(self.dir, name), 'w') as handle:
+                for record in payload:
+                    if len(record) == 3:
+                        handle.write('{}\t|\t{}\t|\t{}\t|\t\t|\t0\t|\t\t|\t11\t|\n'.format(*record))
+                    else:
+                        handle.write('{}\t|\t{}\t|\t\t|\tscientific name\t|\n'.format(*record))
+
+        return self.dir
+
+    def assembly_summary(self):
+        """An assembly summary holding FILLER genomes, all of one species."""
+
+        path = os.path.join(self.dir, 'assembly_summary_bacteria_refseq.txt')
+        with open(path, 'w') as handle:
+            handle.write('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_summary.txt\n')
+            handle.write('#assembly_accession\ttaxid\torganism_name\tinfraspecific_name\tftp_path\n')
+            for n in range(self.FILLER):
+                handle.write('GCF_{:09d}.1\t562\tEscherichia coli\tstrain=x\tftp://a\n'.format(n))
+
+        return path
+
+    def parse(self):
+        self.parser.parse_ncbi_taxonomy(self.taxonomy_dir(),
+                                        [self.assembly_summary()],
+                                        False,
+                                        os.path.join(self.dir, 'ncbi_r237_prok'),
+                                        os.path.join(self.dir, 'prok_failed_filters.tsv'))
+        return self.messages
+
+    def test_the_node_record_count_separates_thousands(self):
+        self.assertIn('Read {:,} node records.'.format(len(NODES) + self.FILLER),
+                      self.parse())
+
+    def test_the_name_record_count_separates_thousands(self):
+        self.assertIn('Read {:,} name records.'.format(len(NAMES) + self.FILLER),
+                      self.parse())
+
+    def test_the_assembly_count_separates_thousands(self):
+        self.assertIn('Number of assemblies: {:,}'.format(self.FILLER), self.parse())
+
+    def test_no_count_is_written_as_a_bare_run_of_digits(self):
+        # the whole of what this class is for: a count of four digits or more
+        # carries its separators wherever it is logged. Paths are not counts --
+        # a release number, a date stamp and a temporary directory are all
+        # written as they stand -- so only the words are read
+        for message in self.parse():
+            for word in message.split():
+                if '/' in word:
+                    continue
+                for number in re.findall(r'(?<![\d,])\d+', word):
+                    self.assertLess(len(number), 4, message)
 
 
 # ----------------------------------------------------------------- the command itself

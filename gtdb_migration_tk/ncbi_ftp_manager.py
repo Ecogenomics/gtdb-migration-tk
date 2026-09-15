@@ -881,7 +881,7 @@ class MetadataSyncManager:
             self.logger.error('Failed to extract {}: {}'.format(tarball, exc))
             sys.exit()
 
-        self.logger.info('Taxonomy holds {} files, including {}.'.format(
+        self.logger.info('Taxonomy holds {:,} files, including {}.'.format(
             len(os.listdir(taxdump_dir)),
             ', '.join(name for name in ('names.dmp', 'nodes.dmp')
                       if os.path.exists(os.path.join(taxdump_dir, name)))))
@@ -995,7 +995,7 @@ class MetadataSyncManager:
             self.logger.error('Failed to parse the NCBI taxonomy: {}'.format(exc))
             sys.exit()
 
-        self.logger.info('Wrote {} file(s) to {}'.format(
+        self.logger.info('Wrote {:,} file(s) to {}'.format(
             len(os.listdir(output_dir)), output_dir))
 
         return output_dir
@@ -1016,7 +1016,7 @@ class MetadataSyncManager:
         taxdump_dir = self.download_taxonomy(self.taxonomy_dir(), date_stamp)
         summaries = self.download_assembly_summaries()
 
-        self.logger.info('Downloaded {} assembly summary file(s): {}'.format(
+        self.logger.info('Downloaded {:,} assembly summary file(s): {}'.format(
             len(summaries), ', '.join(sorted(os.path.basename(f)
                                              for f in summaries.values()))))
 
