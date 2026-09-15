@@ -86,10 +86,10 @@ class TempDirCase(unittest.TestCase):
 
 # ----------------------------------------------------------------- release comparison
 
-class GenomeManagerTests(TempDirCase):
+class UpdateGenomesTests(TempDirCase):
     def setUp(self):
         super().setUp()
-        self.manager = UG.GenomeManager(U.REFSEQ_PREFIX, self.dir)
+        self.manager = UG.UpdateGenomes(U.REFSEQ_PREFIX, self.dir)
         self.new_genomes = {'G1': '/ftp/g1', 'G2': '/ftp/g2', 'G3': '/ftp/g3_new'}
         self.old_genomes = {'G2': '/gtdb/g2', 'G3': '/gtdb/g3_old', 'G4': '/gtdb/g4'}
 
@@ -119,13 +119,13 @@ class GenomeManagerTests(TempDirCase):
                           'GCA_000000003.1\t/ftp/g3\n')
         self.assertEqual(self.manager.load_genome_dirs(path),
                          {'GCF_000000001.1': '/ftp/g1', 'GCF_000000002.1': '/ftp/g2'})
-        self.assertEqual(UG.GenomeManager(U.GENBANK_PREFIX, self.dir).load_genome_dirs(path),
+        self.assertEqual(UG.UpdateGenomes(U.GENBANK_PREFIX, self.dir).load_genome_dirs(path),
                          {'GCA_000000003.1': '/ftp/g3'})
 
     def test_reports_are_named_for_the_database(self):
         # the RefSeq and GenBank runs of a release share one output directory
-        refseq = UG.GenomeManager(U.REFSEQ_PREFIX, self.dir)
-        genbank = UG.GenomeManager(U.GENBANK_PREFIX, self.dir)
+        refseq = UG.UpdateGenomes(U.REFSEQ_PREFIX, self.dir)
+        genbank = UG.UpdateGenomes(U.GENBANK_PREFIX, self.dir)
         self.assertEqual(os.path.basename(refseq.report_file()), 'report_gcf.log')
         self.assertEqual(os.path.basename(refseq.review_file()), 'gcf_to_review.log')
         self.assertEqual(os.path.basename(genbank.report_file()), 'report_gca.log')
@@ -133,7 +133,7 @@ class GenomeManagerTests(TempDirCase):
 
     def test_construction_writes_nothing(self):
         # reports are opened by run_comparison, so a manager can be built without touching disk
-        UG.GenomeManager(U.REFSEQ_PREFIX, os.path.join(self.dir, 'does_not_exist'))
+        UG.UpdateGenomes(U.REFSEQ_PREFIX, os.path.join(self.dir, 'does_not_exist'))
         self.assertEqual(os.listdir(self.dir), [])
 
 
@@ -165,7 +165,7 @@ class RunComparisonTests(TempDirCase):
         out = os.path.join(self.dir, 'release')
         os.mkdir(out)
 
-        UG.GenomeManager(U.REFSEQ_PREFIX, out, dry_run=True).run_comparison(ftp, new, old)
+        UG.UpdateGenomes(U.REFSEQ_PREFIX, out, dry_run=True).run_comparison(ftp, new, old)
 
         with open(os.path.join(out, 'report_gcf.log')) as handle:
             rows = sorted(line.rstrip('\n').split('\t') for line in handle)

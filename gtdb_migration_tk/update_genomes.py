@@ -22,10 +22,10 @@ Each GTDB release is built by comparing the genomes held by the previous release
 with the genomes NCBI currently offers on its FTP site. Genomes NCBI no longer
 offers are removed, genomes new to NCBI are copied across, and genomes held by
 both are checked for a changed genomic FASTA since the previous release. The
-bookkeeping of which genomes fall into which of those three groups is
-GenomeManager's; the copying, comparing and reporting that follows is FTPTools'.
+bookkeeping of which genomes fall into which of those three groups is done by
+UpdateGenomes; the copying, comparing and reporting that follows, by FTPTools.
 
-GenomeManager decides nothing beyond what the genome directory files of the
+UpdateGenomes decides nothing beyond what the genome directory files of the
 mirror and of the previous release already say. The mirror is built from the
 selection, and the selection is where a genome is accepted or passed over, so
 every genome the mirror holds is wanted. RefSeq and GenBank are handled in
@@ -63,7 +63,7 @@ MD5_MANIFEST = 'md5checksums.txt'
 GENOMIC_FASTA_EXT = '_genomic.fna.gz'
 
 
-class GenomeManager:
+class UpdateGenomes:
     """Update the GTDB copy of one NCBI database (RefSeq or GenBank) from the mirror.
 
     Every genome held by the FTP mirror is of interest, the mirror being a copy
@@ -264,8 +264,9 @@ class GenomeManager:
 class FTPTools():
     """Carry out the genome directory changes required by a GTDB release.
 
-    The decision about which genomes belong in a release is made by the managers
-    in ncbi_ftp_manager.py; this class performs the resulting work. Genomes new to
+    The decision about which genomes belong in a release is made by
+    select_genomes.py, and the bookkeeping of what changed since the previous
+    release by UpdateGenomes above; this class performs the resulting work. Genomes new to
     NCBI are copied into the new release, genomes that have gone are recorded,
     and for genomes held by both the previous release and NCBI the mirror's copy
     is taken and, if the genomic FASTA is unchanged, the derived data of the

@@ -257,7 +257,7 @@ The input is an NCBI assembly_summary.txt: the ftp_path column says where each
 assembly lives, and assembly_accession names it. Both are found BY NAME from the
 `#assembly_accession ...` header row, never by column number -- NCBI has grown that file
 from 23 columns to 38, and pinning ftp_path to field 20 breaks silently on the next one.
-The reading of those tables is in ncbi_utils.py, shared with ncbi_ftp_manager.py.
+The reading of those tables is in ncbi_utils.py, shared with select_genomes.py.
 
     ftp_path "na" or empty   the assembly has no public directory (suppressed, or
                              not yet released). NOT an error: whole-domain summaries
@@ -445,8 +445,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import (BadInput, MD5_LINE_RE, read_summary_rows,
-                                          summary_field)
+from gtdb_migration_tk.ncbi_utils import (BadInput, MD5_LINE_RE, has_ftp_path,
+                                          read_summary_rows, summary_field)
 
 
 HOST = "ftp.ncbi.nlm.nih.gov"
@@ -1673,7 +1673,9 @@ def read_assembly_summary(path):
     Rows whose ftp_path is "na" or empty are NOT an error: NCBI publishes them for
     suppressed and unreleased assemblies, and a whole-domain summary normally contains
     some. They are collected and returned for the caller to report, because logging is not
-    configured yet when this runs.
+    configured yet when this runs. What counts as unusable is ncbi_utils.has_ftp_path(),
+    the same test select_genomes applies, so a selection never promises a genome this
+    reader then refuses.
 
     Every URL is validated here so a malformed table fails before any download rather than
     silently mirroring into the wrong directory (see genome_relpath).
@@ -1690,7 +1692,7 @@ def read_assembly_summary(path):
         # be ~40% of the record's memory on a 1.9M-genome summary
         version_status = sys.intern(summary_field(fields, columns, "version_status"))
         excluded = sys.intern(summary_field(fields, columns, "excluded_from_refseq"))
-        if not raw or raw.lower() == "na":
+        if not has_ftp_path(raw):
             skipped.append((lineno, accession or "?", raw or "(empty)"))
             continue
         url = raw.rstrip("/") + "/"

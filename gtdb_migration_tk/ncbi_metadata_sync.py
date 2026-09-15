@@ -229,7 +229,7 @@ def extract_tarball(tarball: str, output_dir: str) -> None:
             archive.extractall(path=output_dir)
 
 
-class MetadataSyncManager:
+class NCBIMetadataSync:
     """Download the NCBI metadata one group of a GTDB release is built from.
 
     A release starts from two things NCBI publishes and GTDB only reads: the

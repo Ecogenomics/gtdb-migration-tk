@@ -32,8 +32,8 @@ That file -- the genome_dirs file written by generate_genome_dir_file() and
 consumed by nearly every other command -- is the lingua franca between steps:
 one line per genome, accession, absolute path, canonical accession. Downstream
 readers split on tabs and ignore any further columns (see
-ncbi_ftp_manager._populate_genomes_dict), so columns may be appended but never
-reordered.
+update_genomes.UpdateGenomes.load_genome_dirs), so columns may be appended but
+never reordered.
 
 The file describes one release, so the walk is filtered by the table
 select_genomes writes: a directory holding a genome that table does not list is

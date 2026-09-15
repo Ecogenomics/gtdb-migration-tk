@@ -4,9 +4,13 @@
 The contract that would break silently in production, and nowhere else, is column
 lookup: NCBI has grown assembly_summary.txt from 23 fields to 38, so a reader that
 addresses columns by position starts reading the wrong field whenever the table is
-revised. ncbi_genome_sync then mirrors the wrong files, and ncbi_ftp_manager builds a release
+revised. ncbi_genome_sync then mirrors the wrong files, and select_genomes builds a release
 from the wrong set of genomes, with nothing to indicate anything went wrong. Those
 tests feed the reader tables whose columns have moved.
+
+Also here is what the NCBI commands know in common about NCBI's files -- the
+accession prefixes, the manifest line, the test for an unserved genome -- because
+ncbi_utils.py is the one module all of them may import.
 """
 
 import os
@@ -222,9 +226,24 @@ class FtpPathTests(unittest.TestCase):
         # older summary files leave it empty rather than writing na
         self.assertFalse(U.has_ftp_path(''))
 
-    def test_the_test_agrees_with_the_one_the_sync_applies(self):
-        # the two must agree, or the selection promises genomes the sync refuses
+
+
+class FtpPathFeedsTheSyncTests(TempDirCase):
+    """select_genomes keeps the rows has_ftp_path accepts; the sync must fetch
+    exactly those, or the selection promises genomes the sync then refuses."""
+
+    ROWS = {'na': 'GCF_000000001.1', 'NA': 'GCF_000000002.1', '': 'GCF_000000003.1',
+            'https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/000/004/x': 'GCF_000000004.1'}
+
+    def test_the_sync_skips_exactly_the_rows_has_ftp_path_rejects(self):
         import gtdb_migration_tk.ncbi_genome_sync as sync
-        for value in ('na', 'NA', '', 'https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/000/001/x'):
-            sync_usable = bool(value) and value.lower() != 'na'
-            self.assertEqual(U.has_ftp_path(value), sync_usable, value)
+        table = self.write('summary.txt', summary(*(
+            '{}\tPRJ\tlatest\tna\tna\t{}'.format(accession, ftp_path)
+            for ftp_path, accession in self.ROWS.items())))
+
+        genomes, skipped = sync.read_assembly_summary(table)
+
+        self.assertEqual(sorted(g.accession for g in genomes),
+                         sorted(a for f, a in self.ROWS.items() if U.has_ftp_path(f)))
+        self.assertEqual(sorted(a for _, a, _ in skipped),
+                         sorted(a for f, a in self.ROWS.items() if not U.has_ftp_path(f)))

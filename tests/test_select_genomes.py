@@ -90,7 +90,7 @@ class SelectedGenomesTests(TempDirCase):
     def select(self, refseq=(), genbank=()):
         """Run the selection over one RefSeq and one GenBank summary file."""
 
-        S.SelectedGenomesManager(self.dir).run(self.write_summaries(refseq, genbank))
+        S.SelectGenomes(self.dir).run(self.write_summaries(refseq, genbank))
 
         return self.table()
 
@@ -186,7 +186,7 @@ class SelectedGenomesTests(TempDirCase):
             ['GCA_000000012.1', 'GCF_000000013.1'])
 
     def test_table_carries_a_commented_header(self):
-        S.SelectedGenomesManager(self.dir).run(self.write_summaries(
+        S.SelectGenomes(self.dir).run(self.write_summaries(
             refseq=['GCF_000000014.1\tPRJNA14\tlatest\tna\tna\tftp://q']))
         with gzip.open(os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz'), 'rt') as table:
             self.assertEqual(
@@ -197,7 +197,7 @@ class SelectedGenomesTests(TempDirCase):
     def test_table_is_gzipped(self):
         # the files of a release are gzipped once they are part of GTDB, and the
         # table carries one row per genome in NCBI
-        S.SelectedGenomesManager(self.dir).run(self.write_summaries(
+        S.SelectGenomes(self.dir).run(self.write_summaries(
             refseq=['GCF_000000024.1\tPRJNA24\tlatest\tna\tna\tftp://ab']))
         path = os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz')
         with open(path, 'rb') as raw:
@@ -211,7 +211,7 @@ class SelectedGenomesTests(TempDirCase):
                           summary('GCA_000000015.1\tftp://r\tx\tna\tna\tlatest',
                                   'GCA_000000016.1\tftp://s\tx\tlarge multi-isolate project\tna\tlatest',
                                   header=header))
-        S.SelectedGenomesManager(self.dir).run([path])
+        S.SelectGenomes(self.dir).run([path])
         self.assertEqual(self.table(),
                          [['GCA_000000015.1', 'ftp://r', 'latest', 'na', 'na', 'na']])
 
@@ -221,7 +221,7 @@ class SelectedGenomesTests(TempDirCase):
                          summary('GCF_000000017.1\tPRJNA17\tlatest\tna\tna\tftp://t'))
         bac = self.write('assembly_summary_bacteria_genbank.txt',
                          summary('GCA_000000018.1\tPRJNA18\tlatest\tna\tna\tftp://u'))
-        S.SelectedGenomesManager(self.dir).run([arc, bac])
+        S.SelectGenomes(self.dir).run([arc, bac])
         self.assertEqual([row[0] for row in self.table()],
                          ['GCA_000000018.1', 'GCF_000000017.1'])
 
@@ -231,7 +231,7 @@ class SelectedGenomesTests(TempDirCase):
         rfq, gbk = self.write_summaries(
             refseq=['GCF_000000019.1\tPRJNA19\tlatest\tGCA_000000019.1\tna\tftp://w'],
             genbank=['GCA_000000019.1\tPRJNA19\tlatest\tGCF_000000019.1\tna\tftp://v'])
-        S.SelectedGenomesManager(self.dir).run([gbk, rfq])
+        S.SelectGenomes(self.dir).run([gbk, rfq])
         self.assertEqual([row[0] for row in self.table()], ['GCF_000000019.1'])
 
 
@@ -244,7 +244,7 @@ class SelectedGenomesFeedTheSyncTests(TempDirCase):
 
     def selected(self, *rows):
         rfq = self.write('assembly_summary_refseq.txt', summary(*rows))
-        S.SelectedGenomesManager(self.dir).run([rfq])
+        S.SelectGenomes(self.dir).run([rfq])
         return os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz')
 
     def test_the_sync_reads_the_selected_genomes_table(self):
@@ -292,7 +292,7 @@ class UnservedGenomeTests(TempDirCase):
                 self.write('assembly_summary_genbank.txt', summary(*genbank))]
 
     def select(self, refseq=(), genbank=()):
-        S.SelectedGenomesManager(self.dir).run(self.write_summaries(refseq, genbank))
+        S.SelectGenomes(self.dir).run(self.write_summaries(refseq, genbank))
         with gzip.open(os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz'), 'rt') as handle:
             return [line.rstrip('\n').split('\t')
                     for line in handle if not line.startswith('#')]
@@ -382,7 +382,7 @@ class SummaryFileGroupingTests(TempDirCase):
 
     def group(self, *names):
         paths = [self.write(name, summary()) for name in names]
-        return S.SelectedGenomesManager(self.dir).group_by_database(paths)
+        return S.SelectGenomes(self.dir).group_by_database(paths)
 
     def test_files_are_grouped_by_the_database_they_are_named_for(self):
         refseq, genbank = self.group('assembly_summary_archaea_refseq.txt',
@@ -433,7 +433,7 @@ class MisfiledRowTests(TempDirCase):
                          summary('GCA_000000023.1\tPRJNA23\tlatest\tna\tna\tftp://aa'))
         gbk = self.write('assembly_summary_genbank.txt',
                          summary('GCA_000000023.1\tPRJNA23\tlatest\tna\tna\tftp://aa'))
-        S.SelectedGenomesManager(self.dir).run([rfq, gbk])
+        S.SelectGenomes(self.dir).run([rfq, gbk])
         with gzip.open(os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz'), 'rt') as handle:
             rows = [line.split('\t')[0] for line in handle if not line.startswith('#')]
         self.assertEqual(rows, ['GCA_000000023.1'])

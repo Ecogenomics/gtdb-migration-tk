@@ -18,7 +18,7 @@
 """
 select_genomes.py -- select the NCBI genomes belonging in a GTDB release.
 
-SelectedGenomesManager answers which genomes a release wants, and answers it from
+SelectGenomes decides which genomes a release wants, and decides it from
 the summary files alone: no previous release, no FTP mirror, no genome
 directories. It is what the select_genomes command runs, so the genomes wanted in
 a release can be settled and reviewed before any of them is copied. The mirror is
@@ -135,7 +135,7 @@ def write_selected_genomes(selected: List[SelectedRow], output_file: str) -> Non
             table.write('\t'.join(row) + '\n')
 
 
-class SelectedGenomesManager:
+class SelectGenomes:
     """Select the NCBI genomes belonging in a GTDB release, from the summary files alone.
 
     This is the one decision in a release about which genomes are wanted, and
@@ -143,7 +143,7 @@ class SelectedGenomesManager:
     NCBI assembly summary files are the only input, and the answer is a table of
     the genomes wanted. Nothing is copied, compared, or deleted, so the selection
     can be produced and reviewed before any part of a release is built; the sync
-    then mirrors exactly this table, and GenomeManager updates the release from
+    then mirrors exactly this table, and UpdateGenomes updates the release from
     that mirror without deciding anything further.
 
     Every RefSeq assembly is wanted. A GenBank assembly is wanted only where

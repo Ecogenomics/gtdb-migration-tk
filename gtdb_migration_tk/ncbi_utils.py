@@ -16,18 +16,28 @@
 ###############################################################################
 
 """
-ncbi_utils.py -- read the NCBI assembly summary files.
+ncbi_utils.py -- read the NCBI assembly summary files, and hold what the NCBI
+commands know in common about NCBI's files.
 
 An assembly summary file (assembly_summary.txt) is the table NCBI publishes
 describing every assembly it holds: a block of '#'-prefixed comments, a
 '#assembly_accession ...' header, then one tab-separated row per genome.
 
 Two parts of this package read those tables. ncbi_genome_sync.py reads ftp_path to
-mirror the genomes from the NCBI FTP site, and ncbi_ftp_manager.py reads
-version_status, gbrs_paired_asm, and excluded_from_refseq to decide which of
-the mirrored genomes belong in a GTDB release. Both need the same thing from
-the file, so the reading lives here and the two callers differ only in what
-they do with a row.
+mirror the genomes from the NCBI FTP site, and select_genomes.py reads
+version_status, gbrs_paired_asm, and excluded_from_refseq to decide which
+genomes belong in a GTDB release. Both need the same thing from the file, so
+the reading lives here and the two callers differ only in what they do with a
+row.
+
+Beside the reader sit the few facts about NCBI's files that more than one
+command depends on: the accession prefixes of the two databases, the shape of
+a line of md5checksums.txt, and the test for an assembly NCBI lists but does
+not serve. They live here rather than in whichever command first needed them
+so that no command module imports another. ncbi_genome_sync.py imports from
+this module and from nothing else in the package, and this module imports
+nothing from the package at all; keep both true, or the sync stops being
+runnable as the standalone script it started as.
 
 A summary file may be gzipped or not, and open_summary() takes either, so no
 caller has to know which it was handed.
@@ -246,11 +256,15 @@ def read_assembly_summary(assembly_summary: str,
         yield tuple(summary_field(fields, columns, name) for name in field_names)
 
 
-# Accession prefixes of the two NCBI databases.
+# Accession prefixes of the two NCBI databases. select_genomes reads a genome's
+# database from them; update_genomes runs once per prefix.
 REFSEQ_PREFIX = 'GCF'
 GENBANK_PREFIX = 'GCA'
 
-# One line of NCBI's md5checksums.txt: the MD5, whitespace, the file name.
+# One line of NCBI's md5checksums.txt: the MD5, whitespace, the file name. The
+# sync reads the manifest to verify what it fetched, and update_genomes reads
+# the mirror's and the previous release's copies to tell whether a genomic FASTA
+# changed, so the two must parse the same lines.
 MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
 
 
@@ -263,9 +277,11 @@ def has_ftp_path(ftp_path: str) -> bool:
     and a row with nothing to fetch would be reported as skipped by every run of it
     forever.
 
-    This is deliberately the same test ncbi_genome_sync.read_assembly_summary() applies
-    when deciding a row has "no usable ftp_path". The two must agree, or the selection
-    would promise genomes the sync then refuses.
+    select_genomes applies this when choosing a genome, and
+    ncbi_genome_sync.read_assembly_summary() when reading the selection back to decide
+    a row has "no usable ftp_path". The two must agree, or the selection would promise
+    genomes the sync then refuses; sharing the one function makes them agree by
+    construction rather than by keeping two copies of the expression in step.
 
     Parameters
     ----------

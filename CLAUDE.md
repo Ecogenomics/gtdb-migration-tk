@@ -25,7 +25,7 @@ Tests are plain `unittest`, offline, and need no mirror or database:
 pytest                                                # whole suite (testpaths in pyproject.toml)
 pytest tests/test_ncbi_genome_sync.py -k manifest -v  # one file / one match
 python -m unittest discover -s tests                  # without pytest
-python -m unittest -v tests.test_ncbi_ftp_manager     # one module
+python -m unittest -v tests.test_select_genomes      # one module
 ```
 
 There is no linter or formatter configured. Releases are cut by publishing a
@@ -49,11 +49,15 @@ by adding a new version line and its notes at the top.
 2. `main.py` `OptionsParser.parse_options()` is an if/elif chain on
    `options.subparser_name`, each branch calling a one-method-per-command wrapper
    that builds a manager and passes the `options` fields through.
-3. A `*_manager.py` module holds the implementation as a class.
+3. A module holds the implementation as a class. The four NCBI commands live in
+   modules named for them (`ncbi_metadata_sync.py` `NCBIMetadataSync`,
+   `select_genomes.py` `SelectGenomes`, `ncbi_genome_sync.py` `NCBIGenomeSync`,
+   `update_genomes.py` `UpdateGenomes`); every other command is a `*_manager.py`
+   holding a `*Manager`.
 
 So adding a command means: an argparse block and a `print_help()` line in
-`__main__.py`, a method plus an elif in `main.py`, the manager, and the command
-table in `README.md`.
+`__main__.py`, a method plus an elif in `main.py`, the implementation module, and
+the command table in `README.md`.
 
 ### Logging and exit codes
 
@@ -84,23 +88,29 @@ summary file is `summary`, and the tests depend on that.
 ### NCBI assembly summary files are read by column name, never by position
 
 `ncbi_utils.py` is the single reader, shared by `ncbi_genome_sync.py` and
-`ncbi_ftp_manager.py`. It finds columns from the `#assembly_accession ...` header
+`select_genomes.py`. It finds columns from the `#assembly_accession ...` header
 row and refuses a table with no header (`BadInput`, a `ValueError`). NCBI has
 grown `assembly_summary.txt` from 23 to 38 columns; a positional reader would
 silently mirror the wrong files or build a release from the wrong genomes. Do
 not slice these tables by index anywhere.
 
+`ncbi_utils.py` also holds what more than one NCBI command knows about NCBI's
+files: `REFSEQ_PREFIX`/`GENBANK_PREFIX`, `MD5_LINE_RE` (a line of
+`md5checksums.txt`) and `has_ftp_path()` (an assembly NCBI lists but does not
+serve). It is a leaf: it imports nothing from the package, and
+`ncbi_genome_sync.py` imports from it and from nothing else in the package. The
+command modules do not import one another; anything two of them need goes here.
+
 ### Release update: deciding vs. doing
 
-`ncbi_ftp_manager.py` `GenomeManager` sorts the genomes of one database (given
+`update_genomes.py` `UpdateGenomes` sorts the genomes of one database (given
 as an accession prefix, `REFSEQ_PREFIX` or `GENBANK_PREFIX`) into removed, new
 and shared by comparing the mirror's and the previous release's genome_dirs
 files, filtered to that prefix; it reads no summary file, since the mirror is a
 copy of the selection. `update_genomes` runs it once per prefix into one output
 directory, with reports named for the prefix (`report_gcf.log`,
-`gcf_to_review.log`, `report_gca.log`, `gca_to_review.log`).
-`ncbi_ftp_manager_tools.py` `FTPTools` does the resulting copying, comparing and
-reporting.
+`gcf_to_review.log`, `report_gca.log`, `gca_to_review.log`). `FTPTools`, in the
+same module, does the resulting copying, comparing and reporting.
 
 Genome IDs are compared in canonical form via
 `biolib_lite.common.canonical_gid()`: `GCF_005435135.1` and `GCA_005435135.1`
@@ -160,9 +170,10 @@ shadowed by it and never importable. Put small shared helpers in
 
 - Every source file starts with the GPLv3 header block. Docstrings use
   numpy-style `Parameters` sections and end with an `@return:` line.
-- Module docstrings in the refactored modules (`ncbi_ftp_manager.py`,
-  `ncbi_utils.py`, `config.py`, `ncbi_genome_sync.py`) explain *why* the code is
-  shaped as it is, not what it does. Keep that up when touching them.
+- Module docstrings in the refactored modules (`ncbi_metadata_sync.py`,
+  `select_genomes.py`, `update_genomes.py`, `ncbi_utils.py`, `config.py`,
+  `ncbi_genome_sync.py`) explain *why* the code is shaped as it is, not what it
+  does. Keep that up when touching them.
 - Tests live in `tests/test_<module>.py`, one `TempDirCase` base for anything
   touching disk. Test names read as sentences about the contract that would
   otherwise break silently in production.

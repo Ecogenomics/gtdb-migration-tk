@@ -548,7 +548,7 @@ class MetadataSyncTests(HttpCase):
     RELEASE = 237
 
     def run_sync(self, group=M.GROUP_PROK):
-        M.MetadataSyncManager(self.dir, group).run(self.RELEASE)
+        M.NCBIMetadataSync(self.dir, group).run(self.RELEASE)
         return sorted(os.listdir(self.dir))
 
     def stamp(self):
@@ -731,16 +731,16 @@ class MetadataSyncTests(HttpCase):
         self.server.RequestHandlerClass.routes['/pub/taxonomy/taxdump.tar.gz.md5'] = \
             b'0' * 32 + b'  taxdump.tar.gz\n'
         with self.assertRaises(SystemExit):
-            M.MetadataSyncManager(self.dir, M.GROUP_PROK).run(self.RELEASE)
+            M.NCBIMetadataSync(self.dir, M.GROUP_PROK).run(self.RELEASE)
 
     def test_a_missing_file_at_ncbi_stops_the_run(self):
         del self.server.RequestHandlerClass.routes['/genomes/genbank/bacteria/assembly_summary.txt']
         with self.assertRaises(SystemExit):
-            M.MetadataSyncManager(self.dir, M.GROUP_PROK).run(self.RELEASE)
+            M.NCBIMetadataSync(self.dir, M.GROUP_PROK).run(self.RELEASE)
 
     def test_an_unknown_group_is_refused_before_anything_is_downloaded(self):
         with self.assertRaises(ValueError):
-            M.MetadataSyncManager(self.dir, 'prok')
+            M.NCBIMetadataSync(self.dir, 'prok')
         self.assertEqual(os.listdir(self.dir), [])
 
     def test_the_summaries_are_stored_gzipped(self):
@@ -773,6 +773,6 @@ class MetadataSyncTests(HttpCase):
         self.run_sync()
         summaries = [self.path(n) for n in os.listdir(self.dir)
                      if n.startswith('assembly_summary_')]
-        refseq, genbank = S.SelectedGenomesManager(self.dir).group_by_database(summaries)
+        refseq, genbank = S.SelectGenomes(self.dir).group_by_database(summaries)
         self.assertEqual(len(refseq), len(M.NCBI_PROK_DOMAINS))
         self.assertEqual(len(genbank), len(M.NCBI_PROK_DOMAINS))
