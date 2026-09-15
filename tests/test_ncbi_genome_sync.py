@@ -1019,6 +1019,10 @@ class ParserContract(unittest.TestCase):
         args = self.parse("--retry", "r", "--root", "g", "-l", "x.log")
         self.assertEqual((args.summary, args.retry), (None, "r"))
 
+    def test_the_selection_takes_g_as_list_genomes_gives_it(self):
+        # the same table is -g to list_genomes, so it is -g here too
+        self.assertEqual(self.parse("-g", "s", "--root", "g", "-l", "x.log").summary, "s")
+
 
 class NfsJobsIsHonoured(TempDirCase):
     """--nfs-jobs must actually reach the walk and the removal, not just parse."""

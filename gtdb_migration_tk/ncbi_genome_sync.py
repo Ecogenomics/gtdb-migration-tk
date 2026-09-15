@@ -1942,7 +1942,7 @@ def add_sync_arguments(parser):
     # module, and its tests, read args.summary -- and main() points it at the retry file
     # when that is what was given.
     table = required.add_mutually_exclusive_group(required=True)
-    table.add_argument("--gtdb_selected_genomes", dest="summary", metavar="FILE",
+    table.add_argument("-g", "--gtdb_selected_genomes", dest="summary", metavar="FILE",
                        help="the table written by select_genomes (gtdb_selected_genomes.tsv.gz). "
                             "Genomes are taken from its assembly_accession and ftp_path columns, "
                             "and it defines the mirror: every genome directory under --root that "
