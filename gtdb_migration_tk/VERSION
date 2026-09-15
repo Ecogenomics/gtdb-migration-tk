@@ -1,3 +1,8 @@
+0.1.4
+- ncbi_metadata_sync takes --group, PROK or FUNGI, and downloads the assembly summary files of that group alone: archaea and bacteria for PROK, the fungal summary of each database for FUNGI. Both groups get a standardised taxonomy, the fungal one generated with keep_subranks set, so it carries NCBI's subranks (13 ranks) where the prokaryotic one is the 7 GTDB curates
+- the taxonomy files of a run are named for its group, ncbi_r<release>_prok_*.tsv and ncbi_r<release>_fungi_*.tsv, with the filter report as <group>_failed_filters.tsv, so both groups can be run into one release directory without either overwriting the other. A run reuses the taxdump already extracted under today's date rather than downloading it again, which also places the two groups against the one taxonomy
+- NCBI_DOMAINS is replaced by NCBI_PROK_DOMAINS and NCBI_FUNGI_DOMAINS, with NCBI_GROUP_DOMAINS, GROUP_KEEP_SUBRANKS and GROUP_FILE_TAG saying what each group downloads, whether its taxonomy keeps subranks, and what its files are named for
+- TaxonomyNCBI.parse_ncbi_taxonomy takes the assembly summaries as a list rather than as one argument per database and domain, a group holding four of them or two, and takes the file its filters report to
 0.1.3
 - ncbi_metadata_sync also downloads the fungal assembly summary of each database (assembly_summary_fungi_refseq.txt.gz, assembly_summary_fungi_genbank.txt.gz), so a release holds the fungal tables NCBI was serving when it was built. They are downloaded only: the 7 rank NCBI taxonomy is still built from the archaeal and bacterial summaries alone, and select_genomes is given whichever files it is pointed at
 0.1.2

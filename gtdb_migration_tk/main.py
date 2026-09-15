@@ -130,7 +130,7 @@ class OptionsParser():
 
     def ncbi_metadata_sync(self, options):
         make_sure_path_exists(options.output_dir)
-        p = MetadataSyncManager(options.output_dir)
+        p = MetadataSyncManager(options.output_dir, options.group)
         p.run(options.release_number)
 
     def select_genomes(self, options):

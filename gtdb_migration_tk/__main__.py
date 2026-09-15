@@ -34,6 +34,7 @@ from gtdb_migration_tk import __version__
 from gtdb_migration_tk.biolib_lite.custom_help_formatter import CustomHelpFormatter
 from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.main import OptionsParser
+from gtdb_migration_tk.ncbi_ftp_manager_tools import NCBI_GROUPS
 from gtdb_migration_tk.ncbi_genome_sync import add_sync_arguments
 
 
@@ -361,6 +362,13 @@ def __release_number(group, required):
                        help='GTDB release number, e.g. 237.')
 
 
+def __ncbi_group(group, required):
+    # 'group' here is the argparse group; the argument itself is the group of
+    # organisms, PROK or FUNGI, which are downloaded and curated separately
+    group.add_argument('--group', required=required, choices=NCBI_GROUPS,
+                       help='Group of organisms to download (PROK or FUNGI).')
+
+
 def __metadata_input_folder(group):
     group.add_argument('-i', '--input_folder', help='Directory folder with all the tables created by metadata.')
 
@@ -643,6 +651,7 @@ def get_main_parser():
         with arg_group(parser, 'required named arguments') as grp:
             __output_dir(grp, required=True)
             __release_number(grp, required=True)
+            __ncbi_group(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 

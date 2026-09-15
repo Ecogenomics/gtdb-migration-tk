@@ -28,11 +28,15 @@ from gtdb_migration_tk import ncbi_tax_manager
 from gtdb_migration_tk import ncbi_utils as U
 
 
-# Two lineages rooted at "cellular organisms", which is where the parser stops
-# walking, shaped as NCBI writes nodes.dmp: fields separated by "\t|\t".
+# Three lineages rooted at "cellular organisms", which is where the parser stops
+# walking, shaped as NCBI writes nodes.dmp: fields separated by "\t|\t". The
+# fungal one carries a subkingdom and a subphylum, the ranks the fungal taxonomy
+# is generated to keep and the prokaryotic one to drop.
 NODES = [('131567', '1', 'no rank'),
-         # Bacteria
-         ('2', '131567', 'superkingdom'),
+         # Bacteria; NCBI ranks the two prokaryotic domains 'domain', and Fungi
+         # a kingdom under a superkingdom, which is why one standardises to a
+         # d__ and the other reaches it through a rank the parser drops
+         ('2', '131567', 'domain'),
          ('1224', '2', 'phylum'),
          ('1236', '1224', 'class'),
          ('91347', '1236', 'order'),
@@ -40,13 +44,24 @@ NODES = [('131567', '1', 'no rank'),
          ('561', '543', 'genus'),
          ('562', '561', 'species'),
          # Archaea
-         ('2157', '131567', 'superkingdom'),
+         ('2157', '131567', 'domain'),
          ('28890', '2157', 'phylum'),
          ('183963', '28890', 'class'),
          ('2235', '183963', 'order'),
          ('2236', '2235', 'family'),
          ('2239', '2236', 'genus'),
-         ('2242', '2239', 'species')]
+         ('2242', '2239', 'species'),
+         # Fungi
+         ('2759', '131567', 'superkingdom'),
+         ('4751', '2759', 'kingdom'),
+         ('451864', '4751', 'subkingdom'),
+         ('4890', '451864', 'phylum'),
+         ('147537', '4890', 'subphylum'),
+         ('4891', '147537', 'class'),
+         ('4892', '4891', 'order'),
+         ('766764', '4892', 'family'),
+         ('1535326', '766764', 'genus'),
+         ('5476', '1535326', 'species')]
 
 NAMES = [('131567', 'cellular organisms'),
          ('2', 'Bacteria'), ('1224', 'Pseudomonadota'),
@@ -56,11 +71,16 @@ NAMES = [('131567', 'cellular organisms'),
          ('2157', 'Archaea'), ('28890', 'Euryarchaeota'),
          ('183963', 'Halobacteria'), ('2235', 'Halobacteriales'),
          ('2236', 'Halobacteriaceae'), ('2239', 'Halobacterium'),
-         ('2242', 'Halobacterium salinarum')]
+         ('2242', 'Halobacterium salinarum'),
+         ('2759', 'Eukaryota'), ('4751', 'Fungi'), ('451864', 'Dikarya'),
+         ('4890', 'Ascomycota'), ('147537', 'Saccharomycotina'),
+         ('4891', 'Saccharomycetes'), ('4892', 'Saccharomycetales'),
+         ('766764', 'Debaryomycetaceae'), ('1535326', 'Candida'),
+         ('5476', 'Candida albicans')]
 
 
 def dmp_files():
-    """nodes.dmp and names.dmp holding one complete bacterial lineage."""
+    """nodes.dmp and names.dmp holding one lineage of each group."""
 
     nodes = ''.join('{}\t|\t{}\t|\t{}\t|\t\t|\t0\t|\t\t|\t11\t|\n'.format(*row)
                     for row in NODES)
@@ -132,47 +152,89 @@ class HttpCase(unittest.TestCase):
 # ------------------------------------------------------------------- download naming
 
 class AssemblySummaryNamingTests(unittest.TestCase):
-    """NCBI publishes all six of these under one name; GTDB cannot."""
+    """NCBI publishes every one of these under one name; GTDB cannot."""
 
     def setUp(self):
-        self.downloads = T.assembly_summary_downloads()
+        self.downloads = {group: T.assembly_summary_downloads(group)
+                          for group in T.NCBI_GROUPS}
+        self.every = [row for rows in self.downloads.values() for row in rows]
 
-    def test_every_database_and_domain_is_downloaded(self):
-        self.assertEqual(len(self.downloads),
-                         len(T.NCBI_DATABASES) * len(T.NCBI_SUMMARY_DOMAINS))
+    def test_each_group_downloads_its_own_domains_from_both_databases(self):
+        for group, rows in self.downloads.items():
+            self.assertEqual(len(rows),
+                             len(T.NCBI_DATABASES) * len(T.NCBI_GROUP_DOMAINS[group]),
+                             group)
+
+    def test_the_prokaryotic_group_is_archaea_and_bacteria(self):
+        self.assertEqual(sorted(n for *_, n in self.downloads[T.GROUP_PROK]),
+                         ['assembly_summary_archaea_genbank.txt.gz',
+                          'assembly_summary_archaea_refseq.txt.gz',
+                          'assembly_summary_bacteria_genbank.txt.gz',
+                          'assembly_summary_bacteria_refseq.txt.gz'])
+
+    def test_the_fungal_group_is_the_fungal_summary_of_each_database(self):
+        self.assertEqual(sorted(n for *_, n in self.downloads[T.GROUP_FUNGI]),
+                         ['assembly_summary_fungi_genbank.txt.gz',
+                          'assembly_summary_fungi_refseq.txt.gz'])
+
+    def test_no_file_is_downloaded_by_both_groups(self):
+        # the groups are run separately, and neither may overwrite the other's
+        # summary files in a release directory holding both
+        names = [name for *_, name in self.every]
+        self.assertEqual(len(set(names)), len(names))
 
     def test_every_file_is_saved_under_a_distinct_name(self):
         # NCBI calls each of them assembly_summary.txt, so saving them into one
         # directory under their own names would leave a single file
-        names = [name for *_, name in self.downloads]
-        self.assertEqual(len(set(names)), len(names))
-        self.assertEqual(sorted(names),
-                         ['assembly_summary_archaea_genbank.txt.gz',
-                          'assembly_summary_archaea_refseq.txt.gz',
-                          'assembly_summary_bacteria_genbank.txt.gz',
-                          'assembly_summary_bacteria_refseq.txt.gz',
-                          'assembly_summary_fungi_genbank.txt.gz',
-                          'assembly_summary_fungi_refseq.txt.gz'])
+        for group, rows in self.downloads.items():
+            names = [name for *_, name in rows]
+            self.assertEqual(len(set(names)), len(names), group)
 
     def test_each_name_carries_the_suffix_select_genomes_reads(self):
         # select_genomes decides a file's database from this suffix, so the two
         # must agree or the release is selected from the wrong genomes
-        for database, _, _, name in self.downloads:
+        for database, _, _, name in self.every:
             self.assertTrue(name.endswith('_{}.txt.gz'.format(database)), name)
 
     def test_the_name_matches_the_url_it_is_downloaded_from(self):
-        for database, domain, url, name in self.downloads:
+        for database, domain, url, name in self.every:
             self.assertTrue(url.endswith('/assembly_summary.txt'), url)
             self.assertIn('/genomes/{}/{}/'.format(database, domain), url)
             self.assertEqual(name,
                              'assembly_summary_{}_{}.txt.gz'.format(domain, database))
 
-    def test_the_fungal_summary_of_each_database_is_downloaded(self):
-        # fungal genomes are a separate procedure, but the summary it works from
-        # has to be the one NCBI was serving when the release was built
-        self.assertEqual(sorted(n for *_, n in self.downloads if 'fungi' in n),
-                         ['assembly_summary_fungi_genbank.txt.gz',
-                          'assembly_summary_fungi_refseq.txt.gz'])
+    def test_an_unknown_group_downloads_nothing(self):
+        # rather than quietly falling back on the prokaryotic domains
+        with self.assertRaises(KeyError):
+            T.assembly_summary_downloads('EUK')
+
+
+class GroupTests(unittest.TestCase):
+    """The two groups are handled differently after they are downloaded."""
+
+    def test_only_the_fungal_taxonomy_keeps_subranks(self):
+        # GTDB curates 7 ranks for prokaryotes; fungal classification leans on
+        # NCBI's intermediate ranks
+        self.assertFalse(T.GROUP_KEEP_SUBRANKS[T.GROUP_PROK])
+        self.assertTrue(T.GROUP_KEEP_SUBRANKS[T.GROUP_FUNGI])
+
+    def test_every_group_says_what_it_downloads_how_it_is_named_and_its_subranks(self):
+        # a group added to NCBI_GROUPS and nowhere else fails here rather than
+        # part way through a download
+        for group in T.NCBI_GROUPS:
+            self.assertIn(group, T.NCBI_GROUP_DOMAINS)
+            self.assertIn(group, T.GROUP_KEEP_SUBRANKS)
+            self.assertIn(group, T.GROUP_FILE_TAG)
+
+    def test_the_groups_name_their_output_files_differently(self):
+        # both groups are run into one release directory
+        tags = [T.GROUP_FILE_TAG[group] for group in T.NCBI_GROUPS]
+        self.assertEqual(len(set(tags)), len(tags))
+
+    def test_no_group_takes_a_domain_of_another(self):
+        domains = [domain for group in T.NCBI_GROUPS
+                   for domain in T.NCBI_GROUP_DOMAINS[group]]
+        self.assertEqual(len(set(domains)), len(domains))
 
 
 # ------------------------------------------------------------------------- downloading
@@ -273,9 +335,6 @@ TAXDUMP_MD5 = hashlib.md5(TAXDUMP).hexdigest()
 # organism_name by column name and walks the lineage of each assembly
 # One genome per file. They must differ: the taxonomy parser refuses an accession
 # it has already seen, so four copies of one row would abort the run.
-# The fungal taxids are absent from the taxdump above on purpose: nothing gives
-# the fungal summaries to the taxonomy parser, so a lineage for them would only
-# hide the day something does.
 GENOMES = {('refseq', 'archaea'): ('GCF_000000001.1', '2242', 'Halobacterium salinarum'),
            ('refseq', 'bacteria'): ('GCF_000000002.1', '562', 'Escherichia coli'),
            ('refseq', 'fungi'): ('GCF_000000005.1', '5476', 'Candida albicans'),
@@ -305,7 +364,8 @@ class MetadataSyncTests(HttpCase):
              '{}  taxdump.tar.gz\n'.format(TAXDUMP_MD5).encode()},
         **{'/genomes/{}/{}/assembly_summary.txt'.format(database, domain):
            summary_file(database, domain)
-           for database in T.NCBI_DATABASES for domain in T.NCBI_SUMMARY_DOMAINS})
+           for database in T.NCBI_DATABASES
+           for group in T.NCBI_GROUPS for domain in T.NCBI_GROUP_DOMAINS[group]})
 
     def setUp(self):
         super().setUp()
@@ -321,13 +381,19 @@ class MetadataSyncTests(HttpCase):
 
     RELEASE = 237
 
-    def run_sync(self):
-        F.MetadataSyncManager(self.dir).run(self.RELEASE)
+    def run_sync(self, group=T.GROUP_PROK):
+        F.MetadataSyncManager(self.dir, group).run(self.RELEASE)
         return sorted(os.listdir(self.dir))
 
     def stamp(self):
         import datetime
         return datetime.date.today().strftime('%Y%m%d')
+
+    def taxonomy(self, name):
+        """One file of the standardised taxonomy, as gid -> taxonomy string."""
+
+        with open(self.path('taxonomy', 'standardised_taxonomy', name)) as handle:
+            return dict(line.rstrip('\n').split('\t', 1) for line in handle)
 
     def test_assembly_summaries_land_in_the_root_ncbi_directory(self):
         # this is the directory select_genomes is pointed at
@@ -337,8 +403,15 @@ class MetadataSyncTests(HttpCase):
             ['assembly_summary_archaea_genbank.txt.gz',
              'assembly_summary_archaea_refseq.txt.gz',
              'assembly_summary_bacteria_genbank.txt.gz',
-             'assembly_summary_bacteria_refseq.txt.gz',
-             'assembly_summary_fungi_genbank.txt.gz',
+             'assembly_summary_bacteria_refseq.txt.gz'])
+
+    def test_a_group_downloads_its_own_summaries_and_no_others(self):
+        # prokaryotes and fungi are curated separately, and a run of one must
+        # not spend an hour downloading the other's tables
+        written = self.run_sync(T.GROUP_FUNGI)
+        self.assertEqual(
+            sorted(n for n in written if n.startswith('assembly_summary_')),
+            ['assembly_summary_fungi_genbank.txt.gz',
              'assembly_summary_fungi_refseq.txt.gz'])
 
     def test_the_root_holds_only_the_summaries_the_log_and_the_taxonomy(self):
@@ -365,28 +438,65 @@ class MetadataSyncTests(HttpCase):
         self.run_sync()
         self.assertTrue(os.path.isdir(self.path('taxonomy', 'taxdump_' + self.stamp())))
 
-    def test_the_standardised_taxonomy_is_named_for_the_release(self):
+    def test_the_second_group_reuses_the_taxonomy_already_extracted(self):
+        # both groups need the taxdump; downloading it twice on one day costs
+        # 80 MB and, worse, places the two groups against two different
+        # downloads of the taxonomy
         self.run_sync()
-        written = os.listdir(self.path('taxonomy', 'standardised_taxonomy'))
-        taxonomy = [n for n in written if n != 'failed_filters.tsv']
+        for route in ('/pub/taxonomy/taxdump.tar.gz', '/pub/taxonomy/taxdump.tar.gz.md5'):
+            del self.server.RequestHandlerClass.routes[route]
+
+        written = self.run_sync(T.GROUP_FUNGI)                # would fail on a download
+        self.assertIn('assembly_summary_fungi_refseq.txt.gz', written)
+        self.assertTrue(self.taxonomy('ncbi_r237_fungi_unfiltered_taxonomy.tsv'))
+
+    def test_a_taxonomy_downloaded_on_an_earlier_day_is_not_reused(self):
+        # a release is built from the taxonomy of the day it is built
+        os.makedirs(self.path('taxonomy', 'taxdump_20200101'))
+        for dmp in ('names.dmp', 'nodes.dmp'):
+            open(self.path('taxonomy', 'taxdump_20200101', dmp), 'w').close()
+
+        self.run_sync()
+        self.assertTrue(os.path.exists(
+            self.path('taxonomy', 'taxdump_' + self.stamp(), 'names.dmp')))
+
+    def test_the_standardised_taxonomy_is_named_for_the_release_and_the_group(self):
+        # both groups are run into one release directory, so a name carrying the
+        # release alone would have the second run overwrite the first
+        self.run_sync()
+        self.run_sync(T.GROUP_FUNGI)
+        written = sorted(os.listdir(self.path('taxonomy', 'standardised_taxonomy')))
+        taxonomy = [n for n in written if not n.endswith('failed_filters.tsv')]
         self.assertTrue(taxonomy)
         for name in taxonomy:
-            self.assertTrue(name.startswith('ncbi_r237_'), name)
+            self.assertTrue(name.startswith('ncbi_r237_prok_')
+                            or name.startswith('ncbi_r237_fungi_'), name)
+
+    def test_neither_group_overwrites_what_the_other_wrote(self):
+        self.run_sync()
+        prokaryotic = sorted(os.listdir(self.path('taxonomy', 'standardised_taxonomy')))
+        self.run_sync(T.GROUP_FUNGI)
+        both = sorted(os.listdir(self.path('taxonomy', 'standardised_taxonomy')))
+
+        self.assertTrue(set(prokaryotic).issubset(both))
+        self.assertEqual(len(both), 2 * len(prokaryotic))
 
     def test_the_failed_filter_report_is_written_beside_the_taxonomy(self):
-        # it names a hardcoded file, so without a working directory to anchor it
-        # the report lands wherever the operator happened to be standing
+        # it named a hardcoded file, so without a working directory to anchor it
+        # the report landed wherever the operator happened to be standing; it is
+        # named for its group for the same reason the taxonomy is
         self.run_sync()
-        self.assertIn('failed_filters.tsv', os.listdir(self.path('taxonomy', 'standardised_taxonomy')))
+        self.assertIn('prok_failed_filters.tsv',
+                      os.listdir(self.path('taxonomy', 'standardised_taxonomy')))
+        self.run_sync(T.GROUP_FUNGI)
+        self.assertIn('fungi_failed_filters.tsv',
+                      os.listdir(self.path('taxonomy', 'standardised_taxonomy')))
 
     def test_the_standardised_taxonomy_resolves_the_lineage_of_each_assembly(self):
         # the point of the step: a taxid becomes a lineage
         self.run_sync()
-        taxonomy = self.path('taxonomy', 'standardised_taxonomy', 'ncbi_r237_unfiltered_taxonomy.tsv')
-        with open(taxonomy) as handle:
-            lineages = dict(line.rstrip('\n').split('\t', 1) for line in handle)
+        lineages = self.taxonomy('ncbi_r237_prok_unfiltered_taxonomy.tsv')
 
-        # the fungal assemblies are downloaded but never handed to the parser
         self.assertEqual(sorted(lineages), ['GCA_000000003.1', 'GCA_000000004.1',
                                             'GCF_000000001.1', 'GCF_000000002.1'])
         self.assertIn('Escherichia coli', lineages['GCF_000000002.1'])
@@ -394,18 +504,54 @@ class MetadataSyncTests(HttpCase):
         self.assertIn('Halobacterium salinarum', lineages['GCF_000000001.1'])
         self.assertIn('Archaea', lineages['GCF_000000001.1'])
 
+    def test_a_group_places_its_own_assemblies_and_no_others(self):
+        # the taxdump holds every lineage; what a group's taxonomy holds is the
+        # assemblies of the summaries that group downloaded
+        self.run_sync(T.GROUP_FUNGI)
+        lineages = self.taxonomy('ncbi_r237_fungi_unfiltered_taxonomy.tsv')
+
+        self.assertEqual(sorted(lineages), ['GCA_000000006.1', 'GCF_000000005.1'])
+        self.assertIn('Candida albicans', lineages['GCF_000000005.1'])
+
+    def test_the_fungal_taxonomy_keeps_the_subranks_ncbi_gives(self):
+        # fungal classification leans on the intermediate ranks
+        self.run_sync(T.GROUP_FUNGI)
+        standardised = self.taxonomy('ncbi_r237_fungi_standardized.tsv')
+
+        taxa = standardised['GCF_000000005.1'].split(';')
+        self.assertEqual(len(taxa), 13)
+        self.assertIn('sd__Dikarya', taxa)
+        self.assertIn('sp__Saccharomycotina', taxa)
+        self.assertIn('s__Candida albicans', taxa)
+
+    def test_the_prokaryotic_taxonomy_is_the_seven_ranks_gtdb_curates(self):
+        # a subphylum or subclass in it would be a rank GTDB has no name for
+        self.run_sync()
+        standardised = self.taxonomy('ncbi_r237_prok_standardized.tsv')
+
+        self.assertEqual(len(standardised), 4)
+        for gid, taxonomy in standardised.items():
+            taxa = taxonomy.split(';')
+            self.assertEqual(len(taxa), 7, gid)
+            self.assertFalse([t for t in taxa if len(t.split('__')[0]) == 2], gid)
+
     def test_a_corrupt_taxonomy_download_stops_the_run(self):
         # a truncated taxdump reads as a valid, smaller taxonomy, and only shows
         # up as genomes that lost their NCBI lineage several commands later
         self.server.RequestHandlerClass.routes['/pub/taxonomy/taxdump.tar.gz.md5'] = \
             b'0' * 32 + b'  taxdump.tar.gz\n'
         with self.assertRaises(SystemExit):
-            F.MetadataSyncManager(self.dir).run(self.RELEASE)
+            F.MetadataSyncManager(self.dir, T.GROUP_PROK).run(self.RELEASE)
 
     def test_a_missing_file_at_ncbi_stops_the_run(self):
         del self.server.RequestHandlerClass.routes['/genomes/genbank/bacteria/assembly_summary.txt']
         with self.assertRaises(SystemExit):
-            F.MetadataSyncManager(self.dir).run(self.RELEASE)
+            F.MetadataSyncManager(self.dir, T.GROUP_PROK).run(self.RELEASE)
+
+    def test_an_unknown_group_is_refused_before_anything_is_downloaded(self):
+        with self.assertRaises(ValueError):
+            F.MetadataSyncManager(self.dir, 'prok')
+        self.assertEqual(os.listdir(self.dir), [])
 
     def test_the_summaries_are_stored_gzipped(self):
         self.run_sync()
@@ -437,8 +583,5 @@ class MetadataSyncTests(HttpCase):
         summaries = [self.path(n) for n in os.listdir(self.dir)
                      if n.startswith('assembly_summary_')]
         refseq, genbank = F.SelectedGenomesManager(self.dir).group_by_database(summaries)
-        # the fungal summaries carry the same database suffix, so they sort by
-        # it like any other; which of these files a release is selected from is
-        # the operator's choice of arguments, not this naming
-        self.assertEqual(len(refseq), len(T.NCBI_SUMMARY_DOMAINS))
-        self.assertEqual(len(genbank), len(T.NCBI_SUMMARY_DOMAINS))
+        self.assertEqual(len(refseq), len(T.NCBI_PROK_DOMAINS))
+        self.assertEqual(len(genbank), len(T.NCBI_PROK_DOMAINS))

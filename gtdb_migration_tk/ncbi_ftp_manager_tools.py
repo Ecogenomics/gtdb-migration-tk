@@ -83,21 +83,40 @@ GENOMIC_FASTA_EXT = '_genomic.fna.gz'
 NCBI_FTP = 'https://ftp.ncbi.nlm.nih.gov'
 TAXDUMP_URL = NCBI_FTP + '/pub/taxonomy/taxdump.tar.gz'
 
-# The two NCBI databases, and the two domains the 7 rank NCBI taxonomy is built
-# from.
+# The two NCBI databases every group is taken from.
 NCBI_DATABASES = ('refseq', 'genbank')
-NCBI_DOMAINS = ('archaea', 'bacteria')
 
-# NCBI serves the fungal assembly summary from the same place, one directory
-# along (genomes/<database>/fungi). Fungal genomes are selected and assessed by
-# a separate procedure and take no part in the prokaryotic taxonomy, but that
-# procedure needs the release's copy of the summary, so it is downloaded here
-# rather than fetched by hand months later, when NCBI is serving a different
-# table.
-NCBI_FUNGAL_DOMAINS = ('fungi',)
+# The two groups of organisms GTDB builds from, and the directories NCBI serves
+# each one's assembly summaries from (genomes/<database>/<domain>). They are
+# kept apart because they are handled differently at every step after this one:
+# prokaryotes are the release, fungi are selected, assessed (busco) and
+# curated by a procedure of their own. One run of ncbi_metadata_sync downloads
+# one group, so a fungal run cannot quietly rewrite the prokaryotic taxonomy a
+# release has already been built on, and the two can be refreshed on their own
+# schedules.
+GROUP_PROK = 'PROK'
+GROUP_FUNGI = 'FUNGI'
+NCBI_GROUPS = (GROUP_PROK, GROUP_FUNGI)
 
-# Every summary downloaded: the domains above, plus fungi.
-NCBI_SUMMARY_DOMAINS = NCBI_DOMAINS + NCBI_FUNGAL_DOMAINS
+NCBI_PROK_DOMAINS = ('archaea', 'bacteria')
+NCBI_FUNGI_DOMAINS = ('fungi',)
+
+NCBI_GROUP_DOMAINS = {GROUP_PROK: NCBI_PROK_DOMAINS,
+                      GROUP_FUNGI: NCBI_FUNGI_DOMAINS}
+
+# Whether the standardised taxonomy of a group keeps NCBI's subranks. The
+# prokaryotic taxonomy is the 7 ranks GTDB curates, and a subphylum or subclass
+# in it would be a rank GTDB has no name for. Fungal classification leans on
+# those intermediate ranks, so they are kept, and the taxonomy runs to the 13
+# ranks standardize_taxonomy() writes when told to.
+GROUP_KEEP_SUBRANKS = {GROUP_PROK: False,
+                       GROUP_FUNGI: True}
+
+# What a group's taxonomy files are named for: ncbi_r237_prok_*.tsv against
+# ncbi_r237_fungi_*.tsv, so both groups can be downloaded into the one release
+# directory without either overwriting the other.
+GROUP_FILE_TAG = {GROUP_PROK: 'prok',
+                  GROUP_FUNGI: 'fungi'}
 
 # Read a request in 1 MiB blocks: the assembly summary of GenBank bacteria alone
 # is well over a gigabyte, so nothing may be held in memory whole.
@@ -108,20 +127,27 @@ DOWNLOAD_BLOCK = 1024 * 1024
 DOWNLOAD_TIMEOUT = 300
 
 
-def assembly_summary_downloads() -> List[Tuple[str, str, str, str]]:
-    """The assembly summary files to download, and the names to save them under.
+def assembly_summary_downloads(group: str) -> List[Tuple[str, str, str, str]]:
+    """The assembly summary files of one group, and the names to save them under.
 
     NCBI calls every one of these files assembly_summary.txt, distinguishing them
     only by the directory they sit in, so downloading them into one directory
     means putting the database and domain back into the name. The names built
     here are the ones GTDB has always used, and are the names select_genomes
-    reads a file's database from, so the two must agree.
+    reads a file's database from, so the two must agree. They carry the domain
+    and not the group, so a fungal file is assembly_summary_fungi_refseq.txt.gz:
+    what a file holds is the domain, and the group is only which of them are
+    downloaded together.
 
-    The database and domain are returned alongside, as the taxonomy step wants
-    the four prokaryotic files individually rather than as a list, and takes no
-    fungal file at all. The names end in .gz because the files are compressed as
-    they are downloaded; every reader of an assembly summary goes through
-    ncbi_utils.open_summary(), which takes either form.
+    The database and domain are returned alongside, as the taxonomy step keys the
+    files it was given by them. The names end in .gz because the files are
+    compressed as they are downloaded; every reader of an assembly summary goes
+    through ncbi_utils.open_summary(), which takes either form.
+
+    Parameters
+    ----------
+    group : str
+        Group to download, GROUP_PROK or GROUP_FUNGI.
 
     @return: list of (database, domain, url, file name), RefSeq before GenBank.
     """
@@ -130,7 +156,7 @@ def assembly_summary_downloads() -> List[Tuple[str, str, str, str]]:
              '{}/genomes/{}/{}/assembly_summary.txt'.format(NCBI_FTP, database, domain),
              'assembly_summary_{}_{}.txt.gz'.format(domain, database))
             for database in NCBI_DATABASES
-            for domain in NCBI_SUMMARY_DOMAINS]
+            for domain in NCBI_GROUP_DOMAINS[group]]
 
 
 def file_checksum(file_path: str, checksum) -> str:
