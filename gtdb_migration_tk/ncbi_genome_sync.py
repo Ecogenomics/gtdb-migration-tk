@@ -796,8 +796,9 @@ class CircuitBreaker(object):
             STOP.check()
             with self.lock:
                 if self.tripped_out:
-                    raise ThrottledOut("NCBI refusing requests; %d consecutive pauses "
-                                       "failed to clear it" % self.consecutive)
+                    raise ThrottledOut("NCBI refusing requests; %s consecutive pauses "
+                                       "failed to clear it"
+                                       % format_count(self.consecutive))
                 remaining = self.paused_until - time.monotonic()
             if remaining <= 0:
                 return
@@ -833,11 +834,13 @@ class CircuitBreaker(object):
         _bump("paused_s", pause)
         if pause:
             message = ("circuit breaker: HTTP %d -> all workers paused %.0f s "
-                       "(trip #%d, %d consecutive)" % (status, pause, trips, cons))
+                       "(trip #%s, %s consecutive)"
+                       % (status, pause, format_count(trips), format_count(cons)))
             LOG.warning(message)
         else:
-            message = ("circuit breaker: HTTP %d after %d consecutive failed pauses -> "
-                       "NCBI is refusing this host; stopping the run" % (status, cons))
+            message = ("circuit breaker: HTTP %d after %s consecutive failed pauses -> "
+                       "NCBI is refusing this host; stopping the run"
+                       % (status, format_count(cons)))
             LOG.error(message)
         if self.notify:
             self.notify(message)
@@ -1497,6 +1500,30 @@ def bounded_map(fn, items, workers):
             fut.result()
 
 
+def format_count(value):
+    """A count as the log writes it, thousands separated: 1913482 -> "1,913,482".
+
+    %-formatting has no comma flag, so counts are rendered here and passed to the
+    logger as strings. A release is a few million genomes and a summary file a few
+    million rows; a bare run of seven digits in a log line cannot be read at a
+    glance, and two of them cannot be compared at all.
+
+    Identifiers keep their digits: an HTTP status, an exit code, a PID, a line
+    number in a table, and the values echoed back from the command line (-j, rate=,
+    max_age=) are not quantities, and a comma in them would be wrong or unusable.
+    """
+    return "{:,}".format(value)
+
+
+def format_amount(value, decimals=1):
+    """A measured amount -- megabytes, seconds, a rate -- thousands separated.
+
+    Same reasoning as format_count(); the decimals are kept because these are the
+    numbers an operator compares between runs to see whether NCBI is slowing down.
+    """
+    return "{:,.{}f}".format(value, decimals)
+
+
 def format_duration(seconds):
     """Seconds -> compact human duration, e.g. "2h 05m 30s", "7m 12s", "43s"."""
     seconds = max(0.0, seconds)
@@ -1585,10 +1612,12 @@ class Progress(object):
         rate = self.done / elapsed if elapsed > 0 else 0.0
         eta = format_duration((self.total - self.done) / rate) if rate > 0 else "?"
         sys.stderr.write(
-            "%s  %s: %d/%d done, %d unchanged, %d failed [%s<%s, %.2f genome/s]    %s"
-            % ("\r" if self.tty else "", self.label, self.done, self.total,
-               self.skipped, self.failed, format_duration(elapsed),
-               eta, rate, "" if self.tty else "\n"))
+            "%s  %s: %s/%s done, %s unchanged, %s failed [%s<%s, %s genome/s]    %s"
+            % ("\r" if self.tty else "", self.label,
+               format_count(self.done), format_count(self.total),
+               format_count(self.skipped), format_count(self.failed),
+               format_duration(elapsed), eta, format_amount(rate, 2),
+               "" if self.tty else "\n"))
         sys.stderr.flush()
 
     def snapshot(self):
@@ -1608,14 +1637,17 @@ class Progress(object):
             trips, paused = STATS["breaker_trips"], STATS["paused_s"]
             probe_404 = STATS["probe_404"]
         req_rate = requests / elapsed if elapsed > 0 else 0.0
-        LOG.info("Progress %s %d/%d (%.1f%%) unchanged=%d fresh=%d failed=%d "
-                 "elapsed=%s eta=%s rate=%.2f/s requests=%d req/s=%.1f MB=%.1f "
-                 "probe404=%d throttled=%d trips=%d paused=%.0fs drops=%d",
-                 self.label, self.done, self.total,
+        LOG.info("Progress %s %s/%s (%.1f%%) unchanged=%s fresh=%s failed=%s "
+                 "elapsed=%s eta=%s rate=%s/s requests=%s req/s=%s MB=%s "
+                 "probe404=%s throttled=%s trips=%s paused=%ss drops=%s",
+                 self.label, format_count(self.done), format_count(self.total),
                  100.0 * self.done / self.total if self.total else 100.0,
-                 self.skipped, self.fresh, self.failed, format_duration(elapsed),
-                 eta, rate, requests, req_rate, megabytes, probe_404, throttled, trips,
-                 paused, drops, extra=FILE_ONLY)
+                 format_count(self.skipped), format_count(self.fresh),
+                 format_count(self.failed), format_duration(elapsed), eta,
+                 format_amount(rate, 2), format_count(requests), format_amount(req_rate),
+                 format_amount(megabytes), format_count(probe_404),
+                 format_count(throttled), format_count(trips), format_amount(paused, 0),
+                 format_count(drops), extra=FILE_ONLY)
 
     def write(self, message):
         """Emit a message without corrupting an active bar."""
@@ -1694,9 +1726,11 @@ def read_assembly_summary(path):
         seen.add(url)
         genomes.append(Genome(accession, url, version_status, excluded))
     if bad:
-        raise BadInput("%d malformed ftp_path(s):\n%s" % (len(bad), "\n".join(bad[:10])))
+        raise BadInput("%s malformed ftp_path(s):\n%s"
+                       % (format_count(len(bad)), "\n".join(bad[:10])))
     if dupes:
-        LOG.warning("note: %d duplicate ftp_path(s) in %s ignored", dupes, path)
+        LOG.warning("note: %s duplicate ftp_path(s) in %s ignored",
+                    format_count(dupes), path)
     return genomes, skipped
 
 
@@ -1876,7 +1910,7 @@ def first_names(names, limit=5):
     names = list(names)
     shown = ", ".join(names[:limit])
     if len(names) > limit:
-        shown += ", ... (all %d listed in the log)" % len(names)
+        shown += ", ... (all %s listed in the log)" % format_count(len(names))
     return shown
 
 
@@ -2031,7 +2065,7 @@ def validate_args(args):
         return "--delete only acts during verification; add --verify or --verify-only"
     if args.rate <= 0 and args.jobs > 6:
         LOG.warning("warning: -j%d with --rate 0: nothing bounds the request rate. A warm "
-                    "re-sync at -j9 lost 36 of the first 1000 genomes to 503s.", args.jobs)
+                    "re-sync at -j9 lost 36 of the first 1,000 genomes to 503s.", args.jobs)
     if args.jobs > 9:
         LOG.warning("warning: -j%d: cold downloads at -j10 throttled even before rate "
                     "limiting existed; above 9 buys nothing measured.", args.jobs)
@@ -2187,12 +2221,14 @@ class NCBIGenomeSync(object):
         Returns 1 if any removal failed, else 0; the caller checks STOP itself."""
         to_remove, to_add, present = plan_mirror(self.args.root, genomes, self.args.silent,
                                                  self.args.nfs_jobs)
-        LOG.info("Mirror: %d genome dir(s) to remove, %d to add, %d present (checked for "
-                 "updates by the sync)", len(to_remove), to_add, present)
+        LOG.info("Mirror: %s genome dir(s) to remove, %s to add, %s present (checked for "
+                 "updates by the sync)", format_count(len(to_remove)),
+                 format_count(to_add), format_count(present))
         removed, failed = prune_mirror(self.args.root, to_remove, self.out.rm,
                                        self.args.silent, self.args.nfs_jobs)
-        LOG.info("Removed %d genome dir(s) not in the selection (listed in %s)%s", removed,
-                 self.out.rm, (", %d could not be removed" % failed) if failed else "")
+        LOG.info("Removed %s genome dir(s) not in the selection (listed in %s)%s",
+                 format_count(removed), self.out.rm,
+                 (", %s could not be removed" % format_count(failed)) if failed else "")
         return 1 if failed else 0
 
     def _dry_run(self, genomes):
@@ -2200,17 +2236,19 @@ class NCBIGenomeSync(object):
         to_remove, to_add, present = plan_mirror(self.args.root, genomes, self.args.silent,
                                                  self.args.nfs_jobs)
         if self.args.retry is not None:
-            LOG.info("DRY RUN (--retry): %d genome(s) to add, %d present and checked for "
-                     "updates. A retry removes nothing.", to_add, present)
+            LOG.info("DRY RUN (--retry): %s genome(s) to add, %s present and checked for "
+                     "updates. A retry removes nothing.",
+                     format_count(to_add), format_count(present))
             return 0
         with open(self.out.rm_dry_run, "w") as record:
             record.write("# DRY RUN: these directories would be removed; nothing was deleted\n")
             record.write(RM_HEADER)
             for rel in to_remove:
                 record.write("%s\t%s\n" % (accession_of(os.path.basename(rel)), rel))
-        LOG.info("DRY RUN: %d genome dir(s) would be removed (listed in %s), %d added, %d present "
-                 "and checked for updates. Nothing was downloaded, removed or verified.",
-                 len(to_remove), self.out.rm_dry_run, to_add, present)
+        LOG.info("DRY RUN: %s genome dir(s) would be removed (listed in %s), %s added, %s "
+                 "present and checked for updates. Nothing was downloaded, removed or verified.",
+                 format_count(len(to_remove)), self.out.rm_dry_run,
+                 format_count(to_add), format_count(present))
         return 0
 
     def _sync(self, genomes):
@@ -2221,7 +2259,9 @@ class NCBIGenomeSync(object):
         """
         base, fail_path = self.out.base, self.out.fail
         rc = 0
-        status = f"Syncing {base}: {len(genomes)} genomes with {self.args.jobs}{'' if not self.args.full else ' (full re-hash)'} jobs in parallel"
+        status = (f"Syncing {base}: {format_count(len(genomes))} genomes with "
+                  f"{self.args.jobs}{'' if not self.args.full else ' (full re-hash)'} "
+                  f"jobs in parallel")
         LOG.info(status)
         prog = Progress("Downloading", len(genomes), self.args.silent)
         BREAKER.notify = prog.write
@@ -2282,25 +2322,28 @@ class NCBIGenomeSync(object):
         n_fail = count_rows(fail_path)
         if STOP.is_set():
             remaining = len(genomes) - prog.done
-            msg = ("STOPPED (%s): %d/%d genomes done, %d in-flight recorded in %s, %d not "
+            msg = ("STOPPED (%s): %s/%s genomes done, %s in-flight recorded in %s, %s not "
                    "attempted. Re-run the SAME summary -- completed genomes are skipped "
                    "without a request (--max-age)."
-                   % (STOP.reason, prog.done - prog.failed, len(genomes), prog.failed,
-                      fail_path, remaining))
+                   % (STOP.reason, format_count(prog.done - prog.failed),
+                      format_count(len(genomes)), format_count(prog.failed),
+                      fail_path, format_count(remaining)))
             LOG.warning(msg)
             rc = 128 + STOP.signum if STOP.signum else 74
         elif BREAKER.tripped_out:
             remaining = len(genomes) - prog.done
-            msg = ("STOPPED: NCBI is refusing requests from this host and %d consecutive "
-                   "pauses did not clear it. %d/%d genomes done, %d in-flight recorded in %s, "
-                   "%d not attempted. Rest this host for hours, then re-run the SAME summary -- "
+            msg = ("STOPPED: NCBI is refusing requests from this host and %s consecutive "
+                   "pauses did not clear it. %s/%s genomes done, %s in-flight recorded in %s, "
+                   "%s not attempted. Rest this host for hours, then re-run the SAME summary -- "
                    "completed genomes are skipped without a request (--max-age)."
-                   % (BREAKER.consecutive, prog.done - prog.failed, len(genomes), prog.failed,
-                      fail_path, remaining))
+                   % (format_count(BREAKER.consecutive), format_count(prog.done - prog.failed),
+                      format_count(len(genomes)), format_count(prog.failed),
+                      fail_path, format_count(remaining)))
             LOG.error(msg)
             rc = 75                              # EX_TEMPFAIL: try again later
-        LOG.info("Sync complete: %d genomes, %d unchanged (%d fresh, no request), %d failed, "
-                 "elapsed=%s", len(genomes), prog.skipped, prog.fresh, n_fail,
+        LOG.info("Sync complete: %s genomes, %s unchanged (%s fresh, no request), %s failed, "
+                 "elapsed=%s", format_count(len(genomes)), format_count(prog.skipped),
+                 format_count(prog.fresh), format_count(n_fail),
                  format_duration(time.time() - prog.started))
         if n_fail:
             LOG.info("failures listed in %s", fail_path)
@@ -2326,12 +2369,13 @@ class NCBIGenomeSync(object):
         if self.args.delete:
             removed, failed = prune_mirror(self.args.root, extras, self.out.rm,
                                            self.args.silent, self.args.nfs_jobs)
-            LOG.error("%d genome dir(s) not in the selection (listed in %s): %d removed%s",
-                      len(extras), self.out.extra, removed,
-                      (", %d could not be removed" % failed) if failed else "")
+            LOG.error("%s genome dir(s) not in the selection (listed in %s): %s removed%s",
+                      format_count(len(extras)), self.out.extra, format_count(removed),
+                      (", %s could not be removed" % format_count(failed)) if failed else "")
         else:
-            LOG.error("%d genome dir(s) not in the selection -> %s. Re-run with --delete to "
-                      "remove them, or run the selection sync.", len(extras), self.out.extra)
+            LOG.error("%s genome dir(s) not in the selection -> %s. Re-run with --delete to "
+                      "remove them, or run the selection sync.",
+                      format_count(len(extras)), self.out.extra)
         return len(extras)
 
     def _verify(self, genomes):
@@ -2346,8 +2390,8 @@ class NCBIGenomeSync(object):
         """
         base, bad_path = self.out.base, self.out.bad
         vjobs = self.args.verify_jobs
-        LOG.info("Verifying %s: %d genomes, -j%d%s", base, len(genomes), vjobs,
-                 " (delete on fail)" if self.args.delete else "")
+        LOG.info("Verifying %s: %s genomes, -j%d%s", base, format_count(len(genomes)),
+                 vjobs, " (delete on fail)" if self.args.delete else "")
         prog = Progress("verify " + base, len(genomes), self.args.silent)
         bad_lock = threading.Lock()
         with open(bad_path, "w") as bad_log:
@@ -2378,8 +2422,9 @@ class NCBIGenomeSync(object):
                 prog.finish()
 
         n_bad = count_rows(bad_path)
-        LOG.info("Verify complete: %d genomes, %d failed, elapsed=%s",
-                 len(genomes), n_bad, format_duration(time.time() - prog.started))
+        LOG.info("Verify complete: %s genomes, %s failed, elapsed=%s",
+                 format_count(len(genomes)), format_count(n_bad),
+                 format_duration(time.time() - prog.started))
 
         # the selection says what the mirror holds, so verifying against it means checking
         # for what it does NOT list as well; not begun after a stop, which wants a re-run
@@ -2388,19 +2433,21 @@ class NCBIGenomeSync(object):
             n_extra = self._verify_nothing_else(genomes)
 
         if STOP.is_set():
-            msg = ("STOPPED (%s): verified %d/%d; %s lists failures among those. Re-run "
-                   "--verify-only on the SAME table." % (STOP.reason, prog.done, len(genomes),
-                                                          bad_path))
+            msg = ("STOPPED (%s): verified %s/%s; %s lists failures among those. Re-run "
+                   "--verify-only on the SAME table."
+                   % (STOP.reason, format_count(prog.done), format_count(len(genomes)),
+                      bad_path))
             LOG.warning(msg)
             return 128 + STOP.signum if STOP.signum else 74
         if n_bad:
-            LOG.error("Failed verification: %d / %d  ->  %s", n_bad, len(genomes), bad_path)
+            LOG.error("Failed verification: %s / %s  ->  %s",
+                      format_count(n_bad), format_count(len(genomes)), bad_path)
             if self.args.delete:
                 LOG.info("bad directories deleted; re-run sync on %s", bad_path)
         if n_bad or n_extra:
             return 1
 
-        LOG.info("All %d genomes verified clean%s.", len(genomes),
+        LOG.info("All %s genomes verified clean%s.", format_count(len(genomes)),
                  "" if self.args.retry is not None else ", and the mirror holds nothing else")
         return 0
 
@@ -2424,17 +2471,19 @@ class NCBIGenomeSync(object):
                       self.args.summary, self.args.root)
             return 2
         if not genomes:
-            LOG.error("error: no genomes with a usable ftp_path in %s (%d rows, all na)",
-                      self.args.summary, len(skipped))
+            LOG.error("error: no genomes with a usable ftp_path in %s (%s rows, all na)",
+                      self.args.summary, format_count(len(skipped)))
             return 2
 
         quiet_console_detail()
         LOG.info(shlex.join(sys.argv))
         stale = [g for g in genomes if g.version_status and g.version_status != "latest"]
-        LOG.info("%s=%s genomes=%d no_ftp_path=%d not_latest=%d root=%s jobs=%d "
+        LOG.info("%s=%s genomes=%s no_ftp_path=%s not_latest=%s root=%s jobs=%d "
                  "rate=%.1f max_age=%gd verify_jobs=%d nfs_jobs=%d%s%s%s%s",
-                 "retry" if retrying else "selection", self.args.summary, len(genomes), len(skipped),
-                 len(stale), self.args.root, self.args.jobs, self.args.rate, self.args.max_age,
+                 "retry" if retrying else "selection", self.args.summary,
+                 format_count(len(genomes)), format_count(len(skipped)),
+                 format_count(len(stale)), self.args.root, self.args.jobs, self.args.rate,
+                 self.args.max_age,
                  self.args.verify_jobs, self.args.nfs_jobs,
                  " full" if self.args.full else "", " verify" if self.args.verify else "",
                  " verify_only" if self.args.verify_only else "", " dry_run" if self.args.dry_run else "")
@@ -2442,24 +2491,25 @@ class NCBIGenomeSync(object):
                  os.uname()[1])
         if skipped:
             report_rows(
-                "%d row(s) in %s have no ftp_path and will not be synced"
-                % (len(skipped), self.args.summary),
+                "%s row(s) in %s have no ftp_path and will not be synced"
+                % (format_count(len(skipped)), self.args.summary),
                 ["no ftp_path %s (%s:%d): ftp_path=%s" % (acc, self.args.summary, lineno, raw)
                  for lineno, acc, raw in skipped],
-                "warning: %d genome(s) in %s have no ftp_path (na or empty) and were "
-                "skipped: %s" % (len(skipped), self.args.summary,
+                "warning: %s genome(s) in %s have no ftp_path (na or empty) and were "
+                "skipped: %s" % (format_count(len(skipped)), self.args.summary,
                                  first_names(acc for _, acc, _ in skipped)))
         if stale:
             # Policy: a replaced or suppressed genome is synced anyway. NCBI still serves the
             # directory, and pinned version lists (GTDB releases) want exactly that version.
             # The status lands in assembly_status.txt as before; this just makes it visible.
             report_rows(
-                "%d genome(s) in %s are not the latest version; synced anyway"
-                % (len(stale), self.args.summary),
+                "%s genome(s) in %s are not the latest version; synced anyway"
+                % (format_count(len(stale)), self.args.summary),
                 ["not latest %s version_status=%s" % (g.accession, g.version_status)
                  for g in stale],
-                "note: %d genome(s) in %s are replaced/suppressed; synced anyway with the "
-                "status recorded in assembly_status.txt (see log)" % (len(stale), self.args.summary))
+                "note: %s genome(s) in %s are replaced/suppressed; synced anyway with the "
+                "status recorded in assembly_status.txt (see log)"
+                % (format_count(len(stale)), self.args.summary))
 
         if self.args.dry_run:
             rtn_code = self._dry_run(genomes)
@@ -2507,12 +2557,17 @@ class NCBIGenomeSync(object):
         """The two closing lines every run ends with, whatever it did: the HTTP account and the
         runtime with the exit code."""
         throttle = sum(STATS["retry_status"].get(c, 0) for c in (429, 503))
-        detail = ", ".join("%d x%d" % (k, v) for k, v in sorted(STATS["retry_status"].items()))
-        http_summary = ("HTTP: %d requests (%d probe 404s), %.1f MB, %d connection drops, "
-                        "%d throttled%s, %d breaker trips, %.0f s paused"
-                        % (STATS["requests"], STATS["probe_404"], STATS["bytes"] / 1e6,
-                           STATS["conn_drops"], throttle, (" (%s)" % detail) if detail else "",
-                           STATS["breaker_trips"], STATS["paused_s"]))
+        # the status code is an identifier and keeps its digits; the count beside it
+        # is a count
+        detail = ", ".join("%d x%s" % (code, format_count(n))
+                           for code, n in sorted(STATS["retry_status"].items()))
+        http_summary = ("HTTP: %s requests (%s probe 404s), %s MB, %s connection drops, "
+                        "%s throttled%s, %s breaker trips, %s s paused"
+                        % (format_count(STATS["requests"]), format_count(STATS["probe_404"]),
+                           format_amount(STATS["bytes"] / 1e6), format_count(STATS["conn_drops"]),
+                           format_count(throttle), (" (%s)" % detail) if detail else "",
+                           format_count(STATS["breaker_trips"]),
+                           format_amount(STATS["paused_s"], 0)))
         runtime = "Total runtime: %s" % format_duration(time.time() - self.started)
         LOG.info(http_summary)
         LOG.info("%s (exit %d)", runtime, rtn_code)

@@ -1075,3 +1075,86 @@ class NfsJobsIsHonoured(TempDirCase):
             self.path("r.rm"), silent=True, workers=1)
         self.assertEqual((removed, failed), (2, 0))
         self.assertFalse(os.path.exists(self.path("all/GCA")))
+
+
+# --------------------------------------------------------------- thousands separators
+
+import re
+
+
+class CountFormatting(unittest.TestCase):
+    """A release is millions of genomes; a bare 1913482 in a log line cannot be
+    read at a glance, and two of them cannot be compared."""
+
+    def test_a_count_separates_thousands(self):
+        self.assertEqual(N.format_count(1234), "1,234")
+        self.assertEqual(N.format_count(1913482), "1,913,482")
+        self.assertEqual(N.format_count(0), "0")
+        self.assertEqual(N.format_count(999), "999")
+
+    def test_an_amount_separates_thousands_and_keeps_its_decimals(self):
+        self.assertEqual(N.format_amount(1234.56), "1,234.6")
+        self.assertEqual(N.format_amount(1234.56, 2), "1,234.56")
+        self.assertEqual(N.format_amount(1234.56, 0), "1,235")
+
+    def test_the_names_reported_carry_the_count_separated(self):
+        self.assertIn("(all 1,234 listed in the log)", N.first_names(["x"] * 1234))
+
+
+class ProgressSnapshotFormatting(unittest.TestCase):
+    """The progress line carries most of the numbers a long run shows."""
+
+    def snapshot(self, **counters):
+        prog = N.Progress("Downloading", 5678901, silent=True)
+        for name, value in counters.items():
+            setattr(prog, name, value)
+
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Capture()
+        logger = logging.getLogger("timestamp")
+        logger.addHandler(handler)
+        try:
+            prog.snapshot()
+        finally:
+            logger.removeHandler(handler)
+
+        self.assertEqual(len(records), 1)
+        return records[0]
+
+    def test_the_counts_of_a_progress_line_are_separated(self):
+        message = self.snapshot(done=1234567, skipped=234567, fresh=123456, failed=1234)
+        self.assertIn("1,234,567/5,678,901", message)
+        self.assertIn("unchanged=234,567", message)
+        self.assertIn("fresh=123,456", message)
+        self.assertIn("failed=1,234", message)
+
+    def test_the_http_counters_of_a_progress_line_are_separated(self):
+        with N._stats_lock:
+            before = dict(N.STATS)
+            N.STATS.update(requests=2345678, conn_drops=1234, probe_404=4321,
+                           breaker_trips=1111, paused_s=98765.0, bytes=9876543210)
+        try:
+            message = self.snapshot(done=1234567)
+        finally:
+            with N._stats_lock:
+                N.STATS.update(before)
+
+        self.assertIn("requests=2,345,678", message)
+        self.assertIn("drops=1,234", message)
+        self.assertIn("probe404=4,321", message)
+        self.assertIn("trips=1,111", message)
+        self.assertIn("paused=98,765s", message)
+        self.assertIn("MB=9,876.5", message)
+
+    def test_no_count_is_written_as_a_bare_run_of_digits(self):
+        # percentages and the fixed fields of a duration are the exceptions, and
+        # neither reaches four digits
+        message = self.snapshot(done=1234567, skipped=234567, fresh=123456, failed=1234)
+        for word in message.split():
+            for number in re.findall(r"(?<![\d,.])\d+", word):
+                self.assertLess(len(number), 4, message)
