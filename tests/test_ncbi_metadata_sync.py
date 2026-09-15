@@ -7,7 +7,7 @@ Run with the interpreter that has tqdm:
 
 The downloads are served by a local HTTP server on the loopback interface, so what
 is exercised is the real urllib path: a real socket, a real Content-Length, real
-blocks. What must not break silently is the naming of the four assembly summary
+blocks. What must not break silently is the naming of the assembly summary
 files, which NCBI publishes under one name and select_genomes reads the database
 from, and the refusal to accept a taxonomy dump whose MD5 does not match.
 """
@@ -132,24 +132,27 @@ class HttpCase(unittest.TestCase):
 # ------------------------------------------------------------------- download naming
 
 class AssemblySummaryNamingTests(unittest.TestCase):
-    """NCBI publishes all four of these under one name; GTDB cannot."""
+    """NCBI publishes all six of these under one name; GTDB cannot."""
 
     def setUp(self):
         self.downloads = T.assembly_summary_downloads()
 
-    def test_all_four_databases_and_domains_are_downloaded(self):
-        self.assertEqual(len(self.downloads), 4)
+    def test_every_database_and_domain_is_downloaded(self):
+        self.assertEqual(len(self.downloads),
+                         len(T.NCBI_DATABASES) * len(T.NCBI_SUMMARY_DOMAINS))
 
     def test_every_file_is_saved_under_a_distinct_name(self):
         # NCBI calls each of them assembly_summary.txt, so saving them into one
         # directory under their own names would leave a single file
         names = [name for *_, name in self.downloads]
-        self.assertEqual(len(set(names)), 4)
+        self.assertEqual(len(set(names)), len(names))
         self.assertEqual(sorted(names),
                          ['assembly_summary_archaea_genbank.txt.gz',
                           'assembly_summary_archaea_refseq.txt.gz',
                           'assembly_summary_bacteria_genbank.txt.gz',
-                          'assembly_summary_bacteria_refseq.txt.gz'])
+                          'assembly_summary_bacteria_refseq.txt.gz',
+                          'assembly_summary_fungi_genbank.txt.gz',
+                          'assembly_summary_fungi_refseq.txt.gz'])
 
     def test_each_name_carries_the_suffix_select_genomes_reads(self):
         # select_genomes decides a file's database from this suffix, so the two
@@ -164,9 +167,12 @@ class AssemblySummaryNamingTests(unittest.TestCase):
             self.assertEqual(name,
                              'assembly_summary_{}_{}.txt.gz'.format(domain, database))
 
-    def test_fungi_are_not_downloaded(self):
-        # fungal genomes are a separate procedure
-        self.assertFalse([n for *_, n in self.downloads if 'fungi' in n])
+    def test_the_fungal_summary_of_each_database_is_downloaded(self):
+        # fungal genomes are a separate procedure, but the summary it works from
+        # has to be the one NCBI was serving when the release was built
+        self.assertEqual(sorted(n for *_, n in self.downloads if 'fungi' in n),
+                         ['assembly_summary_fungi_genbank.txt.gz',
+                          'assembly_summary_fungi_refseq.txt.gz'])
 
 
 # ------------------------------------------------------------------------- downloading
@@ -267,10 +273,15 @@ TAXDUMP_MD5 = hashlib.md5(TAXDUMP).hexdigest()
 # organism_name by column name and walks the lineage of each assembly
 # One genome per file. They must differ: the taxonomy parser refuses an accession
 # it has already seen, so four copies of one row would abort the run.
+# The fungal taxids are absent from the taxdump above on purpose: nothing gives
+# the fungal summaries to the taxonomy parser, so a lineage for them would only
+# hide the day something does.
 GENOMES = {('refseq', 'archaea'): ('GCF_000000001.1', '2242', 'Halobacterium salinarum'),
            ('refseq', 'bacteria'): ('GCF_000000002.1', '562', 'Escherichia coli'),
+           ('refseq', 'fungi'): ('GCF_000000005.1', '5476', 'Candida albicans'),
            ('genbank', 'archaea'): ('GCA_000000003.1', '2242', 'Halobacterium salinarum'),
-           ('genbank', 'bacteria'): ('GCA_000000004.1', '562', 'Escherichia coli')}
+           ('genbank', 'bacteria'): ('GCA_000000004.1', '562', 'Escherichia coli'),
+           ('genbank', 'fungi'): ('GCA_000000006.1', '5476', 'Candida albicans')}
 
 
 def summary_file(database, domain):
@@ -294,7 +305,7 @@ class MetadataSyncTests(HttpCase):
              '{}  taxdump.tar.gz\n'.format(TAXDUMP_MD5).encode()},
         **{'/genomes/{}/{}/assembly_summary.txt'.format(database, domain):
            summary_file(database, domain)
-           for database in T.NCBI_DATABASES for domain in T.NCBI_DOMAINS})
+           for database in T.NCBI_DATABASES for domain in T.NCBI_SUMMARY_DOMAINS})
 
     def setUp(self):
         super().setUp()
@@ -326,7 +337,9 @@ class MetadataSyncTests(HttpCase):
             ['assembly_summary_archaea_genbank.txt.gz',
              'assembly_summary_archaea_refseq.txt.gz',
              'assembly_summary_bacteria_genbank.txt.gz',
-             'assembly_summary_bacteria_refseq.txt.gz'])
+             'assembly_summary_bacteria_refseq.txt.gz',
+             'assembly_summary_fungi_genbank.txt.gz',
+             'assembly_summary_fungi_refseq.txt.gz'])
 
     def test_the_root_holds_only_the_summaries_the_log_and_the_taxonomy(self):
         written = self.run_sync()
@@ -373,6 +386,7 @@ class MetadataSyncTests(HttpCase):
         with open(taxonomy) as handle:
             lineages = dict(line.rstrip('\n').split('\t', 1) for line in handle)
 
+        # the fungal assemblies are downloaded but never handed to the parser
         self.assertEqual(sorted(lineages), ['GCA_000000003.1', 'GCA_000000004.1',
                                             'GCF_000000001.1', 'GCF_000000002.1'])
         self.assertIn('Escherichia coli', lineages['GCF_000000002.1'])
@@ -423,5 +437,8 @@ class MetadataSyncTests(HttpCase):
         summaries = [self.path(n) for n in os.listdir(self.dir)
                      if n.startswith('assembly_summary_')]
         refseq, genbank = F.SelectedGenomesManager(self.dir).group_by_database(summaries)
-        self.assertEqual(len(refseq), 2)
-        self.assertEqual(len(genbank), 2)
+        # the fungal summaries carry the same database suffix, so they sort by
+        # it like any other; which of these files a release is selected from is
+        # the operator's choice of arguments, not this naming
+        self.assertEqual(len(refseq), len(T.NCBI_SUMMARY_DOMAINS))
+        self.assertEqual(len(genbank), len(T.NCBI_SUMMARY_DOMAINS))

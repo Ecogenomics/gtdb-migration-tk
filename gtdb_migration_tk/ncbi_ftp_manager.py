@@ -736,14 +736,19 @@ class MetadataSyncManager:
         <output_dir>/taxonomy/taxdump_<date>/
         <output_dir>/taxonomy/standardised_taxonomy/ncbi_r<release>_*.tsv
 
-    Three things differ from doing it by hand. NCBI names all four assembly
-    summary files assembly_summary.txt, so the database and domain are put back
-    into the name as they are saved, and they are gzipped on the way in rather
-    than kept as the 1.8 GB of text NCBI serves. The taxonomy dump is checked
-    against the MD5 NCBI publishes beside it, since a truncated taxdump is not
-    obviously broken until a release has been built on it, and the archive is
-    then discarded: it has been verified and unpacked, and nothing reads it
-    again. Fungal genomes are a separate procedure and are not downloaded here.
+    Three things differ from doing it by hand. NCBI names every assembly summary
+    file assembly_summary.txt, so the database and domain are put back into the
+    name as they are saved, and they are gzipped on the way in rather than kept
+    as the 1.8 GB of text NCBI serves. The taxonomy dump is checked against the
+    MD5 NCBI publishes beside it, since a truncated taxdump is not obviously
+    broken until a release has been built on it, and the archive is then
+    discarded: it has been verified and unpacked, and nothing reads it again.
+
+    The fungal assembly summaries are downloaded alongside the prokaryotic ones,
+    so that a release holds the table NCBI was serving when it was built. Fungal
+    genomes are otherwise a separate procedure: they are not given to
+    select_genomes, and the 7 rank taxonomy below is built from archaea and
+    bacteria only.
 
     Nothing here decides anything: unlike the other managers in this module it
     only fetches, and hands what it fetched to the NCBI taxonomy parser.
@@ -884,7 +889,9 @@ class MetadataSyncManager:
         """Download the assembly summary file of each database and domain.
 
         These land in the root of the output directory, which is where
-        select_genomes and the taxonomy step below both expect to find them.
+        select_genomes and the taxonomy step below both expect to find them. The
+        fungal summaries land there too, and are simply not among the keys
+        either of those steps asks for.
 
         @return: dict of (database, domain) to the file downloaded.
         """
@@ -904,16 +911,19 @@ class MetadataSyncManager:
         """Produce the 7 rank NCBI taxonomy of the genomes NCBI holds.
 
         This is the NCBI taxonomy parser, run over the files just downloaded
-        rather than over files named by hand. The output prefix is a path, so the
-        files land in taxonomy/standardised_taxonomy/ without the working
-        directory being changed.
+        rather than over files named by hand. The parser takes the four
+        prokaryotic summaries by name, so the fungal ones alongside them are
+        left out of the taxonomy rather than filtered out of it. The output
+        prefix is a path, so the files land in taxonomy/standardised_taxonomy/
+        without the working directory being changed.
 
         Parameters
         ----------
         taxdump_dir : str
             Directory holding the extracted nodes.dmp and names.dmp.
         summaries : dict
-            (database, domain) to assembly summary file.
+            (database, domain) to assembly summary file; the four prokaryotic
+            entries are used.
         release_number : int
             GTDB release number, which names the output files.
 

@@ -156,7 +156,7 @@ Run `gtdb_migration_tk <command> -h` for the arguments of any command.
 
 | Command | Description |
 | --- | --- |
-| `ncbi_metadata_sync` | Download the NCBI taxonomy and assembly summary files a release is built from, and generate the 7 rank NCBI taxonomy |
+| `ncbi_metadata_sync` | Download the NCBI taxonomy and the RefSeq and GenBank assembly summary files (archaea, bacteria and fungi) a release is built from, and generate the 7 rank NCBI taxonomy |
 | `ncbi_genome_sync` | Sync NCBI data to a local directory |
 | `select_genomes` | Select the NCBI genomes which will comprise the new GTDB release |
 | `update_genomes` | Update RefSeq and GenBank genomes from the NCBI FTP mirror, carrying derived data across where the genomic FASTA is unchanged |
