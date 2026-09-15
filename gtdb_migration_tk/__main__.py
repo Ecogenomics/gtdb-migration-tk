@@ -348,7 +348,7 @@ def __marker_db(group, required):
 
 
 def __metadata_file(group, required):
-    group.add_argument('-m', '--metadata', help='Metadata file generated from "gdb metadata export".',
+    group.add_argument('-m', '--metadata', help='Metadata file generated from "gtdb metadata export".',
                        required=required)
 
 def __report_dir(group, required):

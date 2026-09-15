@@ -83,10 +83,21 @@ GENOMIC_FASTA_EXT = '_genomic.fna.gz'
 NCBI_FTP = 'https://ftp.ncbi.nlm.nih.gov'
 TAXDUMP_URL = NCBI_FTP + '/pub/taxonomy/taxdump.tar.gz'
 
-# The two NCBI databases and the two domains GTDB takes from them. Fungal
-# genomes are downloaded by a separate procedure and are not included here.
+# The two NCBI databases, and the two domains the 7 rank NCBI taxonomy is built
+# from.
 NCBI_DATABASES = ('refseq', 'genbank')
 NCBI_DOMAINS = ('archaea', 'bacteria')
+
+# NCBI serves the fungal assembly summary from the same place, one directory
+# along (genomes/<database>/fungi). Fungal genomes are selected and assessed by
+# a separate procedure and take no part in the prokaryotic taxonomy, but that
+# procedure needs the release's copy of the summary, so it is downloaded here
+# rather than fetched by hand months later, when NCBI is serving a different
+# table.
+NCBI_FUNGAL_DOMAINS = ('fungi',)
+
+# Every summary downloaded: the domains above, plus fungi.
+NCBI_SUMMARY_DOMAINS = NCBI_DOMAINS + NCBI_FUNGAL_DOMAINS
 
 # Read a request in 1 MiB blocks: the assembly summary of GenBank bacteria alone
 # is well over a gigabyte, so nothing may be held in memory whole.
@@ -101,16 +112,16 @@ def assembly_summary_downloads() -> List[Tuple[str, str, str, str]]:
     """The assembly summary files to download, and the names to save them under.
 
     NCBI calls every one of these files assembly_summary.txt, distinguishing them
-    only by the directory they sit in, so downloading the four into one directory
+    only by the directory they sit in, so downloading them into one directory
     means putting the database and domain back into the name. The names built
     here are the ones GTDB has always used, and are the names select_genomes
     reads a file's database from, so the two must agree.
 
     The database and domain are returned alongside, as the taxonomy step wants
-    these four files individually rather than as a list. The names end in .gz
-    because the files are compressed as they are downloaded; every reader of an
-    assembly summary goes through ncbi_utils.open_summary(), which takes either
-    form.
+    the four prokaryotic files individually rather than as a list, and takes no
+    fungal file at all. The names end in .gz because the files are compressed as
+    they are downloaded; every reader of an assembly summary goes through
+    ncbi_utils.open_summary(), which takes either form.
 
     @return: list of (database, domain, url, file name), RefSeq before GenBank.
     """
@@ -119,7 +130,7 @@ def assembly_summary_downloads() -> List[Tuple[str, str, str, str]]:
              '{}/genomes/{}/{}/assembly_summary.txt'.format(NCBI_FTP, database, domain),
              'assembly_summary_{}_{}.txt.gz'.format(domain, database))
             for database in NCBI_DATABASES
-            for domain in NCBI_DOMAINS]
+            for domain in NCBI_SUMMARY_DOMAINS]
 
 
 def file_checksum(file_path: str, checksum) -> str:

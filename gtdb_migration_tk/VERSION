@@ -1,3 +1,5 @@
+0.1.3
+- ncbi_metadata_sync also downloads the fungal assembly summary of each database (assembly_summary_fungi_refseq.txt.gz, assembly_summary_fungi_genbank.txt.gz), so a release holds the fungal tables NCBI was serving when it was built. They are downloaded only: the 7 rank NCBI taxonomy is still built from the archaeal and bacterial summaries alone, and select_genomes is given whichever files it is pointed at
 0.1.2
 - lpsn pull_html writes the pages it passes over because their name duplicates a validly published one (LPSN lists such names quoted, with a -1 URL suffix) to <rank>_skipped.lst as name, URL, duplicate_name, and only when there is at least one; a skipped file left by an earlier run is removed otherwise. These were previously mixed into <rank>_failed.lst, which now holds download failures alone
 0.1.1

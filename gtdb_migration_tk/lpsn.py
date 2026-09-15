@@ -902,24 +902,22 @@ class LPSN(object):
         Parse the html file of each genus.
         Store the type, the name, the reference, the strains for each species.
         """
+
         make_sure_path_exists(os.path.join(self.outdir, 'all_ranks'))
 
         self.logger.info('Parsing all pages.')
         headers_order = ['Rank']
         all_rank = []
-        # for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species', 'subspecies']:
-        # #for rk in ['species']:
-        #     self.logger.info(f'Parsing {rk}.')
-        #     headers_order, all_rank = self.parse_rank_html(rk, input_dir, headers_order, all_rank)
-        #
-        # output_all_ranks = open(os.path.join(self.outdir, 'all_ranks', 'full_parsing_raw.tsv'), 'w')
-        # output_all_ranks.write('\t'.join(headers_order) + '\n')
-        # for item in all_rank:
-        #     output_all_ranks.write(
-        #         '\t'.join([item.get(potential_header, 'n/a') for potential_header in headers_order]) + '\n')
+        for rk in ['phylum', 'class', 'order', 'family', 'genus', 'species', 'subspecies']:
+            self.logger.info(f'Parsing {rk}.')
+            headers_order, all_rank = self.parse_rank_html(rk, input_dir, headers_order, all_rank)
 
-        #output_all_ranks.close()
-        #parsed_file = self.parse_all_ranks_tsv(output_all_ranks.name)
+        output_all_rank_file = os.path.join(self.outdir, 'all_ranks', 'full_parsing_raw.tsv')
+        with open(output_all_rank_file, 'w') as f:
+            f.write('\t'.join(headers_order) + '\n')
+            for item in all_rank:
+                f.write('\t'.join([item.get(potential_header, 'n/a') for potential_header in headers_order]) + '\n')
+
         parsed_file = self.parse_all_ranks_tsv(os.path.join(self.outdir, 'all_ranks', 'full_parsing_raw.tsv'))
 
         self.summarise_parsing(parsed_file.name, gss_file)
