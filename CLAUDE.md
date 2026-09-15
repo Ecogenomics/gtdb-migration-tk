@@ -95,9 +95,13 @@ silently mirror the wrong files or build a release from the wrong genomes. Do
 not slice these tables by index anywhere.
 
 `ncbi_utils.py` also holds what more than one NCBI command knows about NCBI's
-files: `REFSEQ_PREFIX`/`GENBANK_PREFIX`, `MD5_LINE_RE` (a line of
-`md5checksums.txt`) and `has_ftp_path()` (an assembly NCBI lists but does not
-serve). It is a leaf: it imports nothing from the package, and
+files: the database table (`REFSEQ`, `GENBANK`, `NCBI_DATABASES` and the
+prefixes derived from them), `NCBI_HOST`/`NCBI_URL`, the naming of a saved
+summary file (`assembly_summary_filename()`/`assembly_summary_database()`), the
+columns every GTDB genome table opens with (`GENOME_COLUMNS`, `table_header()`),
+`NCBI_NA`, `has_ftp_path()`, the manifest (`MD5_MANIFEST`, `GENOMIC_FASTA_EXT`,
+`read_md5_manifest()`) and the block files are read and hashed in (`CHUNK`,
+`file_md5()`). It is a leaf: it imports nothing from the package, and
 `ncbi_genome_sync.py` imports from it and from nothing else in the package. The
 command modules do not import one another; anything two of them need goes here.
 

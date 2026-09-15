@@ -28,7 +28,6 @@ import os
 import sys
 import gzip
 import datetime
-import hashlib
 import logging
 import tarfile
 import urllib.request
@@ -37,7 +36,8 @@ from typing import Dict, List, Tuple
 from tqdm import tqdm
 
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
-from gtdb_migration_tk.ncbi_utils import NCBI_DATABASES, NCBI_URL, assembly_summary_filename
+from gtdb_migration_tk.ncbi_utils import (CHUNK, NCBI_DATABASES, NCBI_URL,
+                                          assembly_summary_filename, file_md5)
 
 
 # Subdirectories of the root NCBI directory of a release. Everything derived from
@@ -84,10 +84,6 @@ GROUP_KEEP_SUBRANKS = {GROUP_PROK: False,
 GROUP_FILE_TAG = {GROUP_PROK: 'prok',
                   GROUP_FUNGI: 'fungi'}
 
-# Read a request in 1 MiB blocks: the assembly summary of GenBank bacteria alone
-# is well over a gigabyte, so nothing may be held in memory whole.
-DOWNLOAD_BLOCK = 1024 * 1024
-
 # A download that stalls outright must fail rather than hold the release up
 # overnight; NCBI answers in well under this even when busy.
 DOWNLOAD_TIMEOUT = 300
@@ -121,29 +117,6 @@ def assembly_summary_downloads(group: str) -> List[Tuple[str, str, str, str]]:
              assembly_summary_filename(domain, database))
             for database in NCBI_DATABASES
             for domain in NCBI_GROUP_DOMAINS[group]]
-
-
-def file_checksum(file_path: str, checksum) -> str:
-    """Feed a file to a hash object a block at a time.
-
-    Parameters
-    ----------
-    file_path : str
-        File to checksum.
-    checksum : hashlib hash
-        Hash object to update.
-
-    @return: hex digest of the file.
-    """
-
-    try:
-        with open(file_path, 'rb') as file_reader:
-            for block in iter(lambda: file_reader.read(DOWNLOAD_BLOCK), b''):
-                checksum.update(block)
-    except OSError as e:
-        raise OSError('cannot read {}'.format(file_path)) from e
-
-    return checksum.hexdigest()
 
 
 def download_file(url: str,
@@ -188,7 +161,7 @@ def download_file(url: str,
             with open_output(partial, 'wb') as handle, tqdm(
                     total=total or None, unit='B', unit_scale=True, unit_divisor=1024,
                     desc=os.path.basename(output_file), disable=quiet) as progress:
-                for block in iter(lambda: response.read(DOWNLOAD_BLOCK), b''):
+                for block in iter(lambda: response.read(CHUNK), b''):
                     handle.write(block)
                     written += len(block)
                     progress.update(len(block))
@@ -423,7 +396,7 @@ class NCBIMetadataSync:
             # NCBI writes "<md5>  taxdump.tar.gz"
             published = handle.read().split()[0].strip().lower()
 
-        observed = file_checksum(tarball, hashlib.md5())
+        observed = file_md5(tarball)
         if observed != published:
             self.logger.error(
                 'MD5 of {} is {}, but NCBI publishes {}; the download is corrupt.'.format(

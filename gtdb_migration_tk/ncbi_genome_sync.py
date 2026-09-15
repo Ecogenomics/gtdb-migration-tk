@@ -445,10 +445,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import (GENOME_COLUMNS, GENOMIC_FASTA_EXT, MD5_MANIFEST,
-                                          NCBI_HOST, NCBI_URL, BadInput, has_ftp_path,
-                                          read_md5_manifest, read_summary_rows,
-                                          summary_field, table_header)
+from gtdb_migration_tk.ncbi_utils import (CHUNK, GENOME_COLUMNS, GENOMIC_FASTA_EXT,
+                                          MD5_MANIFEST, NCBI_HOST, NCBI_URL, BadInput,
+                                          file_md5, has_ftp_path, read_md5_manifest,
+                                          read_summary_rows, summary_field, table_header)
 
 
 HOST = NCBI_HOST
@@ -492,10 +492,6 @@ TEMP_STALE_S = 3600.0
 # re-downloads the same bytes into the same full disk MAX_TRIES times per file and then
 # records every genome in <base>.fail; the right response is to stop the run (exit 74).
 FATAL_ERRNO = frozenset((errno.ENOSPC, errno.EDQUOT, errno.EROFS))
-
-# 64 KB - 1 MB all hash at ~575 MB/s (measured); 4 KB is 18% slower, 4 MB slightly
-# worse. 1 MB sits in the flat region and bounds memory at CHUNK x threads.
-CHUNK = 1 << 20
 
 # Only these files are mirrored; everything else NCBI publishes for a genome is
 # ignored (not downloaded, not verified, not reported missing). The names a full mirror
@@ -998,17 +994,6 @@ def url_to_path(url):
 
 # --------------------------------------------------------------------------- helpers
 
-def md5_file(path):
-    digest = hashlib.md5()
-    with open(path, "rb") as handle:
-        while True:
-            buf = handle.read(CHUNK)
-            if not buf:
-                break
-            digest.update(buf)
-    return digest.hexdigest()
-
-
 def parse_manifest(data, keep):
     """md5checksums.txt bytes -> [(md5, relative_path)] for the whitelisted files only.
 
@@ -1299,7 +1284,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
                 trusted += 1
                 continue
             try:
-                if md5_file(target) == want_md5:
+                if file_md5(target) == want_md5:
                     verified += 1
                     continue
             except OSError as exc:
@@ -1466,7 +1451,7 @@ def _verify_files(genome_dir, delete):
                 delete_genome(genome_dir)
             return False, "missing %s" % name
         try:
-            if md5_file(target) != want_md5:
+            if file_md5(target) != want_md5:
                 if delete:
                     delete_genome(genome_dir)
                 return False, "md5 mismatch %s" % name

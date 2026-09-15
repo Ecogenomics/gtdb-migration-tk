@@ -364,3 +364,27 @@ class ManifestTests(unittest.TestCase):
         from gtdb_migration_tk import ncbi_genome_sync as sync
         self.assertIn(U.MD5_MANIFEST, sync.WANTED_EXACT)
         self.assertIn(U.GENOMIC_FASTA_EXT, sync.WANTED_SUFFIXES)
+
+
+# ---------------------------------------------------------------------------- hashing
+
+class FileMd5Tests(TempDirCase):
+    """One file hash for the taxonomy dump and the mirror alike."""
+
+    def test_the_digest_is_the_md5_of_the_whole_file(self):
+        import hashlib
+        path = self.write('small.bin', 'hello ncbi')
+        self.assertEqual(U.file_md5(path), hashlib.md5(b'hello ncbi').hexdigest())
+
+    def test_a_file_longer_than_a_chunk_hashes_as_one_stream(self):
+        import hashlib
+        payload = bytes(range(256)) * (2 * U.CHUNK // 256 + 3)
+        path = os.path.join(self.dir, 'big.bin')
+        with open(path, 'wb') as handle:
+            handle.write(payload)
+        self.assertGreater(len(payload), 2 * U.CHUNK)
+        self.assertEqual(U.file_md5(path), hashlib.md5(payload).hexdigest())
+
+    def test_the_chunk_is_one_mebibyte(self):
+        # the measured flat region; the sync's memory bound is CHUNK x threads
+        self.assertEqual(U.CHUNK, 1024 * 1024)

@@ -30,10 +30,12 @@ genomes belong in a GTDB release. Both need the same thing from the file, so
 the reading lives here and the two callers differ only in what they do with a
 row.
 
-Beside the reader sit the few facts about NCBI's files that more than one
-command depends on: the accession prefixes of the two databases, the shape of
-a line of md5checksums.txt, and the test for an assembly NCBI lists but does
-not serve. They live here rather than in whichever command first needed them
+Beside the reader sit the facts about NCBI's files that more than one command
+depends on: the two databases and the names each goes by, the server they are
+fetched from, the naming of a saved summary file, the columns every GTDB genome
+table opens with, NCBI's null, the test for an assembly NCBI lists but does not
+serve, the manifest served beside each genome, and the block files are read and
+hashed in. They live here rather than in whichever command first needed them
 so that no command module imports another. ncbi_genome_sync.py imports from
 this module and from nothing else in the package, and this module imports
 nothing from the package at all; keep both true, or the sync stops being
@@ -52,6 +54,7 @@ header is required rather than assumed.
 
 import collections
 import gzip
+import hashlib
 import re
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
@@ -284,6 +287,13 @@ GENBANK_PREFIX = GENBANK.prefix
 # rather than each spelling the convention for itself.
 ASSEMBLY_SUMMARY_NAME = 'assembly_summary_{domain}_{database}.txt'
 
+# Files are read and hashed a CHUNK at a time. Measured on the sync: 64 KB to
+# 1 MB all hash at ~575 MB/s, 4 KB is 18% slower and 4 MB slightly worse, so
+# 1 MB sits in the flat region and bounds memory at CHUNK x threads. The
+# metadata download reads its gigabyte summaries by the same block, so nothing
+# is ever held in memory whole.
+CHUNK = 1 << 20
+
 # NCBI's manifest of the files it serves for a genome, one "<md5>  ./<name>"
 # line per file. The sync reads it to learn what to fetch and to verify what it
 # fetched; update_genomes reads the mirror's and the previous release's copies
@@ -430,3 +440,21 @@ def read_md5_manifest(lines: Iterable[str]) -> Iterator[Tuple[str, str]]:
         if name.startswith('./'):
             name = name[2:]
         yield match.group(1), name
+
+
+def file_md5(path: str) -> str:
+    """MD5 of a file, read a CHUNK at a time.
+
+    Parameters
+    ----------
+    path : str
+        File to hash.
+
+    @return: hex digest.
+    """
+
+    digest = hashlib.md5()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(CHUNK), b''):
+            digest.update(block)
+    return digest.hexdigest()
