@@ -334,3 +334,36 @@ class ReadingTheManifest(TempDirCase):
     def test_a_missing_manifest_is_an_error(self):
         with self.assertRaises(OSError):
             self.tools().genomic_fasta_md5(os.path.join(self.dir, 'no_such_genome'))
+
+
+# -------------------------------------------------------------------- adding a genome
+
+class AddingGenomes(TempDirCase):
+    """A genome new to NCBI is the mirror's directory, whole."""
+
+    def test_every_file_of_the_mirror_directory_is_copied(self):
+        # the mirror holds only what the sync fetched, so nothing is filtered:
+        # the sync's .last_synced stamp and a file the old ignore list named
+        # both come across, as they do for a shared genome
+        mirror = self.genome_dir('mirror', MD5_A)
+        for extra in ('.last_synced', ASSEMBLY + '_protein.faa.gz'):
+            with open(os.path.join(mirror, extra), 'w') as handle:
+                handle.write('x')
+
+        self.tools().add_genomes({ACCESSION: mirror},
+                                 os.path.join(self.dir, 'mirror'),
+                                 os.path.join(self.dir, 'release'))
+
+        target = os.path.join(self.dir, 'release', ASSEMBLY)
+        self.assertEqual(sorted(os.listdir(target)), sorted(os.listdir(mirror)))
+        self.assertEqual(self.report.getvalue(), '{}\tnew\n'.format(ACCESSION))
+
+    def test_a_dry_run_reports_the_genome_and_copies_nothing(self):
+        mirror = self.genome_dir('mirror', MD5_A)
+
+        self.tools(dry_run=True).add_genomes({ACCESSION: mirror},
+                                             os.path.join(self.dir, 'mirror'),
+                                             os.path.join(self.dir, 'release'))
+
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'release')))
+        self.assertEqual(self.report.getvalue(), '{}\tnew\n'.format(ACCESSION))

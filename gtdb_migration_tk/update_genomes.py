@@ -277,7 +277,7 @@ class FTPTools():
                  report: TextIO,
                  genomes_to_review: TextIO,
                  dry_run: bool) -> None:
-        """Set up the file suffix vocabulary and the reports to be written.
+        """Record the reports to be written.
 
         Parameters
         ----------
@@ -293,20 +293,6 @@ class FTPTools():
         self.genomes_to_review = genomes_to_review
         self.dry_run = dry_run
 
-        # this is being maintained for backwards compatibility with previous GTDB releases, but it is not 
-        # required starting with GTDB r237 as we now only sync the exact files required by GTDB
-        self.ignore_extensions_compressed = ["*_assembly_structure","*_cds_from_genomic.fna.gz","*_genomic_gaps.txt.gz",
-                                "*_genomic.gtf.gz","*_rna_from_genomic.fna.gz","*_translated_cds.faa.gz",
-                                "*_protein.faa.gz","*_feature_count.txt.gz","*_feature_table.txt.gz",
-                                "*_protein.gpff.gz"]
-
-        self.ignore_extensions_uncompressed = ["*_cds_from_genomic.fna","*_genomic_gaps.txt",
-                                "*_genomic.gtf","*_rna_from_genomic.fna","*_translated_cds.faa",
-                                "*_protein.faa","*_feature_count.txt","*_feature_table.txt",
-                                "*_protein.gpff"]
-
-        self.ignore_extensions = self.ignore_extensions_compressed + self.ignore_extensions_uncompressed
-
     def add_genomes(self,
                     added_genomes: Dict[str, str],
                     ftp_dir: str,
@@ -314,8 +300,10 @@ class FTPTools():
         """Copy genomes new to NCBI into the new release.
 
         These genomes are on the FTP site but were not in the previous release,
-        so there is nothing to compare against and the NCBI directory is taken
-        whole, less the files GTDB does not keep.
+        so there is nothing to compare against and the mirror's directory is
+        taken whole. The mirror holds only the files GTDB keeps, the sync having
+        fetched nothing else, so nothing is filtered here -- as nothing is in
+        compare_genome_directories, which copies a shared genome the same way.
 
         Parameters
         ----------
@@ -331,8 +319,7 @@ class FTPTools():
             target_dir = os.path.join(new_directory, os.path.relpath(path_record, ftp_dir))
             self.report.write("{0}\tnew\n".format(gid))
             if not self.dry_run:
-                shutil.copytree(path_record, target_dir, symlinks=True,
-                                ignore=shutil.ignore_patterns(*self.ignore_extensions))
+                shutil.copytree(path_record, target_dir, symlinks=True)
 
     def remove_genomes(self, removed_genomes: Dict[str, str]) -> None:
         """Record the genomes NCBI no longer offers.
