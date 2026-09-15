@@ -61,6 +61,7 @@ from tqdm import tqdm
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.ncbi_ftp_manager_tools import (
     FTPTools, SELECTED_GENOMES_FILE, TAXDUMP_URL, SelectedRow,
+    GROUP_FILE_TAG, GROUP_KEEP_SUBRANKS, NCBI_GROUPS,
     assembly_summary_downloads, download_file, extract_tarball, file_checksum,
     write_selected_genomes)
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
@@ -719,13 +720,21 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
 
 
 class MetadataSyncManager:
-    """Download the NCBI metadata a GTDB release is built from.
+    """Download the NCBI metadata one group of a GTDB release is built from.
 
     A release starts from two things NCBI publishes and GTDB only reads: the
     taxonomy, and the assembly summary files describing every assembly NCBI
     holds. This fetches both into one directory, which is then the input to
     select_genomes and, later, to the commands that attach NCBI taxonomy to the
     genomes chosen.
+
+    One run covers one group -- PROK (archaea and bacteria) or FUNGI -- because
+    everything downstream of here treats the two differently. Both groups are
+    downloaded the same way and both get a standardised taxonomy; what the group
+    decides is which of NCBI's directories are fetched, and whether that taxonomy
+    keeps NCBI's subranks. The prokaryotic taxonomy is the 7 ranks GTDB curates;
+    fungal classification leans on the intermediate ranks, so the fungal taxonomy
+    keeps them.
 
     This is the procedure the GTDB wiki gives as "Download latest NCBI taxonomy",
     the first step of "Download the latest RefSeq and GenBank assembly data", and
@@ -734,7 +743,14 @@ class MetadataSyncManager:
 
         <output_dir>/assembly_summary_<domain>_<database>.txt.gz
         <output_dir>/taxonomy/taxdump_<date>/
-        <output_dir>/taxonomy/standardised_taxonomy/ncbi_r<release>_*.tsv
+        <output_dir>/taxonomy/standardised_taxonomy/ncbi_r<release>_<group>_*.tsv
+
+    Both groups can therefore be run into the one release directory: their
+    summary files are named for their domains, and their taxonomy files for their
+    group, so neither run overwrites the other's output. A group run after
+    another on the same day reuses the taxdump already extracted rather than
+    downloading and verifying the same 80 MB archive twice; the two groups are
+    then placed against the same taxonomy, which is what a release wants.
 
     Three things differ from doing it by hand. NCBI names every assembly summary
     file assembly_summary.txt, so the database and domain are put back into the
@@ -744,27 +760,38 @@ class MetadataSyncManager:
     broken until a release has been built on it, and the archive is then
     discarded: it has been verified and unpacked, and nothing reads it again.
 
-    The fungal assembly summaries are downloaded alongside the prokaryotic ones,
-    so that a release holds the table NCBI was serving when it was built. Fungal
-    genomes are otherwise a separate procedure: they are not given to
-    select_genomes, and the 7 rank taxonomy below is built from archaea and
-    bacteria only.
-
     Nothing here decides anything: unlike the other managers in this module it
     only fetches, and hands what it fetched to the NCBI taxonomy parser.
     """
 
-    def __init__(self, output_dir: str) -> None:
-        """Record where the metadata and its log are to be written.
+    def __init__(self, output_dir: str, group: str) -> None:
+        """Record the group to download, and where it is to be written.
 
         Parameters
         ----------
         output_dir : str
             Output directory for the downloaded NCBI metadata.
+        group : str
+            Group to download, PROK or FUNGI.
+
+        @raise ValueError: if the group is not one this toolkit knows.
         """
 
+        if group not in NCBI_GROUPS:
+            raise ValueError('unknown group {}; expected one of {}'.format(
+                group, ', '.join(NCBI_GROUPS)))
+
         self.output_dir = output_dir
+        self.group = group
         self.logger = logging.getLogger('timestamp')
+
+    def file_tag(self) -> str:
+        """What this group's taxonomy files are named for.
+
+        @return: the group's file name tag, e.g. 'prok'.
+        """
+
+        return GROUP_FILE_TAG[self.group]
 
     def taxonomy_dir(self) -> str:
         """Directory holding everything derived from the NCBI taxonomy.
@@ -811,10 +838,16 @@ class MetadataSyncManager:
         return written
 
     def download_taxonomy(self, taxonomy_dir: str, date_stamp: str) -> str:
-        """Download and extract the NCBI taxonomy.
+        """Download and extract the NCBI taxonomy, unless today's is already here.
 
         The archive is verified against NCBI's published MD5, unpacked, and then
         removed: only the extracted directory is ever read again.
+
+        A taxdump already extracted under today's date is reused. Both groups
+        need the taxonomy, and running one after the other would otherwise fetch
+        and verify the same 80 MB archive twice and, worse, place the two groups
+        against two different downloads of the taxonomy. A run on a later date
+        names a different directory and so still gets a fresh dump.
 
         Parameters
         ----------
@@ -828,11 +861,18 @@ class MetadataSyncManager:
 
         os.makedirs(taxonomy_dir, exist_ok=True)
 
+        extracted = os.path.join(taxonomy_dir, 'taxdump_{}'.format(date_stamp))
+        if all(os.path.exists(os.path.join(extracted, dmp))
+               for dmp in ('names.dmp', 'nodes.dmp')):
+            self.logger.info('Reusing the NCBI taxonomy already extracted to {}.'.format(
+                extracted))
+            return extracted
+
         tarball = os.path.join(taxonomy_dir, 'taxdump_{}.tar.gz'.format(date_stamp))
         self._download(TAXDUMP_URL, tarball)
         self._verify_taxonomy(tarball)
 
-        taxdump_dir = os.path.join(taxonomy_dir, 'taxdump_{}'.format(date_stamp))
+        taxdump_dir = extracted
         self.logger.info('Extracting {} to {}'.format(
             os.path.basename(tarball), os.path.basename(taxdump_dir)))
         try:
@@ -886,18 +926,19 @@ class MetadataSyncManager:
             os.path.basename(tarball)))
 
     def download_assembly_summaries(self) -> Dict[Tuple[str, str], str]:
-        """Download the assembly summary file of each database and domain.
+        """Download the assembly summary file of each database and domain of this group.
 
         These land in the root of the output directory, which is where
-        select_genomes and the taxonomy step below both expect to find them. The
-        fungal summaries land there too, and are simply not among the keys
-        either of those steps asks for.
+        select_genomes and the taxonomy step below both expect to find them.
+        Their names carry the domain rather than the group, so running the other
+        group into the same directory adds files beside these rather than
+        replacing them.
 
         @return: dict of (database, domain) to the file downloaded.
         """
 
         downloaded = {}
-        for database, domain, url, name in assembly_summary_downloads():
+        for database, domain, url, name in assembly_summary_downloads(self.group):
             output_file = os.path.join(self.output_dir, name)
             self._download(url, output_file, compress=True)
             downloaded[(database, domain)] = output_file
@@ -908,42 +949,48 @@ class MetadataSyncManager:
                                        taxdump_dir: str,
                                        summaries: Dict[Tuple[str, str], str],
                                        release_number: int) -> str:
-        """Produce the 7 rank NCBI taxonomy of the genomes NCBI holds.
+        """Produce the standardised NCBI taxonomy of the genomes just downloaded.
 
         This is the NCBI taxonomy parser, run over the files just downloaded
-        rather than over files named by hand. The parser takes the four
-        prokaryotic summaries by name, so the fungal ones alongside them are
-        left out of the taxonomy rather than filtered out of it. The output
-        prefix is a path, so the files land in taxonomy/standardised_taxonomy/
-        without the working directory being changed.
+        rather than over files named by hand, and over this group's files alone.
+        Whether the taxonomy keeps NCBI's subranks is the group's: the 7 ranks
+        GTDB curates for prokaryotes, the 13 that carry NCBI's intermediate
+        ranks for fungi.
+
+        The output prefix is a path, so the files land in
+        taxonomy/standardised_taxonomy/ without the working directory being
+        changed, and it names the group, so the other group's run into the same
+        directory neither overwrites these files nor their filter report.
 
         Parameters
         ----------
         taxdump_dir : str
             Directory holding the extracted nodes.dmp and names.dmp.
         summaries : dict
-            (database, domain) to assembly summary file; the four prokaryotic
-            entries are used.
+            (database, domain) to assembly summary file, as downloaded for this
+            group.
         release_number : int
             GTDB release number, which names the output files.
 
         @return: directory the standardised taxonomy was written to.
         """
 
+        keep_subranks = GROUP_KEEP_SUBRANKS[self.group]
+
         output_dir = os.path.join(self.taxonomy_dir(), STANDARDISED_TAXONOMY_DIR)
         os.makedirs(output_dir, exist_ok=True)
-        output_prefix = os.path.join(output_dir, 'ncbi_r{}'.format(release_number))
+        output_prefix = os.path.join(output_dir, 'ncbi_r{}_{}'.format(
+            release_number, self.file_tag()))
 
-        self.logger.info('Generating 7 rank NCBI taxonomy as {}_*.tsv'.format(output_prefix))
+        self.logger.info('Generating {} rank NCBI taxonomy as {}_*.tsv'.format(
+            13 if keep_subranks else 7, output_prefix))
         try:
             TaxonomyNCBI().parse_ncbi_taxonomy(
                 taxdump_dir,
-                summaries[('refseq', 'archaea')],
-                summaries[('refseq', 'bacteria')],
-                summaries[('genbank', 'archaea')],
-                summaries[('genbank', 'bacteria')],
-                False,                           # subranks are not kept, as the wiki has it
-                output_prefix)
+                [summaries[key] for key in sorted(summaries)],
+                keep_subranks,
+                output_prefix,
+                os.path.join(output_dir, '{}_failed_filters.tsv'.format(self.file_tag())))
         except Exception as exc:
             self.logger.error('Failed to parse the NCBI taxonomy: {}'.format(exc))
             sys.exit()
@@ -954,7 +1001,7 @@ class MetadataSyncManager:
         return output_dir
 
     def run(self, release_number: int) -> None:
-        """Download the NCBI metadata of a release and standardise its taxonomy.
+        """Download the NCBI metadata of one group and standardise its taxonomy.
 
         Parameters
         ----------
@@ -963,8 +1010,8 @@ class MetadataSyncManager:
         """
 
         date_stamp = datetime.date.today().strftime('%Y%m%d')
-        self.logger.info('Downloading NCBI metadata for release {} to {}'.format(
-            release_number, self.output_dir))
+        self.logger.info('Downloading {} NCBI metadata for release {} to {}'.format(
+            self.group, release_number, self.output_dir))
 
         taxdump_dir = self.download_taxonomy(self.taxonomy_dir(), date_stamp)
         summaries = self.download_assembly_summaries()

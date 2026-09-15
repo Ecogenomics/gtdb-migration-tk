@@ -62,17 +62,20 @@ class TaxonomyNCBI(object):
         self.logger = logging.getLogger('timestamp')
 
     def _assembly_organism_name(self,
-                                refseq_archaea_assembly_file,
-                                refseq_bacteria_assembly_file,
-                                genbank_archaea_assembly_file,
-                                genbank_bacteria_assembly_file,
+                                assembly_files,
                                 output_organism_name_file):
+        """Write the organism name NCBI gives each assembly in the files given.
 
-
+        Parameters
+        ----------
+        assembly_files : list of str
+            Assembly summary files to read; a None entry is skipped.
+        output_organism_name_file : str
+            File to write.
+        """
 
         fout = open(output_organism_name_file, 'w')
-        for assembly_file in [refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
-                              genbank_archaea_assembly_file, genbank_bacteria_assembly_file]:
+        for assembly_file in assembly_files:
             if assembly_file is None:
                 continue
 
@@ -93,9 +96,13 @@ class TaxonomyNCBI(object):
                     fout.write('%s\t%s\n' % (gid, org_name))
         fout.close()
 
-    def _assembly_to_tax_id(self, refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
-                            genbank_archaea_assembly_file, genbank_bacteria_assembly_file):
+    def _assembly_to_tax_id(self, assembly_files):
         """Determine taxonomic identifier for each assembly.
+
+        Parameters
+        ----------
+        assembly_files : list of str
+          Assembly summary files to read; a None entry is skipped.
 
         Returns
         -------
@@ -104,8 +111,7 @@ class TaxonomyNCBI(object):
         """
 
         d = {}
-        for assembly_file in [refseq_archaea_assembly_file, refseq_bacteria_assembly_file,
-                              genbank_archaea_assembly_file, genbank_bacteria_assembly_file]:
+        for assembly_file in assembly_files:
             if assembly_file is None:
                 continue
 
@@ -302,11 +308,26 @@ class TaxonomyNCBI(object):
         return True, 's__' + sp_name
 
 
-    def standardize_taxonomy(self, ncbi_taxonomy_file, keep_subranks, output_consistent):
+    def standardize_taxonomy(self, ncbi_taxonomy_file, keep_subranks, output_consistent,
+                             failed_filters_file=None):
         """Produce standardized taxonomy file from NCBI taxonomy strings.
 
         This is either a 7 rank taxonomy (domain to species) or the 7 rank taxonomy with
         subranks.
+
+        Parameters
+        ----------
+        ncbi_taxonomy_file : str
+          Unfiltered taxonomy to standardize.
+        keep_subranks : boolean
+          Keep NCBI's subranks, giving 13 ranks rather than 7.
+        output_consistent : str
+          File the standardized taxonomy is written to.
+        failed_filters_file : str
+          File the sanity check filters report to; defaults to
+          failed_filters.tsv beside output_consistent. Two groups standardised
+          into one directory would otherwise share, and overwrite, the one
+          report.
         """
 
 
@@ -398,8 +419,11 @@ class TaxonomyNCBI(object):
         # in process and passes absolute paths, and the report was landing
         # wherever the operator happened to be standing. A relative
         # output_consistent still yields the working directory, as before.
-        fout = open(os.path.join(os.path.dirname(output_consistent),
-                                 'failed_filters.tsv'), 'w')
+        if failed_filters_file is None:
+            failed_filters_file = os.path.join(os.path.dirname(output_consistent),
+                                               'failed_filters.tsv')
+
+        fout = open(failed_filters_file, 'w')
         for sp in failed_filters:
             fout.write(sp + '\n')
         fout.close()
@@ -432,26 +456,38 @@ class TaxonomyNCBI(object):
 
     def parse_ncbi_taxonomy(self,
             taxonomy_dir,
-            refseq_archaea_assembly_file,
-            refseq_bacteria_assembly_file,
-            genbank_archaea_assembly_file,
-            genbank_bacteria_assembly_file,
+            assembly_files,
             keep_subranks,
-            output_prefix):
-        """Read NCBI taxonomy information and create summary output files."""
+            output_prefix,
+            failed_filters_file=None):
+        """Read NCBI taxonomy information and create summary output files.
+
+        The assemblies are given as a list rather than as one argument per
+        database and domain: ncbi_metadata_sync runs this once per group, and a
+        group holds as many summary files as it holds domains -- four for
+        prokaryotes, two for fungi.
+
+        Parameters
+        ----------
+        taxonomy_dir : str
+          Directory holding nodes.dmp and names.dmp.
+        assembly_files : list of str
+          Assembly summary files describing the assemblies to place.
+        keep_subranks : boolean
+          Keep NCBI's subranks, giving 13 ranks rather than 7.
+        output_prefix : str
+          Prefix, which may be a path, of the files written.
+        failed_filters_file : str
+          File the sanity check filters report to; defaults to
+          failed_filters.tsv beside the taxonomy.
+        """
 
         # parse organism name
-        self._assembly_organism_name(refseq_archaea_assembly_file,
-                                     refseq_bacteria_assembly_file,
-                                     genbank_archaea_assembly_file,
-                                     genbank_bacteria_assembly_file,
+        self._assembly_organism_name(assembly_files,
                                      output_prefix + '_organism_names.tsv')
 
         # parse metadata file and taxonomy files
-        assembly_to_tax_id = self._assembly_to_tax_id(refseq_archaea_assembly_file,
-                                                      refseq_bacteria_assembly_file,
-                                                      genbank_archaea_assembly_file,
-                                                      genbank_bacteria_assembly_file)
+        assembly_to_tax_id = self._assembly_to_tax_id(assembly_files)
 
         node_records = self._read_nodes(
             os.path.join(taxonomy_dir, 'nodes.dmp'))
@@ -532,7 +568,8 @@ class TaxonomyNCBI(object):
 
         self.standardize_taxonomy(taxonomy_file,
                                   keep_subranks,
-                                  output_prefix + '_standardized.tsv')
+                                  output_prefix + '_standardized.tsv',
+                                  failed_filters_file)
 
 
     def populate_names_dmp_table(self,taxonomy_dir,
@@ -546,10 +583,11 @@ class TaxonomyNCBI(object):
         # parse organism name
 
         # parse metadata file and taxonomy files
-        assembly_to_tax_id = self._assembly_to_tax_id(refseq_archaea_assembly_file,
-                                                      refseq_bacteria_assembly_file,
-                                                      genbank_archaea_assembly_file,
-                                                      genbank_bacteria_assembly_file)
+        assembly_to_tax_id = self._assembly_to_tax_id(
+            [refseq_archaea_assembly_file,
+             refseq_bacteria_assembly_file,
+             genbank_archaea_assembly_file,
+             genbank_bacteria_assembly_file])
 
         node_records = self._read_nodes(
             os.path.join(taxonomy_dir, 'nodes.dmp'))
