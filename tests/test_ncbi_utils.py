@@ -293,3 +293,41 @@ class SummaryFileNamingTests(unittest.TestCase):
         for name in ('assembly_summary.txt', 'assembly_summary_bacteria.txt.gz',
                      'genbank_summary.txt', 'assembly_summary_refseq_bacteria.txt'):
             self.assertIsNone(U.assembly_summary_database(name), name)
+
+
+# ----------------------------------------------------------------- the genome columns
+
+class GenomeColumnsTests(unittest.TestCase):
+    """Every table GTDB hands the sync opens with the same four columns; they are
+    written down once and each table's header is built from them."""
+
+    def test_the_columns_are_what_the_sync_needs_to_mirror_a_genome(self):
+        self.assertEqual(U.GENOME_COLUMNS,
+                         ('assembly_accession', 'ftp_path', 'version_status',
+                          'excluded_from_refseq'))
+
+    def test_a_table_header_is_a_comment_line_naming_the_columns(self):
+        # the summary readers skip comment lines and read column names from them
+        self.assertEqual(U.table_header('a', 'b'), '#a\tb')
+        columns = U.summary_columns(U.table_header(*U.GENOME_COLUMNS))
+        self.assertEqual(sorted(columns), sorted(U.GENOME_COLUMNS))
+
+    def test_the_selection_opens_with_the_genome_columns(self):
+        from gtdb_migration_tk import select_genomes
+        self.assertTrue(select_genomes.SELECTED_GENOMES_HEADER.startswith(
+            U.table_header(*U.GENOME_COLUMNS) + '\t'))
+
+    def test_the_sync_writes_its_own_tables_with_the_genome_columns(self):
+        from gtdb_migration_tk import ncbi_genome_sync as sync
+        self.assertEqual(sync.BAD_HEADER, U.table_header(*U.GENOME_COLUMNS) + '\n')
+        self.assertTrue(sync.FAIL_HEADER.startswith(U.table_header(*U.GENOME_COLUMNS) + '\t'))
+        self.assertEqual(len(sync.Genome._fields), len(U.GENOME_COLUMNS))
+        self.assertEqual(tuple(sync.SYNC_COLUMNS), U.GENOME_COLUMNS[:2])
+
+
+class NcbiNullTests(unittest.TestCase):
+    def test_na_is_the_null_the_selection_writes_and_has_ftp_path_reads(self):
+        from gtdb_migration_tk import select_genomes
+        self.assertEqual(U.NCBI_NA, 'na')
+        self.assertEqual(select_genomes.NO_NOTE, U.NCBI_NA)
+        self.assertFalse(U.has_ftp_path(U.NCBI_NA))

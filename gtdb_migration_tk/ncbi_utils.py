@@ -291,6 +291,37 @@ ASSEMBLY_SUMMARY_NAME = 'assembly_summary_{domain}_{database}.txt'
 MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
 
 
+# NCBI's null: what an empty field holds in an assembly summary, and what GTDB
+# writes in the same position of the tables it derives from one.
+NCBI_NA = 'na'
+
+# The columns of an assembly summary that identify a genome and say whether and
+# where NCBI serves it, in this order. They are what ncbi_genome_sync needs to
+# mirror a genome, so they open every table GTDB hands it: the selection
+# select_genomes writes, and the .fail and .bad files the sync writes for
+# itself. Each of those builds its header from here, so the three tables cannot
+# drift apart.
+GENOME_COLUMNS = ('assembly_accession', 'ftp_path', 'version_status', 'excluded_from_refseq')
+
+
+def table_header(*columns: str) -> str:
+    """The header line of a GTDB table that the assembly summary readers read.
+
+    It is '#'-prefixed so those readers, which skip comment lines, find the
+    column names on it the way they find them on an NCBI summary, while the
+    line still names its columns for anyone opening the file.
+
+    Parameters
+    ----------
+    columns : str
+        Column names, in order.
+
+    @return: the header line, without a newline.
+    """
+
+    return '#' + '\t'.join(columns)
+
+
 def has_ftp_path(ftp_path: str) -> bool:
     """Report whether NCBI serves a directory for an assembly.
 
@@ -314,7 +345,7 @@ def has_ftp_path(ftp_path: str) -> bool:
     @return: True if the assembly has a directory at NCBI.
     """
 
-    return bool(ftp_path) and ftp_path.lower() != 'na'
+    return bool(ftp_path) and ftp_path.lower() != NCBI_NA
 
 
 def assembly_summary_filename(domain: str, database: NCBIDatabase) -> str:

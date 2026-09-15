@@ -40,9 +40,9 @@ from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.ncbi_utils import (
-    GENBANK, GENBANK_PREFIX, NCBI_DATABASES, REFSEQ, REFSEQ_PREFIX,
-    assembly_summary_database, count_summary_rows, has_ftp_path,
-    read_assembly_summary)
+    GENBANK, GENBANK_PREFIX, GENOME_COLUMNS, NCBI_DATABASES, NCBI_NA, REFSEQ,
+    REFSEQ_PREFIX, assembly_summary_database, count_summary_rows, has_ftp_path,
+    read_assembly_summary, table_header)
 
 
 # Values of excluded_from_refseq marking an assembly as one of the thousands of
@@ -56,9 +56,9 @@ from gtdb_migration_tk.ncbi_utils import (
 # semicolons, hence the substring test.
 MULTI_ISOLATE_TAGS = ('large multi-isolate project', 'surveillance')
 
-# Placeholder for the notes column of the selected genome table, matching the
-# convention NCBI uses for an empty field in the summary files themselves.
-NO_NOTE = 'na'
+# Placeholder for the notes column of the selected genome table: NCBI's own
+# null, so the table reads like the summary files it was made from.
+NO_NOTE = NCBI_NA
 
 # Table of the genomes selected for a new GTDB release, written by the
 # select_genomes command into its output directory. It is gzipped, as the files
@@ -71,24 +71,17 @@ SELECTED_GENOMES_FILE = 'gtdb_selected_genomes.tsv.gz'
 # excluded_from_refseq, gbrs_paired_asm, notes.
 SelectedRow = Tuple[str, str, str, str, str, str]
 
-# Header of the table. It is '#'-prefixed so the file is read by the same
-# readers as an NCBI assembly summary file, which skip comment lines, while
-# still naming its columns for anyone opening it.
-#
-# The first four columns are exactly the four ncbi_genome_sync reads, in the
-# order it writes its own .fail and .bad files, so this table can be handed
-# straight to it as the list of genomes to mirror. It needs assembly_accession
-# and ftp_path, and renders assembly_status.txt from version_status and
-# excluded_from_refseq; the last two columns it simply ignores, as every reader
-# of these tables locates columns by name.
+# Header of the table. It opens with GENOME_COLUMNS, the columns
+# ncbi_genome_sync reads, so this table can be handed straight to it as the
+# list of genomes to mirror; the last two columns it simply ignores, as every
+# reader of these tables locates columns by name.
 #
 # The notes column carries what would otherwise be a per genome warning in the
 # log. It exists because NCBI's summary files routinely pair a GenBank assembly
 # with a RefSeq assembly they do not themselves list: too common to report one
 # line at a time, and too material to drop, since it is the reason a genome that
 # appears to be covered by RefSeq was taken from GenBank instead.
-SELECTED_GENOMES_HEADER = ('#assembly_accession\tftp_path\tversion_status'
-                           '\texcluded_from_refseq\tgbrs_paired_asm\tnotes')
+SELECTED_GENOMES_HEADER = table_header(*GENOME_COLUMNS, 'gbrs_paired_asm', 'notes')
 
 
 def is_multi_isolate(excluded_from_refseq: str) -> bool:
@@ -238,7 +231,7 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
 
         self.logger.warning(
             '{} has version_status "{}" rather than "latest" and was not selected.'.format(
-                accession, version_status or 'na'))
+                accession, version_status or NCBI_NA))
 
         return False
 
@@ -336,7 +329,7 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
                 gid = canonical_gid(accession)
 
                 if not self._is_latest(accession, version_status):
-                    dropped[gid] = 'version_status is "{}"'.format(version_status or 'na')
+                    dropped[gid] = 'version_status is "{}"'.format(version_status or NCBI_NA)
                     continue
 
                 if is_multi_isolate(excluded):

@@ -445,8 +445,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import (NCBI_HOST, NCBI_URL, BadInput, MD5_LINE_RE,
-                                          has_ftp_path, read_summary_rows, summary_field)
+from gtdb_migration_tk.ncbi_utils import (GENOME_COLUMNS, NCBI_HOST, NCBI_URL, BadInput,
+                                          MD5_LINE_RE, has_ftp_path, read_summary_rows,
+                                          summary_field, table_header)
 
 
 HOST = NCBI_HOST
@@ -537,10 +538,15 @@ MANIFEST_IS_TRUTH_SUFFIXES = ("_genomic.gff.gz", "_wgsmaster.gbff.gz")
 # --------------------------------------------------------------------------- tables
 
 # <base>.fail and <base>.bad are themselves valid input (see read_assembly_summary), so
-# both carry the assembly_summary column names that the reader looks for.
-BAD_HEADER = "#assembly_accession\tftp_path\tversion_status\texcluded_from_refseq\n"
+# both carry the assembly_summary column names that the reader looks for. Those are
+# GENOME_COLUMNS, which the selection select_genomes writes also opens with, so the three
+# tables this reads share one shape by construction.
+BAD_HEADER = table_header(*GENOME_COLUMNS) + "\n"
 FAIL_HEADER = BAD_HEADER[:-1] + "\treason\n"
 
+# One row of GENOME_COLUMNS as this module holds it. The second field is `url` rather
+# than ftp_path because the value is normalised before it is stored -- ftp:// rewritten
+# to https, the trailing slash settled -- so it is no longer the column as NCBI wrote it.
 Genome = collections.namedtuple(
     "Genome", "accession url version_status excluded_from_refseq")
 
@@ -1659,7 +1665,7 @@ class Progress(object):
 # Columns this script cannot sync without: the accession names the genome, and
 # ftp_path says where to fetch it from. Both <base>.fail (5 columns) and
 # <base>.bad (4) carry them too, so those are read by this same code path.
-SYNC_COLUMNS = ("assembly_accession", "ftp_path")
+SYNC_COLUMNS = GENOME_COLUMNS[:2]                # the genome, and where to fetch it from
 
 
 def read_assembly_summary(path):
