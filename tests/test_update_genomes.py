@@ -66,7 +66,7 @@ class TempDirCase(unittest.TestCase):
         path = os.path.join(self.dir, name, ASSEMBLY)
         os.makedirs(path)
         for filename, text in ((FASTA, 'fasta'), (REPORT, 'report'),
-                               (UG.MD5_MANIFEST, manifest(fasta_md5))):
+                               (U.MD5_MANIFEST, manifest(fasta_md5))):
             with open(os.path.join(path, filename), 'w') as handle:
                 handle.write(text)
         for subdir in derived:
@@ -213,8 +213,8 @@ class ComparisonOutcome(TempDirCase):
                 self.tools().compare_genome_directories(prev, ftp, target, ACCESSION)
 
                 self.assertEqual(sorted(os.listdir(target)),
-                                 sorted([FASTA, REPORT, UG.MD5_MANIFEST]))
-                with open(os.path.join(target, UG.MD5_MANIFEST)) as handle:
+                                 sorted([FASTA, REPORT, U.MD5_MANIFEST]))
+                with open(os.path.join(target, U.MD5_MANIFEST)) as handle:
                     self.assertEqual(handle.read(), manifest(md5))
 
     def test_derived_data_of_the_previous_release_is_never_modified(self):
@@ -251,7 +251,7 @@ class ComparisonOutcome(TempDirCase):
         self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
         self.assertTrue(os.path.isdir(os.path.join(self.target(), 'prodigal')))
 
-        with open(os.path.join(ftp, UG.MD5_MANIFEST), 'w') as handle:
+        with open(os.path.join(ftp, U.MD5_MANIFEST), 'w') as handle:
             handle.write(manifest(MD5_B))
         row = self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
 
@@ -303,7 +303,7 @@ class ReadingTheManifest(TempDirCase):
     def write_manifest(self, text, name=ASSEMBLY):
         path = os.path.join(self.dir, name)
         os.makedirs(path)
-        with open(os.path.join(path, UG.MD5_MANIFEST), 'w') as handle:
+        with open(os.path.join(path, U.MD5_MANIFEST), 'w') as handle:
             handle.write(text)
         return path
 

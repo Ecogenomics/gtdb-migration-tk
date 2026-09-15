@@ -331,3 +331,36 @@ class NcbiNullTests(unittest.TestCase):
         self.assertEqual(U.NCBI_NA, 'na')
         self.assertEqual(select_genomes.NO_NOTE, U.NCBI_NA)
         self.assertFalse(U.has_ftp_path(U.NCBI_NA))
+
+
+# ----------------------------------------------------------------------- the manifest
+
+class ManifestTests(unittest.TestCase):
+    """md5checksums.txt is read once, for the sync and for the release update."""
+
+    MD5 = 'a' * 32
+
+    def read(self, text):
+        return list(U.read_md5_manifest(text.splitlines()))
+
+    def test_an_entry_is_its_md5_and_its_name_less_the_leading_dot_slash(self):
+        self.assertEqual(self.read(self.MD5 + '  ./GCF_1_A_genomic.fna.gz\n'),
+                         [(self.MD5, 'GCF_1_A_genomic.fna.gz')])
+
+    def test_a_nested_entry_keeps_its_directory(self):
+        # callers match the whole path, which is what keeps the subtrees out
+        self.assertEqual(self.read(self.MD5 + '  ./all_assembly_versions/x.txt\n'),
+                         [(self.MD5, 'all_assembly_versions/x.txt')])
+
+    def test_lines_that_are_not_entries_are_skipped(self):
+        text = '\n# a comment\nnot a checksum  ./x\n' + self.MD5 + '  ./y\n'
+        self.assertEqual(self.read(text), [(self.MD5, 'y')])
+
+    def test_manifest_order_is_kept(self):
+        text = ''.join('{}  ./{}\n'.format(c * 32, n) for c, n in (('1', 'b'), ('2', 'a')))
+        self.assertEqual([n for _, n in self.read(text)], ['b', 'a'])
+
+    def test_the_manifest_and_fasta_names_are_those_the_sync_fetches(self):
+        from gtdb_migration_tk import ncbi_genome_sync as sync
+        self.assertIn(U.MD5_MANIFEST, sync.WANTED_EXACT)
+        self.assertIn(U.GENOMIC_FASTA_EXT, sync.WANTED_SUFFIXES)

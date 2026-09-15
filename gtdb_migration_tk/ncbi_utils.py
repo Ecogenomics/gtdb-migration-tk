@@ -53,7 +53,7 @@ header is required rather than assumed.
 import collections
 import gzip
 import re
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
 class BadInput(ValueError):
@@ -284,11 +284,19 @@ GENBANK_PREFIX = GENBANK.prefix
 # rather than each spelling the convention for itself.
 ASSEMBLY_SUMMARY_NAME = 'assembly_summary_{domain}_{database}.txt'
 
-# One line of NCBI's md5checksums.txt: the MD5, whitespace, the file name. The
-# sync reads the manifest to verify what it fetched, and update_genomes reads
-# the mirror's and the previous release's copies to tell whether a genomic FASTA
-# changed, so the two must parse the same lines.
+# NCBI's manifest of the files it serves for a genome, one "<md5>  ./<name>"
+# line per file. The sync reads it to learn what to fetch and to verify what it
+# fetched; update_genomes reads the mirror's and the previous release's copies
+# to tell whether a genomic FASTA changed. Both go through read_md5_manifest(),
+# so the two parse the same lines the same way.
+MD5_MANIFEST = 'md5checksums.txt'
 MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
+
+# Suffix NCBI appends to the assembly name for the genome assembly itself, e.g.
+# GCF_036600855.1_ASM3660085v1 + _genomic.fna.gz. It is also the tail of
+# _cds_from_genomic.fna.gz and _rna_from_genomic.fna.gz, so it is only ever
+# matched as the whole of a name after the assembly, never searched for.
+GENOMIC_FASTA_EXT = '_genomic.fna.gz'
 
 
 # NCBI's null: what an empty field holds in an assembly summary, and what GTDB
@@ -393,3 +401,32 @@ def assembly_summary_database(filename: str) -> Optional[NCBIDatabase]:
             return database
 
     return None
+
+
+def read_md5_manifest(lines: Iterable[str]) -> Iterator[Tuple[str, str]]:
+    """Read the (md5, name) entries of an md5checksums.txt.
+
+    Names are as NCBI lists them less the leading ./, so a file at the genome
+    root is its bare name and a nested one keeps its directory. Callers match
+    the whole of that, never a basename: every file GTDB wants sits at the root,
+    so a name with a directory in it cannot be one, and the _assembly_structure/
+    and all_assembly_versions/ subtrees stay out without a blacklist to keep in
+    step. A line that is not an entry is skipped rather than rejected, as NCBI
+    writes the odd blank or malformed one.
+
+    Parameters
+    ----------
+    lines : iterable of str
+        Lines of the manifest, from an open file or a decoded download.
+
+    @return: iterator of (md5, name), in manifest order.
+    """
+
+    for line in lines:
+        match = MD5_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        name = match.group(2).strip()
+        if name.startswith('./'):
+            name = name[2:]
+        yield match.group(1), name

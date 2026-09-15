@@ -44,7 +44,7 @@ from typing import Dict, List, TextIO
 from tqdm import tqdm
 
 from gtdb_migration_tk import config
-from gtdb_migration_tk.ncbi_utils import MD5_LINE_RE
+from gtdb_migration_tk.ncbi_utils import GENOMIC_FASTA_EXT, MD5_MANIFEST, read_md5_manifest
 from gtdb_migration_tk.utils.common import count_lines
 
 
@@ -54,13 +54,6 @@ from gtdb_migration_tk.utils.common import count_lines
 # reports the same outcomes as a real one; it only refrains from copying.
 STATUS_FASTA_UNCHANGED = 'genomic FASTA file unchanged'
 STATUS_FASTA_CHANGED = 'genomic FASTA file changed'
-
-# NCBI's manifest of the files it serves for a genome, one "<md5>  ./<name>"
-# line per file. Both the mirror and the previous release carry a copy.
-MD5_MANIFEST = 'md5checksums.txt'
-
-# Suffix NCBI appends to the assembly name for the genome assembly itself.
-GENOMIC_FASTA_EXT = '_genomic.fna.gz'
 
 
 class UpdateGenomes:
@@ -562,8 +555,8 @@ class FTPTools():
         NCBI names the file for the assembly, <accession>_<asm_name>_genomic.fna.gz,
         and names the genome directory <accession>_<asm_name>, so the entry wanted
         is known exactly and is looked up by name; this is how the rest of the
-        toolkit finds the file too. The manifest is read with the same line
-        pattern ncbi_genome_sync uses to mirror and verify it.
+        toolkit finds the file too. The manifest is read by
+        ncbi_utils.read_md5_manifest(), as the sync reads it to mirror and verify.
 
         Parameters
         ----------
@@ -578,14 +571,8 @@ class FTPTools():
         manifest = os.path.join(genome_dir, MD5_MANIFEST)
 
         with open(manifest) as handle:
-            for line in handle:
-                match = MD5_LINE_RE.match(line.strip())
-                if not match:
-                    continue
-                name = match.group(2).strip()
-                if name.startswith('./'):
-                    name = name[2:]
+            for checksum, name in read_md5_manifest(handle):
                 if name == wanted:
-                    return match.group(1)
+                    return checksum
 
         raise ValueError('{} has no entry for {}'.format(manifest, wanted))

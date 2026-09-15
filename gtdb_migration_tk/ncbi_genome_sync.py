@@ -445,8 +445,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import (GENOME_COLUMNS, NCBI_HOST, NCBI_URL, BadInput,
-                                          MD5_LINE_RE, has_ftp_path, read_summary_rows,
+from gtdb_migration_tk.ncbi_utils import (GENOME_COLUMNS, GENOMIC_FASTA_EXT, MD5_MANIFEST,
+                                          NCBI_HOST, NCBI_URL, BadInput, has_ftp_path,
+                                          read_md5_manifest, read_summary_rows,
                                           summary_field, table_header)
 
 
@@ -504,7 +505,7 @@ CHUNK = 1 << 20
 WANTED_EXACT = frozenset((
     "annotation_hashes.txt",
     "assembly_status.txt",
-    "md5checksums.txt"
+    MD5_MANIFEST
 ))
 
 # Suffixes appended to the assembly name, e.g. GCF_036600855.1_ASM3660085v1 + _genomic.fna.gz.
@@ -517,7 +518,7 @@ WANTED_SUFFIXES = (
     "_assembly_report.txt",
     "_assembly_stats.txt",
     "_fcs_report.txt",
-    "_genomic.fna.gz",
+    GENOMIC_FASTA_EXT,
     "_genomic.gbff.gz",
     "_genomic.gff.gz",
     "_wgsmaster.gbff.gz",
@@ -1015,13 +1016,7 @@ def parse_manifest(data, keep):
     neither downloaded nor treated as missing during verification.
     """
     out = []
-    for line in data.decode("utf-8", "replace").splitlines():
-        match = MD5_LINE_RE.match(line.strip())
-        if not match:
-            continue
-        checksum, name = match.group(1), match.group(2).strip()
-        if name.startswith("./"):
-            name = name[2:]
+    for checksum, name in read_md5_manifest(data.decode("utf-8", "replace").splitlines()):
         # Match the FULL manifest path, not its basename. Every wanted file lives at
         # the genome root, so a path with any directory component cannot be one -- which
         # excludes the _assembly_structure/, all_assembly_versions/ and representative/
@@ -1171,7 +1166,7 @@ def fresh_enough(genome_dir, keep, max_age_s):
     if stamp is None or time.time() - stamp > max_age_s:
         return None
     try:
-        with open(os.path.join(genome_dir, "md5checksums.txt"), "rb") as handle:
+        with open(os.path.join(genome_dir, MD5_MANIFEST), "rb") as handle:
             entries = parse_manifest(handle.read(), keep)
     except OSError:
         return None
@@ -1250,7 +1245,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
     url_path = url_to_path(url)
     genome_dir = os.path.join(root, genome_relpath(url))
     asm = os.path.basename(genome_dir)
-    manifest_path = os.path.join(genome_dir, "md5checksums.txt")
+    manifest_path = os.path.join(genome_dir, MD5_MANIFEST)
     keep = wanted_files(asm)
 
     if max_age_s > 0 and not full:
@@ -1263,7 +1258,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
                           extra=FILE_ONLY)
             return 0, 0, present, [], True, True
 
-    status, body, _ = http_get(url_path + "md5checksums.txt")
+    status, body, _ = http_get(url_path + MD5_MANIFEST)
     if status != 200 or body is None:
         # Nothing is created on disk until the manifest is in hand: a genome removed
         # upstream (404) used to leave an empty directory behind for list_genomes to find.
@@ -1349,7 +1344,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
     # A 404 is normal: not every genome has every file. The one exception to "derived,
     # not hardcoded" is MANIFEST_IS_TRUTH_SUFFIXES: names measured to 404 whenever they
     # are unlisted, so probing them only ever cost a request.
-    not_fetched = set(["md5checksums.txt"])
+    not_fetched = set([MD5_MANIFEST])
     not_fetched.update(asm + suffix for suffix in MANIFEST_IS_TRUTH_SUFFIXES)
     if status_text is not None:
         not_fetched.add("assembly_status.txt")
@@ -1386,7 +1381,7 @@ def delete_genome(genome_dir):
     Errors are logged and reported, never swallowed (this used to be ignore_errors=True).
     Returns True only on complete removal.
     """
-    manifest = os.path.join(genome_dir, "md5checksums.txt")
+    manifest = os.path.join(genome_dir, MD5_MANIFEST)
     try:
         if os.path.exists(manifest):
             os.unlink(manifest)
@@ -1441,7 +1436,7 @@ def verify_genome(url, root, delete):
 
 
 def _verify_files(genome_dir, delete):
-    manifest_path = os.path.join(genome_dir, "md5checksums.txt")
+    manifest_path = os.path.join(genome_dir, MD5_MANIFEST)
 
     if not os.path.isdir(genome_dir):
         return False, "missing directory"
@@ -1460,8 +1455,7 @@ def _verify_files(genome_dir, delete):
         # reports success, verify calls it "empty manifest", and --delete then removes a
         # correctly synced genome that the next sync recreates identically, looping
         # forever. (0 of 3000 production manifests hit this, so it is latent, not active.)
-        if not any(MD5_LINE_RE.match(line.strip()) for line in
-                   raw.decode("utf-8", "replace").splitlines()):
+        if not any(read_md5_manifest(raw.decode("utf-8", "replace").splitlines())):
             return False, "unparseable md5checksums.txt"
         return True, ""
 
