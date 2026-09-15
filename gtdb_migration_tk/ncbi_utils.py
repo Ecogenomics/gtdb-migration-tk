@@ -50,6 +50,7 @@ genomes, with nothing to indicate anything went wrong. For the same reason a
 header is required rather than assumed.
 """
 
+import collections
 import gzip
 import re
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -256,10 +257,32 @@ def read_assembly_summary(assembly_summary: str,
         yield tuple(summary_field(fields, columns, name) for name in field_names)
 
 
-# Accession prefixes of the two NCBI databases. select_genomes reads a genome's
-# database from them; update_genomes runs once per prefix.
-REFSEQ_PREFIX = 'GCF'
-GENBANK_PREFIX = 'GCA'
+# Where NCBI serves everything this toolkit fetches: the assembly summaries and
+# the taxonomy (ncbi_metadata_sync) and the genomes themselves (ncbi_genome_sync).
+NCBI_HOST = 'ftp.ncbi.nlm.nih.gov'
+NCBI_URL = 'https://' + NCBI_HOST
+
+# The two NCBI databases GTDB draws on, and the three names each goes by: the
+# directory NCBI serves it from (genomes/<name>/...), the label it is written
+# with in prose and logs, and the prefix of its accessions. RefSeq comes first,
+# and every consumer keeps that order: select_genomes must know which genomes
+# RefSeq covers before it can judge a GenBank assembly.
+NCBIDatabase = collections.namedtuple('NCBIDatabase', 'name label prefix')
+REFSEQ = NCBIDatabase('refseq', 'RefSeq', 'GCF')
+GENBANK = NCBIDatabase('genbank', 'GenBank', 'GCA')
+NCBI_DATABASES = (REFSEQ, GENBANK)
+
+# The prefixes on their own, as most callers want them: select_genomes reads a
+# genome's database from its accession, update_genomes runs once per prefix.
+REFSEQ_PREFIX = REFSEQ.prefix
+GENBANK_PREFIX = GENBANK.prefix
+
+# NCBI calls every assembly summary file assembly_summary.txt and tells them
+# apart by directory, so GTDB puts the domain and database back into the name as
+# it saves them. ncbi_metadata_sync writes these names and select_genomes reads
+# the database back out of them, so both go through the two functions below
+# rather than each spelling the convention for itself.
+ASSEMBLY_SUMMARY_NAME = 'assembly_summary_{domain}_{database}.txt'
 
 # One line of NCBI's md5checksums.txt: the MD5, whitespace, the file name. The
 # sync reads the manifest to verify what it fetched, and update_genomes reads
@@ -292,3 +315,50 @@ def has_ftp_path(ftp_path: str) -> bool:
     """
 
     return bool(ftp_path) and ftp_path.lower() != 'na'
+
+
+def assembly_summary_filename(domain: str, database: NCBIDatabase) -> str:
+    """The name GTDB saves one NCBI assembly summary under.
+
+    The name ends in .gz because ncbi_metadata_sync compresses the files as they
+    are downloaded; every reader goes through open_summary(), which takes either
+    form, and assembly_summary_database() reads the name with or without it.
+
+    Parameters
+    ----------
+    domain : str
+        NCBI directory the file describes: archaea, bacteria or fungi.
+    database : NCBIDatabase
+        Database the file describes.
+
+    @return: file name, e.g. assembly_summary_bacteria_refseq.txt.gz.
+    """
+
+    return ASSEMBLY_SUMMARY_NAME.format(domain=domain, database=database.name) + '.gz'
+
+
+def assembly_summary_database(filename: str) -> Optional[NCBIDatabase]:
+    """The NCBI database an assembly summary file describes, read from its name.
+
+    Only the suffix is read, so a file from an older release, held uncompressed
+    or under a longer name, is placed the same way as one this toolkit wrote.
+
+    Parameters
+    ----------
+    filename : str
+        Path or name of an assembly summary file, gzipped or not.
+
+    @return: the database, or None if the name says neither.
+    """
+
+    name = filename.rsplit('/', 1)[-1]
+    if name.endswith('.gz'):
+        name = name[:-len('.gz')]
+
+    # the part of the template after the domain, e.g. _refseq.txt
+    suffix = ASSEMBLY_SUMMARY_NAME.split('{domain}')[1]
+    for database in NCBI_DATABASES:
+        if name.endswith(suffix.format(database=database.name)):
+            return database
+
+    return None

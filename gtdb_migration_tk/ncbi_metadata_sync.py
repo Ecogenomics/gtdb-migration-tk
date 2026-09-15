@@ -37,6 +37,7 @@ from typing import Dict, List, Tuple
 from tqdm import tqdm
 
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
+from gtdb_migration_tk.ncbi_utils import NCBI_DATABASES, NCBI_URL, assembly_summary_filename
 
 
 # Subdirectories of the root NCBI directory of a release. Everything derived from
@@ -45,12 +46,11 @@ from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 TAXONOMY_DIR = 'taxonomy'
 STANDARDISED_TAXONOMY_DIR = 'standardised_taxonomy'
 
-# Where NCBI publishes the data a GTDB release is built from.
-NCBI_FTP = 'https://ftp.ncbi.nlm.nih.gov'
+# Where NCBI publishes the data a GTDB release is built from. A module-level
+# name rather than NCBI_URL used directly, so the tests can point one command at
+# a local server without reaching into ncbi_utils.
+NCBI_FTP = NCBI_URL
 TAXDUMP_URL = NCBI_FTP + '/pub/taxonomy/taxdump.tar.gz'
-
-# The two NCBI databases every group is taken from.
-NCBI_DATABASES = ('refseq', 'genbank')
 
 # The two groups of organisms GTDB builds from, and the directories NCBI serves
 # each one's assembly summaries from (genomes/<database>/<domain>). They are
@@ -98,17 +98,15 @@ def assembly_summary_downloads(group: str) -> List[Tuple[str, str, str, str]]:
 
     NCBI calls every one of these files assembly_summary.txt, distinguishing them
     only by the directory they sit in, so downloading them into one directory
-    means putting the database and domain back into the name. The names built
-    here are the ones GTDB has always used, and are the names select_genomes
-    reads a file's database from, so the two must agree. They carry the domain
+    means putting the database and domain back into the name. That naming is
+    ncbi_utils.assembly_summary_filename(), which select_genomes reads a file's
+    database back out of, so the two cannot disagree. The names carry the domain
     and not the group, so a fungal file is assembly_summary_fungi_refseq.txt.gz:
     what a file holds is the domain, and the group is only which of them are
     downloaded together.
 
     The database and domain are returned alongside, as the taxonomy step keys the
-    files it was given by them. The names end in .gz because the files are
-    compressed as they are downloaded; every reader of an assembly summary goes
-    through ncbi_utils.open_summary(), which takes either form.
+    files it was given by them.
 
     Parameters
     ----------
@@ -118,9 +116,9 @@ def assembly_summary_downloads(group: str) -> List[Tuple[str, str, str, str]]:
     @return: list of (database, domain, url, file name), RefSeq before GenBank.
     """
 
-    return [(database, domain,
-             '{}/genomes/{}/{}/assembly_summary.txt'.format(NCBI_FTP, database, domain),
-             'assembly_summary_{}_{}.txt.gz'.format(domain, database))
+    return [(database.name, domain,
+             '{}/genomes/{}/{}/assembly_summary.txt'.format(NCBI_FTP, database.name, domain),
+             assembly_summary_filename(domain, database))
             for database in NCBI_DATABASES
             for domain in NCBI_GROUP_DOMAINS[group]]
 

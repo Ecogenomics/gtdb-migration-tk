@@ -445,13 +445,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import (BadInput, MD5_LINE_RE, has_ftp_path,
-                                          read_summary_rows, summary_field)
+from gtdb_migration_tk.ncbi_utils import (NCBI_HOST, NCBI_URL, BadInput, MD5_LINE_RE,
+                                          has_ftp_path, read_summary_rows, summary_field)
 
 
-HOST = "ftp.ncbi.nlm.nih.gov"
-URL_PREFIX = "https://ftp.ncbi.nlm.nih.gov/genomes/"
-FTP_PREFIX = "ftp://ftp.ncbi.nlm.nih.gov/genomes/"   # older summaries; rewritten to https
+HOST = NCBI_HOST
+URL_PREFIX = NCBI_URL + "/genomes/"
+FTP_PREFIX = "ftp://" + NCBI_HOST + "/genomes/"     # older summaries; rewritten to https
 
 RETRY_STATUS = frozenset((429, 500, 502, 503, 504))
 

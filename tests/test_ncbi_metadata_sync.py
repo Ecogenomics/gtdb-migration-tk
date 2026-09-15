@@ -178,7 +178,7 @@ class AssemblySummaryNamingTests(unittest.TestCase):
     def test_each_group_downloads_its_own_domains_from_both_databases(self):
         for group, rows in self.downloads.items():
             self.assertEqual(len(rows),
-                             len(M.NCBI_DATABASES) * len(M.NCBI_GROUP_DOMAINS[group]),
+                             len(U.NCBI_DATABASES) * len(M.NCBI_GROUP_DOMAINS[group]),
                              group)
 
     def test_the_prokaryotic_group_is_archaea_and_bacteria(self):
@@ -206,11 +206,11 @@ class AssemblySummaryNamingTests(unittest.TestCase):
             names = [name for *_, name in rows]
             self.assertEqual(len(set(names)), len(names), group)
 
-    def test_each_name_carries_the_suffix_select_genomes_reads(self):
-        # select_genomes decides a file's database from this suffix, so the two
+    def test_each_name_reads_back_as_the_database_it_was_downloaded_from(self):
+        # select_genomes decides a file's database from its name, so the two
         # must agree or the release is selected from the wrong genomes
         for database, _, _, name in self.every:
-            self.assertTrue(name.endswith('_{}.txt.gz'.format(database)), name)
+            self.assertEqual(U.assembly_summary_database(name).name, database, name)
 
     def test_the_name_matches_the_url_it_is_downloaded_from(self):
         for database, domain, url, name in self.every:
@@ -532,7 +532,7 @@ class MetadataSyncTests(HttpCase):
              '{}  taxdump.tar.gz\n'.format(TAXDUMP_MD5).encode()},
         **{'/genomes/{}/{}/assembly_summary.txt'.format(database, domain):
            summary_file(database, domain)
-           for database in M.NCBI_DATABASES
+           for database in (d.name for d in U.NCBI_DATABASES)
            for group in M.NCBI_GROUPS for domain in M.NCBI_GROUP_DOMAINS[group]})
 
     def setUp(self):

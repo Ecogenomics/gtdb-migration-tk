@@ -40,18 +40,10 @@ from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.ncbi_utils import (
-    GENBANK_PREFIX, REFSEQ_PREFIX, count_summary_rows, has_ftp_path,
+    GENBANK, GENBANK_PREFIX, NCBI_DATABASES, REFSEQ, REFSEQ_PREFIX,
+    assembly_summary_database, count_summary_rows, has_ftp_path,
     read_assembly_summary)
 
-
-# Suffixes of the assembly summary file names of the two NCBI databases. NCBI
-# names each file for the database it describes, and the per-domain copies GTDB
-# works from keep that suffix: assembly_summary_archaea_refseq.txt,
-# assembly_summary_bacteria_genbank.txt. Reading the suffix is what lets each
-# file be parsed once, RefSeq files before GenBank files, rather than every file
-# being parsed once per database.
-REFSEQ_SUFFIX = '_refseq.txt'
-GENBANK_SUFFIX = '_genbank.txt'
 
 # Values of excluded_from_refseq marking an assembly as one of the thousands of
 # near-identical isolates NCBI sequences for outbreak and pathogen surveillance.
@@ -253,9 +245,12 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
     def group_by_database(self, new_list_genomes: List[str]) -> Tuple[List[str], List[str]]:
         """Split the assembly summary files into the RefSeq files and the GenBank files.
 
-        A file whose name says neither is fatal rather than ignored: skipping it
-        would leave every genome it lists out of the release, which looks exactly
-        like a successful run of a smaller release.
+        The database is read from the file name, the convention being
+        ncbi_utils.assembly_summary_filename(), so each file is parsed once,
+        RefSeq files before GenBank files, rather than every file once per
+        database. A file whose name says neither is fatal rather than ignored:
+        skipping it would leave every genome it lists out of the release, which
+        looks exactly like a successful run of a smaller release.
 
         Parameters
         ----------
@@ -268,31 +263,27 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
         refseq_files, genbank_files = [], []
 
         for assembly_summary in new_list_genomes:
-            # the suffix is what names the database, and sits behind the .gz on a
-            # compressed file; ncbi_metadata_sync writes these gzipped, older
-            # releases hold them plain, and both are read the same way
-            name = os.path.basename(assembly_summary)
-            if name.endswith('.gz'):
-                name = name[:-len('.gz')]
-
-            if name.endswith(REFSEQ_SUFFIX):
+            database = assembly_summary_database(assembly_summary)
+            if database is REFSEQ:
                 refseq_files.append(assembly_summary)
-            elif name.endswith(GENBANK_SUFFIX):
+            elif database is GENBANK:
                 genbank_files.append(assembly_summary)
             else:
                 self.logger.error(
-                    'Cannot tell which NCBI database {} describes: the name of an assembly '
-                    'summary file must end with {} or {}, optionally gzipped.'.format(
-                        os.path.basename(assembly_summary), REFSEQ_SUFFIX, GENBANK_SUFFIX))
+                    'Cannot tell which NCBI database {} describes: an assembly summary '
+                    'file is named assembly_summary_<domain>_<database>.txt, optionally '
+                    'gzipped, with <database> one of {}.'.format(
+                        os.path.basename(assembly_summary),
+                        ', '.join(d.name for d in NCBI_DATABASES)))
                 sys.exit()
 
         # either list being empty is legal, but it is far more often a mistake in
         # the file list than a release genuinely drawn from one database
-        for database, files in (('RefSeq', refseq_files), ('GenBank', genbank_files)):
+        for database, files in ((REFSEQ, refseq_files), (GENBANK, genbank_files)):
             if not files:
                 self.logger.warning(
                     'No {} assembly summary files were given; the selection will '
-                    'contain no {} genomes.'.format(database, database))
+                    'contain no {} genomes.'.format(database.label, database.label))
 
         return refseq_files, genbank_files
 

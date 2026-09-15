@@ -247,3 +247,49 @@ class FtpPathFeedsTheSyncTests(TempDirCase):
                          sorted(a for f, a in self.ROWS.items() if U.has_ftp_path(f)))
         self.assertEqual(sorted(a for _, a, _ in skipped),
                          sorted(a for f, a in self.ROWS.items() if not U.has_ftp_path(f)))
+
+
+# ----------------------------------------------------------------- the NCBI databases
+
+class DatabaseTableTests(unittest.TestCase):
+    """RefSeq is GCF and its summary files end _refseq.txt: said once, here."""
+
+    def test_refseq_comes_before_genbank(self):
+        # select_genomes must know what RefSeq covers before it judges GenBank
+        self.assertEqual([d.name for d in U.NCBI_DATABASES], ['refseq', 'genbank'])
+
+    def test_the_prefixes_are_the_databases_own(self):
+        self.assertEqual(U.REFSEQ_PREFIX, U.REFSEQ.prefix)
+        self.assertEqual(U.GENBANK_PREFIX, U.GENBANK.prefix)
+        self.assertEqual({U.REFSEQ_PREFIX, U.GENBANK_PREFIX}, {'GCF', 'GCA'})
+
+
+class SummaryFileNamingTests(unittest.TestCase):
+    """ncbi_metadata_sync names the files and select_genomes reads the database
+    back out of the name; one convention, two directions."""
+
+    def test_a_name_reads_back_as_the_database_it_was_built_for(self):
+        for database in U.NCBI_DATABASES:
+            for domain in ('archaea', 'bacteria', 'fungi'):
+                name = U.assembly_summary_filename(domain, database)
+                self.assertIs(U.assembly_summary_database(name), database, name)
+
+    def test_the_names_are_the_ones_gtdb_has_always_used(self):
+        self.assertEqual(U.assembly_summary_filename('bacteria', U.REFSEQ),
+                         'assembly_summary_bacteria_refseq.txt.gz')
+        self.assertEqual(U.assembly_summary_filename('archaea', U.GENBANK),
+                         'assembly_summary_archaea_genbank.txt.gz')
+
+    def test_an_uncompressed_file_from_an_older_release_is_placed_too(self):
+        self.assertIs(U.assembly_summary_database('assembly_summary_bacteria_refseq.txt'),
+                      U.REFSEQ)
+
+    def test_a_path_is_read_by_its_last_component(self):
+        self.assertIs(U.assembly_summary_database('/r237/ncbi/assembly_summary_fungi_genbank.txt.gz'),
+                      U.GENBANK)
+
+    def test_a_name_saying_neither_database_is_none(self):
+        # select_genomes stops on such a file rather than guessing
+        for name in ('assembly_summary.txt', 'assembly_summary_bacteria.txt.gz',
+                     'genbank_summary.txt', 'assembly_summary_refseq_bacteria.txt'):
+            self.assertIsNone(U.assembly_summary_database(name), name)
