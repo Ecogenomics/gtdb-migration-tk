@@ -26,11 +26,6 @@ from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk import config
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
-from gtdb_migration_tk.ncbi_ftp_manager import (GENBANK_PREFIX,
-                                                REFSEQ_PREFIX,
-                                                GenomeManager,
-                                                MetadataSyncManager,
-                                                SelectedGenomesManager)
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_manager import MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
@@ -39,13 +34,17 @@ from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeType
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.ncbi_genome_sync import NCBIGenomeSync
+from gtdb_migration_tk.ncbi_metadata_sync import MetadataSyncManager
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
+from gtdb_migration_tk.ncbi_utils import GENBANK_PREFIX, REFSEQ_PREFIX
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.propagate_taxonomy import Propagate
 from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
 from gtdb_migration_tk.rna_manager_silva import RnaManagerSILVA
+from gtdb_migration_tk.select_genomes import SelectedGenomesManager
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.trnascan_manager import tRNAScan
+from gtdb_migration_tk.update_genomes import GenomeManager
 from gtdb_migration_tk.utils.tools import Tools
 
 

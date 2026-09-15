@@ -202,3 +202,29 @@ class ReadSummaryRows(TempDirCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# --------------------------------------------------------------------------- ftp_path
+
+class FtpPathTests(unittest.TestCase):
+    """A genome NCBI lists but does not serve cannot be mirrored."""
+
+    def test_a_served_genome_has_an_ftp_path(self):
+        self.assertTrue(U.has_ftp_path('https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/x'))
+
+    def test_na_is_not_an_ftp_path(self):
+        self.assertFalse(U.has_ftp_path('na'))
+
+    def test_na_is_matched_whatever_its_case(self):
+        self.assertFalse(U.has_ftp_path('NA'))
+
+    def test_an_empty_column_is_not_an_ftp_path(self):
+        # older summary files leave it empty rather than writing na
+        self.assertFalse(U.has_ftp_path(''))
+
+    def test_the_test_agrees_with_the_one_the_sync_applies(self):
+        # the two must agree, or the selection promises genomes the sync refuses
+        import gtdb_migration_tk.ncbi_genome_sync as sync
+        for value in ('na', 'NA', '', 'https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/000/001/x'):
+            sync_usable = bool(value) and value.lower() != 'na'
+            self.assertEqual(U.has_ftp_path(value), sync_usable, value)

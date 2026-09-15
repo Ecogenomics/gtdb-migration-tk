@@ -34,7 +34,7 @@ from gtdb_migration_tk import __version__
 from gtdb_migration_tk.biolib_lite.custom_help_formatter import CustomHelpFormatter
 from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.main import OptionsParser
-from gtdb_migration_tk.ncbi_ftp_manager_tools import NCBI_GROUPS
+from gtdb_migration_tk.ncbi_metadata_sync import NCBI_GROUPS
 from gtdb_migration_tk.ncbi_genome_sync import add_sync_arguments
 
 

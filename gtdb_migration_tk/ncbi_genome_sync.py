@@ -434,7 +434,6 @@ import fcntl
 import hashlib
 import http.client
 import logging
-import re
 import shlex
 import shutil
 import signal
@@ -446,7 +445,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import BadInput, read_summary_rows, summary_field
+from gtdb_migration_tk.ncbi_utils import (BadInput, MD5_LINE_RE, read_summary_rows,
+                                          summary_field)
 
 
 HOST = "ftp.ncbi.nlm.nih.gov"
@@ -454,7 +454,6 @@ URL_PREFIX = "https://ftp.ncbi.nlm.nih.gov/genomes/"
 FTP_PREFIX = "ftp://ftp.ncbi.nlm.nih.gov/genomes/"   # older summaries; rewritten to https
 
 RETRY_STATUS = frozenset((429, 500, 502, 503, 504))
-MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
 
 # 6 attempts with 1.7x backoff (sleeping 2, 3.4, 5.8, 9.8, 16.7 s between them) give up
 # on a stuck file after ~38 s. Higher values idle a whole worker on one bad URL for far

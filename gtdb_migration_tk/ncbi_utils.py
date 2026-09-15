@@ -41,6 +41,7 @@ header is required rather than assumed.
 """
 
 import gzip
+import re
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 
@@ -243,3 +244,35 @@ def read_assembly_summary(assembly_summary: str,
     for _, fields, columns in read_summary_rows(assembly_summary,
                                                 required=('assembly_accession',)):
         yield tuple(summary_field(fields, columns, name) for name in field_names)
+
+
+# Accession prefixes of the two NCBI databases.
+REFSEQ_PREFIX = 'GCF'
+GENBANK_PREFIX = 'GCA'
+
+# One line of NCBI's md5checksums.txt: the MD5, whitespace, the file name.
+MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
+
+
+def has_ftp_path(ftp_path: str) -> bool:
+    """Report whether NCBI serves a directory for an assembly.
+
+    NCBI writes 'na' in ftp_path for an assembly it lists but does not serve, and the
+    column can be empty in an older file. Such a genome cannot be mirrored, so it is not
+    selected: the table select_genomes writes is the list ncbi_genome_sync fetches from,
+    and a row with nothing to fetch would be reported as skipped by every run of it
+    forever.
+
+    This is deliberately the same test ncbi_genome_sync.read_assembly_summary() applies
+    when deciding a row has "no usable ftp_path". The two must agree, or the selection
+    would promise genomes the sync then refuses.
+
+    Parameters
+    ----------
+    ftp_path : str
+        Value of the ftp_path column of an assembly summary file.
+
+    @return: True if the assembly has a directory at NCBI.
+    """
+
+    return bool(ftp_path) and ftp_path.lower() != 'na'

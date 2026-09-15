@@ -15,51 +15,37 @@
 #                                                                             #
 ###############################################################################
 
+"""
+update_genomes.py -- update the GTDB genome directories to match the NCBI mirror.
+
+Each GTDB release is built by comparing the genomes held by the previous release
+with the genomes NCBI currently offers on its FTP site. Genomes NCBI no longer
+offers are removed, genomes new to NCBI are copied across, and genomes held by
+both are checked for a changed genomic FASTA since the previous release. The
+bookkeeping of which genomes fall into which of those three groups is
+GenomeManager's; the copying, comparing and reporting that follows is FTPTools'.
+
+GenomeManager decides nothing beyond what the genome directory files of the
+mirror and of the previous release already say. The mirror is built from the
+selection, and the selection is where a genome is accepted or passed over, so
+every genome the mirror holds is wanted. RefSeq and GenBank are handled in
+separate runs of the same code, told apart by the accession prefix (GCF or GCA),
+because the update of each is reported separately; nothing else differs.
+"""
 
 import os
-import gzip
-import multiprocessing as mp
 import shutil
-import tarfile
-import urllib.request
+import logging
+import multiprocessing as mp
+from contextlib import ExitStack
 from multiprocessing.queues import Queue
-from typing import Dict, List, TextIO, Tuple
+from typing import Dict, List, TextIO
 
 from tqdm import tqdm
 
 from gtdb_migration_tk import config
-from gtdb_migration_tk.ncbi_genome_sync import MD5_LINE_RE
-
-
-# Table of the genomes selected for a new GTDB release, written by the
-# select_genomes command into its output directory. It is gzipped, as the files
-# of a release are once they are part of GTDB, and because the table runs to one
-# row per genome in NCBI: a few million lines of highly repetitive accessions and
-# FTP paths, which compress to roughly a tenth of their size.
-SELECTED_GENOMES_FILE = 'gtdb_selected_genomes.tsv.gz'
-
-# One row of that table: accession, ftp_path, version_status,
-# excluded_from_refseq, gbrs_paired_asm, notes.
-SelectedRow = Tuple[str, str, str, str, str, str]
-
-# Header of the table. It is '#'-prefixed so the file is read by the same
-# readers as an NCBI assembly summary file, which skip comment lines, while
-# still naming its columns for anyone opening it.
-#
-# The first four columns are exactly the four ncbi_genome_sync reads, in the
-# order it writes its own .fail and .bad files, so this table can be handed
-# straight to it as the list of genomes to mirror. It needs assembly_accession
-# and ftp_path, and renders assembly_status.txt from version_status and
-# excluded_from_refseq; the last two columns it simply ignores, as every reader
-# of these tables locates columns by name.
-#
-# The notes column carries what would otherwise be a per genome warning in the
-# log. It exists because NCBI's summary files routinely pair a GenBank assembly
-# with a RefSeq assembly they do not themselves list: too common to report one
-# line at a time, and too material to drop, since it is the reason a genome that
-# appears to be covered by RefSeq was taken from GenBank instead.
-SELECTED_GENOMES_HEADER = ('#assembly_accession\tftp_path\tversion_status'
-                           '\texcluded_from_refseq\tgbrs_paired_asm\tnotes')
+from gtdb_migration_tk.ncbi_utils import MD5_LINE_RE
+from gtdb_migration_tk.utils.common import count_lines
 
 
 # Outcomes a genome held by both the previous release and NCBI can have, as
@@ -77,212 +63,202 @@ MD5_MANIFEST = 'md5checksums.txt'
 GENOMIC_FASTA_EXT = '_genomic.fna.gz'
 
 
-# --------------------------------------------------------------- NCBI metadata sync
+class GenomeManager:
+    """Update the GTDB copy of one NCBI database (RefSeq or GenBank) from the mirror.
 
-# Where NCBI publishes the data a GTDB release is built from.
-NCBI_FTP = 'https://ftp.ncbi.nlm.nih.gov'
-TAXDUMP_URL = NCBI_FTP + '/pub/taxonomy/taxdump.tar.gz'
+    Every genome held by the FTP mirror is of interest, the mirror being a copy
+    of the genomes selected for the release, so genome selection is simply a
+    matter of reading its genome directory file. Genomes are then added,
+    removed, or compared relative to the previous GTDB release. Genomes are
+    tracked as dictionaries mapping an accession to its genome directory.
 
-# The two NCBI databases every group is taken from.
-NCBI_DATABASES = ('refseq', 'genbank')
-
-# The two groups of organisms GTDB builds from, and the directories NCBI serves
-# each one's assembly summaries from (genomes/<database>/<domain>). They are
-# kept apart because they are handled differently at every step after this one:
-# prokaryotes are the release, fungi are selected, assessed (busco) and
-# curated by a procedure of their own. One run of ncbi_metadata_sync downloads
-# one group, so a fungal run cannot quietly rewrite the prokaryotic taxonomy a
-# release has already been built on, and the two can be refreshed on their own
-# schedules.
-GROUP_PROK = 'PROK'
-GROUP_FUNGI = 'FUNGI'
-NCBI_GROUPS = (GROUP_PROK, GROUP_FUNGI)
-
-NCBI_PROK_DOMAINS = ('archaea', 'bacteria')
-NCBI_FUNGI_DOMAINS = ('fungi',)
-
-NCBI_GROUP_DOMAINS = {GROUP_PROK: NCBI_PROK_DOMAINS,
-                      GROUP_FUNGI: NCBI_FUNGI_DOMAINS}
-
-# Whether the standardised taxonomy of a group keeps NCBI's subranks. The
-# prokaryotic taxonomy is the 7 ranks GTDB curates, and a subphylum or subclass
-# in it would be a rank GTDB has no name for. Fungal classification leans on
-# those intermediate ranks, so they are kept, and the taxonomy runs to the 13
-# ranks standardize_taxonomy() writes when told to.
-GROUP_KEEP_SUBRANKS = {GROUP_PROK: False,
-                       GROUP_FUNGI: True}
-
-# What a group's taxonomy files are named for: ncbi_r237_prok_*.tsv against
-# ncbi_r237_fungi_*.tsv, so both groups can be downloaded into the one release
-# directory without either overwriting the other.
-GROUP_FILE_TAG = {GROUP_PROK: 'prok',
-                  GROUP_FUNGI: 'fungi'}
-
-# Read a request in 1 MiB blocks: the assembly summary of GenBank bacteria alone
-# is well over a gigabyte, so nothing may be held in memory whole.
-DOWNLOAD_BLOCK = 1024 * 1024
-
-# A download that stalls outright must fail rather than hold the release up
-# overnight; NCBI answers in well under this even when busy.
-DOWNLOAD_TIMEOUT = 300
-
-
-def assembly_summary_downloads(group: str) -> List[Tuple[str, str, str, str]]:
-    """The assembly summary files of one group, and the names to save them under.
-
-    NCBI calls every one of these files assembly_summary.txt, distinguishing them
-    only by the directory they sit in, so downloading them into one directory
-    means putting the database and domain back into the name. The names built
-    here are the ones GTDB has always used, and are the names select_genomes
-    reads a file's database from, so the two must agree. They carry the domain
-    and not the group, so a fungal file is assembly_summary_fungi_refseq.txt.gz:
-    what a file holds is the domain, and the group is only which of them are
-    downloaded together.
-
-    The database and domain are returned alongside, as the taxonomy step keys the
-    files it was given by them. The names end in .gz because the files are
-    compressed as they are downloaded; every reader of an assembly summary goes
-    through ncbi_utils.open_summary(), which takes either form.
-
-    Parameters
-    ----------
-    group : str
-        Group to download, GROUP_PROK or GROUP_FUNGI.
-
-    @return: list of (database, domain, url, file name), RefSeq before GenBank.
+    One instance handles one database, named by the accession prefix it is
+    given: only genomes with that prefix are read from either genome directory
+    file, and the reports carry the prefix in their names so the RefSeq and
+    GenBank runs of a release sit side by side in one output directory.
     """
 
-    return [(database, domain,
-             '{}/genomes/{}/{}/assembly_summary.txt'.format(NCBI_FTP, database, domain),
-             'assembly_summary_{}_{}.txt.gz'.format(domain, database))
-            for database in NCBI_DATABASES
-            for domain in NCBI_GROUP_DOMAINS[group]]
+    def __init__(self,
+                 accession_prefix: str,
+                 new_genome_dir: str,
+                 dry_run: bool = False,
+                 cpus: int = 1) -> None:
+        """Record which database is handled and where the release is written.
 
+        Parameters
+        ----------
+        accession_prefix : str
+            Accession prefix of the database of interest, REFSEQ_PREFIX or
+            GENBANK_PREFIX.
+        new_genome_dir : str
+            Output directory for the new release, where reports are written.
+        dry_run : bool
+            Report the changes that would be made without modifying any files.
+        cpus : int
+            Number of processes used when comparing genomes.
+        """
 
-def file_checksum(file_path: str, checksum) -> str:
-    """Feed a file to a hash object a block at a time.
+        self.accession_prefix = accession_prefix
+        self.new_genome_dir = new_genome_dir
+        self.dry_run = dry_run
+        self.cpus = cpus
+        self.logger = logging.getLogger('timestamp')
 
-    Parameters
-    ----------
-    file_path : str
-        File to checksum.
-    checksum : hashlib hash
-        Hash object to update.
+    def report_file(self) -> str:
+        """Report recording the fate of every genome of this database.
 
-    @return: hex digest of the file.
-    """
+        @return: path of the report, named for the accession prefix.
+        """
 
-    try:
-        with open(file_path, 'rb') as file_reader:
-            for block in iter(lambda: file_reader.read(DOWNLOAD_BLOCK), b''):
-                checksum.update(block)
-    except OSError as e:
-        raise OSError('cannot read {}'.format(file_path)) from e
+        return os.path.join(self.new_genome_dir,
+                            'report_{}.log'.format(self.accession_prefix.lower()))
 
-    return checksum.hexdigest()
+    def review_file(self) -> str:
+        """Report recording genomes of this database needing manual attention.
 
+        @return: path of the report, named for the accession prefix.
+        """
 
-def download_file(url: str,
-                  output_file: str,
-                  quiet: bool = False,
-                  compress: bool = False) -> int:
-    """Download a URL to a file, leaving nothing behind if it fails.
+        return os.path.join(self.new_genome_dir,
+                            '{}_to_review.log'.format(self.accession_prefix.lower()))
 
-    The bytes go to a neighbouring .partial file which is renamed into place only
-    once the transfer has finished, so an interrupted download cannot leave a
-    truncated file that every later step will read as complete. The rename is
-    atomic within a directory, which is why the temporary file is not in /tmp.
+    def load_genome_dirs(self, genome_dirs_file: str) -> Dict[str, str]:
+        """Read the genomes of this database from a genome directory file.
 
-    With compress set the file is gzipped as it arrives rather than afterwards,
-    so the uncompressed form never has to exist on disk -- which for the GenBank
-    bacteria summary is a gigabyte and a half that would be written only to be
-    read back and thrown away.
+        The file describes a whole release, RefSeq and GenBank together; only
+        the genomes with this manager's accession prefix are kept.
 
-    Parameters
-    ----------
-    url : str
-        URL to download.
-    output_file : str
-        File to write.
-    quiet : bool
-        Suppress the progress bar.
-    compress : bool
-        Gzip the file as it is written.
+        Parameters
+        ----------
+        genome_dirs_file : str
+            Genome directory file (accession, path) of the mirror or of a release.
 
-    @return: number of bytes received, before any compression.
-    """
+        @return: dict of accession to genome directory.
+        """
 
-    partial = output_file + '.partial'
-    written = 0
-    open_output = gzip.open if compress else open
+        self.logger.info('Reading {} genomes from {}:'.format(
+            self.accession_prefix, genome_dirs_file))
 
-    try:
-        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response:
-            # absent on a chunked response, in which case the bar shows a rate
-            # and a byte count but no percentage
-            total = int(response.headers.get('Content-Length') or 0)
-            with open_output(partial, 'wb') as handle, tqdm(
-                    total=total or None, unit='B', unit_scale=True, unit_divisor=1024,
-                    desc=os.path.basename(output_file), disable=quiet) as progress:
-                for block in iter(lambda: response.read(DOWNLOAD_BLOCK), b''):
-                    handle.write(block)
-                    written += len(block)
-                    progress.update(len(block))
+        genome_paths = {}
+        with open(genome_dirs_file, 'r') as f:
+            for line in tqdm(f, total=count_lines(genome_dirs_file)):
+                gid, path, *_ = line.split('\t')
+                if gid.startswith(self.accession_prefix):
+                    genome_paths[gid] = path.strip()
 
-        if total and written != total:
-            raise OSError('expected {:,} bytes but received {:,}'.format(total, written))
-    except Exception:
-        if os.path.exists(partial):
-            os.remove(partial)
-        raise
+        self.logger.info(' - identified {:,} genomes'.format(len(genome_paths)))
 
-    os.replace(partial, output_file)
+        return genome_paths
 
-    return written
+    def generate_genomes_to_remove(self,
+                                   new_genomes: Dict[str, str],
+                                   old_genomes: Dict[str, str]) -> Dict[str, str]:
+        """Identify genomes present in the previous release, but no longer on the NCBI FTP site.
 
+        Parameters
+        ----------
+        new_genomes : dict
+            Accession to genome directory for genomes currently on the FTP site.
+        old_genomes : dict
+            Accession to genome directory for genomes in the previous release.
 
-def extract_tarball(tarball: str, output_dir: str) -> None:
-    """Extract a gzipped tarball into a directory.
+        @return: dict of accession to genome directory for genomes to remove.
+        """
 
-    Parameters
-    ----------
-    tarball : str
-        Gzipped tar archive to extract.
-    output_dir : str
-        Directory to extract into; created if it does not exist.
-    """
+        removed_genomes = {gid: path for gid, path in old_genomes.items()
+                           if gid not in new_genomes}
+        self.logger.info('Identified {:,} genomes to remove.'.format(len(removed_genomes)))
 
-    os.makedirs(output_dir, exist_ok=True)
+        return removed_genomes
 
-    with tarfile.open(tarball, 'r:gz') as archive:
-        try:
-            # refuses members that would write outside output_dir; the argument
-            # is only available from Python 3.11.4, and is the default from 3.14
-            archive.extractall(path=output_dir, filter='data')
-        except TypeError:
-            archive.extractall(path=output_dir)
+    def generate_genomes_to_add(self,
+                                new_genomes: Dict[str, str],
+                                old_genomes: Dict[str, str]) -> Dict[str, str]:
+        """Identify genomes new to the NCBI FTP site since the previous release.
 
+        Parameters
+        ----------
+        new_genomes : dict
+            Accession to genome directory for genomes currently on the FTP site.
+        old_genomes : dict
+            Accession to genome directory for genomes in the previous release.
 
-def write_selected_genomes(selected: List[SelectedRow], output_file: str) -> None:
-    """Write the table of genomes selected for a new GTDB release.
+        @return: dict of accession to genome directory for genomes to add.
+        """
 
-    Rows are sorted by accession rather than left in the order the summary files
-    were read, so that the tables of two releases can be compared directly to
-    see what the new release gained and lost.
+        added_genomes = {gid: path for gid, path in new_genomes.items()
+                         if gid not in old_genomes}
+        self.logger.info('Identified {:,} genomes to add.'.format(len(added_genomes)))
 
-    Parameters
-    ----------
-    selected : list
-        Selected genomes as (accession, ftp_path, version_status,
-        excluded_from_refseq, gbrs_paired_asm, notes) rows.
-    output_file : str
-        Gzipped table to write.
-    """
+        return added_genomes
 
-    with gzip.open(output_file, 'wt') as table:
-        table.write(SELECTED_GENOMES_HEADER + '\n')
-        for row in sorted(selected):
-            table.write('\t'.join(row) + '\n')
+    def generate_genomes_to_compare(self,
+                                    new_genomes: Dict[str, str],
+                                    old_genomes: Dict[str, str]) -> List[str]:
+        """Identify genomes common to the previous release and the NCBI FTP site.
+
+        These genomes are candidates for an update as their files may have
+        changed since the previous release.
+
+        Parameters
+        ----------
+        new_genomes : dict
+            Accession to genome directory for genomes currently on the FTP site.
+        old_genomes : dict
+            Accession to genome directory for genomes in the previous release.
+
+        @return: list of accessions to compare between the two releases.
+        """
+
+        shared_genomes = list(old_genomes.keys() & new_genomes.keys())
+        self.logger.info('Identified {:,} genomes to compare.'.format(len(shared_genomes)))
+
+        return shared_genomes
+
+    def run_comparison(self,
+                       ftp_dir: str,
+                       ftp_genome_dirs: str,
+                       old_genome_dirs: str) -> None:
+        """Update the GTDB genome directories of this database to match the mirror.
+
+        The genomes of the mirror are compared to those of the previous GTDB
+        release. Genomes no longer at NCBI are recorded as removed, new genomes
+        are copied across, and genomes common to both are checked for a changed
+        genomic FASTA and carried over with their derived data when it is not.
+
+        Parameters
+        ----------
+        ftp_dir : str
+            Root of the NCBI FTP mirror, replaced by the new release directory
+            to place each genome.
+        ftp_genome_dirs : str
+            Genome directory file (accession, path) for the mirror.
+        old_genome_dirs : str
+            Genome directory file (accession, path) for the previous release.
+        """
+
+        self.logger.info('Updating {} genomes.'.format(self.accession_prefix))
+
+        # reports are opened for the duration of the update so they are closed,
+        # and their contents kept, if the update fails part way through
+        with ExitStack() as reports:
+            report = reports.enter_context(open(self.report_file(), 'w', 1))
+            genomes_to_review = reports.enter_context(open(self.review_file(), 'w', 1))
+
+            old_genomes = self.load_genome_dirs(old_genome_dirs)
+            new_genomes = self.load_genome_dirs(ftp_genome_dirs)
+
+            ftptools = FTPTools(report, genomes_to_review, self.dry_run)
+
+            removed_genomes = self.generate_genomes_to_remove(new_genomes, old_genomes)
+            ftptools.remove_genomes(removed_genomes)
+
+            added_genomes = self.generate_genomes_to_add(new_genomes, old_genomes)
+            ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir)
+
+            shared_genomes = self.generate_genomes_to_compare(new_genomes, old_genomes)
+            ftptools.compare_genomes(shared_genomes, old_genomes, new_genomes,
+                                     ftp_dir, self.new_genome_dir, self.cpus)
 
 
 class FTPTools():
