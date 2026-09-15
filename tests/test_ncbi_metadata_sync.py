@@ -51,6 +51,15 @@ NODES = [('131567', '1', 'no rank'),
          ('2236', '2235', 'family'),
          ('2239', '2236', 'genus'),
          ('2242', '2239', 'species'),
+         # A lineage NCBI holds under the SeqCode, which it says by appending the
+         # code to the name; ranks published under both codes carry it and the
+         # rest do not
+         ('2802426', '2', 'phylum'),
+         ('2802427', '2802426', 'class'),
+         ('2802428', '2802427', 'order'),
+         ('2802429', '2802428', 'family'),
+         ('2802430', '2802429', 'genus'),
+         ('2802431', '2802430', 'species'),
          # Fungi
          ('2759', '131567', 'superkingdom'),
          ('4751', '2759', 'kingdom'),
@@ -68,6 +77,12 @@ NAMES = [('131567', 'cellular organisms'),
          ('1236', 'Gammaproteobacteria'), ('91347', 'Enterobacterales'),
          ('543', 'Enterobacteriaceae'), ('561', 'Escherichia'),
          ('562', 'Escherichia coli'),
+         ('2802426', 'Patescibacteria (SeqCode)'),
+         ('2802427', 'Patescibacteriia'),
+         ('2802428', 'Patescibacteriales'),
+         ('2802429', 'Patescibacteriaceae (SeqCode)'),
+         ('2802430', 'Patescibacter'),
+         ('2802431', 'Patescibacter aquaticus (SeqCode)'),
          ('2157', 'Archaea'), ('28890', 'Euryarchaeota'),
          ('183963', 'Halobacteria'), ('2235', 'Halobacteriales'),
          ('2236', 'Halobacteriaceae'), ('2239', 'Halobacterium'),
@@ -326,6 +341,70 @@ class InvalidTaxidReportTests(unittest.TestCase):
         self.assertIn('GCA_000000001.1 (taxid 987210895)', self.warnings[0])
 
 
+# ------------------------------------------------------------------- names.dmp parsing
+
+class NameParsingTests(unittest.TestCase):
+    """NCBI writes the nomenclatural code into the name of a taxon it holds under
+    the SeqCode, and GTDB wants the name alone."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix='ncbi_names_test.')
+        self.parser = ncbi_tax_manager.TaxonomyNCBI()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def names_dmp(self, *records):
+        """A names.dmp holding the given (tax_id, name, name class) records."""
+
+        path = os.path.join(self.dir, 'names.dmp')
+        with open(path, 'w') as handle:
+            for tax_id, name, name_class in records:
+                handle.write('{}\t|\t{}\t|\t\t|\t{}\t|\n'.format(tax_id, name, name_class))
+
+        return path
+
+    def read(self, *records):
+        return {tax_id: record.name_txt for tax_id, record
+                in self.parser._read_names(self.names_dmp(*records)).items()}
+
+    def test_the_seqcode_annotation_is_removed_from_a_name(self):
+        self.assertEqual(
+            self.read(('2802429', 'Patescibacteriaceae (SeqCode)', 'scientific name')),
+            {'2802429': 'Patescibacteriaceae'})
+
+    def test_a_name_without_an_annotation_is_left_as_it_is(self):
+        self.assertEqual(
+            self.read(('562', 'Escherichia coli', 'scientific name')),
+            {'562': 'Escherichia coli'})
+
+    def test_an_annotation_is_removed_from_a_name_of_any_rank(self):
+        # it is appended to species and phyla alike
+        self.assertEqual(
+            self.read(('2802426', 'Patescibacteria (SeqCode)', 'scientific name'),
+                      ('2802431', 'Patescibacter aquaticus (SeqCode)', 'scientific name')),
+            {'2802426': 'Patescibacteria', '2802431': 'Patescibacter aquaticus'})
+
+    def test_an_annotation_elsewhere_in_a_name_is_left_alone(self):
+        # only a trailing code is an annotation on the name
+        self.assertEqual(
+            self.read(('1', '(SeqCode) sensu lato', 'scientific name')),
+            {'1': '(SeqCode) sensu lato'})
+
+    def test_a_name_that_is_nothing_but_the_annotation_is_kept(self):
+        # rather than putting an empty taxon into a lineage
+        self.assertEqual(self.read(('1', '(SeqCode)', 'scientific name')),
+                         {'1': '(SeqCode)'})
+
+    def test_only_scientific_names_are_read(self):
+        # the contract the stripping sits inside
+        self.assertEqual(
+            self.read(('562', 'Escherichia coli', 'scientific name'),
+                      ('562', 'E. coli', 'equivalent name'),
+                      ('562', 'Bacillus coli (SeqCode)', 'synonym')),
+            {'562': 'Escherichia coli'})
+
+
 # ----------------------------------------------------------------- the command itself
 
 TAXDUMP = make_taxdump()
@@ -333,28 +412,32 @@ TAXDUMP_MD5 = hashlib.md5(TAXDUMP).hexdigest()
 
 # enough of an assembly summary for the taxonomy parser, which reads taxid and
 # organism_name by column name and walks the lineage of each assembly
-# One genome per file. They must differ: the taxonomy parser refuses an accession
-# it has already seen, so four copies of one row would abort the run.
-GENOMES = {('refseq', 'archaea'): ('GCF_000000001.1', '2242', 'Halobacterium salinarum'),
-           ('refseq', 'bacteria'): ('GCF_000000002.1', '562', 'Escherichia coli'),
-           ('refseq', 'fungi'): ('GCF_000000005.1', '5476', 'Candida albicans'),
-           ('genbank', 'archaea'): ('GCA_000000003.1', '2242', 'Halobacterium salinarum'),
-           ('genbank', 'bacteria'): ('GCA_000000004.1', '562', 'Escherichia coli'),
-           ('genbank', 'fungi'): ('GCA_000000006.1', '5476', 'Candida albicans')}
+# The accessions must differ: the taxonomy parser refuses one it has already
+# seen, so copies of a row in two files would abort the run.
+SEQCODE_GENOME = ('GCF_000000007.1', '2802431', 'Patescibacter aquaticus')
+
+GENOMES = {('refseq', 'archaea'): [('GCF_000000001.1', '2242', 'Halobacterium salinarum')],
+           ('refseq', 'bacteria'): [('GCF_000000002.1', '562', 'Escherichia coli'),
+                                    SEQCODE_GENOME],
+           ('refseq', 'fungi'): [('GCF_000000005.1', '5476', 'Candida albicans')],
+           ('genbank', 'archaea'): [('GCA_000000003.1', '2242', 'Halobacterium salinarum')],
+           ('genbank', 'bacteria'): [('GCA_000000004.1', '562', 'Escherichia coli')],
+           ('genbank', 'fungi'): [('GCA_000000006.1', '5476', 'Candida albicans')]}
 
 
 def summary_file(database, domain):
-    """An assembly summary holding one genome.
+    """An assembly summary holding the genomes of one database and domain.
 
     The comment line matters: the taxonomy parser skips the first line of an
     assembly summary and reads the second as the header, as NCBI writes them.
     """
 
-    accession, taxid, organism = GENOMES[(database, domain)]
+    rows = ''.join('{}\t{}\t{}\tstrain=x\tftp://a\n'.format(*genome)
+                   for genome in GENOMES[(database, domain)])
 
     return ('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_summary.txt\n'
             '#assembly_accession\ttaxid\torganism_name\tinfraspecific_name\tftp_path\n'
-            '{}\t{}\t{}\tstrain=x\tftp://a\n'.format(accession, taxid, organism)).encode()
+            + rows).encode()
 
 
 class MetadataSyncTests(HttpCase):
@@ -498,7 +581,8 @@ class MetadataSyncTests(HttpCase):
         lineages = self.taxonomy('ncbi_r237_prok_unfiltered_taxonomy.tsv')
 
         self.assertEqual(sorted(lineages), ['GCA_000000003.1', 'GCA_000000004.1',
-                                            'GCF_000000001.1', 'GCF_000000002.1'])
+                                            'GCF_000000001.1', 'GCF_000000002.1',
+                                            'GCF_000000007.1'])
         self.assertIn('Escherichia coli', lineages['GCF_000000002.1'])
         self.assertIn('Bacteria', lineages['GCF_000000002.1'])
         self.assertIn('Halobacterium salinarum', lineages['GCF_000000001.1'])
@@ -529,11 +613,34 @@ class MetadataSyncTests(HttpCase):
         self.run_sync()
         standardised = self.taxonomy('ncbi_r237_prok_standardized.tsv')
 
-        self.assertEqual(len(standardised), 4)
+        self.assertEqual(len(standardised), 5)
         for gid, taxonomy in standardised.items():
             taxa = taxonomy.split(';')
             self.assertEqual(len(taxa), 7, gid)
             self.assertFalse([t for t in taxa if len(t.split('__')[0]) == 2], gid)
+
+    def test_the_nomenclatural_code_is_not_carried_into_the_taxonomy(self):
+        # NCBI appends the code to the name of a taxon it holds under the
+        # SeqCode; f__Patescibacteriaceae (SeqCode) matches no other spelling of
+        # the same taxon
+        self.run_sync()
+        lineages = self.taxonomy('ncbi_r237_prok_unfiltered_taxonomy.tsv')
+
+        self.assertNotIn('SeqCode', lineages['GCF_000000007.1'])
+        self.assertIn('f__Patescibacteriaceae', lineages['GCF_000000007.1'].split(';'))
+        self.assertIn('p__Patescibacteria', lineages['GCF_000000007.1'].split(';'))
+
+    def test_a_seqcode_species_reaches_the_standardised_taxonomy(self):
+        # the brackets would otherwise fail the valid character check and drop
+        # the genome from the standardised taxonomy entirely
+        self.run_sync()
+        standardised = self.taxonomy('ncbi_r237_prok_standardized.tsv')
+
+        self.assertEqual(
+            standardised['GCF_000000007.1'],
+            'd__Bacteria;p__Patescibacteria;c__Patescibacteriia;'
+            'o__Patescibacteriales;f__Patescibacteriaceae;g__Patescibacter;'
+            's__Patescibacter aquaticus')
 
     def test_a_corrupt_taxonomy_download_stops_the_run(self):
         # a truncated taxdump reads as a valid, smaller taxonomy, and only shows
@@ -567,7 +674,8 @@ class MetadataSyncTests(HttpCase):
         rows = list(U.read_assembly_summary(
             self.path('assembly_summary_bacteria_refseq.txt.gz'),
             'assembly_accession', 'taxid'))
-        self.assertEqual(rows, [('GCF_000000002.1', '562')])
+        self.assertEqual(rows, [('GCF_000000002.1', '562'),
+                                ('GCF_000000007.1', '2802431')])
 
     def test_no_uncompressed_summary_is_left_behind(self):
         # the uncompressed GenBank bacteria summary is 1.5 GB, so it is never
