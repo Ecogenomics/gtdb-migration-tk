@@ -36,7 +36,6 @@ from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.ncbi_genome_sync import NCBIGenomeSync
 from gtdb_migration_tk.ncbi_metadata_sync import NCBIMetadataSync
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
-from gtdb_migration_tk.ncbi_utils import GENBANK_PREFIX, REFSEQ_PREFIX
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.propagate_taxonomy import Propagate
 from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
@@ -152,10 +151,9 @@ class OptionsParser():
         check_file_exists(options.old_genome_dirs)
         make_sure_path_exists(options.output_dir)
 
-        # RefSeq then GenBank, each with its own reports in the one output directory
-        for accession_prefix in (REFSEQ_PREFIX, GENBANK_PREFIX):
-            p = UpdateGenomes(accession_prefix, options.output_dir, options.dry_run, options.cpus)
-            p.run_comparison(options.ftp_dir, options.ftp_genome_dirs, options.old_genome_dirs)
+        # RefSeq and GenBank in one pass, with one pair of reports for the release
+        p = UpdateGenomes(options.output_dir, options.dry_run, options.cpus)
+        p.run_comparison(options.ftp_dir, options.ftp_genome_dirs, options.old_genome_dirs)
 
     def run_prodigal(self, options):
         p = ProdigalManager(options.tmp_dir, options.cpus)

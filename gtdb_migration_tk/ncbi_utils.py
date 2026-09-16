@@ -275,8 +275,8 @@ REFSEQ = NCBIDatabase('refseq', 'RefSeq', 'GCF')
 GENBANK = NCBIDatabase('genbank', 'GenBank', 'GCA')
 NCBI_DATABASES = (REFSEQ, GENBANK)
 
-# The prefixes on their own, as most callers want them: select_genomes reads a
-# genome's database from its accession, update_genomes runs once per prefix.
+# The prefixes on their own, as most callers want them: select_genomes and
+# update_genomes both read a genome's database from its accession.
 REFSEQ_PREFIX = REFSEQ.prefix
 GENBANK_PREFIX = GENBANK.prefix
 

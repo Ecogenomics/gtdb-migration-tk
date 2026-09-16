@@ -204,8 +204,26 @@ Run `gtdb_migration_tk <command> -h` for the arguments of any command.
 | `ncbi_metadata_sync` | Download the NCBI taxonomy and the RefSeq and GenBank assembly summary files one group (`--group PROK` or `FUNGI`) is built from, and generate its standardised NCBI taxonomy |
 | `ncbi_genome_sync` | Sync NCBI data to a local directory |
 | `select_genomes` | Select the NCBI genomes which will comprise the new GTDB release |
-| `update_genomes` | Update RefSeq and GenBank genomes from the NCBI FTP mirror, carrying derived data across where the genomic FASTA is unchanged |
+| `update_genomes` | Update RefSeq and GenBank genomes from the NCBI FTP mirror, carrying derived data across where the genome's sequences are unchanged |
 | `list_genomes` | Produce file indicating the directory of each genome |
+
+`update_genomes` writes the new release under `--new_directory`, RefSeq and
+GenBank in trees of their own and each genome under NCBI's own nesting:
+
+```
+<new_directory>/
+  refseq/GCF/000/006/805/GCF_000006805.1_ASM680v1/
+  genbank/GCA/047/639/395/GCA_047639395.1_ASM4763939v1/
+  report.log          the fate of every genome of the release
+  to_review.log       genomes needing manual attention
+  genome_dirs.tsv     the genome_dirs file of the new release
+```
+
+`genome_dirs.tsv` is in the format `list_genomes` writes and every later command
+reads, so the new release does not need indexing with `list_genomes` afterwards;
+that command is for indexing the mirror. It names only the genomes whose
+directory was written, so a `--dry_run`, which writes none, writes no
+`genome_dirs.tsv` either.
 
 ### Gene calling and annotation
 
@@ -333,6 +351,17 @@ database are written to. Two names derive from them:
 MARKER_FOLDER_SUFFIX = {'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}
 GTDB_DERIVED_DIRS_TO_COPY = ('prodigal', 'rna_silva_138.2', 'trna', 'rna_ltp_10_2024')
 ```
+
+A genome whose sequences NCBI has not changed keeps the derived data of the
+previous release. The genomic FASTA MD5 NCBI publishes decides that, but it is
+the MD5 of the whole file, and NCBI reissues a FASTA with rewritten deflines --
+a renamed organism, a relabelled assembly -- and identical sequences. Where the
+two published MD5s disagree, `update_genomes` therefore hashes the sequences
+themselves before throwing anything away: the same contigs, under the same IDs,
+with the same bases, ignoring the free text after each ID, the line wrapping and
+the base case. Those genomes are reported as `genomic FASTA sequences unchanged`
+and keep their derived data. A genome whose contig was renamed does not, its
+gene calls naming a contig the new FASTA no longer has.
 
 `MARKER_FOLDER_SUFFIX` is the default `--folder_suffix` of `hmmsearch` and
 `top_hit`, so by default they write `prodigal/pfam_33.1_lite/` and

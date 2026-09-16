@@ -182,7 +182,13 @@ def __domain(group, required):
 
 
 def __dry_run(group):
-    group.add_argument('--dry_run', action='store_true', help='Run the pipeline without copying the files.')
+    group.add_argument('--dry_run', action='store_true',
+                       help='Report what the run would do without copying any file. '
+                            'Every genome is still compared -- the genomic FASTA MD5 of '
+                            'the mirror against the previous release, and where those '
+                            'differ the sequences themselves -- so the reports and the '
+                            'counts of changed and unchanged genomes are the ones a real '
+                            'run would produce.')
 
 
 def __dsmz_directory(group, required):
@@ -428,7 +434,7 @@ def __ftp_directory(group, required):
 
 def __new_directory(group, required):
     group.add_argument('--new_directory', dest="output_dir", required=required,
-                       help='Root directory of the new GTDB release, where the genomes and reports are written.')
+                       help='Root directory of the new GTDB release. RefSeq genomes are written under refseq/ and GenBank genomes under genbank/, each keeping NCBI\'s nesting (genbank/GCA/047/639/395/GCA_047639395.1_ASM4763939v1), alongside the reports and the genome_dirs.tsv of the new release.')
 
 
 def __ftp_genome_dirs_file(group, required):

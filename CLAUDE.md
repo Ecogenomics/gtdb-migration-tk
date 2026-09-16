@@ -107,27 +107,60 @@ command modules do not import one another; anything two of them need goes here.
 
 ### Release update: deciding vs. doing
 
-`update_genomes.py` `UpdateGenomes` sorts the genomes of one database (given
-as an accession prefix, `REFSEQ_PREFIX` or `GENBANK_PREFIX`) into removed, new
-and shared by comparing the mirror's and the previous release's genome_dirs
-files, filtered to that prefix; it reads no summary file, since the mirror is a
-copy of the selection. `update_genomes` runs it once per prefix into one output
-directory, with reports named for the prefix (`report_gcf.log`,
-`gcf_to_review.log`, `report_gca.log`, `gca_to_review.log`). `FTPTools`, in the
+`update_genomes.py` `UpdateGenomes` sorts the genomes of a release into removed,
+new and shared by comparing the mirror's and the previous release's genome_dirs
+files; it reads no summary file, since the mirror is a copy of the selection.
+RefSeq and GenBank are done in ONE pass, every genome decided on its own
+accession, writing `report.log`, `to_review.log` and `genome_dirs.tsv`. It ran once per accession
+prefix until 0.1.7, from when `GenBankManager` needed the RefSeq run's output;
+that decision now belongs to `select_genomes.py`. What the split reported for
+free is kept as the per-database breakdown on every count logged
+(`database_label()`, `tally_by_database()`, `count_by_database()`, and
+`ComparisonTally.by_database` for the comparison outcomes). `FTPTools`, in the
 same module, does the resulting copying, comparing and reporting.
+
+Whether a shared genome keeps its derived data is decided by
+`compare_genome_directories()` in two steps. The genomic FASTA MD5 published in
+each `md5checksums.txt` is compared first, costing no read. Where those differ,
+`sequences_md5()` hashes what the FASTA says the GENOME is -- the contig IDs and
+the bases, ignoring the free text after each ID, the line wrapping and the base
+case -- because NCBI reissues a FASTA with rewritten deflines and untouched
+sequences, and the published MD5, being of the whole file, changes with them.
+Equal sequences give `STATUS_SEQUENCES_UNCHANGED`, a fourth outcome that carries
+the derived data across exactly as `STATUS_FASTA_UNCHANGED` does. The contig ID
+and the division between contigs are deliberately part of the digest: the derived
+data names the contigs it was called on, so a renamed or merged contig must
+regenerate however unchanged the bases. The file is hashed as it decompresses,
+nothing written.
+
+The release tree splits the databases at the top where the mirror does not.
+NCBI nests every genome of both under one `all/`
+(`all/GCA/047/639/395/GCA_047639395.1_ASM4763939v1`); `release_genome_dir()`
+keeps the nesting and replaces `all/` with the database's `name`, giving
+`genbank/GCA/047/639/395/...` and `refseq/GCF/...`. The nesting is taken from the
+mirror path, never rebuilt from the accession: NCBI defines it, the sync laid it
+down from NCBI's URLs, and a reshaped release is no longer what
+`ncbi_genome_sync --verify` checks.
 
 Genome IDs are compared in canonical form via
 `biolib_lite.common.canonical_gid()`: `GCF_005435135.1` and `GCA_005435135.1`
 both become `G005435135`, which is how a GenBank genome is matched to its RefSeq
 counterpart. Use it rather than slicing accessions.
 
-The lingua franca between commands is the **genome_dirs file**: a TSV of
-`accession<TAB>path`, one genome per line. `list_genomes` writes it
-(`directory_manager.py`) by walking a tree and keeping the genomes named by
-`--gtdb_selected_genomes`, and the update, comparison and validation commands
-consume old, new and FTP variants of it. It says where each genome of a release
-is held locally; the selection table says which genomes and where NCBI serves
-them. Whether a tree holds what it should is `ncbi_genome_sync --verify`.
+The lingua franca between commands is the **genome_dirs file**: a headerless TSV
+of `accession<TAB>absolute path<TAB>canonical accession`, one genome per line.
+Readers split on tabs and ignore further columns, so columns may be appended but
+never reordered. Two commands write one. `list_genomes`
+(`directory_manager.py`) walks a tree and keeps the genomes named by
+`--gtdb_selected_genomes`; that is how the MIRROR is indexed. `update_genomes`
+writes `genome_dirs.tsv` for the release it builds, from the paths it placed
+(`genome_dirs_row()`, `FTPTools.record_genome_dir()`), so the new release is not
+walked back afterwards — only genomes whose directory was written are in it, and
+a dry run, having written none, writes no file. The update, comparison and
+validation commands consume old, new and FTP variants. A genome_dirs file says
+where each genome of a release is held locally; the selection table says which
+genomes and where NCBI serves them. Whether a tree holds what it should is
+`ncbi_genome_sync --verify`.
 
 ### `config.py` is the only place a reference database version lives
 
@@ -138,7 +171,7 @@ holds: `MARKER_FOLDER_SUFFIX` (`{'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}`)
 is the default `--folder_suffix` of `hmmsearch` and `top_hit`, resolved in
 `main.py`, so those commands write `prodigal/pfam_33.1_lite/` unless told
 otherwise; `GTDB_DERIVED_DIRS_TO_COPY` is the derived data `FTPTools` carries
-across from the previous release when a genome's FASTA is unchanged. The
+across from the previous release when a genome's sequences are unchanged. The
 Pfam/TIGRFAM results and the version-free symlinks to them
 (`prodigal/<gid>_pfam_lite.tsv.gz -> ./pfam_33.1_lite/...`) live inside
 `prodigal/`, so copying `prodigal/` with `symlinks=True` carries them intact;
