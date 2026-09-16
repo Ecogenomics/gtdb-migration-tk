@@ -319,8 +319,12 @@ class GenomeColumnsTests(unittest.TestCase):
 
     def test_the_sync_writes_its_own_tables_with_the_genome_columns(self):
         from gtdb_migration_tk import ncbi_genome_sync as sync
-        self.assertEqual(sync.BAD_HEADER, U.table_header(*U.GENOME_COLUMNS) + '\n')
-        self.assertTrue(sync.FAIL_HEADER.startswith(U.table_header(*U.GENOME_COLUMNS) + '\t'))
+        # both open with the shared columns, and each adds the one column saying what
+        # went wrong -- which --retry, reading by name, ignores
+        for header in (sync.BAD_HEADER, sync.FAIL_HEADER):
+            self.assertTrue(header.startswith(U.table_header(*U.GENOME_COLUMNS) + '\t'))
+        self.assertEqual(sync.BAD_HEADER.split('\t')[-1], 'failed_files\n')
+        self.assertEqual(sync.FAIL_HEADER.split('\t')[-1], 'reason\n')
         self.assertEqual(len(sync.Genome._fields), len(U.GENOME_COLUMNS))
         self.assertEqual(tuple(sync.SYNC_COLUMNS), U.GENOME_COLUMNS[:2])
 

@@ -103,7 +103,7 @@ genome it lists is fetched or brought up to date, each file verified against the
 S=/srv/db/gtdb/metadata/release237/ncbi/gtdb_selected_genomes.tsv.gz
 
 # see what a run would do: how many directories removed, genomes added, genomes
-# already present -- and the removal list in <base>.rm_dry_run. Changes nothing.
+# already present -- and the removal list in <log>.rm_dry_run. Changes nothing.
 gtdb_migration_tk ncbi_genome_sync --gtdb_selected_genomes $S \
     --root /srv/db/gtdb/genomes -l ./logs/sync.log --dry-run
 
@@ -111,13 +111,26 @@ gtdb_migration_tk ncbi_genome_sync --gtdb_selected_genomes $S \
 gtdb_migration_tk ncbi_genome_sync --gtdb_selected_genomes $S \
     --root /srv/db/gtdb/genomes -l ./logs/sync.log
 
-# retry only the genomes that failed last time; a retry never removes anything
-gtdb_migration_tk ncbi_genome_sync --retry ./logs/gtdb_selected_genomes.fail \
-    --root /srv/db/gtdb/genomes -l ./logs/sync.log
+# retry only the genomes that failed last time; a retry removes nothing it was not given.
+# The round gets its own --log, and so its own outputs: it reads sync.fail and writes
+# retry1.fail. Reusing -l ./logs/sync.log here is refused, since the run would truncate
+# the file it is reading.
+gtdb_migration_tk ncbi_genome_sync --retry ./logs/sync.fail \
+    --root /srv/db/gtdb/genomes -l ./logs/retry1.log
+
+# rebuild the genomes that failed verification: --delete removes each directory
+# immediately before that genome is refetched, in the one run
+gtdb_migration_tk ncbi_genome_sync --retry ./logs/sync.bad \
+    --root /srv/db/gtdb/genomes -l ./logs/rebuild.log --delete
 ```
 
-`<base>.fail`, `<base>.bad` and `<base>.rm` (what was removed, each directory recorded
-before it is deleted) are written to the `--log` directory. A failure file carries the
+`-l/--log` names the log and the run alike: every file a run writes is that name with
+`.log` stripped, beside the log — `-l ./logs/sync.log` gives `./logs/sync.fail`,
+`sync.bad`, `sync.rm`, `sync.rm_dry_run` and `sync.extra` (`<log>.*` below). Any other
+extension is kept, so `run.txt` yields `run.txt.fail`. Give each round its own log and
+one round's outputs can never overwrite another's; a run that would truncate its own
+`--retry` input is refused (exit 2). `--fail`/`--bad` override the two that are also
+inputs. A failure file carries the
 same columns as the input, so it can be fed back in with `--retry`. Never give a `.fail`
 or any subset of the table to `--gtdb_selected_genomes`: the table defines what the
 mirror should hold, and everything it leaves out would be removed. An empty table is
@@ -131,10 +144,42 @@ RefSeq assembly it stands in for and why. Without this the genome would leave th
 entirely, even though NCBI holds it under its GenBank accession.
 
 `--verify` and `--verify-only` check both halves of "the mirror equals the selection":
-every listed genome present and md5-clean (failures to `<base>.bad`), and nothing else
-present (directories the selection does not list to `<base>.extra`). Either fails the
+every listed genome present and md5-clean (failures to `<log>.bad`), and nothing else
+present (directories the selection does not list to `<log>.extra`). Either fails the
 verification; `--delete` removes both. Given `--retry`, only the listed genomes are
 verified.
+
+NCBI publishes two checksum tables per assembly, `md5checksums.txt` and — for some
+assemblies — `uncompressed_checksums.txt`, and they can contradict each other: about 1000
+genomes have a stale `md5checksums.txt` entry for `<asm>_fcs_report.txt` while the other
+table is right. Believing the first alone means those genomes can never sync at all (the
+bytes NCBI serves do not match the checksum NCBI publishes for them, so the download fails
+every run) and verify reports rot that is not there. So a file `md5checksums.txt` rejects
+gets a second opinion from `uncompressed_checksums.txt`, in both the sync and the verify,
+and passes if that table vouches for exactly those bytes under exactly that name. A file
+neither table vouches for fails as before. Only uncompressed files are eligible: that table
+lists the uncompressed *form* of everything, so a `.gz` appears in it under a name it does
+not have on disk and can never match — it is refused before a request is made, and can
+never excuse a corrupt archive. The second table is fetched only on an eligible
+disagreement — one request per affected genome, none for a clean one — and is written into
+that genome's directory as the record of why the bytes were accepted, so some genome
+directories hold one and most do not; its absence is never a fault. Each run's closing
+lines report how many files and genomes it settled.
+
+A `<log>.bad` row carries a `failed_files` column naming every file of that genome at
+fault, comma-separated, each tagged with which fault it was — `missing:NAME` (the manifest
+lists it, the mirror does not have it), `mismatch:NAME` (present, bytes rotted) or
+`unreadable:NAME`. The whole genome is checked before the row is written, so the column is
+every fault rather than the first one found. A fault with no file to name — missing
+directory, no `md5checksums.txt` — puts that reason in the column instead. The four columns
+before it are what `--retry` reads, so the file still feeds straight back in.
+
+`--delete` means "remove the directory rather than repair it". With `--retry` it rebuilds:
+each listed genome's directory is removed immediately before that genome is fetched, which
+is what a `<log>.bad` needs, since a plain sync trusts an intact manifest and would repair
+nothing. With `--verify`/`--verify-only` it removes what fails verification and what the
+selection does not list. A plain `--gtdb_selected_genomes` sync refuses it (exit 2) — there
+it could only mean re-downloading the whole mirror.
 
 `ncbi_genome_sync` returns meaningful exit codes so it can be driven from a wrapper
 script:
@@ -142,11 +187,11 @@ script:
 | Code | Meaning |
 | --- | --- |
 | `0` | everything synced / verified clean |
-| `1` | some genomes failed — see `<base>.fail` / `<base>.bad` — or verification found directories the selection does not list — see `<base>.extra` |
+| `1` | some genomes failed — see `<log>.fail` / `<log>.bad` — or verification found directories the selection does not list — see `<log>.extra` |
 | `2` | usage error, or a malformed assembly summary |
 | `74` | filesystem refused the write (disk full, quota, read-only) |
 | `75` | NCBI is throttling this host, or another sync holds `--root` — retry later |
-| `130` / `143` | interrupted (SIGINT / SIGTERM); in-flight genomes recorded in `<base>.fail` |
+| `130` / `143` | interrupted (SIGINT / SIGTERM); in-flight genomes recorded in `<log>.fail` |
 
 ## Commands
 
