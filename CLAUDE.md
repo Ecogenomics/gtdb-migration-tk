@@ -25,7 +25,7 @@ Tests are plain `unittest`, offline, and need no mirror or database:
 pytest                                                # whole suite (testpaths in pyproject.toml)
 pytest tests/test_ncbi_genome_sync.py -k manifest -v  # one file / one match
 python -m unittest discover -s tests                  # without pytest
-python -m unittest -v tests.test_ncbi_ftp_manager     # one module
+python -m unittest -v tests.test_select_genomes      # one module
 ```
 
 There is no linter or formatter configured. Releases are cut by publishing a
@@ -49,11 +49,15 @@ by adding a new version line and its notes at the top.
 2. `main.py` `OptionsParser.parse_options()` is an if/elif chain on
    `options.subparser_name`, each branch calling a one-method-per-command wrapper
    that builds a manager and passes the `options` fields through.
-3. A `*_manager.py` module holds the implementation as a class.
+3. A module holds the implementation as a class. The four NCBI commands live in
+   modules named for them (`ncbi_metadata_sync.py` `NCBIMetadataSync`,
+   `select_genomes.py` `SelectGenomes`, `ncbi_genome_sync.py` `NCBIGenomeSync`,
+   `update_genomes.py` `UpdateGenomes`); every other command is a `*_manager.py`
+   holding a `*Manager`.
 
 So adding a command means: an argparse block and a `print_help()` line in
-`__main__.py`, a method plus an elif in `main.py`, the manager, and the command
-table in `README.md`.
+`__main__.py`, a method plus an elif in `main.py`, the implementation module, and
+the command table in `README.md`.
 
 ### Logging and exit codes
 
@@ -84,36 +88,79 @@ summary file is `summary`, and the tests depend on that.
 ### NCBI assembly summary files are read by column name, never by position
 
 `ncbi_utils.py` is the single reader, shared by `ncbi_genome_sync.py` and
-`ncbi_ftp_manager.py`. It finds columns from the `#assembly_accession ...` header
+`select_genomes.py`. It finds columns from the `#assembly_accession ...` header
 row and refuses a table with no header (`BadInput`, a `ValueError`). NCBI has
 grown `assembly_summary.txt` from 23 to 38 columns; a positional reader would
 silently mirror the wrong files or build a release from the wrong genomes. Do
 not slice these tables by index anywhere.
 
+`ncbi_utils.py` also holds what more than one NCBI command knows about NCBI's
+files: the database table (`REFSEQ`, `GENBANK`, `NCBI_DATABASES` and the
+prefixes derived from them), `NCBI_HOST`/`NCBI_URL`, the naming of a saved
+summary file (`assembly_summary_filename()`/`assembly_summary_database()`), the
+columns every GTDB genome table opens with (`GENOME_COLUMNS`, `table_header()`),
+`NCBI_NA`, `has_ftp_path()`, the manifest (`MD5_MANIFEST`, `GENOMIC_FASTA_EXT`,
+`read_md5_manifest()`) and the block files are read and hashed in (`CHUNK`,
+`file_md5()`). It is a leaf: it imports nothing from the package, and
+`ncbi_genome_sync.py` imports from it and from nothing else in the package. The
+command modules do not import one another; anything two of them need goes here.
+
 ### Release update: deciding vs. doing
 
-`ncbi_ftp_manager.py` `GenomeManager` sorts the genomes of one database (given
-as an accession prefix, `REFSEQ_PREFIX` or `GENBANK_PREFIX`) into removed, new
-and shared by comparing the mirror's and the previous release's genome_dirs
-files, filtered to that prefix; it reads no summary file, since the mirror is a
-copy of the selection. `update_genomes` runs it once per prefix into one output
-directory, with reports named for the prefix (`report_gcf.log`,
-`gcf_to_review.log`, `report_gca.log`, `gca_to_review.log`).
-`ncbi_ftp_manager_tools.py` `FTPTools` does the resulting copying, comparing and
-reporting.
+`update_genomes.py` `UpdateGenomes` sorts the genomes of a release into removed,
+new and shared by comparing the mirror's and the previous release's genome_dirs
+files; it reads no summary file, since the mirror is a copy of the selection.
+RefSeq and GenBank are done in ONE pass, every genome decided on its own
+accession, writing `report.log`, `to_review.log` and `genome_dirs.tsv`. It ran once per accession
+prefix until 0.1.7, from when `GenBankManager` needed the RefSeq run's output;
+that decision now belongs to `select_genomes.py`. What the split reported for
+free is kept as the per-database breakdown on every count logged
+(`database_label()`, `tally_by_database()`, `count_by_database()`, and
+`ComparisonTally.by_database` for the comparison outcomes). `FTPTools`, in the
+same module, does the resulting copying, comparing and reporting.
+
+Whether a shared genome keeps its derived data is decided by
+`compare_genome_directories()` in two steps. The genomic FASTA MD5 published in
+each `md5checksums.txt` is compared first, costing no read. Where those differ,
+`sequences_md5()` hashes what the FASTA says the GENOME is -- the contig IDs and
+the bases, ignoring the free text after each ID, the line wrapping and the base
+case -- because NCBI reissues a FASTA with rewritten deflines and untouched
+sequences, and the published MD5, being of the whole file, changes with them.
+Equal sequences give `STATUS_SEQUENCES_UNCHANGED`, a fourth outcome that carries
+the derived data across exactly as `STATUS_FASTA_UNCHANGED` does. The contig ID
+and the division between contigs are deliberately part of the digest: the derived
+data names the contigs it was called on, so a renamed or merged contig must
+regenerate however unchanged the bases. The file is hashed as it decompresses,
+nothing written.
+
+The release tree splits the databases at the top where the mirror does not.
+NCBI nests every genome of both under one `all/`
+(`all/GCA/047/639/395/GCA_047639395.1_ASM4763939v1`); `release_genome_dir()`
+keeps the nesting and replaces `all/` with the database's `name`, giving
+`genbank/GCA/047/639/395/...` and `refseq/GCF/...`. The nesting is taken from the
+mirror path, never rebuilt from the accession: NCBI defines it, the sync laid it
+down from NCBI's URLs, and a reshaped release is no longer what
+`ncbi_genome_sync --verify` checks.
 
 Genome IDs are compared in canonical form via
 `biolib_lite.common.canonical_gid()`: `GCF_005435135.1` and `GCA_005435135.1`
 both become `G005435135`, which is how a GenBank genome is matched to its RefSeq
 counterpart. Use it rather than slicing accessions.
 
-The lingua franca between commands is the **genome_dirs file**: a TSV of
-`accession<TAB>path`, one genome per line. `list_genomes` writes it
-(`directory_manager.py`) by walking a tree and keeping the genomes named by
-`--gtdb_selected_genomes`, and the update, comparison and validation commands
-consume old, new and FTP variants of it. It says where each genome of a release
-is held locally; the selection table says which genomes and where NCBI serves
-them. Whether a tree holds what it should is `ncbi_genome_sync --verify`.
+The lingua franca between commands is the **genome_dirs file**: a headerless TSV
+of `accession<TAB>absolute path<TAB>canonical accession`, one genome per line.
+Readers split on tabs and ignore further columns, so columns may be appended but
+never reordered. Two commands write one. `list_genomes`
+(`directory_manager.py`) walks a tree and keeps the genomes named by
+`--gtdb_selected_genomes`; that is how the MIRROR is indexed. `update_genomes`
+writes `genome_dirs.tsv` for the release it builds, from the paths it placed
+(`genome_dirs_row()`, `FTPTools.record_genome_dir()`), so the new release is not
+walked back afterwards — only genomes whose directory was written are in it, and
+a dry run, having written none, writes no file. The update, comparison and
+validation commands consume old, new and FTP variants. A genome_dirs file says
+where each genome of a release is held locally; the selection table says which
+genomes and where NCBI serves them. Whether a tree holds what it should is
+`ncbi_genome_sync --verify`.
 
 ### `config.py` is the only place a reference database version lives
 
@@ -124,7 +171,7 @@ holds: `MARKER_FOLDER_SUFFIX` (`{'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}`)
 is the default `--folder_suffix` of `hmmsearch` and `top_hit`, resolved in
 `main.py`, so those commands write `prodigal/pfam_33.1_lite/` unless told
 otherwise; `GTDB_DERIVED_DIRS_TO_COPY` is the derived data `FTPTools` carries
-across from the previous release when a genome's FASTA is unchanged. The
+across from the previous release when a genome's sequences are unchanged. The
 Pfam/TIGRFAM results and the version-free symlinks to them
 (`prodigal/<gid>_pfam_lite.tsv.gz -> ./pfam_33.1_lite/...`) live inside
 `prodigal/`, so copying `prodigal/` with `symlinks=True` carries them intact;
@@ -160,9 +207,10 @@ shadowed by it and never importable. Put small shared helpers in
 
 - Every source file starts with the GPLv3 header block. Docstrings use
   numpy-style `Parameters` sections and end with an `@return:` line.
-- Module docstrings in the refactored modules (`ncbi_ftp_manager.py`,
-  `ncbi_utils.py`, `config.py`, `ncbi_genome_sync.py`) explain *why* the code is
-  shaped as it is, not what it does. Keep that up when touching them.
+- Module docstrings in the refactored modules (`ncbi_metadata_sync.py`,
+  `select_genomes.py`, `update_genomes.py`, `ncbi_utils.py`, `config.py`,
+  `ncbi_genome_sync.py`) explain *why* the code is shaped as it is, not what it
+  does. Keep that up when touching them.
 - Tests live in `tests/test_<module>.py`, one `TempDirCase` base for anything
   touching disk. Test names read as sentences about the contract that would
   otherwise break silently in production.

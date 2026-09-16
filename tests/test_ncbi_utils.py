@@ -4,9 +4,13 @@
 The contract that would break silently in production, and nowhere else, is column
 lookup: NCBI has grown assembly_summary.txt from 23 fields to 38, so a reader that
 addresses columns by position starts reading the wrong field whenever the table is
-revised. ncbi_genome_sync then mirrors the wrong files, and ncbi_ftp_manager builds a release
+revised. ncbi_genome_sync then mirrors the wrong files, and select_genomes builds a release
 from the wrong set of genomes, with nothing to indicate anything went wrong. Those
 tests feed the reader tables whose columns have moved.
+
+Also here is what the NCBI commands know in common about NCBI's files -- the
+accession prefixes, the manifest line, the test for an unserved genome -- because
+ncbi_utils.py is the one module all of them may import.
 """
 
 import os
@@ -202,3 +206,189 @@ class ReadSummaryRows(TempDirCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# --------------------------------------------------------------------------- ftp_path
+
+class FtpPathTests(unittest.TestCase):
+    """A genome NCBI lists but does not serve cannot be mirrored."""
+
+    def test_a_served_genome_has_an_ftp_path(self):
+        self.assertTrue(U.has_ftp_path('https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/x'))
+
+    def test_na_is_not_an_ftp_path(self):
+        self.assertFalse(U.has_ftp_path('na'))
+
+    def test_na_is_matched_whatever_its_case(self):
+        self.assertFalse(U.has_ftp_path('NA'))
+
+    def test_an_empty_column_is_not_an_ftp_path(self):
+        # older summary files leave it empty rather than writing na
+        self.assertFalse(U.has_ftp_path(''))
+
+
+
+class FtpPathFeedsTheSyncTests(TempDirCase):
+    """select_genomes keeps the rows has_ftp_path accepts; the sync must fetch
+    exactly those, or the selection promises genomes the sync then refuses."""
+
+    ROWS = {'na': 'GCF_000000001.1', 'NA': 'GCF_000000002.1', '': 'GCF_000000003.1',
+            'https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/000/004/x': 'GCF_000000004.1'}
+
+    def test_the_sync_skips_exactly_the_rows_has_ftp_path_rejects(self):
+        import gtdb_migration_tk.ncbi_genome_sync as sync
+        table = self.write('summary.txt', summary(*(
+            '{}\tPRJ\tlatest\tna\tna\t{}'.format(accession, ftp_path)
+            for ftp_path, accession in self.ROWS.items())))
+
+        genomes, skipped = sync.read_assembly_summary(table)
+
+        self.assertEqual(sorted(g.accession for g in genomes),
+                         sorted(a for f, a in self.ROWS.items() if U.has_ftp_path(f)))
+        self.assertEqual(sorted(a for _, a, _ in skipped),
+                         sorted(a for f, a in self.ROWS.items() if not U.has_ftp_path(f)))
+
+
+# ----------------------------------------------------------------- the NCBI databases
+
+class DatabaseTableTests(unittest.TestCase):
+    """RefSeq is GCF and its summary files end _refseq.txt: said once, here."""
+
+    def test_refseq_comes_before_genbank(self):
+        # select_genomes must know what RefSeq covers before it judges GenBank
+        self.assertEqual([d.name for d in U.NCBI_DATABASES], ['refseq', 'genbank'])
+
+    def test_the_prefixes_are_the_databases_own(self):
+        self.assertEqual(U.REFSEQ_PREFIX, U.REFSEQ.prefix)
+        self.assertEqual(U.GENBANK_PREFIX, U.GENBANK.prefix)
+        self.assertEqual({U.REFSEQ_PREFIX, U.GENBANK_PREFIX}, {'GCF', 'GCA'})
+
+
+class SummaryFileNamingTests(unittest.TestCase):
+    """ncbi_metadata_sync names the files and select_genomes reads the database
+    back out of the name; one convention, two directions."""
+
+    def test_a_name_reads_back_as_the_database_it_was_built_for(self):
+        for database in U.NCBI_DATABASES:
+            for domain in ('archaea', 'bacteria', 'fungi'):
+                name = U.assembly_summary_filename(domain, database)
+                self.assertIs(U.assembly_summary_database(name), database, name)
+
+    def test_the_names_are_the_ones_gtdb_has_always_used(self):
+        self.assertEqual(U.assembly_summary_filename('bacteria', U.REFSEQ),
+                         'assembly_summary_bacteria_refseq.txt.gz')
+        self.assertEqual(U.assembly_summary_filename('archaea', U.GENBANK),
+                         'assembly_summary_archaea_genbank.txt.gz')
+
+    def test_an_uncompressed_file_from_an_older_release_is_placed_too(self):
+        self.assertIs(U.assembly_summary_database('assembly_summary_bacteria_refseq.txt'),
+                      U.REFSEQ)
+
+    def test_a_path_is_read_by_its_last_component(self):
+        self.assertIs(U.assembly_summary_database('/r237/ncbi/assembly_summary_fungi_genbank.txt.gz'),
+                      U.GENBANK)
+
+    def test_a_name_saying_neither_database_is_none(self):
+        # select_genomes stops on such a file rather than guessing
+        for name in ('assembly_summary.txt', 'assembly_summary_bacteria.txt.gz',
+                     'genbank_summary.txt', 'assembly_summary_refseq_bacteria.txt'):
+            self.assertIsNone(U.assembly_summary_database(name), name)
+
+
+# ----------------------------------------------------------------- the genome columns
+
+class GenomeColumnsTests(unittest.TestCase):
+    """Every table GTDB hands the sync opens with the same four columns; they are
+    written down once and each table's header is built from them."""
+
+    def test_the_columns_are_what_the_sync_needs_to_mirror_a_genome(self):
+        self.assertEqual(U.GENOME_COLUMNS,
+                         ('assembly_accession', 'ftp_path', 'version_status',
+                          'excluded_from_refseq'))
+
+    def test_a_table_header_is_a_comment_line_naming_the_columns(self):
+        # the summary readers skip comment lines and read column names from them
+        self.assertEqual(U.table_header('a', 'b'), '#a\tb')
+        columns = U.summary_columns(U.table_header(*U.GENOME_COLUMNS))
+        self.assertEqual(sorted(columns), sorted(U.GENOME_COLUMNS))
+
+    def test_the_selection_opens_with_the_genome_columns(self):
+        from gtdb_migration_tk import select_genomes
+        self.assertTrue(select_genomes.SELECTED_GENOMES_HEADER.startswith(
+            U.table_header(*U.GENOME_COLUMNS) + '\t'))
+
+    def test_the_sync_writes_its_own_tables_with_the_genome_columns(self):
+        from gtdb_migration_tk import ncbi_genome_sync as sync
+        # both open with the shared columns, and each adds the one column saying what
+        # went wrong -- which --retry, reading by name, ignores
+        for header in (sync.BAD_HEADER, sync.FAIL_HEADER):
+            self.assertTrue(header.startswith(U.table_header(*U.GENOME_COLUMNS) + '\t'))
+        self.assertEqual(sync.BAD_HEADER.split('\t')[-1], 'failed_files\n')
+        self.assertEqual(sync.FAIL_HEADER.split('\t')[-1], 'reason\n')
+        self.assertEqual(len(sync.Genome._fields), len(U.GENOME_COLUMNS))
+        self.assertEqual(tuple(sync.SYNC_COLUMNS), U.GENOME_COLUMNS[:2])
+
+
+class NcbiNullTests(unittest.TestCase):
+    def test_na_is_the_null_the_selection_writes_and_has_ftp_path_reads(self):
+        from gtdb_migration_tk import select_genomes
+        self.assertEqual(U.NCBI_NA, 'na')
+        self.assertEqual(select_genomes.NO_NOTE, U.NCBI_NA)
+        self.assertFalse(U.has_ftp_path(U.NCBI_NA))
+
+
+# ----------------------------------------------------------------------- the manifest
+
+class ManifestTests(unittest.TestCase):
+    """md5checksums.txt is read once, for the sync and for the release update."""
+
+    MD5 = 'a' * 32
+
+    def read(self, text):
+        return list(U.read_md5_manifest(text.splitlines()))
+
+    def test_an_entry_is_its_md5_and_its_name_less_the_leading_dot_slash(self):
+        self.assertEqual(self.read(self.MD5 + '  ./GCF_1_A_genomic.fna.gz\n'),
+                         [(self.MD5, 'GCF_1_A_genomic.fna.gz')])
+
+    def test_a_nested_entry_keeps_its_directory(self):
+        # callers match the whole path, which is what keeps the subtrees out
+        self.assertEqual(self.read(self.MD5 + '  ./all_assembly_versions/x.txt\n'),
+                         [(self.MD5, 'all_assembly_versions/x.txt')])
+
+    def test_lines_that_are_not_entries_are_skipped(self):
+        text = '\n# a comment\nnot a checksum  ./x\n' + self.MD5 + '  ./y\n'
+        self.assertEqual(self.read(text), [(self.MD5, 'y')])
+
+    def test_manifest_order_is_kept(self):
+        text = ''.join('{}  ./{}\n'.format(c * 32, n) for c, n in (('1', 'b'), ('2', 'a')))
+        self.assertEqual([n for _, n in self.read(text)], ['b', 'a'])
+
+    def test_the_manifest_and_fasta_names_are_those_the_sync_fetches(self):
+        from gtdb_migration_tk import ncbi_genome_sync as sync
+        self.assertIn(U.MD5_MANIFEST, sync.WANTED_EXACT)
+        self.assertIn(U.GENOMIC_FASTA_EXT, sync.WANTED_SUFFIXES)
+
+
+# ---------------------------------------------------------------------------- hashing
+
+class FileMd5Tests(TempDirCase):
+    """One file hash for the taxonomy dump and the mirror alike."""
+
+    def test_the_digest_is_the_md5_of_the_whole_file(self):
+        import hashlib
+        path = self.write('small.bin', 'hello ncbi')
+        self.assertEqual(U.file_md5(path), hashlib.md5(b'hello ncbi').hexdigest())
+
+    def test_a_file_longer_than_a_chunk_hashes_as_one_stream(self):
+        import hashlib
+        payload = bytes(range(256)) * (2 * U.CHUNK // 256 + 3)
+        path = os.path.join(self.dir, 'big.bin')
+        with open(path, 'wb') as handle:
+            handle.write(payload)
+        self.assertGreater(len(payload), 2 * U.CHUNK)
+        self.assertEqual(U.file_md5(path), hashlib.md5(payload).hexdigest())
+
+    def test_the_chunk_is_one_mebibyte(self):
+        # the measured flat region; the sync's memory bound is CHUNK x threads
+        self.assertEqual(U.CHUNK, 1024 * 1024)

@@ -58,6 +58,54 @@ The trust rule relies on NCBI regenerating the manifest whenever content changes
 cannot see local bit-rot in a file whose entry did not move. --full re-hashes everything
 and repairs; --verify re-hashes everything and reports. That is the documented policy.
 
+WHEN NCBI'S TWO CHECKSUM TABLES DISAGREE
+----------------------------------------
+NCBI publishes md5checksums.txt and, for some assemblies, uncompressed_checksums.txt, and
+they can contradict each other. Measured on the production mirror: ~1000 genomes whose
+md5checksums.txt entry for <asm>_fcs_report.txt is stale while the other table is right.
+Believing md5checksums.txt alone condemns those genomes twice over. The sync cannot
+install a file it has just downloaded -- the bytes NCBI serves do not match the checksum
+NCBI publishes for them -- so the genome fails on every run and never enters the mirror at
+all; and a verify of one that was mirrored by some other route reports rot that is not
+there.
+
+The two files look nothing alike, and that is a trap worth stating plainly, because
+assuming otherwise fails SILENTLY rather than loudly -- a table read with the wrong reader
+parses to nothing, which is indistinguishable from "NCBI vouches for nothing here":
+
+    md5checksums.txt           <md5>  ./<name>          two spaces, no header
+    uncompressed_checksums.txt ./<name>\t<md5>\t...     TAB-separated, name FIRST, under a
+                                                       `#file md5sum crc32 size` header
+
+read_uncompressed_checksums() reads the second by column name, never by position, and
+returns None rather than guessing when the header is missing.
+
+So an UNCOMPRESSED file md5checksums.txt rejects gets a second opinion, in both the sync
+and the verify: if uncompressed_checksums.txt vouches for exactly the bytes in hand, under
+exactly that name, the file passes. A file neither table vouches for fails exactly as
+before.
+
+Only uncompressed files, because the table lists the uncompressed FORM of everything: a
+.gz appears there under a name it does not have on disk (<asm>_genomic.fna against
+<asm>_genomic.fna.gz), so no entry for it can ever match. Asking is a request that cannot
+succeed, so a compressed file is refused before one is made and a genome whose only
+failures are archives spends nothing. What remains eligible is what NCBI does not compress
+-- <asm>_fcs_report.txt, the assembly and ANI reports -- which means this can never excuse
+a corrupt archive, structurally rather than by policy.
+
+It is a SECOND opinion, never a first -- md5checksums.txt settles every file it agrees
+with, and the other table is fetched lazily, one request on the first eligible
+disagreement in a genome and none at all for a genome that is clean. A verify of a healthy
+mirror therefore still makes no requests.
+
+The table is not trusted from disk: a local copy vouching for local bytes is two halves of
+the same claim, and NCBI may since have corrected either table, so the answer comes from
+NCBI each time. The copy is written into the genome directory when it settles something,
+as the record of why those bytes were accepted -- which is why some genome directories
+hold an uncompressed_checksums.txt and most do not. It is not in the whitelist, nothing
+requires it, and its absence is never a fault. Each run's closing lines say how many files
+and genomes it settled, so a change in NCBI's consistency is visible rather than silent.
+
 CORRECTNESS -- AND BEING KILLED
 -------------------------------
 Every download is written to a temp file and md5-checked BEFORE being moved into place,
@@ -69,7 +117,7 @@ on the first and hashes-then-completes the second, downloading nothing that was 
 correct. Stale temp files from the kill are swept when the genome is next visited.
 
 A stop the script can see (Ctrl-C, SIGTERM, a full disk) is cooperative: every worker
-aborts at its next request, in-flight genomes are recorded in <base>.fail as "stopped:",
+aborts at its next request, in-flight genomes are recorded in <log>.fail as "stopped:",
 the summary prints, and the exit code says why (74 / 130 / 143 below). A second signal
 kills outright. <root>/.ncbi_sync.lock refuses a second sync on the same mirror, so a
 restart cannot race a run that is merely paused.
@@ -85,7 +133,7 @@ than surviving beside it, which a match on accession alone would allow. The digi
 directories a removal empties go too, down to all/, so list_genomes never finds a hollow
 path.
 
-Each directory is written to <base>.rm BEFORE it is deleted: a kill mid-way leaves a
+Each directory is written to <log>.rm BEFORE it is deleted: a kill mid-way leaves a
 record of what went, and Ctrl-C / SIGTERM stops between directories. One that will not
 delete (another member's file -- see SHARED OPERATION) is logged and counted and the sync
 still runs, with exit 1.
@@ -100,26 +148,46 @@ window between the test and the act. That in turn makes the removals safe to run
 ENOTEMPTY or ENOENT and stops climbing. NFS does not throttle the way NCBI does -- the
 ceiling is the server's nfsd pool, not a penalty -- so --nfs-jobs is a throughput knob
 rather than a safety one: 8 by default, lower it when others are working on the mirror.
-Measured on the production server: 113 genomes/s serial, 316 at 4, 465 at 8, 539 at 16. Rows land in <base>.rm in
+Measured on the production server: 113 genomes/s serial, 316 at 4, 465 at 8, 539 at 16. Rows land in <log>.rm in
 completion order rather than sorted.
 
 Two guards, because this deletes data:
   * A table given to --gtdb_selected_genomes that lists no genomes is refused (exit 2):
     taken literally it would empty the mirror, and the likely cause is an empty .fail
     given to the wrong flag. --retry treats the same table as "nothing to do" (exit 0).
-  * --retry never removes. A .fail, a .bad, or any hand-cut subset of the selection
-    lists only some of the genomes the mirror should hold, and belongs there.
+  * --retry never removes a genome it was not given. A .fail, a .bad, or any hand-cut
+    subset of the selection lists only some of the genomes the mirror should hold, so
+    what it omits is not "extra". With --delete it still removes the genomes it WAS
+    given, one directory at a time, immediately before refetching that genome (below).
+
+--delete means "remove the directory rather than repair it", and what it is given decides
+which directories:
+
+  * --retry --delete rebuilds. Each listed genome's directory is removed immediately
+    before that genome is fetched, in the same run, by the same worker. A .bad is the
+    case it exists for: verification found the bytes on disk wrong, and a sync would
+    otherwise trust an intact manifest and repair nothing. Removing per genome rather
+    than in an up-front pass means a Ctrl-C or a tripped breaker leaves at most -j
+    directories gone and not yet rebuilt, and those are exactly the ones the run records
+    as "stopped:" in <log>.fail. A directory that will not delete is recorded as a
+    failure and NOT synced: fetching into it would rebuild the state being discarded.
+  * --verify/--verify-only --delete repairs the mirror's shape. Genomes that fail
+    verification lose their directories (so a later sync rebuilds them), and directories
+    the selection does not name are removed and recorded in <log>.rm.
+  * A bare --gtdb_selected_genomes sync refuses --delete (exit 2). There it could only
+    mean "discard and re-download the whole mirror", which is millions of files and no
+    guard; the pruning that sync does need happens anyway.
 
 --verify and --verify-only, given the selection, check both halves of "the mirror equals
-the selection": every listed genome present and md5-clean (failures to <base>.bad, as
+the selection": every listed genome present and md5-clean (failures to <log>.bad, as
 always), AND nothing else present -- every directory the selection does not name is listed
-in <base>.extra and fails the verification (exit 1); with --delete they are removed as
-well, recorded in <base>.rm. Given --retry only the listed genomes are verified, a retry
+in <log>.extra and fails the verification (exit 1); with --delete they are removed as
+well, recorded in <log>.rm. Given --retry only the listed genomes are verified, a retry
 file being a subset. --verify-only never syncs, and removes nothing without --delete.
 
 --dry-run walks the mirror and reports the three counts -- directories to remove, genomes
 to add, genomes already present (whether a present one needs updating is decided per
-genome by the sync, from the manifest) -- writes the removal list to <base>.rm_dry_run,
+genome by the sync, from the manifest) -- writes the removal list to <log>.rm_dry_run,
 and exits without fetching, removing or verifying anything. It takes no lock, so it can
 run beside a live sync to show what the NEXT run would do. The walk is one os.scandir()
 per directory, on the order of 1.4M of them on NFS for a full release, overlapped across
@@ -137,7 +205,7 @@ genome is simply visited again (one request, fast path). --verify withdraws it o
 failure, so the next sync must consult NCBI for that genome rather than skip it as fresh.
 (What that sync then repairs is unchanged by the marker: a missing file is re-downloaded;
 bit-rot in a file whose manifest entry did not move is still trusted, and still needs
---verify --delete or --full, exactly as before.)
+--full, or --verify to find it and --retry <log>.bad --delete to rebuild it.)
 
 With --max-age DAYS (default 14) a genome whose marker is younger is skipped with ZERO
 requests -- but only after the local checks that cost nothing: the manifest must be
@@ -208,7 +276,7 @@ mostly warm and run for hours, so -j alone cannot be made safe. Two mechanisms r
     After 4 such failed pauses in a row the host is in a penalty state that minutes will
     not clear (measured: 60/120/240/300 s pauses each answered within 1-17 s, 67 min after
     the load that caused it) and the run STOPS with exit 75 rather than crawling. Done
-    genomes stay on disk, in-flight ones go to <base>.fail as "stopped:", and a re-run of
+    genomes stay on disk, in-flight ones go to <log>.fail as "stopped:", and a re-run of
     the same list hours later is cheap because everything done takes the fast path.
 
 In practice, then: --rate (default 20) is the safety mechanism and -j (default 8) is not.
@@ -257,7 +325,7 @@ The input is an NCBI assembly_summary.txt: the ftp_path column says where each
 assembly lives, and assembly_accession names it. Both are found BY NAME from the
 `#assembly_accession ...` header row, never by column number -- NCBI has grown that file
 from 23 columns to 38, and pinning ftp_path to field 20 breaks silently on the next one.
-The reading of those tables is in ncbi_utils.py, shared with ncbi_ftp_manager.py.
+The reading of those tables is in ncbi_utils.py, shared with select_genomes.py.
 
     ftp_path "na" or empty   the assembly has no public directory (suppressed, or
                              not yet released). NOT an error: whole-domain summaries
@@ -277,48 +345,68 @@ The reading of those tables is in ncbi_utils.py, shared with ncbi_ftp_manager.py
     https://ftp.ncbi.../     old shell pipeline's rewritten URLs would otherwise
     genomes/                 mirror into the wrong directory (see genome_relpath)
 
-<base>.fail and <base>.bad carry the same column names -- plus version_status and
+<log>.fail and <log>.bad open with the same column names -- plus version_status and
 excluded_from_refseq, so a retry can still write assembly_status.txt without a request --
-and feed straight back in with no cut/awk step. Nothing else is accepted: a bare list of
-URLs has no header, and a file whose rows start before one is rejected by name.
+and feed straight back in with no cut/awk step. Each then adds one column of its own,
+`reason` and `failed_files`, which the reader ignores: it reads by name, so a table may
+carry extra columns. Nothing else is accepted: a bare list of URLs has no header, and a
+file whose rows start before one is rejected by name.
 
 OUTPUTS
 -------
-All written to the current directory, named after the input with .txt/.tsv stripped
-(`assembly_summary_archaea_genbank.txt` -> `assembly_summary_archaea_genbank.*`). A
-.fail/.bad input keeps its suffix (`x.bad` -> `x.bad.fail`) so a retry run cannot overwrite
-the outputs it is retrying.
+<log> below is -l/--log with .log stripped: -l r95/sync.log writes r95/sync.fail,
+r95/sync.bad, r95/sync.rm, r95/sync.rm_dry_run and r95/sync.extra. The log names the run
+and the run's outputs carry its name, so one round's whole account of itself shares one
+stem and sits in one directory -- give each round its own --log and nothing of one round
+can overwrite another's. Any extension that is not .log is kept (`run.txt` ->
+`run.txt.fail`), so a log named otherwise cannot collide with a `run.log` beside it.
+--fail/--bad override the two that are also inputs.
+
+The consequence to know: --retry reads a file this scheme writes. Retrying a round's own
+.fail or .bad under that same --log would have the run truncate the list it is reading, so
+it is refused (exit 2) rather than risked -- give the retry its own --log, which is what
+you want anyway, since that round deserves its own history.
 
 The run history is NOT a file of this module's own: argv, every row that had no usable
 ftp_path, a cumulative progress/throttling snapshot every 60 s, and the final summary all
-go to the file named by -l/--log, which appends across runs the same way. <base>.fail,
-<base>.bad, <base>.rm and <base>.extra are written to that file's directory, so one
-directory holds a mirror's whole run history. NOTHING is logged per genome -- a ~2M-genome run
+go to the file named by -l/--log, which appends across runs the same way. NOTHING is logged per genome -- a ~2M-genome run
 would otherwise bury the log in near-identical lines -- so the log stays bounded by how
 long the run took rather than by how many genomes it covered. Genomes needing action are
-listed in <base>.fail / <base>.bad below, and failures print to the console as they
+listed in <log>.fail / <log>.bad below, and failures print to the console as they
 happen; set LOG_LEVEL to DEBUG for per-genome detail when debugging.
 
-    <base>.fail  genomes the sync could not complete, TSV under a `#assembly_accession
+    <log>.fail  genomes the sync could not complete, TSV under a `#assembly_accession
                  ftp_path version_status excluded_from_refseq reason` header. TRUNCATED
                  each run. With MAX_TRIES=6 a throttled run WILL populate this; feed it
                  back in with --retry.
-    <base>.bad   genomes that failed --verify, TSV under the same header minus `reason`.
-                 TRUNCATED each run. Feed it back in with --retry (with --delete having
-                 cleared the directories).
-    <base>.rm    genome directories removed because the selection does not list them,
+    <log>.bad   genomes that failed --verify, TSV under the same header with
+                 `failed_files` in place of `reason`: every file of that genome at fault,
+                 comma-separated and each tagged with WHICH fault -- missing:NAME (the
+                 manifest lists it, the mirror does not have it), mismatch:NAME (present,
+                 bytes rotted) or unreadable:NAME (present, could not be hashed; the
+                 errno is in the log). The whole genome is checked before the row is
+                 written, so the column is every fault, not the first. A fault with no
+                 file to name -- missing directory, no md5checksums.txt, unparseable
+                 md5checksums.txt -- puts that reason in the column instead. TRUNCATED
+                 each run. Feed it back in with --retry --delete, which removes each
+                 directory and refetches it in the one run.
+    <log>.rm    genome directories removed because the selection does not list them,
                  TSV under `#assembly_accession directory`. Each row is written BEFORE
                  its directory is deleted, so an interrupted run still says what went;
                  a row whose removal then failed is reported in the log. TRUNCATED each
                  run of the selection.
-    <base>.rm_dry_run  the same list, written by --dry-run instead of being acted on.
-    <base>.extra  written by --verify/--verify-only given the selection: the directories
+    <log>.rm_dry_run  the same list, written by --dry-run instead of being acted on.
+    <log>.extra  written by --verify/--verify-only given the selection: the directories
                  the selection does not list, same columns as .rm. TRUNCATED each run.
 
     <root>/.ncbi_sync.lock  held (flock) while a run is alive; records pid, host, start.
     <genome>/.last_synced   UTC time this genome was last confirmed complete against
                             NCBI; what --max-age reads. Written last; withdrawn by a
                             failed verify.
+    <genome>/uncompressed_checksums.txt  present ONLY in a genome where NCBI's two
+                            checksum tables disagreed and this one settled it (see WHEN
+                            NCBI'S TWO CHECKSUM TABLES DISAGREE). Most genomes have none,
+                            and nothing treats its absence as a fault.
 
 SHARED OPERATION -- PERMISSIONS
 -------------------------------
@@ -348,7 +436,7 @@ If the files have more than one owner, only root can fix them all. Put sudo on t
 command that changes things, not on eval -- eval is a shell builtin, so `sudo eval ...`
 fails with "command not found":
     eval sudo find genomes -maxdepth 3 $FIX
-    find genomes/all ... -print0 | sudo xargs -0 -P 8 -I@@ sh -c "..." sh @@ | ...tqdm...
+    find genomes/all -mindepth 3 -maxdepth 3 -type d -print0 | sudo xargs -0 -P 8 -I@@ sh -c "find \"\$1\" $FIX; echo \"\$1\"" sh @@ | /opt/miniforge/bin/python3 -m tqdm --total $(find genomes/all -mindepth 3 -maxdepth 3 -type d | wc -l) --unit dir --null
     sudo chmod 664 *.log *.fail *.bad *.rm *.extra genomes/.ncbi_sync.lock
 $FIX and the globs are expanded by YOUR shell before sudo runs, which is what you want.
 
@@ -385,8 +473,8 @@ clauses as one serial find do the whole job and are easier to read:
 EXIT CODES
 ----------
     0   everything synced / verified clean
-    1   some genomes failed (see <base>.fail / <base>.bad), or verification found
-        directories the selection does not list (see <base>.extra)
+    1   some genomes failed (see <log>.fail / <log>.bad), or verification found
+        directories the selection does not list (see <log>.extra)
     0   also: a header-only table given to --retry (an empty .fail at the end of a loop)
     2   usage error or bad --jobs/--rate/--delete combination; a table with no header
         row, a malformed ftp_path, or rows but none with a usable ftp_path; a selection
@@ -395,7 +483,7 @@ EXIT CODES
         half-installed; fix it and re-run the SAME summary
     75  NCBI is refusing this host and pauses did not clear it (EX_TEMPFAIL): rest for
         hours, then re-run the SAME summary. Also: another sync already holds --root
-    130 SIGINT (Ctrl-C), 143 SIGTERM: in-flight genomes are in <base>.fail as
+    130 SIGINT (Ctrl-C), 143 SIGTERM: in-flight genomes are in <log>.fail as
         "stopped:"; re-run the SAME summary
 
 USAGE
@@ -405,8 +493,12 @@ USAGE
     ./ncbi_genome_sync.py --gtdb_selected_genomes $S --root genomes -l sync.log  # remove, then sync
     ./ncbi_genome_sync.py --gtdb_selected_genomes $S --root genomes -l sync.log --verify
     ./ncbi_genome_sync.py --gtdb_selected_genomes $S --root genomes -l sync.log --full
-    ./ncbi_genome_sync.py --retry gtdb_selected_genomes.fail --root genomes -l sync.log
-    ./ncbi_genome_sync.py --retry gtdb_selected_genomes.bad --root genomes -l sync.log --verify-only --delete
+    ./ncbi_genome_sync.py --retry sync.fail --root genomes -l retry1.log
+    ./ncbi_genome_sync.py --retry sync.bad  --root genomes -l rebuild.log --delete
+
+  Each round gets its own --log, and so its own .fail/.bad: the first line above reads
+  sync.fail and writes retry1.fail, whose leftovers the next round reads. Reusing
+  -l sync.log there would have the run truncate the file it is reading, and is refused.
 
   A subset is just a subset of the table: keep the '#assembly_accession ...' header line
   and grep/awk out the rows you want -- and give it to --retry, because as
@@ -419,11 +511,12 @@ USAGE
   mirror rather than NCBI and so are bounded by NFS latency, not by --rate.
   --verify-jobs (default 20) sizes the verification pass separately, since md5 is local
   and CPU-bound rather than NCBI-limited -- see TUNING. --root is the mirror directory and
-  has no default; "genomes" is the usual name. -l/--log names the log, and places the
-  .fail/.bad/.rm files beside it.
+  has no default; "genomes" is the usual name. -l/--log names the log AND the run: the
+  .fail/.bad/.rm/.rm_dry_run/.extra are that name with .log stripped, written beside it.
 """
 
 import os
+import re
 import sys
 import argparse
 import calendar
@@ -434,7 +527,6 @@ import fcntl
 import hashlib
 import http.client
 import logging
-import re
 import shlex
 import shutil
 import signal
@@ -446,22 +538,24 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import BadInput, read_summary_rows, summary_field
+from gtdb_migration_tk.ncbi_utils import (CHUNK, GENOME_COLUMNS, GENOMIC_FASTA_EXT,
+                                          MD5_MANIFEST, NCBI_HOST, NCBI_URL, BadInput,
+                                          file_md5, has_ftp_path, read_md5_manifest,
+                                          read_summary_rows, summary_field, table_header)
 
 
-HOST = "ftp.ncbi.nlm.nih.gov"
-URL_PREFIX = "https://ftp.ncbi.nlm.nih.gov/genomes/"
-FTP_PREFIX = "ftp://ftp.ncbi.nlm.nih.gov/genomes/"   # older summaries; rewritten to https
+HOST = NCBI_HOST
+URL_PREFIX = NCBI_URL + "/genomes/"
+FTP_PREFIX = "ftp://" + NCBI_HOST + "/genomes/"     # older summaries; rewritten to https
 
 RETRY_STATUS = frozenset((429, 500, 502, 503, 504))
-MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
 
 # 6 attempts with 1.7x backoff (sleeping 2, 3.4, 5.8, 9.8, 16.7 s between them) give up
 # on a stuck file after ~38 s. Higher values idle a whole worker on one bad URL for far
 # longer without helping: genuinely dead URLs return 404, which is not retried at all.
 #
 # This is deliberately fail-fast: under heavy 503s it turns throttling into hard failures
-# rather than riding them out, so a throttled run WILL leave genomes in <base>.fail that
+# rather than riding them out, so a throttled run WILL leave genomes in <log>.fail that
 # need a second pass. That is the intended trade -- no worker is held hostage to one URL
 # -- but it means .fail must actually be reprocessed. Raise MAX_TRIES if you would rather
 # a run take longer and finish complete.
@@ -489,12 +583,8 @@ TEMP_STALE_S = 3600.0
 
 # errno values that mean the FILESYSTEM refused, not the network. Retrying these
 # re-downloads the same bytes into the same full disk MAX_TRIES times per file and then
-# records every genome in <base>.fail; the right response is to stop the run (exit 74).
+# records every genome in <log>.fail; the right response is to stop the run (exit 74).
 FATAL_ERRNO = frozenset((errno.ENOSPC, errno.EDQUOT, errno.EROFS))
-
-# 64 KB - 1 MB all hash at ~575 MB/s (measured); 4 KB is 18% slower, 4 MB slightly
-# worse. 1 MB sits in the flat region and bounds memory at CHUNK x threads.
-CHUNK = 1 << 20
 
 # Only these files are mirrored; everything else NCBI publishes for a genome is
 # ignored (not downloaded, not verified, not reported missing). The names a full mirror
@@ -504,7 +594,7 @@ CHUNK = 1 << 20
 WANTED_EXACT = frozenset((
     "annotation_hashes.txt",
     "assembly_status.txt",
-    "md5checksums.txt"
+    MD5_MANIFEST
 ))
 
 # Suffixes appended to the assembly name, e.g. GCF_036600855.1_ASM3660085v1 + _genomic.fna.gz.
@@ -517,11 +607,17 @@ WANTED_SUFFIXES = (
     "_assembly_report.txt",
     "_assembly_stats.txt",
     "_fcs_report.txt",
-    "_genomic.fna.gz",
+    GENOMIC_FASTA_EXT,
     "_genomic.gbff.gz",
     "_genomic.gff.gz",
     "_wgsmaster.gbff.gz",
 )
+
+# NCBI's second checksum table. It is NOT in the whitelist above: it is never mirrored
+# for its own sake, only written into a genome directory on the rare occasion it settled a
+# disagreement there (see ChecksumFallback), so some genome directories hold one and most
+# do not. Nothing treats its absence as a fault.
+UNCOMPRESSED_MANIFEST = "uncompressed_checksums.txt"
 
 # Wanted names the manifest is HONEST about: on the server iff listed. Measured on 110
 # genomes (87/87 gff, 72/72 wgsmaster on disk == in manifest) and 24 live manifests. When
@@ -537,11 +633,27 @@ MANIFEST_IS_TRUTH_SUFFIXES = ("_genomic.gff.gz", "_wgsmaster.gbff.gz")
 
 # --------------------------------------------------------------------------- tables
 
-# <base>.fail and <base>.bad are themselves valid input (see read_assembly_summary), so
-# both carry the assembly_summary column names that the reader looks for.
-BAD_HEADER = "#assembly_accession\tftp_path\tversion_status\texcluded_from_refseq\n"
-FAIL_HEADER = BAD_HEADER[:-1] + "\treason\n"
+# <log>.fail and <log>.bad are themselves valid input (see read_assembly_summary), so
+# both carry the assembly_summary column names that the reader looks for. Those are
+# GENOME_COLUMNS, which the selection select_genomes writes also opens with, so the three
+# tables this reads share one shape by construction.
+# Each adds the one column that says what went wrong -- `failed_files` for a verification,
+# which names the files, `reason` for a sync, which has no file to name.
+BAD_HEADER = table_header(*GENOME_COLUMNS) + "\tfailed_files\n"
+FAIL_HEADER = table_header(*GENOME_COLUMNS) + "\treason\n"
 
+# How <log>.bad names a file that failed verification. The tag matters as much as the
+# name: a file the manifest lists and the mirror does not have is repaired by any sync,
+# while one whose bytes have rotted is trusted by the manifest fast path and needs the
+# directory removed first (--retry <log>.bad --delete).
+FAILED_MISSING = "missing"                       # listed in the manifest, not on disk
+FAILED_MISMATCH = "mismatch"                     # present, md5 differs from the manifest
+FAILED_UNREADABLE = "unreadable"                 # present, could not be hashed (OSError)
+FAILED_SEP = ","                                 # no NCBI assembly filename holds one
+
+# One row of GENOME_COLUMNS as this module holds it. The second field is `url` rather
+# than ftp_path because the value is normalised before it is stored -- ftp:// rewritten
+# to https, the trailing slash settled -- so it is no longer the column as NCBI wrote it.
 Genome = collections.namedtuple(
     "Genome", "accession url version_status excluded_from_refseq")
 
@@ -576,8 +688,8 @@ ASSEMBLY_ANOMALIES = frozenset((
 # before it reaches any handler, so the cost is a dropped call and nothing more.
 #
 # The information is not lost. What actually needs acting on is written to files that are
-# meant to be machine-read and fed back in: <base>.fail lists every genome the sync could
-# not complete, with its reason, and <base>.bad every genome that failed --verify. The
+# meant to be machine-read and fed back in: <log>.fail lists every genome the sync could
+# not complete, with its reason, and <log>.bad every genome that failed --verify. The
 # console shows failures as they happen through Progress.write(). The log keeps the
 # per-run story: argv, the genome count, a progress/throttling snapshot every 60 s, and
 # the final summary -- bounded by runtime, not by list size.
@@ -632,7 +744,11 @@ STATS = {"requests": 0, "retry_status": {}, "conn_drops": 0, "bytes": 0,
          # Requests spent probing for an unlisted file that turned out not to exist. The
          # budget is one request per warm genome; this is the counter that shows when a
          # layout change at NCBI starts eating into it (see MANIFEST_IS_TRUTH_SUFFIXES).
-         "probe_404": 0}
+         "probe_404": 0,
+         # Files md5checksums.txt condemned and uncompressed_checksums.txt cleared, and
+         # the genomes they belong to. NCBI's two tables disagree for a small minority of
+         # genomes; this is how much, so the scale stays visible rather than silent.
+         "fallback_files": 0, "fallback_genomes": 0}
 
 
 def _bump(key, n=1):
@@ -688,7 +804,7 @@ class RateLimiter(object):
 
 class RunStopped(Exception):
     """Base for 'this genome did not fail, the RUN is ending': the worker records it as
-    "stopped: ..." in <base>.fail so a re-run picks it up, and makes no further requests."""
+    "stopped: ..." in <log>.fail so a re-run picks it up, and makes no further requests."""
 
 
 class ThrottledOut(RunStopped):
@@ -707,7 +823,7 @@ class StopFlag(object):
     Without this a Ctrl-C reached only the main thread, and ThreadPoolExecutor.__exit__ then
     waited for every QUEUED genome to finish -- minutes if a breaker pause was in force --
     and SIGTERM (a scheduler, `timeout`) was not handled at all: an instant death that left
-    temp files behind and no summary. Now both signals produce a complete <base>.fail, the
+    temp files behind and no summary. Now both signals produce a complete <log>.fail, the
     STOPPED summary, and exit 128+signal (130 for SIGINT, 143 for SIGTERM). A second signal
     falls through to the default action and kills the process at once.
     """
@@ -745,7 +861,7 @@ def install_signal_handlers():
         STOP.set("interrupted by %s" % name, signum)
         signal.signal(signum, signal.SIG_DFL)    # second one kills outright
         sys.stderr.write("\n%s: finishing in-flight requests, recording the rest in "
-                         "<base>.fail (again to kill)\n" % name)
+                         "<log>.fail (again to kill)\n" % name)
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
@@ -770,7 +886,7 @@ class CircuitBreaker(object):
     pauses were each answered by a 503 within 1-17 s of resuming, 67 min after the load that
     caused it). Crawling on -- one genome per 7 minutes -- only deepens it. The breaker then
     raises ThrottledOut and the run stops cleanly with exit 75 (EX_TEMPFAIL): completed
-    genomes are on disk, in-flight ones are in <base>.fail, and a re-run later is cheap
+    genomes are on disk, in-flight ones are in <log>.fail, and a re-run later is cheap
     because everything done takes the fast path.
     """
 
@@ -794,8 +910,9 @@ class CircuitBreaker(object):
             STOP.check()
             with self.lock:
                 if self.tripped_out:
-                    raise ThrottledOut("NCBI refusing requests; %d consecutive pauses "
-                                       "failed to clear it" % self.consecutive)
+                    raise ThrottledOut("NCBI refusing requests; %s consecutive pauses "
+                                       "failed to clear it"
+                                       % format_count(self.consecutive))
                 remaining = self.paused_until - time.monotonic()
             if remaining <= 0:
                 return
@@ -831,11 +948,13 @@ class CircuitBreaker(object):
         _bump("paused_s", pause)
         if pause:
             message = ("circuit breaker: HTTP %d -> all workers paused %.0f s "
-                       "(trip #%d, %d consecutive)" % (status, pause, trips, cons))
+                       "(trip #%s, %s consecutive)"
+                       % (status, pause, format_count(trips), format_count(cons)))
             LOG.warning(message)
         else:
-            message = ("circuit breaker: HTTP %d after %d consecutive failed pauses -> "
-                       "NCBI is refusing this host; stopping the run" % (status, cons))
+            message = ("circuit breaker: HTTP %d after %s consecutive failed pauses -> "
+                       "NCBI is refusing this host; stopping the run"
+                       % (status, format_count(cons)))
             LOG.error(message)
         if self.notify:
             self.notify(message)
@@ -992,17 +1111,6 @@ def url_to_path(url):
 
 # --------------------------------------------------------------------------- helpers
 
-def md5_file(path):
-    digest = hashlib.md5()
-    with open(path, "rb") as handle:
-        while True:
-            buf = handle.read(CHUNK)
-            if not buf:
-                break
-            digest.update(buf)
-    return digest.hexdigest()
-
-
 def parse_manifest(data, keep):
     """md5checksums.txt bytes -> [(md5, relative_path)] for the whitelisted files only.
 
@@ -1010,13 +1118,7 @@ def parse_manifest(data, keep):
     neither downloaded nor treated as missing during verification.
     """
     out = []
-    for line in data.decode("utf-8", "replace").splitlines():
-        match = MD5_LINE_RE.match(line.strip())
-        if not match:
-            continue
-        checksum, name = match.group(1), match.group(2).strip()
-        if name.startswith("./"):
-            name = name[2:]
+    for checksum, name in read_md5_manifest(data.decode("utf-8", "replace").splitlines()):
         # Match the FULL manifest path, not its basename. Every wanted file lives at
         # the genome root, so a path with any directory component cannot be one -- which
         # excludes the _assembly_structure/, all_assembly_versions/ and representative/
@@ -1065,7 +1167,7 @@ def sweep_temps(genome_dir, keep):
         if not name.startswith("."):
             continue
         stem = name[1:].rsplit(".", 1)[0]       # ".<final>.XXXXXX" -> <final>
-        if stem not in keep and stem != LAST_SYNCED:
+        if stem not in keep and stem not in (LAST_SYNCED, UNCOMPRESSED_MANIFEST):
             continue
         path = os.path.join(genome_dir, name)
         try:
@@ -1093,6 +1195,210 @@ def set_mtime_from_headers(path, headers):
                 stamp = calendar.timegm(parsed[:6]) - (parsed[9] or 0)
                 os.utime(path, (stamp, stamp))
             return
+
+
+# Its columns, by name. NCBI has grown its tables before (crc32 and size are not in every
+# copy of this one), so they are found by name and never by position -- the same rule
+# ncbi_utils applies to the assembly summaries, for the same reason.
+UNCOMPRESSED_NAME_COLUMN = "file"
+UNCOMPRESSED_MD5_COLUMN = "md5sum"
+
+# uncompressed_checksums.txt lists the UNCOMPRESSED form of every file, so a compressed
+# one appears there under a name it does not have on disk -- <asm>_genomic.fna against
+# <asm>_genomic.fna.gz -- and can never be matched. Asking about it is a request that
+# cannot succeed, so a compressed file is never asked about at all: a genome whose only
+# failures are archives spends nothing on a second opinion.
+#
+# This is an extension test, which the wanted-name matching elsewhere in this module
+# deliberately is not: there, endswith() on "_genomic.fna.gz" also catches
+# "_cds_from_genomic.fna.gz" and silently re-admits files the mirror does not carry. Here
+# the question is only "is this name a compressed one", and the suffix is the whole of the
+# answer. Everything compressed in the whitelist is a .gz, and a .gz added to
+# WANTED_SUFFIXES later is excluded by this without a second list to keep in step.
+COMPRESSED_EXT = ".gz"
+
+
+def may_be_uncompressed_checksummed(name):
+    """Can uncompressed_checksums.txt possibly carry an entry under this name?
+
+    False for a compressed file, where the answer is structural rather than a matter of
+    what NCBI happens to publish. Nothing else is hardcoded: which uncompressed files NCBI
+    chooses to list is NCBI's to change, so any of them may be asked about.
+    """
+    return not name.endswith(COMPRESSED_EXT)
+_MD5_HEX = re.compile(r"^[0-9a-fA-F]{32}$")
+_warned_uncompressed = threading.Lock()
+_warned_uncompressed_done = False
+
+
+def read_uncompressed_checksums(lines):
+    """{name: md5} from NCBI's uncompressed_checksums.txt, or None if it has no header.
+
+    NOTHING about this file resembles md5checksums.txt, and assuming otherwise is a silent
+    failure rather than a loud one: md5checksums.txt is `<md5>  ./<name>`, two spaces, no
+    header; this is a TAB-separated table under `#file<TAB>md5sum<TAB>crc32<TAB>size`, with
+    the name FIRST and the md5 SECOND. Reading it with the manifest reader yields an empty
+    table, which looks exactly like "NCBI vouches for nothing here" -- so every second
+    opinion came back negative and the genomes this exists for went on failing.
+
+    Names keep NCBI's form less the leading ./, as read_md5_manifest does, so they compare
+    directly against the manifest's. The table lists the UNCOMPRESSED form of every file,
+    so for a compressed one the name here (<asm>_genomic.fna) is not the name on disk
+    (<asm>_genomic.fna.gz) and no match is possible. That is the point rather than a
+    limitation: this table can only ever vouch for files NCBI does not compress --
+    <asm>_fcs_report.txt, the assembly and ANI reports -- and can never excuse a corrupt
+    archive.
+
+    Parameters
+    ----------
+    lines : iterable of str
+        Lines of the table, from a decoded download.
+
+    @return: {name: md5} for every row with both columns and a well-formed md5, or None
+             when the header is missing, which is the one thing that must not be guessed.
+    """
+
+    columns = None
+    out = {}
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if columns is None:                  # the first comment line is the header
+                names = [name.strip() for name in line[1:].split("\t")]
+                columns = dict((name, i) for i, name in enumerate(names))
+            continue
+        if columns is None:
+            return None                          # rows before a header: position is a guess
+        name_at = columns.get(UNCOMPRESSED_NAME_COLUMN)
+        md5_at = columns.get(UNCOMPRESSED_MD5_COLUMN)
+        if name_at is None or md5_at is None:
+            return None
+        fields = line.split("\t")
+        if len(fields) <= max(name_at, md5_at):
+            continue                             # a short row is skipped, not fatal
+        name, md5 = fields[name_at].strip(), fields[md5_at].strip()
+        if not name or not _MD5_HEX.match(md5):
+            continue
+        if name.startswith("./"):
+            name = name[2:]
+        out[name] = md5.lower()
+    return out if columns is not None else None
+
+
+class ChecksumFallback(object):
+    """NCBI's uncompressed_checksums.txt for ONE genome, asked for only when needed.
+
+    NCBI publishes two checksum tables per assembly and they can disagree. Measured on the
+    production mirror: ~1000 genomes whose md5checksums.txt entry for <asm>_fcs_report.txt
+    is stale while uncompressed_checksums.txt is right. Believing md5checksums.txt alone
+    condemns those genomes twice over -- the sync cannot install a file it just downloaded,
+    because the bytes NCBI serves do not match the checksum NCBI publishes for them, so the
+    genome fails every run and never enters the mirror; and a verify of one that did get
+    mirrored reports rot that is not there. So a file that md5checksums.txt rejects gets a
+    second opinion, and passes if the other table vouches for exactly the bytes on disk.
+
+    It is a SECOND opinion, never a first: md5checksums.txt is asked first and settles
+    every file it agrees with, and this is fetched lazily -- one request, on the first
+    disagreement in the genome, never for a genome whose files all match. A clean mirror
+    therefore verifies with no requests at all, as it always did.
+
+    The table is not trusted from disk. A local copy vouching for local bytes is two halves
+    of the same claim, and NCBI may have since corrected either table, so the answer comes
+    from NCBI each time. The copy is written into the genome directory when it settles
+    something, as the record of why those bytes were accepted.
+
+    One instance per genome, used by the one worker handling it, so nothing here is shared
+    or locked; only the STATS bump at the end is.
+    """
+
+    def __init__(self, url_path, genome_dir):
+        self.url_path = url_path
+        self.genome_dir = genome_dir
+        self.entries = None                      # None until asked; {} when NCBI had none
+        self.body = None
+        self.vouched = []                        # names it cleared, for the log and counts
+
+    def _fetch(self):
+        """One request per genome, at most. A 404 is ordinary: most assemblies publish no
+        uncompressed_checksums.txt, and that simply means no second opinion exists."""
+        if self.entries is not None:
+            return
+        self.entries = {}
+        try:
+            status, body, _ = http_get(self.url_path + UNCOMPRESSED_MANIFEST)
+        except HttpError as exc:
+            LOG.debug("%s%s gave up: %s", self.url_path, UNCOMPRESSED_MANIFEST, exc,
+                      extra=FILE_ONLY)
+            return
+        if status == 404:
+            _bump("probe_404")
+        if status != 200 or body is None:
+            return
+        entries = read_uncompressed_checksums(
+            body.decode("utf-8", "replace").splitlines())
+        if entries is None:
+            # NCBI changed the format, and every second opinion from here on is worthless.
+            # Once per run, at WARNING: this is the failure that hid the first time, and
+            # per genome it would be a million identical lines.
+            global _warned_uncompressed_done
+            with _warned_uncompressed:
+                if not _warned_uncompressed_done:
+                    _warned_uncompressed_done = True
+                    LOG.warning("warning: %s at NCBI has no '#%s ... %s' header; it cannot "
+                                "be read, so files md5checksums.txt rejects will fail as "
+                                "they did before it existed (first seen %s)",
+                                UNCOMPRESSED_MANIFEST, UNCOMPRESSED_NAME_COLUMN,
+                                UNCOMPRESSED_MD5_COLUMN, self.url_path)
+            return
+        self.body = body
+        self.entries = entries
+
+    def accepts(self, name, have_md5):
+        """Does the other table vouch for exactly these bytes under exactly this name?
+
+        A compressed file is refused before any request is made: the table lists the
+        uncompressed form, under a different name, so no entry for it can exist (see
+        may_be_uncompressed_checksummed). The name check that follows would refuse it
+        anyway; this is what keeps a genome whose only failures are archives from spending
+        a request to be told so.
+        """
+        if not may_be_uncompressed_checksummed(name):
+            return False
+        self._fetch()
+        if self.entries.get(name) != have_md5:
+            return False
+        self._install()
+        self.vouched.append(name)
+        return True
+
+    def _install(self):
+        """Keep the table that settled it beside the files it settled. Failing to write it
+        does not un-settle anything, so it is logged rather than raised -- except a full
+        disk, which raise_if_fatal turns into the run-ending Fatal as everywhere else."""
+        target = os.path.join(self.genome_dir, UNCOMPRESSED_MANIFEST)
+        if self.body is None or os.path.exists(target):
+            return
+        tmp = temp_for(target)
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(self.body)
+            install(tmp, target)
+        except OSError as exc:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise_if_fatal(exc)
+            LOG.debug("could not write %s: %s", target, exc, extra=FILE_ONLY)
+
+    def report(self, url):
+        """Account for what it cleared. Nothing when it cleared nothing."""
+        if not self.vouched:
+            return
+        _bump("fallback_files", len(self.vouched))
+        _bump("fallback_genomes")
+        LOG.debug("%s: %s accepted by %s against md5checksums.txt",
+                  url, ", ".join(self.vouched), UNCOMPRESSED_MANIFEST, extra=FILE_ONLY)
 
 
 def fetch_unlisted(url_path, genome_dir, name):
@@ -1166,7 +1472,7 @@ def fresh_enough(genome_dir, keep, max_age_s):
     if stamp is None or time.time() - stamp > max_age_s:
         return None
     try:
-        with open(os.path.join(genome_dir, "md5checksums.txt"), "rb") as handle:
+        with open(os.path.join(genome_dir, MD5_MANIFEST), "rb") as handle:
             entries = parse_manifest(handle.read(), keep)
     except OSError:
         return None
@@ -1245,7 +1551,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
     url_path = url_to_path(url)
     genome_dir = os.path.join(root, genome_relpath(url))
     asm = os.path.basename(genome_dir)
-    manifest_path = os.path.join(genome_dir, "md5checksums.txt")
+    manifest_path = os.path.join(genome_dir, MD5_MANIFEST)
     keep = wanted_files(asm)
 
     if max_age_s > 0 and not full:
@@ -1258,7 +1564,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
                           extra=FILE_ONLY)
             return 0, 0, present, [], True, True
 
-    status, body, _ = http_get(url_path + "md5checksums.txt")
+    status, body, _ = http_get(url_path + MD5_MANIFEST)
     if status != 200 or body is None:
         # Nothing is created on disk until the manifest is in hand: a genome removed
         # upstream (404) used to leave an empty directory behind for list_genomes to find.
@@ -1291,6 +1597,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
 
     downloaded = verified = trusted = 0
     failures = []
+    fallback = ChecksumFallback(url_path, genome_dir)
 
     for want_md5, name in entries:
         target = os.path.join(genome_dir, name)
@@ -1299,7 +1606,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
                 trusted += 1
                 continue
             try:
-                if md5_file(target) == want_md5:
+                if file_md5(target) == want_md5:
                     verified += 1
                     continue
             except OSError as exc:
@@ -1313,7 +1620,10 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
                 st, got_md5, _ = http_get(url_path + name, sink=handle)
             if st != 200:
                 raise HttpError("HTTP %d" % st)
-            if got_md5 != want_md5:
+            if got_md5 != want_md5 and not fallback.accepts(name, got_md5):
+                # The bytes NCBI serves do not match the checksum NCBI publishes for them
+                # in EITHER table. Not a transfer fault -- a download is retried on the
+                # wire before it gets here -- so re-fetching would only fail the same way.
                 raise HttpError("md5 mismatch")
             install(tmp, target)
             downloaded += 1
@@ -1344,7 +1654,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
     # A 404 is normal: not every genome has every file. The one exception to "derived,
     # not hardcoded" is MANIFEST_IS_TRUTH_SUFFIXES: names measured to 404 whenever they
     # are unlisted, so probing them only ever cost a request.
-    not_fetched = set(["md5checksums.txt"])
+    not_fetched = set([MD5_MANIFEST])
     not_fetched.update(asm + suffix for suffix in MANIFEST_IS_TRUTH_SUFFIXES)
     if status_text is not None:
         not_fetched.add("assembly_status.txt")
@@ -1361,6 +1671,7 @@ def sync_genome(url, root, full, status_text=None, max_age_s=0.0):
                 or not os.path.exists(os.path.join(genome_dir, name))):
             fetch_unlisted(url_path, genome_dir, name)
 
+    fallback.report(url)
     unchanged = wanted_same and not full and downloaded == 0 and not failures
     if not failures:
         # LAST, after the manifest and the unlisted files: its existence means "everything
@@ -1381,7 +1692,7 @@ def delete_genome(genome_dir):
     Errors are logged and reported, never swallowed (this used to be ignore_errors=True).
     Returns True only on complete removal.
     """
-    manifest = os.path.join(genome_dir, "md5checksums.txt")
+    manifest = os.path.join(genome_dir, MD5_MANIFEST)
     try:
         if os.path.exists(manifest):
             os.unlink(manifest)
@@ -1417,29 +1728,62 @@ def verify_genome(url, root, delete):
 
     Note this can only attest to files md5checksums.txt actually covers: the four
     unlisted files have no published checksum, so "verified clean" means "every
-    checksummed wanted file matches", not "every file is present and correct".
+    checksummed wanted file matches", not "every file is present and correct". A file
+    md5checksums.txt rejects is put to NCBI's uncompressed_checksums.txt before being
+    called bad, since the two tables disagree for a minority of genomes and that one is
+    right -- see ChecksumFallback, and WHEN NCBI'S TWO CHECKSUM TABLES DISAGREE in the
+    header. That is the only reason a verify makes a request, and only for a genome that
+    is already failing on a file NCBI does not compress.
 
     A failure WITHDRAWS the genome's .last_synced marker (unless --delete removed the whole
     directory), so the next sync consults NCBI for this genome instead of skipping it as
     fresh for up to --max-age days. Whether that sync can repair the fault is the trust
     rule's business, not the marker's: a missing file, yes; rot in a trusted entry needs
-    --delete or --full, as it always did.
+    the directory gone first (--delete here, or --retry <log>.bad --delete) or --full.
 
-    Returns (ok, reason).
+    Returns (ok, detail), detail being <log>.bad's failed_files column: every file at
+    fault, tagged missing:/mismatch:/unreadable: and comma-separated, or the reason when
+    the fault is the genome's rather than a file's. Empty when ok.
     """
     url = url.rstrip("/") + "/"
     genome_dir = os.path.join(root, genome_relpath(url))
-    ok, reason = _verify_files(genome_dir, delete)
+    fallback = ChecksumFallback(url_to_path(url), genome_dir)
+    ok, detail = _verify_files(genome_dir, delete, fallback)
+    fallback.report(url)
     if not ok and os.path.isdir(genome_dir):
         clear_last_synced(genome_dir)
-    return ok, reason
+    return ok, detail
 
 
-def _verify_files(genome_dir, delete):
-    manifest_path = os.path.join(genome_dir, "md5checksums.txt")
+def _tsv_safe(text):
+    """Collapse whitespace, so a value cannot break the TSV it is written into.
+
+    <log>.bad is itself --retry input, and a tab or a newline inside a field would make
+    the next run read the wrong columns. Everything else is left as it stands: mangling a
+    filename to fit a format would defeat the point of naming it.
+    """
+    return " ".join(str(text).split())
+
+
+def _verify_files(genome_dir, delete, fallback):
+    """md5-check one genome directory. Returns (ok, detail).
+
+    `detail` is what <log>.bad's failed_files column carries and what the console line
+    shows. EVERY manifest entry is checked before returning, so the column lists every
+    file at fault rather than the first one found -- "which files are wrong, and how" is
+    the question that file exists to answer, and stopping at the first would have the
+    operator rebuild a genome to discover the next fault in it. A fault that is not a
+    file's -- no directory, no manifest, a manifest that will not parse -- has no file to
+    name, so the reason stands in the column in its place.
+
+    This is why --delete acts at the END rather than at the first failure: the remaining
+    entries have to still be on disk to be checked. A genome that fails is removed whole,
+    once, after the check, exactly as before.
+    """
+    manifest_path = os.path.join(genome_dir, MD5_MANIFEST)
 
     if not os.path.isdir(genome_dir):
-        return False, "missing directory"
+        return False, "missing directory"        # nothing to delete, nothing to name
     if not os.path.isfile(manifest_path):
         if delete:
             delete_genome(genome_dir)
@@ -1455,25 +1799,35 @@ def _verify_files(genome_dir, delete):
         # reports success, verify calls it "empty manifest", and --delete then removes a
         # correctly synced genome that the next sync recreates identically, looping
         # forever. (0 of 3000 production manifests hit this, so it is latent, not active.)
-        if not any(MD5_LINE_RE.match(line.strip()) for line in
-                   raw.decode("utf-8", "replace").splitlines()):
+        if not any(read_md5_manifest(raw.decode("utf-8", "replace").splitlines())):
+            if delete:
+                delete_genome(genome_dir)
             return False, "unparseable md5checksums.txt"
         return True, ""
 
+    failed = []                                  # manifest order, so a genome reads the same twice
     for want_md5, name in entries:
         target = os.path.join(genome_dir, name)
         if not os.path.isfile(target):
-            if delete:
-                delete_genome(genome_dir)
-            return False, "missing %s" % name
+            failed.append("%s:%s" % (FAILED_MISSING, _tsv_safe(name)))
+            continue
         try:
-            if md5_file(target) != want_md5:
-                if delete:
-                    delete_genome(genome_dir)
-                return False, "md5 mismatch %s" % name
+            have_md5 = file_md5(target)
+            # md5checksums.txt first and last for everything it agrees with; only a file
+            # it condemns is put to NCBI's other table (see ChecksumFallback)
+            if have_md5 != want_md5 and not fallback.accepts(name, have_md5):
+                failed.append("%s:%s" % (FAILED_MISMATCH, _tsv_safe(name)))
         except OSError as exc:
-            return False, "%s (%s)" % (name, exc)
-    return True, ""
+            # the errno belongs in the log, not in a column that is read back as input
+            LOG.debug("verify %s: cannot hash %s: %s", genome_dir, name, exc,
+                      extra=FILE_ONLY)
+            failed.append("%s:%s" % (FAILED_UNREADABLE, _tsv_safe(name)))
+
+    if not failed:
+        return True, ""
+    if delete:
+        delete_genome(genome_dir)
+    return False, FAILED_SEP.join(failed)
 
 
 # --------------------------------------------------------------------------- driver
@@ -1511,6 +1865,30 @@ def bounded_map(fn, items, workers):
                 pending = still
         for fut in pending:
             fut.result()
+
+
+def format_count(value):
+    """A count as the log writes it, thousands separated: 1913482 -> "1,913,482".
+
+    %-formatting has no comma flag, so counts are rendered here and passed to the
+    logger as strings. A release is a few million genomes and a summary file a few
+    million rows; a bare run of seven digits in a log line cannot be read at a
+    glance, and two of them cannot be compared at all.
+
+    Identifiers keep their digits: an HTTP status, an exit code, a PID, a line
+    number in a table, and the values echoed back from the command line (-j, rate=,
+    max_age=) are not quantities, and a comma in them would be wrong or unusable.
+    """
+    return "{:,}".format(value)
+
+
+def format_amount(value, decimals=1):
+    """A measured amount -- megabytes, seconds, a rate -- thousands separated.
+
+    Same reasoning as format_count(); the decimals are kept because these are the
+    numbers an operator compares between runs to see whether NCBI is slowing down.
+    """
+    return "{:,.{}f}".format(value, decimals)
 
 
 def format_duration(seconds):
@@ -1601,10 +1979,12 @@ class Progress(object):
         rate = self.done / elapsed if elapsed > 0 else 0.0
         eta = format_duration((self.total - self.done) / rate) if rate > 0 else "?"
         sys.stderr.write(
-            "%s  %s: %d/%d done, %d unchanged, %d failed [%s<%s, %.2f genome/s]    %s"
-            % ("\r" if self.tty else "", self.label, self.done, self.total,
-               self.skipped, self.failed, format_duration(elapsed),
-               eta, rate, "" if self.tty else "\n"))
+            "%s  %s: %s/%s done, %s unchanged, %s failed [%s<%s, %s genome/s]    %s"
+            % ("\r" if self.tty else "", self.label,
+               format_count(self.done), format_count(self.total),
+               format_count(self.skipped), format_count(self.failed),
+               format_duration(elapsed), eta, format_amount(rate, 2),
+               "" if self.tty else "\n"))
         sys.stderr.flush()
 
     def snapshot(self):
@@ -1624,14 +2004,17 @@ class Progress(object):
             trips, paused = STATS["breaker_trips"], STATS["paused_s"]
             probe_404 = STATS["probe_404"]
         req_rate = requests / elapsed if elapsed > 0 else 0.0
-        LOG.info("Progress %s %d/%d (%.1f%%) unchanged=%d fresh=%d failed=%d "
-                 "elapsed=%s eta=%s rate=%.2f/s requests=%d req/s=%.1f MB=%.1f "
-                 "probe404=%d throttled=%d trips=%d paused=%.0fs drops=%d",
-                 self.label, self.done, self.total,
+        LOG.info("Progress %s %s/%s (%.1f%%) unchanged=%s fresh=%s failed=%s "
+                 "elapsed=%s eta=%s rate=%s/s requests=%s req/s=%s MB=%s "
+                 "probe404=%s throttled=%s trips=%s paused=%ss drops=%s",
+                 self.label, format_count(self.done), format_count(self.total),
                  100.0 * self.done / self.total if self.total else 100.0,
-                 self.skipped, self.fresh, self.failed, format_duration(elapsed),
-                 eta, rate, requests, req_rate, megabytes, probe_404, throttled, trips,
-                 paused, drops, extra=FILE_ONLY)
+                 format_count(self.skipped), format_count(self.fresh),
+                 format_count(self.failed), format_duration(elapsed), eta,
+                 format_amount(rate, 2), format_count(requests), format_amount(req_rate),
+                 format_amount(megabytes), format_count(probe_404),
+                 format_count(throttled), format_count(trips), format_amount(paused, 0),
+                 format_count(drops), extra=FILE_ONLY)
 
     def write(self, message):
         """Emit a message without corrupting an active bar."""
@@ -1658,9 +2041,9 @@ class Progress(object):
 # --------------------------------------------------------------------------- input
 
 # Columns this script cannot sync without: the accession names the genome, and
-# ftp_path says where to fetch it from. Both <base>.fail (5 columns) and
-# <base>.bad (4) carry them too, so those are read by this same code path.
-SYNC_COLUMNS = ("assembly_accession", "ftp_path")
+# ftp_path says where to fetch it from. Both <log>.fail and <log>.bad carry them too --
+# five columns each, the fifth their own -- so those are read by this same code path.
+SYNC_COLUMNS = GENOME_COLUMNS[:2]                # the genome, and where to fetch it from
 
 
 def read_assembly_summary(path):
@@ -1674,7 +2057,9 @@ def read_assembly_summary(path):
     Rows whose ftp_path is "na" or empty are NOT an error: NCBI publishes them for
     suppressed and unreleased assemblies, and a whole-domain summary normally contains
     some. They are collected and returned for the caller to report, because logging is not
-    configured yet when this runs.
+    configured yet when this runs. What counts as unusable is ncbi_utils.has_ftp_path(),
+    the same test select_genomes applies, so a selection never promises a genome this
+    reader then refuses.
 
     Every URL is validated here so a malformed table fails before any download rather than
     silently mirroring into the wrong directory (see genome_relpath).
@@ -1691,7 +2076,7 @@ def read_assembly_summary(path):
         # be ~40% of the record's memory on a 1.9M-genome summary
         version_status = sys.intern(summary_field(fields, columns, "version_status"))
         excluded = sys.intern(summary_field(fields, columns, "excluded_from_refseq"))
-        if not raw or raw.lower() == "na":
+        if not has_ftp_path(raw):
             skipped.append((lineno, accession or "?", raw or "(empty)"))
             continue
         url = raw.rstrip("/") + "/"
@@ -1708,9 +2093,11 @@ def read_assembly_summary(path):
         seen.add(url)
         genomes.append(Genome(accession, url, version_status, excluded))
     if bad:
-        raise BadInput("%d malformed ftp_path(s):\n%s" % (len(bad), "\n".join(bad[:10])))
+        raise BadInput("%s malformed ftp_path(s):\n%s"
+                       % (format_count(len(bad)), "\n".join(bad[:10])))
     if dupes:
-        LOG.warning("note: %d duplicate ftp_path(s) in %s ignored", dupes, path)
+        LOG.warning("note: %s duplicate ftp_path(s) in %s ignored",
+                    format_count(dupes), path)
     return genomes, skipped
 
 
@@ -1890,7 +2277,7 @@ def first_names(names, limit=5):
     names = list(names)
     shown = ", ".join(names[:limit])
     if len(names) > limit:
-        shown += ", ... (all %d listed in the log)" % len(names)
+        shown += ", ... (all %s listed in the log)" % format_count(len(names))
     return shown
 
 
@@ -1956,26 +2343,31 @@ def add_sync_arguments(parser):
     # module, and its tests, read args.summary -- and main() points it at the retry file
     # when that is what was given.
     table = required.add_mutually_exclusive_group(required=True)
-    table.add_argument("--gtdb_selected_genomes", dest="summary", metavar="FILE",
+    table.add_argument("-g", "--gtdb_selected_genomes", dest="summary", metavar="FILE",
                        help="the table written by select_genomes (gtdb_selected_genomes.tsv.gz). "
                             "Genomes are taken from its assembly_accession and ftp_path columns, "
                             "and it defines the mirror: every genome directory under --root that "
                             "it does not list is REMOVED before syncing. A subset, or a .fail/.bad "
                             "file, belongs to --retry.")
     table.add_argument("--retry", metavar="FILE",
-                       help="a <base>.fail or <base>.bad from an earlier run (same columns): sync "
-                            "only the genomes it lists and remove nothing.")
+                       help="a <log>.fail or <log>.bad from an earlier run (same columns): sync "
+                            "only the genomes it lists and remove nothing it does not list. "
+                            "With --delete each listed genome's directory is removed and "
+                            "refetched, which is what a .bad needs.")
     required.add_argument("--root", required=True, metavar="DIR",
                           help="mirror root directory, e.g. genomes")
     required.add_argument("-l", "--log", required=True, metavar="FILE",
-                          help="log file, appended across runs. <base>.fail, <base>.bad, "
-                               "<base>.rm and <base>.extra are written to its directory.")
+                          help="log file, appended across runs. It also names this run's "
+                               "outputs, with .log stripped and written beside it: "
+                               "sync.log -> sync.fail, sync.bad, sync.rm, sync.rm_dry_run, "
+                               "sync.extra. Give each round its own log so one round "
+                               "cannot overwrite another's.")
 
     optional = parser.add_argument_group('options arguments')
     optional.add_argument("--dry-run", action="store_true",
                           help="report how many genome directories would be removed, added, and "
                                "checked for updates (already present), list the removals in "
-                               "<base>.rm_dry_run, and exit. Nothing is downloaded, removed or "
+                               "<log>.rm_dry_run, and exit. Nothing is downloaded, removed or "
                                "verified, and no lock is taken.")
     optional.add_argument("-j", "--jobs", type=int, default=8,
                         help="parallel workers (default %(default)s). Bandwidth parallelism "
@@ -1993,20 +2385,30 @@ def add_sync_arguments(parser):
                              "it when others are working on the mirror.")
     optional.add_argument("--verify-jobs", type=int, default=20,
                         help="workers for the verification pass (default %(default)s). "
-                             "Local md5 only, not NCBI-limited -- see TUNING in the file "
-                             "header for why more does not help.")
+                             "Local md5, so not NCBI-limited -- see TUNING in the file "
+                             "header for why more does not help. A file that fails its "
+                             "md5checksums.txt entry does cost one request, for NCBI's "
+                             "uncompressed_checksums.txt, which the two tables disagreeing "
+                             "makes the deciding one; only uncompressed files are eligible, "
+                             "and a clean mirror asks nothing.")
     optional.add_argument("--verify", action="store_true",
                         help="after syncing, md5-verify every genome against its manifest; "
                              "given the selection, also check the mirror holds nothing else "
-                             "(directories it does not list go to <base>.extra)")
+                             "(directories it does not list go to <log>.extra)")
     optional.add_argument("--verify-only", action="store_true",
                         help="skip the sync; only verify, both checks above. Removes nothing "
                              "without --delete.")
     optional.add_argument("--delete", action="store_true",
-                        help="with --verify/--verify-only: delete failing genome dirs so a "
-                             "re-sync rebuilds them (the manifest is removed first, so a "
-                             "partial delete can never look like a healthy genome), and remove "
-                             "directories the selection does not list (recorded in <base>.rm)")
+                        help="remove genome directories rather than repair them. With "
+                             "--retry: each listed genome's directory is removed "
+                             "immediately before that genome is fetched, so one run "
+                             "rebuilds the .fail/.bad from scratch. With "
+                             "--verify/--verify-only: delete failing genome dirs, and "
+                             "remove directories the selection does not list (recorded in "
+                             "<log>.rm). Either way the manifest goes first, so a partial "
+                             "delete can never look like a healthy genome. Illegal with a "
+                             "bare --gtdb_selected_genomes sync, which would mean "
+                             "re-downloading the whole mirror.")
     optional.add_argument("--max-age", type=float, default=14.0, metavar="DAYS",
                         help="a genome confirmed complete against NCBI within DAYS days "
                              "(its .last_synced marker) is skipped with NO request, after "
@@ -2016,8 +2418,8 @@ def add_sync_arguments(parser):
     optional.add_argument("--full", action="store_true",
                         help="bypass the manifest fast path AND --max-age: re-hash and "
                              "repair every file")
-    optional.add_argument("--fail", help="failure log (default: <base>.fail beside --log)")
-    optional.add_argument("--bad", help="verification failures (default: <base>.bad beside --log)")
+    optional.add_argument("--fail", help="failure log (default: <log>.fail beside --log)")
+    optional.add_argument("--bad", help="verification failures (default: <log>.bad beside --log)")
     optional.add_argument("--silent", action="store_true", help="suppress output")
     return required, optional
 
@@ -2041,52 +2443,73 @@ def validate_args(args):
         return "--rate must be >= 0"
     if args.max_age < 0:
         return "--max-age must be >= 0"
-    if args.delete and not (args.verify or args.verify_only):
-        return "--delete only acts during verification; add --verify or --verify-only"
+    if args.delete and not (args.verify or args.verify_only or args.retry is not None):
+        return ("--delete only acts on --retry (rebuild the listed genomes) or during "
+                "verification; add --retry, --verify or --verify-only")
     if args.rate <= 0 and args.jobs > 6:
         LOG.warning("warning: -j%d with --rate 0: nothing bounds the request rate. A warm "
-                    "re-sync at -j9 lost 36 of the first 1000 genomes to 503s.", args.jobs)
+                    "re-sync at -j9 lost 36 of the first 1,000 genomes to 503s.", args.jobs)
     if args.jobs > 9:
         LOG.warning("warning: -j%d: cold downloads at -j10 throttled even before rate "
                     "limiting existed; above 9 buys nothing measured.", args.jobs)
     return None
 
 
-Outputs = collections.namedtuple("Outputs", "base fail bad rm rm_dry_run extra")
+Outputs = collections.namedtuple("Outputs", "stem fail bad rm rm_dry_run extra")
+
+
+def table_name(path):
+    """The input table's name for the log and the progress bar, .gz then .txt/.tsv off.
+
+    A LABEL, nothing more: it says which table a run is working from, in lines like
+    "Syncing gtdb_selected_genomes: 1,204,331 genomes". What the run WRITES is named after
+    --log (output_paths), so this never reaches a filename.
+    """
+    name = os.path.basename(path)
+    if name.endswith(".gz"):
+        name = name[:-len(".gz")]
+    for suffix in (".txt", ".tsv"):
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
+    return name
 
 
 def output_paths(args):
-    """Where this run writes: files named after the input, placed in --log's directory.
+    """Where this run writes: every file named after --log, beside --log.
 
-    .gz then .txt/.tsv are stripped from the input's name; .fail/.bad deliberately are NOT,
-    so a retry run's outputs sit beside the files it is retrying instead of overwriting
-    them (x.bad -> x.bad.fail). .gz comes off first because GTDB stores the summaries
-    compressed -- the table select_genomes writes is gtdb_selected_genomes.tsv.gz -- and
-    these outputs are plain text, so x.tsv.gz.fail would claim a compression they do not
-    have; taking it off first also leaves x.bad.gz yielding x.bad.fail.
+    The log names the run, so the run's outputs carry its name: -l r95/sync.log gives
+    r95/sync.fail, .bad, .rm, .rm_dry_run and .extra. One stem for all five, because they
+    are one run's account of itself and reading them means reading them together.
+
+    Naming them after the INPUT, as this used to, tied a run's outputs to a table rather
+    than to a run: two rounds against the same selection overwrote each other, while the
+    .fail of one round and the .bad of another -- different inputs, same mirror, same log
+    -- sat under unrelated names. Against that, the input's name had to survive a retry
+    intact (x.bad -> x.bad.fail) so a retry could not overwrite the very list it was
+    retrying. That is now the operator's to keep apart, and run() enforces it: give each
+    round its own --log and it cannot arise, and if it does the run refuses (exit 2)
+    rather than overwrite. .log is stripped; any other extension is kept, so a log
+    deliberately named run.txt yields run.txt.fail rather than silently colliding with a
+    run.log beside it.
 
     They go beside the log rather than into the working directory so that one directory,
     chosen by the operator, holds a mirror's whole run history (and the SHARED OPERATION
     chmod has one place to run). A bare --log name means that directory is the working
     directory, as before. --fail/--bad, when given, are used exactly as given."""
-    base = os.path.basename(args.summary)
-    if base.endswith(".gz"):
-        base = base[:-len(".gz")]
-    for suffix in (".txt", ".tsv"):
-        if base.endswith(suffix):
-            base = base[:-len(suffix)]
-            break
+    stem = os.path.basename(args.log)
+    if stem.endswith(".log") and stem != ".log":
+        stem = stem[:-len(".log")]
     out_dir = os.path.dirname(args.log)
 
     def beside_log(name):
         return os.path.join(out_dir, name) if out_dir else name
 
-    return Outputs(base,
-                   args.fail or beside_log(base + ".fail"),
-                   args.bad or beside_log(base + ".bad"),
-                   beside_log(base + ".rm"),
-                   beside_log(base + ".rm_dry_run"),
-                   beside_log(base + ".extra"))
+    return Outputs(stem,
+                   args.fail or beside_log(stem + ".fail"),
+                   args.bad or beside_log(stem + ".bad"),
+                   beside_log(stem + ".rm"),
+                   beside_log(stem + ".rm_dry_run"),
+                   beside_log(stem + ".extra"))
 
 
 def standalone_logging(log_path):
@@ -2166,9 +2589,13 @@ class NCBIGenomeSync(object):
         for flag, path in (("--fail", self.out.fail), ("--bad", self.out.bad)):
             if os.path.realpath(path) == os.path.realpath(self.args.summary):
                 # it is read fully before being truncated, so the run would work -- and a
-                # crash would then have destroyed the only list of what needed retrying
-                LOG.error("error: %s %s is the input file; it would be overwritten",
-                          flag, path)
+                # crash would then have destroyed the only list of what needed retrying.
+                # Outputs are named after --log, so this is what a retry of a round's own
+                # .fail/.bad under that round's log looks like: give the retry its own log
+                LOG.error("error: this run's %s output (%s) is the file it reads; it "
+                          "would be overwritten. Give this run its own --log -- outputs "
+                          "are named after it -- or place the file with %s",
+                          flag, path, flag)
                 return 2
 
         if self.args.dry_run:
@@ -2201,12 +2628,14 @@ class NCBIGenomeSync(object):
         Returns 1 if any removal failed, else 0; the caller checks STOP itself."""
         to_remove, to_add, present = plan_mirror(self.args.root, genomes, self.args.silent,
                                                  self.args.nfs_jobs)
-        LOG.info("Mirror: %d genome dir(s) to remove, %d to add, %d present (checked for "
-                 "updates by the sync)", len(to_remove), to_add, present)
+        LOG.info("Mirror: %s genome dir(s) to remove, %s to add, %s present (checked for "
+                 "updates by the sync)", format_count(len(to_remove)),
+                 format_count(to_add), format_count(present))
         removed, failed = prune_mirror(self.args.root, to_remove, self.out.rm,
                                        self.args.silent, self.args.nfs_jobs)
-        LOG.info("Removed %d genome dir(s) not in the selection (listed in %s)%s", removed,
-                 self.out.rm, (", %d could not be removed" % failed) if failed else "")
+        LOG.info("Removed %s genome dir(s) not in the selection (listed in %s)%s",
+                 format_count(removed), self.out.rm,
+                 (", %s could not be removed" % format_count(failed)) if failed else "")
         return 1 if failed else 0
 
     def _dry_run(self, genomes):
@@ -2214,17 +2643,24 @@ class NCBIGenomeSync(object):
         to_remove, to_add, present = plan_mirror(self.args.root, genomes, self.args.silent,
                                                  self.args.nfs_jobs)
         if self.args.retry is not None:
-            LOG.info("DRY RUN (--retry): %d genome(s) to add, %d present and checked for "
-                     "updates. A retry removes nothing.", to_add, present)
+            if self.args.delete:
+                LOG.info("DRY RUN (--retry --delete): %s genome(s) to add, %s present and "
+                         "removed before being fetched again. A retry removes nothing it "
+                         "was not given.", format_count(to_add), format_count(present))
+            else:
+                LOG.info("DRY RUN (--retry): %s genome(s) to add, %s present and checked for "
+                         "updates. A retry removes nothing.",
+                         format_count(to_add), format_count(present))
             return 0
         with open(self.out.rm_dry_run, "w") as record:
             record.write("# DRY RUN: these directories would be removed; nothing was deleted\n")
             record.write(RM_HEADER)
             for rel in to_remove:
                 record.write("%s\t%s\n" % (accession_of(os.path.basename(rel)), rel))
-        LOG.info("DRY RUN: %d genome dir(s) would be removed (listed in %s), %d added, %d present "
-                 "and checked for updates. Nothing was downloaded, removed or verified.",
-                 len(to_remove), self.out.rm_dry_run, to_add, present)
+        LOG.info("DRY RUN: %s genome dir(s) would be removed (listed in %s), %s added, %s "
+                 "present and checked for updates. Nothing was downloaded, removed or verified.",
+                 format_count(len(to_remove)), self.out.rm_dry_run,
+                 format_count(to_add), format_count(present))
         return 0
 
     def _sync(self, genomes):
@@ -2233,13 +2669,21 @@ class NCBIGenomeSync(object):
         Returns the exit code the sync alone would warrant: 75 (EX_TEMPFAIL) if the
         circuit breaker gave up on NCBI, 1 if any genome failed, else 0.
         """
-        base, fail_path = self.out.base, self.out.fail
+        base, fail_path = table_name(self.args.summary), self.out.fail
         rc = 0
-        status = f"Syncing {base}: {len(genomes)} genomes with {self.args.jobs}{'' if not self.args.full else ' (full re-hash)'} jobs in parallel"
+        # --delete on a retry: rebuild, not repair. Only reachable with --retry
+        # (validate_args), so it can never wipe the whole mirror.
+        rebuild = self.args.delete and self.args.retry is not None
+        status = (f"Syncing {base}: {format_count(len(genomes))} genomes with "
+                  f"{self.args.jobs}{'' if not self.args.full else ' (full re-hash)'} "
+                  f"jobs in parallel{' (--delete: each directory removed before it is '
+                  f'fetched)' if rebuild else ''}")
         LOG.info(status)
         prog = Progress("Downloading", len(genomes), self.args.silent)
         BREAKER.notify = prog.write
         fail_lock = threading.Lock()
+        rebuild_lock = threading.Lock()
+        rebuilt = 0
         max_age_s = self.args.max_age * 86400.0
         with open(fail_path, "w") as fail_log:
             fail_log.write(FAIL_HEADER)
@@ -2257,7 +2701,22 @@ class NCBIGenomeSync(object):
                 prog.tick(failed=True)
 
             def work(genome):
+                nonlocal rebuilt
                 url = genome.url
+                if rebuild:
+                    # Per genome, immediately before its fetch, so a stop leaves at most
+                    # -j directories removed and not yet rebuilt -- and those are the ones
+                    # recorded as "stopped:" in <log>.fail. A directory that will not go
+                    # is a failure in its own right: syncing into it would rebuild the
+                    # very state the operator asked to discard.
+                    genome_dir = os.path.join(self.args.root, genome_relpath(url))
+                    if os.path.isdir(genome_dir):
+                        if not delete_genome(genome_dir):
+                            prog.write("  FAILED %s: could not remove %s" % (url, genome_dir))
+                            record(genome, "could not remove %s for rebuild" % genome_dir)
+                            return
+                        with rebuild_lock:
+                            rebuilt += 1
                 try:
                     downloaded, verified, trusted, failures, skipped, fresh = sync_genome(
                         url, self.args.root, self.args.full, render_status(genome), max_age_s)
@@ -2294,27 +2753,39 @@ class NCBIGenomeSync(object):
                 prog.finish()
 
         n_fail = count_rows(fail_path)
+        # What a stop should be resumed with. --max-age is the whole point of re-running
+        # the same table -- except under --delete, where every directory is removed before
+        # it is fetched and there is no marker left to be fresh.
+        resume = ("Re-run the SAME table with --delete; genomes already rebuilt are "
+                  "fetched again, since --delete removes the marker --max-age reads."
+                  if rebuild else
+                  "Re-run the SAME summary -- completed genomes are skipped without a "
+                  "request (--max-age).")
+        if rebuild:
+            LOG.info("Removed %s genome dir(s) listed in %s before fetching them (--delete)",
+                     format_count(rebuilt), self.args.summary)
         if STOP.is_set():
             remaining = len(genomes) - prog.done
-            msg = ("STOPPED (%s): %d/%d genomes done, %d in-flight recorded in %s, %d not "
-                   "attempted. Re-run the SAME summary -- completed genomes are skipped "
-                   "without a request (--max-age)."
-                   % (STOP.reason, prog.done - prog.failed, len(genomes), prog.failed,
-                      fail_path, remaining))
+            msg = ("STOPPED (%s): %s/%s genomes done, %s in-flight recorded in %s, %s not "
+                   "attempted. %s"
+                   % (STOP.reason, format_count(prog.done - prog.failed),
+                      format_count(len(genomes)), format_count(prog.failed),
+                      fail_path, format_count(remaining), resume))
             LOG.warning(msg)
             rc = 128 + STOP.signum if STOP.signum else 74
         elif BREAKER.tripped_out:
             remaining = len(genomes) - prog.done
-            msg = ("STOPPED: NCBI is refusing requests from this host and %d consecutive "
-                   "pauses did not clear it. %d/%d genomes done, %d in-flight recorded in %s, "
-                   "%d not attempted. Rest this host for hours, then re-run the SAME summary -- "
-                   "completed genomes are skipped without a request (--max-age)."
-                   % (BREAKER.consecutive, prog.done - prog.failed, len(genomes), prog.failed,
-                      fail_path, remaining))
+            msg = ("STOPPED: NCBI is refusing requests from this host and %s consecutive "
+                   "pauses did not clear it. %s/%s genomes done, %s in-flight recorded in %s, "
+                   "%s not attempted. Rest this host for hours, then: %s"
+                   % (format_count(BREAKER.consecutive), format_count(prog.done - prog.failed),
+                      format_count(len(genomes)), format_count(prog.failed),
+                      fail_path, format_count(remaining), resume))
             LOG.error(msg)
             rc = 75                              # EX_TEMPFAIL: try again later
-        LOG.info("Sync complete: %d genomes, %d unchanged (%d fresh, no request), %d failed, "
-                 "elapsed=%s", len(genomes), prog.skipped, prog.fresh, n_fail,
+        LOG.info("Sync complete: %s genomes, %s unchanged (%s fresh, no request), %s failed, "
+                 "elapsed=%s", format_count(len(genomes)), format_count(prog.skipped),
+                 format_count(prog.fresh), format_count(n_fail),
                  format_duration(time.time() - prog.started))
         if n_fail:
             LOG.info("failures listed in %s", fail_path)
@@ -2340,12 +2811,13 @@ class NCBIGenomeSync(object):
         if self.args.delete:
             removed, failed = prune_mirror(self.args.root, extras, self.out.rm,
                                            self.args.silent, self.args.nfs_jobs)
-            LOG.error("%d genome dir(s) not in the selection (listed in %s): %d removed%s",
-                      len(extras), self.out.extra, removed,
-                      (", %d could not be removed" % failed) if failed else "")
+            LOG.error("%s genome dir(s) not in the selection (listed in %s): %s removed%s",
+                      format_count(len(extras)), self.out.extra, format_count(removed),
+                      (", %s could not be removed" % format_count(failed)) if failed else "")
         else:
-            LOG.error("%d genome dir(s) not in the selection -> %s. Re-run with --delete to "
-                      "remove them, or run the selection sync.", len(extras), self.out.extra)
+            LOG.error("%s genome dir(s) not in the selection -> %s. Re-run with --delete to "
+                      "remove them, or run the selection sync.",
+                      format_count(len(extras)), self.out.extra)
         return len(extras)
 
     def _verify(self, genomes):
@@ -2358,10 +2830,10 @@ class NCBIGenomeSync(object):
         Returns 1 if any genome failed verification or the mirror held directories the
         selection does not list (whether or not --delete removed them), else 0.
         """
-        base, bad_path = self.out.base, self.out.bad
+        base, bad_path = table_name(self.args.summary), self.out.bad
         vjobs = self.args.verify_jobs
-        LOG.info("Verifying %s: %d genomes, -j%d%s", base, len(genomes), vjobs,
-                 " (delete on fail)" if self.args.delete else "")
+        LOG.info("Verifying %s: %s genomes, -j%d%s", base, format_count(len(genomes)),
+                 vjobs, " (delete on fail)" if self.args.delete else "")
         prog = Progress("verify " + base, len(genomes), self.args.silent)
         bad_lock = threading.Lock()
         with open(bad_path, "w") as bad_log:
@@ -2370,20 +2842,31 @@ class NCBIGenomeSync(object):
 
             def check(genome):
                 url = genome.url
-                ok, reason = verify_genome(url, self.args.root, self.args.delete)
+                try:
+                    ok, detail = verify_genome(url, self.args.root, self.args.delete)
+                except RunStopped:
+                    # Only a second opinion asks NCBI (ChecksumFallback), so only that can
+                    # be stopped mid-verify. The genome is unjudged, not bad: recording it
+                    # would put a healthy genome in <log>.bad, and the stop already says
+                    # to re-run --verify-only on the same table.
+                    prog.tick()
+                    return
                 if ok:
                     LOG.debug("verified %s", url, extra=FILE_ONLY)
                 else:
-                    LOG.debug("bad %s %s%s", url, reason,
+                    LOG.debug("bad %s %s%s", url, detail,
                               " (deleted)" if self.args.delete else "", extra=FILE_ONLY)
                 if not ok:
                     with bad_lock:
-                        bad_log.write("%s\t%s\t%s\t%s\n" % (
+                        # failed_files last: every file at fault, tagged with which fault,
+                        # so the row says what to do about the genome as well as that it
+                        # is broken. The four columns before it are what --retry reads.
+                        bad_log.write("%s\t%s\t%s\t%s\t%s\n" % (
                             genome.accession, url, genome.version_status,
-                            genome.excluded_from_refseq))
+                            genome.excluded_from_refseq, detail))
                         bad_log.flush()
                     with _print_lock:
-                        prog.write("  BAD %s: %s" % (url, reason))
+                        prog.write("  BAD %s: %s" % (url, detail))
                 prog.tick(failed=not ok)
 
             try:
@@ -2392,8 +2875,9 @@ class NCBIGenomeSync(object):
                 prog.finish()
 
         n_bad = count_rows(bad_path)
-        LOG.info("Verify complete: %d genomes, %d failed, elapsed=%s",
-                 len(genomes), n_bad, format_duration(time.time() - prog.started))
+        LOG.info("Verify complete: %s genomes, %s failed, elapsed=%s",
+                 format_count(len(genomes)), format_count(n_bad),
+                 format_duration(time.time() - prog.started))
 
         # the selection says what the mirror holds, so verifying against it means checking
         # for what it does NOT list as well; not begun after a stop, which wants a re-run
@@ -2402,19 +2886,24 @@ class NCBIGenomeSync(object):
             n_extra = self._verify_nothing_else(genomes)
 
         if STOP.is_set():
-            msg = ("STOPPED (%s): verified %d/%d; %s lists failures among those. Re-run "
-                   "--verify-only on the SAME table." % (STOP.reason, prog.done, len(genomes),
-                                                          bad_path))
+            msg = ("STOPPED (%s): verified %s/%s; %s lists failures among those. Re-run "
+                   "--verify-only on the SAME table."
+                   % (STOP.reason, format_count(prog.done), format_count(len(genomes)),
+                      bad_path))
             LOG.warning(msg)
             return 128 + STOP.signum if STOP.signum else 74
         if n_bad:
-            LOG.error("Failed verification: %d / %d  ->  %s", n_bad, len(genomes), bad_path)
+            LOG.error("Failed verification: %s / %s  ->  %s",
+                      format_count(n_bad), format_count(len(genomes)), bad_path)
             if self.args.delete:
                 LOG.info("bad directories deleted; re-run sync on %s", bad_path)
+            else:
+                LOG.info("re-run with --retry %s --delete to remove and refetch them",
+                         bad_path)
         if n_bad or n_extra:
             return 1
 
-        LOG.info("All %d genomes verified clean%s.", len(genomes),
+        LOG.info("All %s genomes verified clean%s.", format_count(len(genomes)),
                  "" if self.args.retry is not None else ", and the mirror holds nothing else")
         return 0
 
@@ -2438,17 +2927,19 @@ class NCBIGenomeSync(object):
                       self.args.summary, self.args.root)
             return 2
         if not genomes:
-            LOG.error("error: no genomes with a usable ftp_path in %s (%d rows, all na)",
-                      self.args.summary, len(skipped))
+            LOG.error("error: no genomes with a usable ftp_path in %s (%s rows, all na)",
+                      self.args.summary, format_count(len(skipped)))
             return 2
 
         quiet_console_detail()
         LOG.info(shlex.join(sys.argv))
         stale = [g for g in genomes if g.version_status and g.version_status != "latest"]
-        LOG.info("%s=%s genomes=%d no_ftp_path=%d not_latest=%d root=%s jobs=%d "
+        LOG.info("%s=%s genomes=%s no_ftp_path=%s not_latest=%s root=%s jobs=%d "
                  "rate=%.1f max_age=%gd verify_jobs=%d nfs_jobs=%d%s%s%s%s",
-                 "retry" if retrying else "selection", self.args.summary, len(genomes), len(skipped),
-                 len(stale), self.args.root, self.args.jobs, self.args.rate, self.args.max_age,
+                 "retry" if retrying else "selection", self.args.summary,
+                 format_count(len(genomes)), format_count(len(skipped)),
+                 format_count(len(stale)), self.args.root, self.args.jobs, self.args.rate,
+                 self.args.max_age,
                  self.args.verify_jobs, self.args.nfs_jobs,
                  " full" if self.args.full else "", " verify" if self.args.verify else "",
                  " verify_only" if self.args.verify_only else "", " dry_run" if self.args.dry_run else "")
@@ -2456,24 +2947,25 @@ class NCBIGenomeSync(object):
                  os.uname()[1])
         if skipped:
             report_rows(
-                "%d row(s) in %s have no ftp_path and will not be synced"
-                % (len(skipped), self.args.summary),
+                "%s row(s) in %s have no ftp_path and will not be synced"
+                % (format_count(len(skipped)), self.args.summary),
                 ["no ftp_path %s (%s:%d): ftp_path=%s" % (acc, self.args.summary, lineno, raw)
                  for lineno, acc, raw in skipped],
-                "warning: %d genome(s) in %s have no ftp_path (na or empty) and were "
-                "skipped: %s" % (len(skipped), self.args.summary,
+                "warning: %s genome(s) in %s have no ftp_path (na or empty) and were "
+                "skipped: %s" % (format_count(len(skipped)), self.args.summary,
                                  first_names(acc for _, acc, _ in skipped)))
         if stale:
             # Policy: a replaced or suppressed genome is synced anyway. NCBI still serves the
             # directory, and pinned version lists (GTDB releases) want exactly that version.
             # The status lands in assembly_status.txt as before; this just makes it visible.
             report_rows(
-                "%d genome(s) in %s are not the latest version; synced anyway"
-                % (len(stale), self.args.summary),
+                "%s genome(s) in %s are not the latest version; synced anyway"
+                % (format_count(len(stale)), self.args.summary),
                 ["not latest %s version_status=%s" % (g.accession, g.version_status)
                  for g in stale],
-                "note: %d genome(s) in %s are replaced/suppressed; synced anyway with the "
-                "status recorded in assembly_status.txt (see log)" % (len(stale), self.args.summary))
+                "note: %s genome(s) in %s are replaced/suppressed; synced anyway with the "
+                "status recorded in assembly_status.txt (see log)"
+                % (format_count(len(stale)), self.args.summary))
 
         if self.args.dry_run:
             rtn_code = self._dry_run(genomes)
@@ -2521,14 +3013,26 @@ class NCBIGenomeSync(object):
         """The two closing lines every run ends with, whatever it did: the HTTP account and the
         runtime with the exit code."""
         throttle = sum(STATS["retry_status"].get(c, 0) for c in (429, 503))
-        detail = ", ".join("%d x%d" % (k, v) for k, v in sorted(STATS["retry_status"].items()))
-        http_summary = ("HTTP: %d requests (%d probe 404s), %.1f MB, %d connection drops, "
-                        "%d throttled%s, %d breaker trips, %.0f s paused"
-                        % (STATS["requests"], STATS["probe_404"], STATS["bytes"] / 1e6,
-                           STATS["conn_drops"], throttle, (" (%s)" % detail) if detail else "",
-                           STATS["breaker_trips"], STATS["paused_s"]))
+        # the status code is an identifier and keeps its digits; the count beside it
+        # is a count
+        detail = ", ".join("%d x%s" % (code, format_count(n))
+                           for code, n in sorted(STATS["retry_status"].items()))
+        http_summary = ("HTTP: %s requests (%s probe 404s), %s MB, %s connection drops, "
+                        "%s throttled%s, %s breaker trips, %s s paused"
+                        % (format_count(STATS["requests"]), format_count(STATS["probe_404"]),
+                           format_amount(STATS["bytes"] / 1e6), format_count(STATS["conn_drops"]),
+                           format_count(throttle), (" (%s)" % detail) if detail else "",
+                           format_count(STATS["breaker_trips"]),
+                           format_amount(STATS["paused_s"], 0)))
         runtime = "Total runtime: %s" % format_duration(time.time() - self.started)
         LOG.info(http_summary)
+        if STATS["fallback_files"]:
+            # NCBI's two checksum tables disagreeing is rare but real; a count each run is
+            # how a change in that -- in either direction -- becomes visible
+            LOG.info("Checksums: %s file(s) in %s genome(s) rejected by md5checksums.txt "
+                     "and accepted by %s (the copy that settled it is in each genome "
+                     "directory)", format_count(STATS["fallback_files"]),
+                     format_count(STATS["fallback_genomes"]), UNCOMPRESSED_MANIFEST)
         LOG.info("%s (exit %d)", runtime, rtn_code)
 
 

@@ -16,18 +16,30 @@
 ###############################################################################
 
 """
-ncbi_utils.py -- read the NCBI assembly summary files.
+ncbi_utils.py -- read the NCBI assembly summary files, and hold what the NCBI
+commands know in common about NCBI's files.
 
 An assembly summary file (assembly_summary.txt) is the table NCBI publishes
 describing every assembly it holds: a block of '#'-prefixed comments, a
 '#assembly_accession ...' header, then one tab-separated row per genome.
 
 Two parts of this package read those tables. ncbi_genome_sync.py reads ftp_path to
-mirror the genomes from the NCBI FTP site, and ncbi_ftp_manager.py reads
-version_status, gbrs_paired_asm, and excluded_from_refseq to decide which of
-the mirrored genomes belong in a GTDB release. Both need the same thing from
-the file, so the reading lives here and the two callers differ only in what
-they do with a row.
+mirror the genomes from the NCBI FTP site, and select_genomes.py reads
+version_status, gbrs_paired_asm, and excluded_from_refseq to decide which
+genomes belong in a GTDB release. Both need the same thing from the file, so
+the reading lives here and the two callers differ only in what they do with a
+row.
+
+Beside the reader sit the facts about NCBI's files that more than one command
+depends on: the two databases and the names each goes by, the server they are
+fetched from, the naming of a saved summary file, the columns every GTDB genome
+table opens with, NCBI's null, the test for an assembly NCBI lists but does not
+serve, the manifest served beside each genome, and the block files are read and
+hashed in. They live here rather than in whichever command first needed them
+so that no command module imports another. ncbi_genome_sync.py imports from
+this module and from nothing else in the package, and this module imports
+nothing from the package at all; keep both true, or the sync stops being
+runnable as the standalone script it started as.
 
 A summary file may be gzipped or not, and open_summary() takes either, so no
 caller has to know which it was handed.
@@ -40,8 +52,11 @@ genomes, with nothing to indicate anything went wrong. For the same reason a
 header is required rather than assumed.
 """
 
+import collections
 import gzip
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+import hashlib
+import re
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
 class BadInput(ValueError):
@@ -243,3 +258,203 @@ def read_assembly_summary(assembly_summary: str,
     for _, fields, columns in read_summary_rows(assembly_summary,
                                                 required=('assembly_accession',)):
         yield tuple(summary_field(fields, columns, name) for name in field_names)
+
+
+# Where NCBI serves everything this toolkit fetches: the assembly summaries and
+# the taxonomy (ncbi_metadata_sync) and the genomes themselves (ncbi_genome_sync).
+NCBI_HOST = 'ftp.ncbi.nlm.nih.gov'
+NCBI_URL = 'https://' + NCBI_HOST
+
+# The two NCBI databases GTDB draws on, and the three names each goes by: the
+# directory NCBI serves it from (genomes/<name>/...), the label it is written
+# with in prose and logs, and the prefix of its accessions. RefSeq comes first,
+# and every consumer keeps that order: select_genomes must know which genomes
+# RefSeq covers before it can judge a GenBank assembly.
+NCBIDatabase = collections.namedtuple('NCBIDatabase', 'name label prefix')
+REFSEQ = NCBIDatabase('refseq', 'RefSeq', 'GCF')
+GENBANK = NCBIDatabase('genbank', 'GenBank', 'GCA')
+NCBI_DATABASES = (REFSEQ, GENBANK)
+
+# The prefixes on their own, as most callers want them: select_genomes and
+# update_genomes both read a genome's database from its accession.
+REFSEQ_PREFIX = REFSEQ.prefix
+GENBANK_PREFIX = GENBANK.prefix
+
+# NCBI calls every assembly summary file assembly_summary.txt and tells them
+# apart by directory, so GTDB puts the domain and database back into the name as
+# it saves them. ncbi_metadata_sync writes these names and select_genomes reads
+# the database back out of them, so both go through the two functions below
+# rather than each spelling the convention for itself.
+ASSEMBLY_SUMMARY_NAME = 'assembly_summary_{domain}_{database}.txt'
+
+# Files are read and hashed a CHUNK at a time. Measured on the sync: 64 KB to
+# 1 MB all hash at ~575 MB/s, 4 KB is 18% slower and 4 MB slightly worse, so
+# 1 MB sits in the flat region and bounds memory at CHUNK x threads. The
+# metadata download reads its gigabyte summaries by the same block, so nothing
+# is ever held in memory whole.
+CHUNK = 1 << 20
+
+# NCBI's manifest of the files it serves for a genome, one "<md5>  ./<name>"
+# line per file. The sync reads it to learn what to fetch and to verify what it
+# fetched; update_genomes reads the mirror's and the previous release's copies
+# to tell whether a genomic FASTA changed. Both go through read_md5_manifest(),
+# so the two parse the same lines the same way.
+MD5_MANIFEST = 'md5checksums.txt'
+MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
+
+# Suffix NCBI appends to the assembly name for the genome assembly itself, e.g.
+# GCF_036600855.1_ASM3660085v1 + _genomic.fna.gz. It is also the tail of
+# _cds_from_genomic.fna.gz and _rna_from_genomic.fna.gz, so it is only ever
+# matched as the whole of a name after the assembly, never searched for.
+GENOMIC_FASTA_EXT = '_genomic.fna.gz'
+
+
+# NCBI's null: what an empty field holds in an assembly summary, and what GTDB
+# writes in the same position of the tables it derives from one.
+NCBI_NA = 'na'
+
+# The columns of an assembly summary that identify a genome and say whether and
+# where NCBI serves it, in this order. They are what ncbi_genome_sync needs to
+# mirror a genome, so they open every table GTDB hands it: the selection
+# select_genomes writes, and the .fail and .bad files the sync writes for
+# itself. Each of those builds its header from here, so the three tables cannot
+# drift apart.
+GENOME_COLUMNS = ('assembly_accession', 'ftp_path', 'version_status', 'excluded_from_refseq')
+
+
+def table_header(*columns: str) -> str:
+    """The header line of a GTDB table that the assembly summary readers read.
+
+    It is '#'-prefixed so those readers, which skip comment lines, find the
+    column names on it the way they find them on an NCBI summary, while the
+    line still names its columns for anyone opening the file.
+
+    Parameters
+    ----------
+    columns : str
+        Column names, in order.
+
+    @return: the header line, without a newline.
+    """
+
+    return '#' + '\t'.join(columns)
+
+
+def has_ftp_path(ftp_path: str) -> bool:
+    """Report whether NCBI serves a directory for an assembly.
+
+    NCBI writes 'na' in ftp_path for an assembly it lists but does not serve, and the
+    column can be empty in an older file. Such a genome cannot be mirrored, so it is not
+    selected: the table select_genomes writes is the list ncbi_genome_sync fetches from,
+    and a row with nothing to fetch would be reported as skipped by every run of it
+    forever.
+
+    select_genomes applies this when choosing a genome, and
+    ncbi_genome_sync.read_assembly_summary() when reading the selection back to decide
+    a row has "no usable ftp_path". The two must agree, or the selection would promise
+    genomes the sync then refuses; sharing the one function makes them agree by
+    construction rather than by keeping two copies of the expression in step.
+
+    Parameters
+    ----------
+    ftp_path : str
+        Value of the ftp_path column of an assembly summary file.
+
+    @return: True if the assembly has a directory at NCBI.
+    """
+
+    return bool(ftp_path) and ftp_path.lower() != NCBI_NA
+
+
+def assembly_summary_filename(domain: str, database: NCBIDatabase) -> str:
+    """The name GTDB saves one NCBI assembly summary under.
+
+    The name ends in .gz because ncbi_metadata_sync compresses the files as they
+    are downloaded; every reader goes through open_summary(), which takes either
+    form, and assembly_summary_database() reads the name with or without it.
+
+    Parameters
+    ----------
+    domain : str
+        NCBI directory the file describes: archaea, bacteria or fungi.
+    database : NCBIDatabase
+        Database the file describes.
+
+    @return: file name, e.g. assembly_summary_bacteria_refseq.txt.gz.
+    """
+
+    return ASSEMBLY_SUMMARY_NAME.format(domain=domain, database=database.name) + '.gz'
+
+
+def assembly_summary_database(filename: str) -> Optional[NCBIDatabase]:
+    """The NCBI database an assembly summary file describes, read from its name.
+
+    Only the suffix is read, so a file from an older release, held uncompressed
+    or under a longer name, is placed the same way as one this toolkit wrote.
+
+    Parameters
+    ----------
+    filename : str
+        Path or name of an assembly summary file, gzipped or not.
+
+    @return: the database, or None if the name says neither.
+    """
+
+    name = filename.rsplit('/', 1)[-1]
+    if name.endswith('.gz'):
+        name = name[:-len('.gz')]
+
+    # the part of the template after the domain, e.g. _refseq.txt
+    suffix = ASSEMBLY_SUMMARY_NAME.split('{domain}')[1]
+    for database in NCBI_DATABASES:
+        if name.endswith(suffix.format(database=database.name)):
+            return database
+
+    return None
+
+
+def read_md5_manifest(lines: Iterable[str]) -> Iterator[Tuple[str, str]]:
+    """Read the (md5, name) entries of an md5checksums.txt.
+
+    Names are as NCBI lists them less the leading ./, so a file at the genome
+    root is its bare name and a nested one keeps its directory. Callers match
+    the whole of that, never a basename: every file GTDB wants sits at the root,
+    so a name with a directory in it cannot be one, and the _assembly_structure/
+    and all_assembly_versions/ subtrees stay out without a blacklist to keep in
+    step. A line that is not an entry is skipped rather than rejected, as NCBI
+    writes the odd blank or malformed one.
+
+    Parameters
+    ----------
+    lines : iterable of str
+        Lines of the manifest, from an open file or a decoded download.
+
+    @return: iterator of (md5, name), in manifest order.
+    """
+
+    for line in lines:
+        match = MD5_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        name = match.group(2).strip()
+        if name.startswith('./'):
+            name = name[2:]
+        yield match.group(1), name
+
+
+def file_md5(path: str) -> str:
+    """MD5 of a file, read a CHUNK at a time.
+
+    Parameters
+    ----------
+    path : str
+        File to hash.
+
+    @return: hex digest.
+    """
+
+    digest = hashlib.md5()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(CHUNK), b''):
+            digest.update(block)
+    return digest.hexdigest()

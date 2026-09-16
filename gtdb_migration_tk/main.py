@@ -26,11 +26,6 @@ from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk import config
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
-from gtdb_migration_tk.ncbi_ftp_manager import (GENBANK_PREFIX,
-                                                REFSEQ_PREFIX,
-                                                GenomeManager,
-                                                MetadataSyncManager,
-                                                SelectedGenomesManager)
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_manager import MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
@@ -39,13 +34,16 @@ from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeType
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.ncbi_genome_sync import NCBIGenomeSync
+from gtdb_migration_tk.ncbi_metadata_sync import NCBIMetadataSync
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
 from gtdb_migration_tk.propagate_taxonomy import Propagate
 from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
 from gtdb_migration_tk.rna_manager_silva import RnaManagerSILVA
+from gtdb_migration_tk.select_genomes import SelectGenomes
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.trnascan_manager import tRNAScan
+from gtdb_migration_tk.update_genomes import UpdateGenomes
 from gtdb_migration_tk.utils.tools import Tools
 
 
@@ -130,14 +128,14 @@ class OptionsParser():
 
     def ncbi_metadata_sync(self, options):
         make_sure_path_exists(options.output_dir)
-        p = MetadataSyncManager(options.output_dir, options.group)
+        p = NCBIMetadataSync(options.output_dir, options.group)
         p.run(options.release_number)
 
     def select_genomes(self, options):
         for assembly_summary in options.new_list_genomes:
             check_file_exists(assembly_summary)
         make_sure_path_exists(options.output_dir)
-        p = SelectedGenomesManager(options.output_dir)
+        p = SelectGenomes(options.output_dir)
         p.run(options.new_list_genomes)
 
     def parse_genome_directory(self, options):
@@ -153,10 +151,9 @@ class OptionsParser():
         check_file_exists(options.old_genome_dirs)
         make_sure_path_exists(options.output_dir)
 
-        # RefSeq then GenBank, each with its own reports in the one output directory
-        for accession_prefix in (REFSEQ_PREFIX, GENBANK_PREFIX):
-            p = GenomeManager(accession_prefix, options.output_dir, options.dry_run, options.cpus)
-            p.run_comparison(options.ftp_dir, options.ftp_genome_dirs, options.old_genome_dirs)
+        # RefSeq and GenBank in one pass, with one pair of reports for the release
+        p = UpdateGenomes(options.output_dir, options.dry_run, options.cpus)
+        p.run_comparison(options.ftp_dir, options.ftp_genome_dirs, options.old_genome_dirs)
 
     def run_prodigal(self, options):
         p = ProdigalManager(options.tmp_dir, options.cpus)

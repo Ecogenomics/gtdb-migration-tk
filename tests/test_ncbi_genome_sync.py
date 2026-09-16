@@ -218,55 +218,47 @@ class MainHelpers(TempDirCase):
         base.update(kw)
         return types.SimpleNamespace(**base)
 
-    def test_output_paths_strip_txt_but_keep_fail_bad(self):
-        out = N.output_paths(self.args())
-        self.assertEqual((out.base, out.fail, out.bad),
-                         ("assembly_summary_archaea_genbank",
-                          "assembly_summary_archaea_genbank.fail",
-                          "assembly_summary_archaea_genbank.bad"))
-        out = N.output_paths(self.args(summary="/x/y/run.bad"))
-        self.assertEqual((out.base, out.fail), ("run.bad", "run.bad.fail"))
-        out = N.output_paths(self.args(fail="f", bad="b"))
-        self.assertEqual((out.fail, out.bad), ("f", "b"))
-
-    def test_outputs_are_placed_beside_the_log(self):
-        # one directory, chosen by the operator, holds a mirror's whole run history
+    def test_every_output_is_named_after_the_log(self):
+        # the log names the run, so one round's whole account of itself shares one stem
         out = N.output_paths(self.args(summary="/in/gtdb_selected_genomes.tsv.gz",
                                        log="/logs/sync.log"))
-        self.assertEqual((out.fail, out.bad, out.rm, out.rm_dry_run, out.extra),
-                         ("/logs/gtdb_selected_genomes.fail",
-                          "/logs/gtdb_selected_genomes.bad",
-                          "/logs/gtdb_selected_genomes.rm",
-                          "/logs/gtdb_selected_genomes.rm_dry_run",
-                          "/logs/gtdb_selected_genomes.extra"))
+        self.assertEqual((out.stem, out.fail, out.bad, out.rm, out.rm_dry_run, out.extra),
+                         ("sync",
+                          "/logs/sync.fail",
+                          "/logs/sync.bad",
+                          "/logs/sync.rm",
+                          "/logs/sync.rm_dry_run",
+                          "/logs/sync.extra"))
+
+    def test_the_input_table_does_not_name_any_output(self):
+        # two rounds against the same table, two logs, two sets of outputs
+        first = N.output_paths(self.args(summary="/in/sel.tsv.gz", log="/logs/sync.log"))
+        second = N.output_paths(self.args(summary="/in/sel.tsv.gz", log="/logs/retry1.log"))
+        self.assertEqual((first.fail, second.fail), ("/logs/sync.fail", "/logs/retry1.fail"))
+
+    def test_only_a_log_extension_is_stripped(self):
+        # a log named otherwise keeps its name whole, so it cannot collide with a
+        # run.log beside it
+        self.assertEqual(N.output_paths(self.args(log="/logs/run.txt")).fail,
+                         "/logs/run.txt.fail")
+        self.assertEqual(N.output_paths(self.args(log="/logs/run")).fail, "/logs/run.fail")
+        self.assertEqual(N.output_paths(self.args(log="/logs/.log")).fail, "/logs/.log.fail")
 
     def test_a_bare_log_name_means_the_working_directory(self):
         out = N.output_paths(self.args(summary="/in/x.tsv", log="sync.log"))
-        self.assertEqual(out.fail, "x.fail")
+        self.assertEqual(out.fail, "sync.fail")
 
     def test_explicit_fail_and_bad_ignore_the_log_directory(self):
         out = N.output_paths(self.args(fail="/elsewhere/f", bad="/elsewhere/b", log="/logs/s.log"))
         self.assertEqual((out.fail, out.bad), ("/elsewhere/f", "/elsewhere/b"))
 
-    def test_output_paths_strip_gz(self):
-        # GTDB stores the summaries compressed, and the table select_genomes
-        # writes is gtdb_selected_genomes.tsv.gz; these outputs are plain text,
-        # so they must not be named as though they were gzipped
-        out = N.output_paths(self.args(summary="/x/y/gtdb_selected_genomes.tsv.gz"))
-        self.assertEqual((out.base, out.fail, out.bad, out.rm),
-                         ("gtdb_selected_genomes",
-                          "gtdb_selected_genomes.fail",
-                          "gtdb_selected_genomes.bad",
-                          "gtdb_selected_genomes.rm"))
-
-    def test_output_paths_strip_gz_before_the_retry_suffix(self):
-        # a gzipped retry file still keeps its .bad, so its outputs sit beside it
-        # rather than overwriting the run that produced it
-        out = N.output_paths(self.args(summary="/x/y/run.bad.gz"))
-        self.assertEqual((out.base, out.fail), ("run.bad", "run.bad.fail"))
-
-    def test_output_paths_strip_a_bare_gz(self):
-        self.assertEqual(N.output_paths(self.args(summary="/x/y/summary.gz")).base, "summary")
+    def test_table_name_labels_the_input_without_naming_a_file(self):
+        # only a label for the log line and the progress bar; GTDB stores the summaries
+        # compressed, so .gz comes off before .tsv
+        self.assertEqual(N.table_name("/x/y/gtdb_selected_genomes.tsv.gz"),
+                         "gtdb_selected_genomes")
+        self.assertEqual(N.table_name("/x/y/summary.gz"), "summary")
+        self.assertEqual(N.table_name("/x/y/sync.fail"), "sync.fail")
 
     def test_validate_args(self):
         self.assertIsNone(N.validate_args(self.args()))
@@ -277,6 +269,11 @@ class MainHelpers(TempDirCase):
         self.assertIsNone(N.validate_args(self.args(max_age=0)))
         self.assertIn("--delete", N.validate_args(self.args(delete=True)))
         self.assertIsNone(N.validate_args(self.args(delete=True, verify=True)))
+        self.assertIsNone(N.validate_args(self.args(delete=True, verify_only=True)))
+        # --retry --delete rebuilds the listed genomes; on a bare selection the same flag
+        # could only mean re-downloading the whole mirror, so it stays a usage error
+        self.assertIsNone(N.validate_args(self.args(delete=True, retry="x.bad")))
+        self.assertIn("--delete", N.validate_args(self.args(delete=True, retry=None)))
 
     def test_count_rows_ignores_header_and_blank_lines(self):
         path = write(self.path("x.fail"), N.FAIL_HEADER + "a\tb\tc\td\te\n\n" + "f\tg\th\ti\tj\n")
@@ -404,11 +401,11 @@ class MainRunner(TempDirCase):
     """Drives main() the way the command line does; holds no tests of its own, so the
     classes built on it do not re-run one another's."""
 
-    def run_main(self, table, *argv, retry=False):
+    def run_main(self, table, *argv, retry=False, log="sync.log"):
         # The table is --gtdb_selected_genomes (the selection: removes what it does not
-        # list) or --retry (syncs only what it lists). --log is required and places the
-        # .fail/.bad/.rm outputs; under gtdb_migration_tk logger_setup() would create its
-        # directory. ncbi_genome_sync reports through the toolkit logger, so capture that
+        # list) or --retry (syncs only what it lists). --log is required and NAMES the
+        # .fail/.bad/.rm outputs, so a round given its own log gets its own outputs;
+        # under gtdb_migration_tk logger_setup() would create its directory. ncbi_genome_sync reports through the toolkit logger, so capture that
         # too and return it alongside stderr -- the progress bar and signal handler still
         # use stderr.
         cwd = os.getcwd(); os.chdir(self.dir)
@@ -416,7 +413,7 @@ class MainRunner(TempDirCase):
         stderr, sys.stderr = sys.stderr, open(self.path("stderr"), "w")
         flag = "--retry" if retry else "--gtdb_selected_genomes"
         argv_saved, sys.argv = (sys.argv, ["ncbi_genome_sync.py", flag, table,
-                                           "-l", os.path.join("logs", "sync.log")] + list(argv))
+                                           "-l", os.path.join("logs", log)] + list(argv))
         records = []
 
         class _Capture(logging.Handler):
@@ -468,6 +465,28 @@ class MainEndToEndOffline(MainRunner):
         self.assertEqual(rc, 2)
         self.assertIn("would be overwritten", err)
 
+    def test_retrying_a_rounds_own_fail_under_that_round_s_log_is_refused(self):
+        # outputs are named after --log, so -l logs/sync.log writes logs/sync.fail: giving
+        # that same file to --retry would truncate the list being read. The operator gives
+        # the round its own log, and the run says so rather than destroying it
+        row = N.FAIL_HEADER + "GCA_1.1\t%sGCA_1.1_A/\tlatest\tna\tr\n" % P
+        os.makedirs(self.path("logs"), exist_ok=True)
+        write(self.path("logs/sync.fail"), row)
+        rc, err = self.run_main("logs/sync.fail", "--root", self.path("mirror"), retry=True)
+        self.assertEqual(rc, 2)
+        self.assertIn("would be overwritten", err)
+        self.assertIn("--log", err)
+        with open(self.path("logs/sync.fail")) as handle:
+            self.assertEqual(handle.read(), row)              # untouched
+
+    def test_the_same_retry_under_its_own_log_writes_its_own_outputs(self):
+        os.makedirs(self.path("logs"), exist_ok=True)
+        write(self.path("logs/sync.fail"), N.FAIL_HEADER)
+        rc, err = self.run_main("logs/sync.fail", "--root", self.path("mirror"),
+                                retry=True, log="retry1.log")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(os.path.exists(self.path("logs/sync.fail")))
+
     def test_main_releases_the_root_lock_on_return(self):
         # PyPy does not close a dropped handle promptly: without an explicit close the
         # flock outlived main() and a second run in the same process was refused with 75
@@ -496,15 +515,32 @@ def md5hex(data):
     return hashlib.md5(data).hexdigest()
 
 
+def uncompressed_table(*rows, header="#file\tmd5sum\tcrc32\tsize"):
+    """NCBI's uncompressed_checksums.txt AS NCBI WRITES IT -- tab-separated under a
+    '#file md5sum crc32 size' header, name first and md5 second. Nothing like
+    md5checksums.txt, which is '<md5>  ./<name>' with no header: building these tests out
+    of the manifest format is what let the reader that parsed none of it pass."""
+    lines = [header] if header else []
+    for name, md5 in rows:
+        lines.append("./%s\t%s\t8561a392\t863" % (name, md5))
+    return "\n".join(lines) + "\n"
+
+
 class FakeNCBI(object):
     """Stand-in for http_get: serves a manifest and files from a dict, records every call.
-    Lets sync_genome run cold, end to end, with no network."""
+    Lets sync_genome run cold, end to end, with no network.
 
-    def __init__(self, asm, files, manifest_extra=""):
+    `uncompressed` is NCBI's second checksum table, served only when given -- most
+    assemblies publish none, and the 404 that follows is the ordinary case.
+    """
+
+    def __init__(self, asm, files, manifest_extra="", manifest=None, uncompressed=None):
         self.asm = asm
         self.files = files                       # name -> bytes
-        self.manifest = ("".join("%s  ./%s\n" % (md5hex(b), n) for n, b in sorted(files.items()))
-                         + manifest_extra).encode()
+        self.manifest = (manifest if manifest is not None else
+                         "".join("%s  ./%s\n" % (md5hex(b), n)
+                                 for n, b in sorted(files.items())) + manifest_extra).encode()
+        self.uncompressed = None if uncompressed is None else uncompressed.encode()
         self.calls = []
 
     def __call__(self, path, sink=None, headers=None):
@@ -512,6 +548,10 @@ class FakeNCBI(object):
         name = path.rsplit("/", 1)[-1]
         if name == "md5checksums.txt":
             return 200, self.manifest, []
+        if name == N.UNCOMPRESSED_MANIFEST:
+            if self.uncompressed is None:
+                return 404, b"", []
+            return 200, self.uncompressed, []
         if name in self.files:
             if sink is not None:
                 sink.write(self.files[name])
@@ -545,6 +585,9 @@ class FreshEnough(TempDirCase):
 
     def setUp(self):
         super().setUp()
+        # a mismatch now asks NCBI for its second checksum table; the suite is offline, so
+        # stand in for the ordinary answer -- this assembly publishes none
+        self.real_http_get, N.http_get = N.http_get, FakeNCBI(self.ASM, {})
         self.keep = N.wanted_files(self.ASM)
         self.files = {self.ASM + "_genomic.fna.gz": b"ACGT", "annotation_hashes.txt": b"h"}
         for name, data in self.files.items():
@@ -553,6 +596,10 @@ class FreshEnough(TempDirCase):
         write(self.path("md5checksums.txt"),
               "".join("%s  ./%s\n" % (md5hex(b), n) for n, b in self.files.items()))
         N.write_last_synced(self.dir)
+
+    def tearDown(self):
+        N.http_get = self.real_http_get
+        super().tearDown()
 
     def test_fresh_and_complete_reports_listed_count(self):
         self.assertEqual(N.fresh_enough(self.dir, self.keep, 14 * 86400), 2)
@@ -583,10 +630,312 @@ class FreshEnough(TempDirCase):
         self.assertIsNotNone(N.read_last_synced(gdir))          # clean: kept
         with open(os.path.join(gdir, self.ASM + "_genomic.fna.gz"), "wb") as handle:
             handle.write(b"rotten")
-        ok, reason = N.verify_genome(url, root, delete=False)
-        self.assertFalse(ok); self.assertIn("md5 mismatch", reason)
+        ok, detail = N.verify_genome(url, root, delete=False)
+        self.assertFalse(ok)
+        self.assertEqual(detail, "mismatch:" + self.ASM + "_genomic.fna.gz")
         self.assertIsNone(N.read_last_synced(gdir))             # withdrawn, dir kept
         self.assertTrue(os.path.isdir(gdir))
+
+
+class FailedFilesColumn(TempDirCase):
+    """What <log>.bad's failed_files column says. Every fault in the genome, tagged with
+    which fault it was -- the row has to say what to do about the genome, not just that
+    something is wrong with it."""
+
+    ASM = "GCA_000000001.1_ASM1v1"
+    URL = P + ASM + "/"
+
+    def setUp(self):
+        super().setUp()
+        self.real_http_get, N.http_get = N.http_get, FakeNCBI(self.ASM, {})
+        self.root = self.path("root")
+        self.gdir = os.path.join(self.root, N.genome_relpath(self.URL))
+        os.makedirs(self.gdir)
+        self.files = {self.ASM + "_genomic.fna.gz": b"ACGT",
+                      self.ASM + "_assembly_report.txt": b"report",
+                      self.ASM + "_assembly_stats.txt": b"stats"}
+        for name, data in self.files.items():
+            with open(os.path.join(self.gdir, name), "wb") as handle:
+                handle.write(data)
+        write(os.path.join(self.gdir, "md5checksums.txt"),
+              "".join("%s  ./%s\n" % (md5hex(b), n) for n, b in sorted(self.files.items())))
+
+    def tearDown(self):
+        N.http_get = self.real_http_get
+        super().tearDown()
+
+    def detail(self, delete=False):
+        return N.verify_genome(self.URL, self.root, delete)
+
+    def name(self, suffix):
+        return self.ASM + suffix
+
+    def test_a_clean_genome_has_no_detail(self):
+        self.assertEqual(self.detail(), (True, ""))
+
+    def test_every_failing_file_is_listed_not_just_the_first(self):
+        # stopping at the first would have the operator rebuild the genome to discover
+        # the next fault in it
+        with open(os.path.join(self.gdir, self.name("_genomic.fna.gz")), "wb") as handle:
+            handle.write(b"rot")
+        os.unlink(os.path.join(self.gdir, self.name("_assembly_report.txt")))
+        ok, detail = self.detail()
+        self.assertFalse(ok)
+        self.assertEqual(sorted(detail.split(",")),
+                         ["mismatch:" + self.name("_genomic.fna.gz"),
+                          "missing:" + self.name("_assembly_report.txt")])
+
+    def test_each_file_is_tagged_with_which_fault_it_was(self):
+        # a missing file any sync repairs; a rotted one is trusted by the manifest fast
+        # path and needs --retry <log>.bad --delete
+        os.unlink(os.path.join(self.gdir, self.name("_assembly_stats.txt")))
+        self.assertEqual(self.detail()[1], "missing:" + self.name("_assembly_stats.txt"))
+        with open(os.path.join(self.gdir, self.name("_assembly_stats.txt")), "wb") as handle:
+            handle.write(b"wrong")
+        self.assertEqual(self.detail()[1], "mismatch:" + self.name("_assembly_stats.txt"))
+
+    def test_the_list_is_in_manifest_order_so_a_genome_reads_the_same_twice(self):
+        for name in self.files:
+            with open(os.path.join(self.gdir, name), "wb") as handle:
+                handle.write(b"rot")
+        self.assertEqual(self.detail()[1], self.detail()[1])
+        self.assertEqual(len(self.detail()[1].split(",")), len(self.files))
+
+    def test_a_fault_with_no_file_to_name_puts_the_reason_in_the_column(self):
+        os.unlink(os.path.join(self.gdir, "md5checksums.txt"))
+        self.assertEqual(self.detail(), (False, "no md5checksums.txt"))
+        shutil.rmtree(self.gdir)
+        self.assertEqual(self.detail(), (False, "missing directory"))
+
+    def test_delete_acts_after_the_whole_genome_is_checked(self):
+        # deleting at the first failure would take the remaining files with it, and the
+        # column would name one fault out of three
+        for name in self.files:
+            with open(os.path.join(self.gdir, name), "wb") as handle:
+                handle.write(b"rot")
+        ok, detail = self.detail(delete=True)
+        self.assertFalse(ok)
+        self.assertEqual(len(detail.split(",")), len(self.files))
+        self.assertFalse(os.path.isdir(self.gdir))
+
+    def test_the_column_can_never_break_the_tsv_it_is_written_into(self):
+        # <log>.bad is itself --retry input: a tab or newline would shift every column
+        self.assertEqual(N._tsv_safe("a\tb\nc  d"), "a b c d")
+
+
+class UncompressedChecksumsFormat(unittest.TestCase):
+    """The format NCBI actually writes. Reusing the md5checksums.txt reader for this file
+    parsed NOTHING out of it, which reads exactly like "NCBI vouches for nothing here" --
+    so every second opinion came back negative and the genomes the fallback exists for
+    went on failing. These are the bytes NCBI served for GCF_964266735.1."""
+
+    REAL = ("#file\tmd5sum\tcrc32\tsize\n"
+            "./GCF_964266735.1_RHODOP_ani_report.txt\t115dbb8ce0efd2ff0d07b5d71cfe98f4\tb0843f27\t6305\n"
+            "./GCF_964266735.1_RHODOP_fcs_report.txt\t032ef29ec46f8c57fc0fecaa7e936bf2\t8561a392\t863\n"
+            "./GCF_964266735.1_RHODOP_genomic.fna\t3aafaef58c53a5e20de246b635c2ebf9\t0b673e39\t5663303\n")
+
+    def read(self, text):
+        return N.read_uncompressed_checksums(text.splitlines())
+
+    def test_it_reads_what_ncbi_actually_serves(self):
+        entries = self.read(self.REAL)
+        self.assertEqual(entries["GCF_964266735.1_RHODOP_fcs_report.txt"],
+                         "032ef29ec46f8c57fc0fecaa7e936bf2")
+        self.assertEqual(len(entries), 3)
+
+    def test_it_is_not_the_md5checksums_format(self):
+        # the two files are '<md5>  ./<name>' and './<name>\t<md5>\t...': opposite order,
+        # different separator, one has a header and the other does not
+        self.assertIsNone(self.read("0dff9a9f7949aa83fee2cb8e101a7d3f  ./x_fcs_report.txt\n"))
+
+    def test_columns_are_found_by_name_not_position(self):
+        # NCBI has grown its tables before; crc32 and size are not in every copy
+        reordered = ("#size\tmd5sum\tfile\n"
+                     "863\t032ef29ec46f8c57fc0fecaa7e936bf2\t./x_fcs_report.txt\n")
+        self.assertEqual(self.read(reordered),
+                         {"x_fcs_report.txt": "032ef29ec46f8c57fc0fecaa7e936bf2"})
+        self.assertEqual(self.read("#file\tmd5sum\n./x.txt\t%s\n" % ("a" * 32)),
+                         {"x.txt": "a" * 32})
+
+    def test_a_table_with_no_header_is_refused_rather_than_read_by_position(self):
+        self.assertIsNone(self.read("./x.txt\t%s\t8561a392\t863\n" % ("a" * 32)))
+        self.assertIsNone(self.read(""))
+
+    def test_a_header_without_the_columns_it_needs_is_refused(self):
+        self.assertIsNone(self.read("#file\tcrc32\n./x.txt\t8561a392\n"))
+
+    def test_rows_that_are_not_entries_are_skipped_not_fatal(self):
+        text = ("#file\tmd5sum\tcrc32\tsize\n"
+                "\n"
+                "./short.txt\n"                            # too few fields
+                "./notanmd5.txt\tzzzz\t8561a392\t863\n"   # md5 that is not one
+                "./good.txt\t%s\t8561a392\t863\n" % ("b" * 32))
+        self.assertEqual(self.read(text), {"good.txt": "b" * 32})
+
+    def test_the_leading_dot_slash_comes_off_so_names_compare_with_the_manifest(self):
+        self.assertIn("x_fcs_report.txt",
+                      self.read("#file\tmd5sum\n./x_fcs_report.txt\t%s\n" % ("c" * 32)))
+
+
+class ChecksumDisagreement(TempDirCase):
+    """NCBI's two checksum tables can disagree -- ~1000 genomes, on _fcs_report.txt --
+    and uncompressed_checksums.txt is the one that is right. md5checksums.txt is still
+    asked first and settles everything it agrees with; only a file it condemns gets a
+    second opinion, fetched once per genome and never for a genome that is clean."""
+
+    ASM = "GCA_000000001.1_ASM1v1"
+    URL = P + ASM + "/"
+
+    def setUp(self):
+        super().setUp()
+        self.real = N.http_get                   # restored whether or not a test serves
+        self.root = self.path("root")
+        self.gdir = os.path.join(self.root, N.genome_relpath(self.URL))
+        os.makedirs(self.gdir)
+        self.fcs = self.ASM + "_fcs_report.txt"
+        self.rep = self.ASM + "_assembly_report.txt"      # uncompressed, so eligible too
+        self.fna = self.ASM + "_genomic.fna.gz"           # compressed, so never eligible
+        self.content = {self.fcs: b"fcs contents", self.rep: b"report", self.fna: b"ACGT"}
+        for name, data in self.content.items():
+            with open(os.path.join(self.gdir, name), "wb") as handle:
+                handle.write(data)
+
+    def tearDown(self):
+        N.http_get = self.real
+        super().tearDown()
+
+    def serve(self, uncompressed=None, files=None):
+        N.http_get = FakeNCBI(self.ASM, files if files is not None else {},
+                              uncompressed=uncompressed)
+        return N.http_get
+
+    def table(self, **names):
+        return uncompressed_table(*sorted(names.items()))
+
+    def write_manifest(self, **md5s):
+        """md5checksums.txt as NCBI published it -- entries given here override the truth."""
+        lines = []
+        for name, data in sorted(self.content.items()):
+            lines.append("%s  ./%s\n" % (md5s.get(name, md5hex(data)), name))
+        write(os.path.join(self.gdir, "md5checksums.txt"), "".join(lines))
+
+    def installed(self):
+        return os.path.join(self.gdir, N.UNCOMPRESSED_MANIFEST)
+
+    def test_a_file_the_other_table_vouches_for_verifies_clean(self):
+        self.write_manifest(**{self.fcs: md5hex(b"stale")})
+        self.serve(uncompressed=self.table(**{self.fcs: md5hex(self.content[self.fcs])}))
+        self.assertEqual(N.verify_genome(self.URL, self.root, delete=False), (True, ""))
+
+    def test_the_table_that_settled_it_is_written_into_the_genome_directory(self):
+        self.write_manifest(**{self.fcs: md5hex(b"stale")})
+        served = self.table(**{self.fcs: md5hex(self.content[self.fcs])})
+        self.serve(uncompressed=served)
+        N.verify_genome(self.URL, self.root, delete=False)
+        with open(self.installed()) as handle:
+            self.assertEqual(handle.read(), served)
+
+    def test_a_clean_genome_asks_ncbi_nothing(self):
+        # the whole point of the second opinion being lazy: verify stays local
+        self.write_manifest()
+        fake = self.serve(uncompressed="whatever")
+        self.assertEqual(N.verify_genome(self.URL, self.root, delete=False), (True, ""))
+        self.assertEqual(fake.calls, [])
+        self.assertFalse(os.path.exists(self.installed()))
+
+    def test_one_request_settles_every_disagreement_in_the_genome(self):
+        self.write_manifest(**{self.fcs: md5hex(b"stale"), self.rep: md5hex(b"stale")})
+        fake = self.serve(uncompressed=self.table(**{
+            self.fcs: md5hex(self.content[self.fcs]),
+            self.rep: md5hex(self.content[self.rep])}))
+        self.assertEqual(N.verify_genome(self.URL, self.root, delete=False), (True, ""))
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_a_compressed_file_is_never_asked_about(self):
+        # the table lists the uncompressed form, under a name the archive does not have,
+        # so no entry for it can exist: asking is a request that cannot succeed
+        self.write_manifest(**{self.fna: md5hex(b"stale")})
+        fake = self.serve(uncompressed=self.table(**{self.fna: md5hex(self.content[self.fna])}))
+        self.assertEqual(N.verify_genome(self.URL, self.root, delete=False),
+                         (False, "mismatch:" + self.fna))
+        self.assertEqual(fake.calls, [])
+        self.assertFalse(os.path.exists(self.installed()))
+
+    def test_an_archive_failing_beside_an_uncompressed_file_still_costs_one_request(self):
+        self.write_manifest(**{self.fcs: md5hex(b"stale"), self.fna: md5hex(b"stale")})
+        fake = self.serve(uncompressed=self.table(**{
+            self.fcs: md5hex(self.content[self.fcs])}))
+        ok, detail = N.verify_genome(self.URL, self.root, delete=False)
+        self.assertEqual((ok, detail), (False, "mismatch:" + self.fna))   # the fcs passed
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_the_predicate_is_about_compression_not_about_the_wanted_list(self):
+        for name in (self.fcs, self.rep, "annotation_hashes.txt", "assembly_status.txt"):
+            self.assertTrue(N.may_be_uncompressed_checksummed(name), name)
+        for name in (self.fna, self.ASM + "_genomic.gbff.gz", self.ASM + "_genomic.gff.gz",
+                     self.ASM + "_wgsmaster.gbff.gz"):
+            self.assertFalse(N.may_be_uncompressed_checksummed(name), name)
+
+    def test_a_file_neither_table_vouches_for_still_fails(self):
+        # a second opinion, not an amnesty: real rot is still rot
+        self.write_manifest()
+        with open(os.path.join(self.gdir, self.fcs), "wb") as handle:
+            handle.write(b"rotten")
+        self.serve(uncompressed=self.table(**{self.fcs: md5hex(b"something else")}))
+        self.assertEqual(N.verify_genome(self.URL, self.root, delete=False),
+                         (False, "mismatch:" + self.fcs))
+
+    def test_an_assembly_that_publishes_no_second_table_fails_as_before(self):
+        self.write_manifest(**{self.fcs: md5hex(b"stale")})
+        self.serve()                                          # 404
+        ok, detail = N.verify_genome(self.URL, self.root, delete=False)
+        self.assertEqual((ok, detail), (False, "mismatch:" + self.fcs))
+        self.assertFalse(os.path.exists(self.installed()))
+
+    def test_matching_is_by_name_so_another_entry_cannot_excuse_a_file(self):
+        # the right digest under the wrong name clears nothing, even between two files
+        # that are both eligible
+        self.write_manifest(**{self.fcs: md5hex(b"stale")})
+        self.serve(uncompressed=uncompressed_table((self.rep, md5hex(self.content[self.fcs]))))
+        self.assertEqual(N.verify_genome(self.URL, self.root, delete=False),
+                         (False, "mismatch:" + self.fcs))
+
+    def test_the_run_counts_what_the_second_table_settled(self):
+        self.write_manifest(**{self.fcs: md5hex(b"stale")})
+        self.serve(uncompressed=self.table(**{self.fcs: md5hex(self.content[self.fcs])}))
+        before = N.STATS["fallback_files"], N.STATS["fallback_genomes"]
+        N.verify_genome(self.URL, self.root, delete=False)
+        self.assertEqual((N.STATS["fallback_files"], N.STATS["fallback_genomes"]),
+                         (before[0] + 1, before[1] + 1))
+
+    def test_the_sync_installs_a_file_only_the_other_table_vouches_for(self):
+        # without this the genome NEVER syncs: the bytes NCBI serves do not match the
+        # checksum NCBI publishes for them, so the download fails on every run
+        shutil.rmtree(self.gdir)
+        served = {self.fcs: b"fcs contents", self.fna: b"ACGT"}
+        manifest = "".join("%s  ./%s\n" % (md5hex(b"stale") if n == self.fcs else md5hex(b), n)
+                           for n, b in sorted(served.items()))
+        N.http_get = FakeNCBI(
+            self.ASM, served, manifest=manifest,
+            uncompressed=uncompressed_table((self.fcs, md5hex(served[self.fcs]))))
+        _, _, _, failures, _, _ = N.sync_genome(self.URL, self.root, full=False)
+        self.assertEqual(failures, [])
+        with open(os.path.join(self.gdir, self.fcs), "rb") as handle:
+            self.assertEqual(handle.read(), served[self.fcs])
+        self.assertIsNotNone(N.read_last_synced(self.gdir))   # the genome completed
+        self.assertTrue(os.path.exists(self.installed()))
+
+    def test_the_sync_still_fails_a_file_neither_table_vouches_for(self):
+        shutil.rmtree(self.gdir)
+        served = {self.fcs: b"fcs contents"}
+        manifest = "%s  ./%s\n" % (md5hex(b"stale"), self.fcs)
+        N.http_get = FakeNCBI(
+            self.ASM, served, manifest=manifest,
+            uncompressed=uncompressed_table((self.fcs, md5hex(b"also wrong"))))
+        _, _, _, failures, _, _ = N.sync_genome(self.URL, self.root, full=False)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("md5 mismatch", failures[0])
+        self.assertIsNone(N.read_last_synced(self.gdir))
 
 
 class SyncGenomeOffline(TempDirCase):
@@ -890,7 +1239,7 @@ class RemovalEndToEndOffline(MainRunner):
         self.assertFalse(self.a_exists())
         self.assertTrue(self.b_synced())
         self.assertIn("1 genome dir(s) to remove, 1 to add, 0 present", err)
-        with open(self.path("logs/sel.rm")) as handle:
+        with open(self.path("logs/sync.rm")) as handle:
             self.assertEqual(handle.read(),
                              N.RM_HEADER + "GCA_000001405.1\tall/GCA/000/001/405/%s\n" % self.A)
 
@@ -900,7 +1249,7 @@ class RemovalEndToEndOffline(MainRunner):
         self.assertEqual(rc, 0, err)
         self.assertTrue(self.a_exists())
         self.assertTrue(self.b_synced())
-        self.assertFalse(os.path.exists(self.path("logs/sel.fail.rm")))
+        self.assertFalse(os.path.exists(self.path("logs/sync.rm")))
 
     def test_dry_run_reports_counts_lists_removals_and_changes_nothing(self):
         write(self.path("sel.tsv"), selection(self.B))
@@ -912,11 +1261,11 @@ class RemovalEndToEndOffline(MainRunner):
         self.assertTrue(self.a_exists())
         self.assertFalse(self.b_synced())
         self.assertEqual(len(N.http_get.calls), calls_before)          # no request at all
-        with open(self.path("logs/sel.rm_dry_run")) as handle:
+        with open(self.path("logs/sync.rm_dry_run")) as handle:
             lines = handle.read().splitlines()
         self.assertTrue(lines[0].startswith("# DRY RUN"))
         self.assertEqual(lines[-1], "GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A)
-        for name in ("sel.rm", "sel.fail", "sel.bad"):
+        for name in ("sync.rm", "sync.fail", "sync.bad"):
             self.assertFalse(os.path.exists(self.path("logs/" + name)), name)
 
     def test_dry_run_takes_no_lock_so_it_can_run_beside_a_live_sync(self):
@@ -946,10 +1295,10 @@ class RemovalEndToEndOffline(MainRunner):
         rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only")
         self.assertEqual(rc, 1)
         self.assertTrue(self.a_exists())
-        self.assertFalse(os.path.exists(self.path("logs/sel.rm")))
-        self.assertEqual(self.extra_rows("sel.extra"),
+        self.assertFalse(os.path.exists(self.path("logs/sync.rm")))
+        self.assertEqual(self.extra_rows("sync.extra"),
                          N.RM_HEADER + "GCA_000001405.1\tall/GCA/000/001/405/%s\n" % self.A)
-        self.assertIn(self.B, self.extra_rows("sel.bad"))
+        self.assertIn(self.B, self.extra_rows("sync.bad"))
         self.assertIn("1 genome dir(s) not in the selection", err)
         self.assertIn("missing directory", err)
 
@@ -958,8 +1307,8 @@ class RemovalEndToEndOffline(MainRunner):
         rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only", "--delete")
         self.assertEqual(rc, 1)                                  # B is still missing
         self.assertFalse(self.a_exists())
-        self.assertIn("GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A, self.extra_rows("sel.rm"))
-        self.assertIn("GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A, self.extra_rows("sel.extra"))
+        self.assertIn("GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A, self.extra_rows("sync.rm"))
+        self.assertIn("GCA_000001405.1\tall/GCA/000/001/405/%s" % self.A, self.extra_rows("sync.extra"))
         self.assertIn("1 removed", err)
 
     def test_a_mirror_equal_to_the_selection_verifies_clean_exit_0(self):
@@ -967,8 +1316,109 @@ class RemovalEndToEndOffline(MainRunner):
         self.assertEqual(self.run_main("sel.tsv", "--root", self.root)[0], 0)   # removes A, fetches B
         rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only")
         self.assertEqual(rc, 0, err)
-        self.assertEqual(self.extra_rows("sel.extra"), N.RM_HEADER)
+        self.assertEqual(self.extra_rows("sync.extra"), N.RM_HEADER)
         self.assertIn("holds nothing else", err)
+
+    def b_file(self, name):
+        return os.path.join(self.root, "all/GCA/000/001/405", self.B, name)
+
+    def rot_a_synced_genome(self):
+        """Sync B clean, then corrupt a file WITHOUT touching the manifest -- the state a
+        <base>.bad describes, and the one a plain sync cannot repair: the installed
+        manifest still matches, so the file is trusted and never re-hashed."""
+        write(self.path("sel.tsv"), selection(self.B))
+        self.assertEqual(self.run_main("sel.tsv", "--root", self.root)[0], 0)
+        rotten = self.b_file(self.B + "_genomic.fna.gz")
+        write(rotten, "rot")
+        write(self.path("sel.bad"), selection(self.B))
+        return rotten
+
+    def test_a_retry_without_delete_trusts_the_manifest_and_repairs_nothing(self):
+        # the reason --delete has to rebuild: this is not a bug, it is the trust rule
+        rotten = self.rot_a_synced_genome()
+        self.assertEqual(self.run_main("sel.bad", "--root", self.root, retry=True)[0], 0)
+        with open(rotten, "rb") as handle:
+            self.assertEqual(handle.read(), b"rot")
+
+    def test_a_retry_with_delete_removes_each_listed_dir_and_refetches_it_in_one_run(self):
+        # one run, not two: no separate --verify-only --delete pass first
+        rotten = self.rot_a_synced_genome()
+        rc, err = self.run_main("sel.bad", "--root", self.root, "--delete", retry=True)
+        self.assertEqual(rc, 0, err)
+        with open(rotten, "rb") as handle:
+            self.assertEqual(handle.read(), self.files[self.B + "_genomic.fna.gz"])
+        self.assertIn("Removed 1 genome dir(s)", err)
+
+    def test_a_retry_with_delete_leaves_alone_what_it_was_not_given(self):
+        # A is not in the retry file, so --delete must not reach it -- a retry file is a
+        # subset, and what it omits is not "extra"
+        self.rot_a_synced_genome()                      # the selection sync removed A
+        a_dir = os.path.join(self.root, "all/GCA/000/001/405", self.A)
+        os.makedirs(a_dir)
+        write(os.path.join(a_dir, "md5checksums.txt"), "")
+        # its own --log, so its own outputs: nothing here is the selection run's
+        self.assertEqual(self.run_main("sel.bad", "--root", self.root, "--delete",
+                                       retry=True, log="rebuild.log")[0], 0)
+        self.assertTrue(self.a_exists())
+        self.assertFalse(os.path.exists(self.path("logs/rebuild.rm")))
+
+    def test_a_directory_that_will_not_delete_is_recorded_as_a_failure_and_not_synced(self):
+        # syncing into a half-removed directory would rebuild the state being discarded
+        self.rot_a_synced_genome()
+        real, N.delete_genome = N.delete_genome, lambda genome_dir: False
+        try:
+            rc, err = self.run_main("sel.bad", "--root", self.root, "--delete", retry=True)
+        finally:
+            N.delete_genome = real
+        self.assertEqual(rc, 1)
+        with open(self.path("logs/sync.fail")) as handle:
+            rows = handle.read()
+        self.assertIn(self.B, rows)
+        self.assertIn("could not remove", rows)
+
+    def test_the_bad_file_carries_failed_files_and_still_feeds_retry(self):
+        # the column is the point of the file, and the four columns before it are what
+        # --retry reads, so one run's .bad rebuilds in the next without a cut/awk step
+        write(self.path("sel.tsv"), selection(self.B))
+        self.assertEqual(self.run_main("sel.tsv", "--root", self.root)[0], 0)
+        rotten = self.b_file(self.B + "_genomic.fna.gz")
+        write(rotten, "rot")
+        os.unlink(self.b_file("annotation_hashes.txt"))
+        rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only",
+                                log="verify.log")
+        self.assertEqual(rc, 1)
+        with open(self.path("logs/verify.bad")) as handle:
+            header, row = handle.read().splitlines()
+        self.assertEqual(header.split("\t")[-1], "failed_files")
+        self.assertEqual(sorted(row.split("\t")[-1].split(",")),
+                         ["mismatch:" + self.B + "_genomic.fna.gz",
+                          "missing:annotation_hashes.txt"])
+        rc, err = self.run_main("logs/verify.bad", "--root", self.root, "--delete",
+                                retry=True, log="rebuild.log")
+        self.assertEqual(rc, 0, err)
+        with open(rotten, "rb") as handle:
+            self.assertEqual(handle.read(), self.files[self.B + "_genomic.fna.gz"])
+
+    def test_a_genome_the_second_checksum_table_settles_verifies_clean_and_is_counted(self):
+        # end to end: the run reports what it settled instead of failing the genome
+        write(self.path("sel.tsv"), selection(self.B))
+        self.assertEqual(self.run_main("sel.tsv", "--root", self.root)[0], 0)
+        fcs = self.b_file(self.B + "_fcs_report.txt")
+        write(fcs, "fcs")
+        with open(self.b_file("md5checksums.txt"), "a") as handle:      # a stale entry
+            handle.write("%s  ./%s\n" % (md5hex(b"stale"), self.B + "_fcs_report.txt"))
+        N.http_get.uncompressed = uncompressed_table(
+            (self.B + "_fcs_report.txt", md5hex(b"fcs"))).encode()
+        # STATS is module-level and accumulates across runs in one process, as every other
+        # counter in it does; this run's contribution is what the line must report
+        N.STATS["fallback_files"] = N.STATS["fallback_genomes"] = 0
+        rc, err = self.run_main("sel.tsv", "--root", self.root, "--verify-only",
+                                log="verify.log")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("1 file(s) in 1 genome(s) rejected by md5checksums.txt", err)
+        self.assertTrue(os.path.exists(self.b_file(N.UNCOMPRESSED_MANIFEST)))
+        with open(self.path("logs/verify.bad")) as handle:
+            self.assertEqual(handle.read(), N.BAD_HEADER)               # no row
 
     def test_a_retry_verifies_only_what_it_lists(self):
         # a retry file is a subset, so what it does not list is not "extra"
@@ -977,7 +1427,7 @@ class RemovalEndToEndOffline(MainRunner):
         rc, err = self.run_main("sel.fail", "--root", self.root, "--verify-only", retry=True)
         self.assertEqual(rc, 0, err)
         self.assertTrue(self.a_exists())
-        self.assertFalse(os.path.exists(self.path("logs/sel.fail.extra")))
+        self.assertFalse(os.path.exists(self.path("logs/sync.extra")))
         self.assertNotIn("holds nothing else", err)
 
 
@@ -1018,6 +1468,10 @@ class ParserContract(unittest.TestCase):
         self.assertEqual(self.parse("--gtdb_selected_genomes", "s", "--root", "g", "-l", "x.log").summary, "s")
         args = self.parse("--retry", "r", "--root", "g", "-l", "x.log")
         self.assertEqual((args.summary, args.retry), (None, "r"))
+
+    def test_the_selection_takes_g_as_list_genomes_gives_it(self):
+        # the same table is -g to list_genomes, so it is -g here too
+        self.assertEqual(self.parse("-g", "s", "--root", "g", "-l", "x.log").summary, "s")
 
 
 class NfsJobsIsHonoured(TempDirCase):
@@ -1071,3 +1525,86 @@ class NfsJobsIsHonoured(TempDirCase):
             self.path("r.rm"), silent=True, workers=1)
         self.assertEqual((removed, failed), (2, 0))
         self.assertFalse(os.path.exists(self.path("all/GCA")))
+
+
+# --------------------------------------------------------------- thousands separators
+
+import re
+
+
+class CountFormatting(unittest.TestCase):
+    """A release is millions of genomes; a bare 1913482 in a log line cannot be
+    read at a glance, and two of them cannot be compared."""
+
+    def test_a_count_separates_thousands(self):
+        self.assertEqual(N.format_count(1234), "1,234")
+        self.assertEqual(N.format_count(1913482), "1,913,482")
+        self.assertEqual(N.format_count(0), "0")
+        self.assertEqual(N.format_count(999), "999")
+
+    def test_an_amount_separates_thousands_and_keeps_its_decimals(self):
+        self.assertEqual(N.format_amount(1234.56), "1,234.6")
+        self.assertEqual(N.format_amount(1234.56, 2), "1,234.56")
+        self.assertEqual(N.format_amount(1234.56, 0), "1,235")
+
+    def test_the_names_reported_carry_the_count_separated(self):
+        self.assertIn("(all 1,234 listed in the log)", N.first_names(["x"] * 1234))
+
+
+class ProgressSnapshotFormatting(unittest.TestCase):
+    """The progress line carries most of the numbers a long run shows."""
+
+    def snapshot(self, **counters):
+        prog = N.Progress("Downloading", 5678901, silent=True)
+        for name, value in counters.items():
+            setattr(prog, name, value)
+
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Capture()
+        logger = logging.getLogger("timestamp")
+        logger.addHandler(handler)
+        try:
+            prog.snapshot()
+        finally:
+            logger.removeHandler(handler)
+
+        self.assertEqual(len(records), 1)
+        return records[0]
+
+    def test_the_counts_of_a_progress_line_are_separated(self):
+        message = self.snapshot(done=1234567, skipped=234567, fresh=123456, failed=1234)
+        self.assertIn("1,234,567/5,678,901", message)
+        self.assertIn("unchanged=234,567", message)
+        self.assertIn("fresh=123,456", message)
+        self.assertIn("failed=1,234", message)
+
+    def test_the_http_counters_of_a_progress_line_are_separated(self):
+        with N._stats_lock:
+            before = dict(N.STATS)
+            N.STATS.update(requests=2345678, conn_drops=1234, probe_404=4321,
+                           breaker_trips=1111, paused_s=98765.0, bytes=9876543210)
+        try:
+            message = self.snapshot(done=1234567)
+        finally:
+            with N._stats_lock:
+                N.STATS.update(before)
+
+        self.assertIn("requests=2,345,678", message)
+        self.assertIn("drops=1,234", message)
+        self.assertIn("probe404=4,321", message)
+        self.assertIn("trips=1,111", message)
+        self.assertIn("paused=98,765s", message)
+        self.assertIn("MB=9,876.5", message)
+
+    def test_no_count_is_written_as_a_bare_run_of_digits(self):
+        # percentages and the fixed fields of a duration are the exceptions, and
+        # neither reaches four digits
+        message = self.snapshot(done=1234567, skipped=234567, fresh=123456, failed=1234)
+        for word in message.split():
+            for number in re.findall(r"(?<![\d,.])\d+", word):
+                self.assertLess(len(number), 4, message)
