@@ -854,8 +854,10 @@ class FTPTools():
         Copying a genome directory is a few dozen round trips to an NFS server
         and no arithmetic at all, so the thread that issues one spends its time
         waiting in a system call with the GIL released, and threads are what
-        overlap that waiting: 300 genomes that take 6.0s copied one at a time
-        take 1.0s copied eight at a time and 0.8s copied 32 at a time. Threads also keep the reports where
+        overlap that waiting: 200 genome directories of the size NCBI serves --
+        15 files and some 6 MB apiece -- take 17.1s copied one at a time over
+        NFS, 5.2s copied eight at a time and 4.2s copied 32 at a time, the link
+        itself being the ceiling from there. Threads also keep the reports where
         they belong -- this process holds the only handle on them and writes
         every row itself, so there is nothing for the listener process of
         compare_genomes to do here. An update adds a few thousand genomes and

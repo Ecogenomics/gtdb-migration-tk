@@ -231,10 +231,24 @@ to the previous release and no derived data is carried across, so everything
 derived from the genomes is to be regenerated. It reads no
 `--old_genome_dirs_file`, which is therefore required only without it.
 
-`--cpus` is the number of genomes compared, and copied, at once. Copying a genome
-is round trips to the file server rather than work for a CPU, so it is worth
-raising well past the number of cores on a mirror held over NFS; a `--fresh` run,
-which copies the whole release, is the run it matters most to.
+`--cpus` is the number of genomes compared, and copied, at once. It defaults to
+16. Neither half of the work is bound by the CPU: copying a genome is round trips to the file server, and the comparison only
+reads a FASTA where NCBI has reissued one. Measured against a mirror on NFS, 200
+genomes of the size NCBI serves:
+
+| `--cpus` | copying (`--fresh`) | comparing, MD5s agree | comparing, every FASTA reissued |
+| --- | --- | --- | --- |
+| 1 | 17.1s | 15.5s | 46.0s |
+| 8 | 5.2s | 4.3s | 6.5s |
+| 16 | 4.5s | 3.7s | 4.3s |
+| 32 | 4.2s | 3.4s | 3.9s |
+| 64 | 4.0s | -- | 4.2s |
+
+Hence the default of 16. Raise it to 32 for a release NCBI has reissued heavily;
+past that the copying is bound by the link rather than by how many genomes are in
+flight, and the hashing turns back down. There is no reason to scale with the
+core count: 64 was slower than 32 on the one part of this that is CPU work. Lower
+it on a file server shared with other work.
 
 ### Gene calling and annotation
 

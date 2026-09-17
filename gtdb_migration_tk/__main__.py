@@ -977,7 +977,15 @@ def get_main_parser():
             __silent(grp)
             __fresh(grp)
             __dry_run(grp)
-            __cpus(grp)
+            # neither half of the work is bound by the CPU: copying a genome is
+            # round trips to the file server, and a FASTA is read only where NCBI
+            # reissued one. Measured against a mirror on NFS, 200 genomes of the
+            # size NCBI serves take 17.1s copied one at a time and 4.5s copied 16
+            # at a time, and a comparison in which every FASTA had been reissued
+            # 46.0s against 4.3s. Past 16 the copying is bound by the link and the
+            # hashing turns back down -- 64 was slower than 32 -- so it does not
+            # follow the core count
+            __cpus(grp, default=16)
 
     # # Steps to propagate GTDB Taxonomy
     with subparser(sub_parsers, 'propagate_gtdb_taxonomy', 'Propagating GTDB taxonomy to new release.') as parser:
