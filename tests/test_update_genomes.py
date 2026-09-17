@@ -544,6 +544,112 @@ class RunComparisonTests(TempDirCase):
         self.assertIn('unchanged=0', drawn.getvalue())
 
 
+class FreshRunTests(TempDirCase):
+    """A release built from the mirror alone: --fresh, with no previous release."""
+
+    def genome(self, root, assembly, fasta_md5, derived=()):
+        path = os.path.join(root, assembly)
+        os.makedirs(path)
+        with open(os.path.join(path, 'md5checksums.txt'), 'w') as handle:
+            handle.write('{}  ./{}_genomic.fna.gz\n'.format(fasta_md5, assembly))
+        with gzip.open(os.path.join(path, assembly + '_genomic.fna.gz'), 'wt') as handle:
+            handle.write(fasta())
+        for subdir in derived:
+            os.makedirs(os.path.join(path, subdir))
+        return path
+
+    def mirror(self):
+        """A mirror of one RefSeq and one GenBank genome, and somewhere to build.
+
+        @return: (ftp root, ftp_genome_dirs file, output dir)
+        """
+        ftp = os.path.join(self.dir, 'mirror')
+        refseq = self.genome(os.path.join(ftp, 'all', 'GCF', '000', '000', '001'),
+                             'GCF_000000001.1_ASM1v1', 'a' * 32)
+        genbank = self.genome(os.path.join(ftp, 'all', 'GCA', '000', '000', '002'),
+                              'GCA_000000002.1_ASM2v1', 'b' * 32)
+        new = self.write('ftp_dirs.tsv',
+                         'GCF_000000001.1\t{}\n'.format(refseq) +
+                         'GCA_000000002.1\t{}\n'.format(genbank))
+        out = os.path.join(self.dir, 'release')
+        os.mkdir(out)
+
+        return ftp, new, out
+
+    def test_every_genome_of_the_mirror_is_copied_and_reported_as_new(self):
+        # the whole point of --fresh: the mirror is the release, and no genome of it
+        # depends on anything the previous release did or did not hold
+        ftp, new, out = self.mirror()
+
+        UG.UpdateGenomes(out).run_fresh(ftp, new)
+
+        with open(os.path.join(out, 'report.log')) as handle:
+            rows = sorted(line.rstrip('\n').split('\t') for line in handle)
+        self.assertEqual(rows, [['GCA_000000002.1', 'new'],
+                                ['GCF_000000001.1', 'new']])
+        self.assertTrue(os.path.isfile(os.path.join(
+            out, 'refseq', 'GCF', '000', '000', '001', 'GCF_000000001.1_ASM1v1',
+            'md5checksums.txt')))
+        self.assertTrue(os.path.isfile(os.path.join(
+            out, 'genbank', 'GCA', '000', '000', '002', 'GCA_000000002.1_ASM2v1',
+            'md5checksums.txt')))
+
+    def test_no_derived_data_is_carried_across_from_a_previous_release(self):
+        # a genome the previous release holds, with its Prodigal results, is still
+        # taken from the mirror alone: a fresh release regenerates everything
+        ftp, new, out = self.mirror()
+        previous = self.genome(os.path.join(self.dir, 'previous'),
+                               'GCF_000000001.1_ASM1v1', 'a' * 32,
+                               derived=('prodigal',))
+        self.write('old_dirs.tsv', 'GCF_000000001.1\t{}\n'.format(previous))
+
+        UG.UpdateGenomes(out).run_fresh(ftp, new)
+
+        self.assertFalse(os.path.exists(os.path.join(
+            out, 'refseq', 'GCF', '000', '000', '001', 'GCF_000000001.1_ASM1v1',
+            'prodigal')))
+
+    def test_nothing_is_compared_or_removed(self):
+        ftp, new, out = self.mirror()
+
+        with self.assertLogs('timestamp', level='INFO') as logged:
+            UG.UpdateGenomes(out).run_fresh(ftp, new)
+
+        text = '\n'.join(logged.output)
+        self.assertIn('Identified 2 genomes to add', text)
+        self.assertIn('1 RefSeq, 1 GenBank', text)
+        self.assertNotIn('to compare', text)
+        self.assertNotIn('to remove', text)
+        # to_review.log is written and stays empty: nothing was looked for
+        with open(os.path.join(out, 'to_review.log')) as handle:
+            self.assertEqual(handle.read(), '')
+
+    def test_the_run_writes_the_genome_dirs_file_of_the_release(self):
+        ftp, new, out = self.mirror()
+
+        UG.UpdateGenomes(out).run_fresh(ftp, new)
+
+        with open(os.path.join(out, 'genome_dirs.tsv')) as handle:
+            rows = sorted(line.rstrip('\n').split('\t') for line in handle)
+
+        self.assertEqual(rows, [
+            ['GCA_000000002.1',
+             os.path.join(out, 'genbank', 'GCA', '000', '000', '002', 'GCA_000000002.1_ASM2v1'),
+             'G000000002'],
+            ['GCF_000000001.1',
+             os.path.join(out, 'refseq', 'GCF', '000', '000', '001', 'GCF_000000001.1_ASM1v1'),
+             'G000000001']])
+
+    def test_a_dry_run_reports_the_release_without_building_it(self):
+        ftp, new, out = self.mirror()
+
+        UG.UpdateGenomes(out, dry_run=True).run_fresh(ftp, new)
+
+        self.assertEqual(sorted(os.listdir(out)), ['report.log', 'to_review.log'])
+        with open(os.path.join(out, 'report.log')) as handle:
+            self.assertEqual(len(handle.readlines()), 2)
+
+
 class SequenceDigest(TempDirCase):
     """What sequences_md5() counts as the same genome, and what it does not."""
 

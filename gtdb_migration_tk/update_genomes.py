@@ -30,6 +30,16 @@ mirror and of the previous release already say. The mirror is built from the
 selection, and the selection is where a genome is accepted or passed over, so
 every genome the mirror holds is wanted.
 
+A release can also be built with no previous release behind it at all. A FRESH
+run takes every genome the mirror holds, copies it into the new release and
+reports it as new: nothing is compared, no derived data is carried across, and
+nothing is removed, there being nothing there to be removed. It is the run that
+starts a release from the NCBI data alone -- because there is no previous release
+to inherit from, or because everything derived from the genomes is to be
+regenerated regardless of what did not change. It reads no previous genome
+directory file, so the previous release is never named or opened, and the mirror
+is the only thing it consults.
+
 RefSeq and GenBank are updated in ONE pass over each genome directory file. They
 were once two runs of this code, each filtered to an accession prefix, because
 the GenBank run read the RefSeq run's output: a GenBank assembly was dropped when
@@ -76,9 +86,9 @@ import hashlib
 import logging
 import collections
 import multiprocessing as mp
-from contextlib import ExitStack
+from contextlib import contextmanager, ExitStack
 from multiprocessing.queues import Queue
-from typing import Dict, Iterable, List, Optional, TextIO, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, TextIO, Tuple
 
 from tqdm import tqdm
 
@@ -461,6 +471,10 @@ class UpdateGenomes:
     removed, or compared relative to the previous GTDB release. Genomes are
     tracked as dictionaries mapping an accession to its genome directory.
 
+    run_comparison() builds a release from the previous one; run_fresh() builds
+    one from the mirror alone, adding every genome the mirror holds and
+    comparing nothing. Both write the same reports through release_reports().
+
     One instance updates the whole release, RefSeq and GenBank together: what is
     done with a genome follows from its own accession and from nothing else, so
     the database it belongs to changes nothing here. It is still worth seeing
@@ -609,6 +623,41 @@ class UpdateGenomes:
 
         return shared_genomes
 
+    @contextmanager
+    def release_reports(self) -> Iterator['FTPTools']:
+        """Open the files a run writes, and hand back what writes them.
+
+        The reports are opened for the duration of the run and line buffered, so
+        a run that fails part way through leaves behind the account of what it
+        had done rather than an empty file.
+
+        Shared by both ways of building a release -- from the previous release
+        and afresh from the mirror -- because what a run writes does not depend
+        on how it decided what to write: the same two reports, and the same
+        genome_dirs file naming what was placed.
+
+        @return: context manager yielding the FTPTools the run is to use.
+        """
+
+        with ExitStack() as reports:
+            report = reports.enter_context(open(self.report_file(), 'w', 1))
+            genomes_to_review = reports.enter_context(open(self.review_file(), 'w', 1))
+
+            # a dry run writes no genome directory, so it has none to describe and
+            # writes no genome_dirs file; the reports say what it would have done
+            genome_dirs = None
+            if not self.dry_run:
+                genome_dirs = reports.enter_context(
+                    open(self.genome_dirs_file(), 'w', 1))
+
+            yield FTPTools(report, genomes_to_review, self.dry_run, genome_dirs)
+
+            # inside the stack, so the handle is still open and line buffered: every
+            # row written is on disk, and reading them back is how the count is of
+            # what the file HOLDS rather than of what was meant to go into it
+            if not self.dry_run:
+                self.log_genome_dirs()
+
     def run_comparison(self,
                        ftp_dir: str,
                        ftp_genome_dirs: str,
@@ -633,23 +682,9 @@ class UpdateGenomes:
 
         self.logger.info('Updating the GTDB genome directories from the NCBI mirror.')
 
-        # reports are opened for the duration of the update so they are closed,
-        # and their contents kept, if the update fails part way through
-        with ExitStack() as reports:
-            report = reports.enter_context(open(self.report_file(), 'w', 1))
-            genomes_to_review = reports.enter_context(open(self.review_file(), 'w', 1))
-
-            # a dry run writes no genome directory, so it has none to describe and
-            # writes no genome_dirs file; the reports say what it would have done
-            genome_dirs = None
-            if not self.dry_run:
-                genome_dirs = reports.enter_context(
-                    open(self.genome_dirs_file(), 'w', 1))
-
+        with self.release_reports() as ftptools:
             old_genomes = self.load_genome_dirs(old_genome_dirs)
             new_genomes = self.load_genome_dirs(ftp_genome_dirs)
-
-            ftptools = FTPTools(report, genomes_to_review, self.dry_run, genome_dirs)
 
             removed_genomes = self.generate_genomes_to_remove(new_genomes, old_genomes)
             ftptools.remove_genomes(removed_genomes)
@@ -661,11 +696,44 @@ class UpdateGenomes:
             ftptools.compare_genomes(shared_genomes, old_genomes, new_genomes,
                                      ftp_dir, self.new_genome_dir, self.cpus)
 
-            # inside the stack, so the handle is still open and line buffered: every
-            # row written is on disk, and reading them back is how the count is of
-            # what the file HOLDS rather than of what was meant to go into it
-            if not self.dry_run:
-                self.log_genome_dirs()
+    def run_fresh(self, ftp_dir: str, ftp_genome_dirs: str) -> None:
+        """Build the GTDB genome directories afresh from the mirror alone.
+
+        Every genome the mirror holds is copied into the new release and reported
+        as new. No previous release is read, nothing is compared, and no derived
+        data is carried across: the release starts from the NCBI data, and
+        everything derived from it is to be produced again. Nothing is recorded
+        as removed either, a run with no previous release behind it having
+        nothing it could be dropping.
+
+        What the run writes is what a run made against a previous release writes:
+        every genome has the outcome 'new' in report.log, to_review.log is
+        written and stays empty -- nothing having been looked for in a previous
+        release to be found missing -- and a dry run reports the release it would
+        build without copying a file.
+
+        Parameters
+        ----------
+        ftp_dir : str
+            Root of the NCBI FTP mirror, replaced by the new release directory
+            to place each genome.
+        ftp_genome_dirs : str
+            Genome directory file (accession, path) for the mirror.
+        """
+
+        self.logger.info(
+            'Building the GTDB genome directories afresh from the NCBI mirror, '
+            'with no comparison to a previous release.')
+
+        with self.release_reports() as ftptools:
+            new_genomes = self.load_genome_dirs(ftp_genome_dirs)
+
+            # against an empty previous release: every genome the mirror holds is
+            # new to a release that has nothing behind it, and reaching that
+            # through the one method that decides it either way keeps the line
+            # logged here the line the other run logs
+            added_genomes = self.generate_genomes_to_add(new_genomes, {})
+            ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir)
 
     def log_genome_dirs(self) -> None:
         """Report the genome directory file the run wrote.

@@ -225,6 +225,12 @@ that command is for indexing the mirror. It names only the genomes whose
 directory was written, so a `--dry_run`, which writes none, writes no
 `genome_dirs.tsv` either.
 
+`--fresh` starts the release from the NCBI genome data alone: every genome of the
+mirror is copied into the new release and reported as `new`, nothing is compared
+to the previous release and no derived data is carried across, so everything
+derived from the genomes is to be regenerated. It reads no
+`--old_genome_dirs_file`, which is therefore required only without it.
+
 ### Gene calling and annotation
 
 | Command | Description |

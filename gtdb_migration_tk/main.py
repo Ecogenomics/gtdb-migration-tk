@@ -148,12 +148,28 @@ class OptionsParser():
 
     def update_genomes(self, options):
         check_file_exists(options.ftp_genome_dirs)
-        check_file_exists(options.old_genome_dirs)
+
+        if not options.fresh:
+            # argparse cannot make one argument required by the absence of another,
+            # so the previous release is asked for here; checked before the output
+            # directory is made, a run that cannot start leaving nothing behind
+            if not options.old_genome_dirs:
+                self.logger.error(
+                    '--old_genome_dirs_file is required unless --fresh is given.\n')
+                sys.exit(1)
+            check_file_exists(options.old_genome_dirs)
+
         make_sure_path_exists(options.output_dir)
 
         # RefSeq and GenBank in one pass, with one pair of reports for the release
         p = UpdateGenomes(options.output_dir, options.dry_run, options.cpus)
-        p.run_comparison(options.ftp_dir, options.ftp_genome_dirs, options.old_genome_dirs)
+
+        if options.fresh:
+            # the mirror is the release: nothing compared, nothing inherited
+            p.run_fresh(options.ftp_dir, options.ftp_genome_dirs)
+        else:
+            p.run_comparison(options.ftp_dir, options.ftp_genome_dirs,
+                             options.old_genome_dirs)
 
     def run_prodigal(self, options):
         p = ProdigalManager(options.tmp_dir, options.cpus)
