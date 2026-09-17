@@ -429,8 +429,11 @@ class ProdigalGeneFeatureParser():
         """
 
         # bool, not the float64 np.zeros() gives by default: one byte a base
-        # rather than eight, and every worker holds a genome's worth
-        coding_base_mask = np.zeros(self.last_coding_base[seq_id], dtype=bool)
+        # rather than eight, and every worker holds a genome's worth.
+        # last_coding_base + 1 because a GFF counts bases from 1: without the
+        # extra entry the final base of the rightmost gene on every contig fell
+        # off the end of the array and was never counted as coding
+        coding_base_mask = np.zeros(self.last_coding_base[seq_id] + 1, dtype=bool)
         for pos in self.genes[seq_id]:
             coding_base_mask[pos[0]:pos[1] + 1] = True
 
@@ -455,8 +458,9 @@ class ProdigalGeneFeatureParser():
         if seq_id not in self.genes:
             return 0
 
-        # set end to last coding base if not specified
+        # set end to just past the last coding base if not specified, the range
+        # being half open and the bases counted from 1
         if end is None:
-            end = self.last_coding_base[seq_id]
+            end = self.last_coding_base[seq_id] + 1
 
         return int(np.count_nonzero(self.coding_base_masks[seq_id][start:end]))
