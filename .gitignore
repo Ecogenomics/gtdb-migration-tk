@@ -133,3 +133,6 @@ dmypy.json
 
 # Claude Code personal instructions (machine-specific; CLAUDE.md is the shared one)
 CLAUDE.local.md
+
+# Local scratch for running commands by hand against real data (genomes, outputs)
+tmp-manual-test/
