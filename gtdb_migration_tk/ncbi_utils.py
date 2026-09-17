@@ -54,6 +54,7 @@ header is required rather than assumed.
 
 import collections
 import gzip
+import os
 import hashlib
 import re
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
@@ -307,6 +308,89 @@ MD5_LINE_RE = re.compile(r"^([0-9a-f]{32})\s+(.+)$")
 # _cds_from_genomic.fna.gz and _rna_from_genomic.fna.gz, so it is only ever
 # matched as the whole of a name after the assembly, never searched for.
 GENOMIC_FASTA_EXT = '_genomic.fna.gz'
+
+
+# The annotation NCBI publishes beside the genome, gzipped as NCBI serves it and
+# as the mirror and a release hold it. Two commands read it for the translation
+# table NCBI declares -- prodigal, to call genes under that table, and
+# trans_table, to compare it against what gTranslate predicts -- so the name is
+# spelled once. It was spelled twice before, and the copy that had lost the .gz
+# matched no file at all, which made the check that reads it report that no
+# genome disagreed rather than that no genome had been looked at.
+GENOMIC_GFF_EXT = '_genomic.gff.gz'
+
+
+def assembly_accession(name: str) -> str:
+    """The accession at the front of an NCBI assembly name.
+
+    NCBI names an assembly <accession>_<asm_name>, and the accession itself holds
+    one underscore, so the accession ends at the SECOND underscore:
+    GCF_000157115.2_Escherichia_sp_3_2_53FAA_V2 -> GCF_000157115.2. The rule was
+    written out wherever it was needed, which is a rule in several places that
+    must agree; it is not canonical_gid(), which gives G000157115.
+
+    Parameters
+    ----------
+    name : str
+        Assembly name, or a filename beginning with one.
+
+    @return: the accession, or the whole name if it holds no second underscore.
+    """
+
+    cut = name.find('_', 4)
+
+    return name[0:cut] if cut != -1 else name
+
+
+def genomic_gff(genome_dir: str) -> str:
+    """The genomic GFF NCBI serves for a genome.
+
+    NCBI names the file for the assembly and names the genome directory the same,
+    so the file wanted is known exactly and is named rather than searched for.
+
+    Parameters
+    ----------
+    genome_dir : str
+        Genome directory, of the mirror or of a release.
+
+    @return: path of the genomic GFF in that directory, which may not exist.
+    """
+
+    assembly = os.path.basename(os.path.normpath(genome_dir))
+
+    return os.path.join(genome_dir, assembly + GENOMIC_GFF_EXT)
+
+
+def ncbi_translation_table(gff_file: str) -> Optional[int]:
+    """The translation table NCBI declares for a genome.
+
+    NCBI records transl_table= on the CDS features of the GFF, last among the
+    attributes of the line, so the first one found is taken and the rest of the
+    file is not read: the table is a property of the genome, and a GFF runs to
+    millions of lines.
+
+    Parameters
+    ----------
+    gff_file : str
+        Gzipped genomic GFF of the genome, as NCBI serves it.
+
+    @return: the translation table, or None where the file is absent or declares
+             none -- which is what a genome NCBI has not annotated looks like.
+    """
+
+    ncbi_transl_table = None
+    if os.path.exists(gff_file):
+        with gzip.open(gff_file, 'rt') as f:
+            for line in f:
+                if line[0] == '#':
+                    continue
+
+                if 'transl_table=' in line:
+                    trans_num = line[line.rfind('=') + 1:].strip()
+                    ncbi_transl_table = int(trans_num)
+                    break
+
+    return ncbi_transl_table
 
 
 # NCBI's null: what an empty field holds in an assembly summary, and what GTDB

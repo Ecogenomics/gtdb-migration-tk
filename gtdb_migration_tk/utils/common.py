@@ -1,5 +1,80 @@
+import csv
 import gzip
 from collections import namedtuple
+from typing import Dict, Optional
+
+
+# Columns of the translation table summary gTranslate writes, which trans_table
+# produces and prodigal consumes. The file is read by COLUMN NAME: gTranslate has
+# changed what it reports between releases, and a column taken by position is a
+# column that can quietly become a different one.
+TT_SUMMARY_GENOME = 'user_genome'
+TT_SUMMARY_TABLE = 'best_tln_table'
+TT_SUMMARY_DENSITY_4 = 'coding_density_4'
+TT_SUMMARY_DENSITY_11 = 'coding_density_11'
+
+# The coding densities gTranslate reports are PERCENTAGES, where the rule below
+# was written against fractions, so the thresholds are scaled rather than the
+# values: 0.05 of 1 is 5 of 100, and 0.7 of 1 is 70 of 100.
+CHECKM_DENSITY_MARGIN = 5.0
+CHECKM_DENSITY_FLOOR = 70.0
+
+
+def read_translation_table_summary(summary_file: str) -> Dict[str, Dict[str, str]]:
+    """Read the translation table summary gTranslate writes.
+
+    Shared by the command that writes it and the command that acts on it, so that
+    the two never disagree about which column holds what.
+
+    Parameters
+    ----------
+    summary_file : str
+        gtranslate.translation_table_summary.tsv, of one batch or of a release.
+
+    @return: genome ID to its row, keyed by column name.
+    """
+
+    predictions = {}
+    with open(summary_file) as handle:
+        for row in csv.DictReader(handle, delimiter='\t'):
+            genome = row.get(TT_SUMMARY_GENOME)
+            if genome:
+                predictions[genome] = row
+
+    return predictions
+
+
+def checkm_translation_table(density_4: str, density_11: str) -> Optional[int]:
+    """The translation table the coding density rule alone would choose.
+
+    This is what CheckM and Prodigal do when nothing tells them the table: call
+    the genes under tables 4 and 11 and take 4 only where it codes appreciably
+    more of the genome. It is reported beside the gTranslate prediction so that
+    the two can be compared -- a classifier trained on GTDB against a threshold
+    on two numbers -- without calling any genes again.
+
+    Parameters
+    ----------
+    density_4 : str
+        Coding density under table 4, as a percentage.
+    density_11 : str
+        Coding density under table 11, as a percentage.
+
+    @return: 4 or 11, or None where either density is missing or unreadable.
+    """
+
+    try:
+        coding_4, coding_11 = float(density_4), float(density_11)
+    except (TypeError, ValueError):
+        return None
+
+    if (coding_4 - coding_11 > CHECKM_DENSITY_MARGIN
+            and coding_4 > CHECKM_DENSITY_FLOOR):
+        return 4
+
+    return 11
+
+
 
 
 def read_gtdb_metadata(metadata_file, fields):

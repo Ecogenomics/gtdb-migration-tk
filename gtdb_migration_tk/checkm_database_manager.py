@@ -18,6 +18,7 @@
 import sys
 import logging
 
+from gtdb_migration_tk.ncbi_utils import assembly_accession
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 
@@ -72,7 +73,7 @@ class CheckMDatabaseManager(object):
                 for line in f:
                     line_split = line.rstrip().split('\t')
                     orig_genome_id = line_split[0]
-                    genome_id = orig_genome_id[0:orig_genome_id.find('_', 4)]
+                    genome_id = assembly_accession(orig_genome_id)
 
                     if genome_id.startswith('GCA_'):
                         genome_id = 'GB_' + genome_id
@@ -102,7 +103,7 @@ class CheckMDatabaseManager(object):
             for line in f:
                 line_split = line.rstrip().split('\t')
                 genome_id = line_split[0]
-                genome_id = genome_id[0:genome_id.find('_', 4)]
+                genome_id = assembly_accession(genome_id)
 
                 if genome_id.startswith('GCA_'):
                     genome_id = 'GB_' + genome_id

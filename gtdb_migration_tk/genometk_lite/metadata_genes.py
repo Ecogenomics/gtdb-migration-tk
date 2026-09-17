@@ -74,17 +74,17 @@ class GenericFeatureParser():
 
                 seq_id = line_split[0]
                 if seq_id not in self.genes:
-                    gene_count = 0
-                    self.genes[seq_id] = {}
+                    self.genes[seq_id] = []
                     self.last_coding_base[seq_id] = 0
-
-                gene_id = seq_id + '_' + str(gene_count)
-                gene_count += 1
 
                 start = int(line_split[3])
                 end = int(line_split[4])
 
-                self.genes[seq_id][gene_id] = [start, end]
+                # a list of intervals, not gene IDs of this module's making: the
+                # counter those came from was reset only when a contig was first
+                # met, so a GFF returning to an earlier contig reused IDs that
+                # contig already had and overwrote its own genes. Nothing read them
+                self.genes[seq_id].append([start, end])
                 self.last_coding_base[seq_id] = max(self.last_coding_base[seq_id], end)
 
     def _coding_mask(self, seq_id):
@@ -92,8 +92,10 @@ class GenericFeatureParser():
 
         # safe way to calculate coding bases as it accounts
         # for the potential of overlapping genes
-        coding_mask = np_zeros(self.last_coding_base[seq_id])
-        for pos in self.genes[seq_id].values():
+        # last_coding_base + 1 because a GFF counts bases from 1: without the
+        # extra entry the final base of the rightmost gene fell off the end
+        coding_mask = np_zeros(self.last_coding_base[seq_id] + 1)
+        for pos in self.genes[seq_id]:
             coding_mask[pos[0]:pos[1] + 1] = 1
 
         return coding_mask

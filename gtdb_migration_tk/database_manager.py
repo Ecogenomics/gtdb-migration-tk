@@ -45,6 +45,7 @@ from atpbar import atpbar
 from atpbar import flush
 from dateutil.parser import parse
 
+from gtdb_migration_tk.ncbi_utils import assembly_accession
 from gtdb_migration_tk.biolib_lite.checksum import sha256_rb
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
@@ -218,7 +219,7 @@ class DatabaseManager(object):
                     list_sql.append(query)
                 _genome_path, genome_id = ntpath.split(
                     self.genome_dirs_dict[checkm_record])
-                genome_id = genome_id[0:genome_id.find('_', 4)]
+                genome_id = assembly_accession(genome_id)
                 gene_file_path = os.path.join(
                     self.genome_dirs_dict[checkm_record], "prodigal")
                 gene_files = glob.glob(gene_file_path + "/*_protein.faa.gz")
@@ -441,7 +442,7 @@ class DatabaseManager(object):
         list_genome_details.append(self.update_date)
         _genome_path, genome_id = ntpath.split(
             self.genome_dirs_dict[checkm_record])
-        genome_id = genome_id[0:genome_id.find('_', 4)]
+        genome_id = assembly_accession(genome_id)
         gene_file_path = os.path.join(
             self.genome_dirs_dict[checkm_record], "prodigal", genome_id + "_protein.faa.gz")
         gene_file_path_shorten = re.sub(
