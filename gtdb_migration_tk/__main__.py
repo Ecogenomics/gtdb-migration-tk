@@ -57,8 +57,8 @@ def print_help():
 
     Call genes:
       call_genes_wf  -> Full call genes workflow (prodigal -> hmmsearch -> top_hit)
+      trans_table    -> Predict translation table for each genome using gTranslate
       prodigal       -> Call genes using Prodigal
-      prodigal_check -> Check if table used by Prodigal is the same as the one indicated in NCBI
       hmmsearch      -> Search Tigrfam/Pfam markers genes and generate tophit files
       top_hit        -> Generate tophit files
       metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
@@ -140,7 +140,7 @@ def valid_date(s):
 
 
 def __all_genomes(group):
-    group.add_argument('--all', dest='all_genomes', help="re run all genomes", action='store_true')
+    group.add_argument('--all', dest='all_genomes', help="Re-run all genomes", action='store_true')
 
 
 
@@ -167,9 +167,9 @@ def __cpus(group, default=1):
 
 def __database_setup(group, required):
     group.add_argument('--hostname', help='Hostname', required=required)
-    group.add_argument('-u', '--user', help='psql username', required=required)
-    group.add_argument('-d', '--db', help='database name.', required=required)
-    group.add_argument('-p', '--password', help='password for psql user', required=required)
+    group.add_argument('-u', '--user', help='PostgreSQL username', required=required)
+    group.add_argument('-d', '--db', help='Database name.', required=required)
+    group.add_argument('-p', '--password', help='Password for psql user', required=required)
 
 
 def __do_not_null_field(group):
@@ -178,7 +178,7 @@ def __do_not_null_field(group):
 
 
 def __domain(group, required):
-    group.add_argument('--domain', required=required, help='domain to append to output files', choices=['bac', 'ar'])
+    group.add_argument('--domain', required=required, help='Domain to append to output files', choices=['bac', 'ar'])
 
 
 def __dry_run(group):
@@ -201,7 +201,7 @@ def __dsmz_directory(group, required):
 
 def __field_of_interest(group, required):
     group.add_argument('--field_of_interest',
-                       help='common field to compare between files.',
+                       help='Common field to compare between files.',
                        required=required)
 
 
@@ -235,48 +235,48 @@ def __gbk_bac_assembly_file(group, required):
 
 def __genbank_assembly_summary(group, required):
     group.add_argument('-g', '--genbank_assembly_summary', required=required,
-                       help='file from NCBI indicating metadata for genome assemblies in GenBank '
+                       help='File from NCBI indicating metadata for genome assemblies in GenBank '
                             '(ftp://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt)')
 
 
 def __genome_directory(group, required):
     group.add_argument('-d', '--genome_dir', required=required,
-                       help='base directory leading to NCBI archaeal and bacterial genome assemblies')
+                       help='Base directory leading to NCBI archaeal and bacterial genome assemblies')
 
 
 def __gtdb_selected_genomes(group, required):
     group.add_argument('-g', '--gtdb_selected_genomes', required=required,
-                       help='table of the genomes selected for the new release, written by '
+                       help='Table of the genomes selected for the new release, written by '
                             'select_genomes (gtdb_selected_genomes.tsv.gz).')
 
 
 def __genome_list(group, required):
     group.add_argument('--genome_list',
-                       help='only process genomes in this list ( we can use the metadata file exported from GTDB',
+                       help='Only process genomes in this list ( we can use the metadata file exported from GTDB',
                        required=required, default=None)
 
 
 def __gtdb_comparison_report(group, required):
-    group.add_argument('--report', help='report log indicating new, modified, unmodified, ..., genomes',
+    group.add_argument('--report', help='Report log indicating new, modified, unmodified, ..., genomes',
                        required=required)
 
 
 def __gtdb_decorate_table(group, required):
     group.add_argument('--gtdb_decorate_table', required=required,
-                       help='decoration table produced by PhyloRank decorate')
+                       help='Decoration table produced by PhyloRank decorate')
 
 
 def __gtdb_genome_path_file(group, required):
-    group.add_argument('-g', '--gtdb_genome_path_file', help='genome paths to GTDB genomes.', required=required)
+    group.add_argument('-g', '--gtdb_genome_path_file', help='Genome paths to GTDB genomes.', required=required)
 
 
 def __gtdb_domain_file(group, required):
     group.add_argument('-d', '--gtdb_domain_file',
-                        help='file indicating predicted domain for each GTDB genomes', required=required)
+                        help='File indicating predicted domain for each GTDB genomes', required=required)
 
 
 def __gtdb_init_taxonomy(group, required):
-    group.add_argument('--gtdb_init_taxonomy', required=required, help='initial taxonomy for latest release')
+    group.add_argument('--gtdb_init_taxonomy', required=required, help='Initial taxonomy for latest release')
 
 
 def __gtdb_metadata_current_release(group, required):
@@ -290,11 +290,11 @@ def __gtdb_metadata_previous_release(group, required):
 
 
 def __gtdb_prev_sp_clusters(group, required):
-    group.add_argument('--gtdb_prev_sp_clusters', required=required, help='species clusters for previous release')
+    group.add_argument('--gtdb_prev_sp_clusters', required=required, help='Species clusters for previous release')
 
 
 def __gtdb_sp_clusters(group, required):
-    group.add_argument('--gtdb_sp_clusters', required=required, help='species clusters for latest release')
+    group.add_argument('--gtdb_sp_clusters', required=required, help='Species clusters for latest release')
 
 
 def __input_dir(group, required):
@@ -326,7 +326,7 @@ def __lpsn_directory(group, required):
 
 def __lpsn_gss_file(group, required):
     group.add_argument('--lpsn_gss_file',
-                       help="table from lpsn.dsmz.de with nomenclature information (lpsn_gss_<date>.csv)",
+                       help="Table from lpsn.dsmz.de with nomenclature information (lpsn_gss_<date>.csv)",
                        required=required)
 
 def __lpsn_metadata_file(group, required):
@@ -352,7 +352,7 @@ def __ltp_version(group, required):
 
 
 def __marker_db(group, required):
-    group.add_argument('-d', '--db', required=required, help='pfam or tigrfam.', choices=['pfam', 'tigrfam'])
+    group.add_argument('-d', '--db', required=required, help='Pfam or tigrfam.', choices=['pfam', 'tigrfam'])
 
 
 def __metadata_file(group, required):
@@ -389,7 +389,7 @@ def __metadata_table_description(group):
 
 
 def __name(group, required):
-    group.add_argument('--name', required=required, help='species clusters for latest release')
+    group.add_argument('--name', required=required, help='Species clusters for latest release')
 
 
 def __ncbi_names(group, required):
@@ -412,14 +412,14 @@ def __new_list_genomes(group, required):
 
 def __new_metadata_file(group, required):
     group.add_argument('--new_metadata_file',
-                       help='file indicating metadata of each genome in latest GTDB version.',
+                       help='File indicating metadata of each genome in latest GTDB version.',
                        required=required)
 
 
 
 
 def __node(group, required):
-    group.add_argument('--node', required=required, help='initial taxonomy for latest release')
+    group.add_argument('--node', required=required, help='Initial taxonomy for latest release')
 
 
 
@@ -472,7 +472,7 @@ def __output_file(group, required):
 
 
 def __output_prefix(group, required):
-    group.add_argument('-p', '--output_prefix', required=required, help='output prefix')
+    group.add_argument('-p', '--output_prefix', required=required, help='Output prefix')
 
 
 def __password(group, required):
@@ -481,13 +481,13 @@ def __password(group, required):
 
 def __previous_metadata_file(group, required):
     group.add_argument('--previous_metadata_file',
-                       help='file indicating metadata of each genome in previous GTDB version.',
+                       help='File indicating metadata of each genome in previous GTDB version.',
                        required=required)
 
 
 def __refseq_assembly_summary(group, required):
     group.add_argument('-g', '--refseq_assembly_summary', required=required,
-                       help='file from NCBI indicating metadata for genome assemblies in RefSeq '
+                       help='File from NCBI indicating metadata for genome assemblies in RefSeq '
                             '(ftp://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_refseq.txt)')
 
 
@@ -523,7 +523,7 @@ def __rna_file_path(group):
 
 def __rna_gene(group, required):
     group.add_argument('-r', '--rna_gene', required=required,
-                       choices=['ssu', 'lsu_23S', 'lsu_5S'], help="rRNA gene to process")
+                       choices=['ssu', 'lsu_23S', 'lsu_5S'], help="RRNA gene to process")
 
 
 def __rna_version(group, required):
@@ -535,8 +535,52 @@ def __second_domain_report(group, required):
                        help='File generated from GTDB power domain report from latest release.')
 
 
+def __trans_table_file(group, required):
+    group.add_argument('--trans_table', dest='trans_table_file', required=required,
+                       help='Translation table of each genome '
+                            '(gtranslate.translation_table_summary.tsv, written by trans_table).')
+
+
+def __tt_override(group):
+    group.add_argument('--tt_override',
+                       help='Corrections to --trans_table: a TSV with genome_id and '
+                            'translation_table columns, overriding the prediction.')
+
+
+def __batch_size(group, default=10000):
+    group.add_argument('--batch_size', type=int, default=default,
+                       help='Number of genomes per batch, each batch being the unit of '
+                            'restart and of sharing between machines.')
+
+
+def __reclaim(group):
+    group.add_argument('--reclaim', action='store_true',
+                       help='Take over batches another machine claimed and did not finish. '
+                            'A claim this host left behind is reclaimed without it.')
+
+
+def __gtranslate_force(group):
+    group.add_argument('--force', action='store_true',
+                       help='Continue when a single genome fails rather than stopping the run.')
+
+
+def __keep_called_genes(group):
+    group.add_argument('--keep_called_genes', action='store_true',
+                       help='Keep the genes gTranslate called under the predicted translation table.')
+
+
+def __gtranslate_prefix(group):
+    group.add_argument('--prefix',
+                       help='Prefix of the gTranslate output files (default: gtranslate).')
+
+
+def __custom_model_path(group):
+    group.add_argument('--custom_model_path',
+                       help='Classifiers to predict with (default: the models named by GTRANSLATE_MODEL_PATH).')
+
+
 def __silent(group):
-    group.add_argument('--silent', help="suppress output", action='store_true')
+    group.add_argument('--silent', help="Suppress output", action='store_true')
 
 def __truncate_taxonomy(group):
         group.add_argument('--truncate_taxonomy', help="Truncate taxonomy in database to only gtdb_domain", action='store_true')
@@ -547,7 +591,7 @@ def __silva_version(group, required):
 
 def __skip_taxa_per_letter_dl(group):
     group.add_argument('--skip_taxa_per_letter_dl', action='store_true',
-                       help='skip downloading the set of taxa under each rank; '
+                       help='Skip downloading the set of taxa under each rank; '
                             'assumes this information has previously been downloaded.')
 
 
@@ -561,12 +605,12 @@ def __ssu_version(group, required):
 
 
 def __surveillance_list(group, required):
-    group.add_argument('--genome_list', required=required, help='surveillance genomes.')
+    group.add_argument('--genome_list', required=required, help='Surveillance genomes.')
 
 
 def __taxonomy_directory(group, required):
     group.add_argument('-t', '--taxonomy_dir', required=required,
-                       help='directory containing NCBI taxonomy files (dmp files)')
+                       help='Directory containing NCBI taxonomy files (dmp files)')
 
 
 def __taxonomy_file(group, required):
@@ -575,12 +619,12 @@ def __taxonomy_file(group, required):
 
 
 def __tmp_dir(group):
-    group.add_argument('--tmp_dir', help='temporary directory for storing intermediate results', default='/tmp')
+    group.add_argument('--tmp_dir', help='Directory for scratch files; no results are written here', default='/tmp')
 
 
 def __truncate_taxonomy(group):
     group.add_argument('--truncate_taxonomy',
-                       help='truncate current taxonomy strings to just the domain before updating taxonomy',
+                       help='Truncate current taxonomy strings to just the domain before updating taxonomy',
                        action='store_true')
 
 
@@ -624,13 +668,13 @@ def __hmm_db_path(group, required):
                        required=required)
 
 def __rerun(group):
-    group.add_argument('--rerun', help='rerun all genomes', action='store_true')
+    group.add_argument('--rerun', help='Rerun all genomes', action='store_true')
     pass
 
 
 def __remove(group, db_name):
     group.add_argument('--remove',
-                       help=f'remove all previous results in {db_name} directory (use with caution!)',
+                       help=f'Remove all previous results in {db_name} directory (use with caution!)',
                        action='store_true')
 
 
@@ -645,7 +689,7 @@ def __checkm2_output_dir(grp, required):
 
 def __report(grp, required):
     grp.add_argument('--report', required=required,
-                     help='report log indicating new, modified, unmodified, ..., genomes')
+                     help='Report log indicating new, modified, unmodified, ..., genomes')
 
 
 
@@ -655,7 +699,7 @@ def __id_last_genome(grp, required):
     
 def __final_cluster_file(grp, required):
     grp.add_argument('--final_cluster_file', required=required,
-                     help="clusters for named species")
+                     help="Clusters for named species")
 
 
 def get_main_parser():
@@ -683,22 +727,35 @@ def get_main_parser():
             __silent(grp)
 
     # Call genes with prodigal
-    with subparser(sub_parsers, 'prodigal', 'Call genes using Prodigal.') as parser:
+    with subparser(sub_parsers, 'trans_table',
+                   'Predict the translation table of each genome using gTranslate.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
+            __taxonomy_file(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
             __tmp_dir(grp)
             __cpus(grp)
-            __all_genomes(grp)
+            __batch_size(grp)
+            __reclaim(grp)
+            __gtranslate_force(grp)
+            __keep_called_genes(grp)
+            __gtranslate_prefix(grp)
+            __custom_model_path(grp)
 
-    with subparser(sub_parsers, 'prodigal_check',
-                   'Check if table used by Prodigal is the same as the one indicated in NCBI.') as parser:
+    with subparser(sub_parsers, 'prodigal', 'Call genes using Prodigal.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
+            __trans_table_file(grp, required=True)
+            __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
+            __tt_override(grp)
+            __tmp_dir(grp)
+            __cpus(grp)
+            __all_genomes(grp)
 
     # Search Pfam Tigrfam markers
     with subparser(sub_parsers, 'top_hit', 'Generate TopHit file for Tigrfam or Pfam.') as parser:

@@ -24,32 +24,296 @@ __email__ = 'donovan.parks@gmail.com'
 
 import os
 import gzip
+import hashlib
 import logging
-import ntpath
+import multiprocessing as mp
 import shutil
+import subprocess
 import tempfile
-from collections import defaultdict, namedtuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from tqdm import tqdm
+
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, remove_extension, make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_on_path
-from gtdb_migration_tk.biolib_lite.parallel import Parallel
-from gtdb_migration_tk.biolib_lite.seq_io import read_fasta, write_fasta
+from gtdb_migration_tk.biolib_lite.seq_tk import genome_size
+
+
+# Below this many bases Prodigal cannot train on the genome itself, and its
+# precalculated parameters are used instead.
+MIN_BASES_TO_TRAIN = 100000
+
+# The tables tried when nothing says which one a genome uses.
+CANDIDATE_TABLES = (4, 11)
+
+# Table 4 is taken only where it codes appreciably more of the genome.
+DENSITY_MARGIN = 0.05
+DENSITY_FLOOR = 0.7
+
+# Files are read and hashed a block at a time.
+CHUNK = 1 << 20
+
+
+class ProdigalTask(NamedTuple):
+    """Everything the gene calling of ONE genome needs.
+
+    The pool pickles the callable and its argument once per task, so a worker is
+    given its own genome's table rather than the mapping for the whole release.
+    The output paths are given rather than composed here: what the files are
+    called is the caller's convention, not this wrapper's.
+    """
+
+    genome_id: str
+    genome_file: str
+    translation_table: Optional[int]
+    aa_gene_file: str
+    nt_gene_file: str
+    gff_file: str
+    checksum_file: Optional[str] = None
+    tmp_root: Optional[str] = None
+    called_genes: bool = False
+    meta: bool = False
+    closed_ends: bool = False
+
+
+class ConsumerData(NamedTuple):
+    """What the caller learns about one genome's called genes."""
+
+    aa_gene_file: str
+    nt_gene_file: str
+    gff_file: str
+    best_translation_table: int
+    coding_density_4: float
+    coding_density_11: float
+    checksum: Optional[str] = None
+
+
+def run_prodigal(cmd: List[str], genome_file: str, gff_file: str, tmp_dir: str) -> None:
+    """Run Prodigal over one genome, feeding it the genome on stdin.
+
+    Prodigal reads stdin when given no -i, so a gzipped genome needs no
+    uncompressed copy on disk. A non-zero exit raises, carrying what Prodigal said.
+
+    Parameters
+    ----------
+    cmd : list of str
+        Prodigal and its arguments, without -i.
+    genome_file : str
+        Genome to feed it, optionally gzipped.
+    gff_file : str
+        File its GFF output is written to.
+    tmp_dir : str
+        Directory its stderr is collected in.
+
+    @return: None
+    """
+
+    opener = gzip.open if genome_file.endswith('.gz') else open
+    stderr_file = os.path.join(tmp_dir, 'prodigal.stderr')
+
+    # stdout and stderr both go to files, so neither can fill a pipe and deadlock
+    # the process while this one is still writing the genome into its stdin
+    with open(gff_file, 'wb') as gff_out, open(stderr_file, 'wb') as err_out:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                stdout=gff_out, stderr=err_out)
+        try:
+            with opener(genome_file, 'rb') as genome:
+                shutil.copyfileobj(genome, proc.stdin)
+        finally:
+            proc.stdin.close()
+            proc.wait()
+
+    if proc.returncode != 0:
+        with open(stderr_file) as handle:
+            complaint = ' '.join(handle.read().split())
+        raise RuntimeError('prodigal failed on {} with exit code {}: {}'.format(
+            genome_file, proc.returncode, complaint or '(no output on stderr)'))
+
+
+def scratch_dir(tmp_root: Optional[str], results: Sequence[Optional[str]]) -> str:
+    """Make a private directory for the intermediate files of one genome.
+
+    Everything in it is deleted when the genome is done, so it must not be able to
+    contain a result. The results are now written where they belong -- a genome's
+    own prodigal directory -- and a scratch directory that turned out to be an
+    ancestor of one would take the release's gene calls with it. mkdtemp() makes a
+    fresh, uniquely named directory, so this cannot happen; it is checked rather
+    than assumed, because the cost of being wrong is not recoverable.
+
+    Parameters
+    ----------
+    tmp_root : str
+        Directory to create the scratch directory in, or None for the default.
+    results : sequence of str
+        The files this genome will produce, which must lie outside it.
+
+    @return: path of the scratch directory, which the caller must remove.
+    """
+
+    scratch = tempfile.mkdtemp(dir=tmp_root)
+    root = os.path.realpath(scratch) + os.sep
+
+    for result in results:
+        if result and os.path.realpath(result).startswith(root):
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise RuntimeError(
+                'refusing to run: {} would be written inside the scratch '
+                'directory {}, which is deleted when the genome is done'.format(
+                    result, scratch))
+
+    return scratch
+
+
+def call_genes(task: ProdigalTask) -> Tuple[str, str, str, str, int, float, float, Optional[str]]:
+    """Call the genes of one genome and report what they were called under.
+
+    A module-level function rather than a method, so that what crosses to the
+    worker is one genome's task and not whatever an instance happens to hold.
+
+    The results are compressed straight to the paths the task names, and the
+    checksum of the protein file is taken from the bytes already passing through:
+    writing them to a scratch directory for the caller to move and re-read costs a
+    copy of every file and a decompression of every protein file, the second of
+    them in the caller and so in one process however many are calling genes.
+
+    Parameters
+    ----------
+    task : ProdigalTask
+        The genome, its table or None, and where the results go.
+
+    @return: (genome_id, aa file, nt file, gff file, table, density 4, density 11,
+             checksum), the densities -1 where they were not measured.
+    """
+
+    best_translation_table = -1
+    table_coding_density = {4: -1, 11: -1}
+
+    for path in (task.aa_gene_file, task.nt_gene_file, task.gff_file):
+        make_sure_path_exists(os.path.dirname(path))
+
+    if task.called_genes:
+        shutil.copyfile(os.path.abspath(task.genome_file), task.aa_gene_file)
+        return (task.genome_id, task.aa_gene_file, task.nt_gene_file, task.gff_file,
+                best_translation_table, table_coding_density[4],
+                table_coding_density[11], None)
+
+    scratch = scratch_dir(task.tmp_root, (task.aa_gene_file, task.nt_gene_file,
+                                          task.gff_file, task.checksum_file))
+    try:
+        total_bases = genome_size(task.genome_file)
+
+        translation_tables = ([task.translation_table] if task.translation_table
+                              else list(CANDIDATE_TABLES))
+
+        # the density exists to choose between tables; with one table there is
+        # nothing to choose, so the GFF is not parsed and no mask is built
+        measure_density = len(translation_tables) > 1
+
+        for translation_table in translation_tables:
+            table_dir = os.path.join(scratch, str(translation_table))
+            os.makedirs(table_dir)
+
+            aa_gene_file_tmp = os.path.join(table_dir, 'genes.faa')
+            nt_gene_file_tmp = os.path.join(table_dir, 'genes.fna')
+            gff_file_tmp = os.path.join(table_dir, 'genes.gff')
+
+            # too small to train on the genome itself, so use Prodigal's own parameters
+            proc_str = 'meta' if (total_bases < MIN_BASES_TO_TRAIN or task.meta) else 'single'
+
+            cmd = ['prodigal', '-m', '-p', proc_str, '-q', '-f', 'gff',
+                   '-g', str(translation_table),
+                   '-a', aa_gene_file_tmp, '-d', nt_gene_file_tmp]
+            if task.closed_ends:
+                cmd.append('-c')
+
+            run_prodigal(cmd, task.genome_file, gff_file_tmp, table_dir)
+
+            if measure_density:
+                parser = ProdigalGeneFeatureParser(gff_file_tmp)
+                coding_bases = sum(parser.coding_bases(seq_id) for seq_id in parser.genes)
+                table_coding_density[translation_table] = float(coding_bases) / total_bases
+
+        if measure_density:
+            best_translation_table = 11
+            if (table_coding_density[4] - table_coding_density[11] > DENSITY_MARGIN
+                    and table_coding_density[4] > DENSITY_FLOOR):
+                best_translation_table = 4
+        else:
+            best_translation_table = task.translation_table
+
+        best_dir = os.path.join(scratch, str(best_translation_table))
+        checksum = None
+        for produced, final in (('genes.faa', task.aa_gene_file),
+                                ('genes.fna', task.nt_gene_file),
+                                ('genes.gff', task.gff_file)):
+            digest = compress_to(os.path.join(best_dir, produced), final)
+            if final == task.aa_gene_file:
+                checksum = digest
+
+        if task.checksum_file and checksum:
+            with open(task.checksum_file, 'w') as handle:
+                handle.write(checksum)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    return (task.genome_id, task.aa_gene_file, task.nt_gene_file, task.gff_file,
+            best_translation_table, table_coding_density[4],
+            table_coding_density[11], checksum)
+
+
+def compress_to(source: str, destination: str) -> str:
+    """Gzip one file to its destination, hashing what goes in.
+
+    The digest is of the UNCOMPRESSED bytes, which is what vouches for the genes
+    rather than for the gzip container, and it costs nothing here: the bytes are
+    being read anyway.
+
+    SHA-1, because that is what biolib_lite.checksum.sha256_rb() computes despite
+    its name, and that function is what reads these digests back to decide a
+    genome can be skipped. Every .sha256 file of every past release holds a SHA-1;
+    computing a real SHA-256 here would match none of them and would have the next
+    run call the genes of the entire release again.
+
+    Parameters
+    ----------
+    source : str
+        Uncompressed file Prodigal produced.
+    destination : str
+        Path of the gzipped copy.
+
+    @return: digest of the uncompressed bytes, in the form sha256_rb() returns.
+    """
+
+    digest = hashlib.sha1()
+    with open(source, 'rb') as f_in, gzip.open(destination, 'wb') as f_out:
+        while True:
+            block = f_in.read(CHUNK)
+            if not block:
+                break
+            digest.update(block)
+            f_out.write(block)
+
+    return digest.hexdigest()
 
 
 class Prodigal(object):
     """Wrapper for running Prodigal in parallel."""
 
-    def __init__(self, cpus, verbose=True):
+    def __init__(self, cpus: int, verbose: bool = True) -> None:
         """Initialization.
+
+        Prodigal is checked for here rather than when the first genome is reached.
 
         Parameters
         ----------
         cpus : int
-            Number of cpus to use.
-        verbose : boolean
-            Flag indicating if progress should be reported.
+            Number of genomes to process at once.
+        verbose : bool
+            Report progress.
+
+        @return: None
         """
 
         self.logger = logging.getLogger('timestamp')
@@ -59,242 +323,37 @@ class Prodigal(object):
         self.cpus = cpus
         self.verbose = verbose
 
-    def _producer(self, genome_file):
-        """Apply prodigal to genome with most suitable translation table.
+    def run(self, tasks: Sequence[ProdigalTask]) -> Dict[str, ConsumerData]:
+        """Call genes for a set of genomes, one task per genome.
+
+        The caller says where each genome's results go and what they are called;
+        this only spreads the work and collects what came back.
 
         Parameters
         ----------
-        genome_file : queue
-            Fasta file for genome.
+        tasks : sequence of ProdigalTask
+            One per genome, each naming its own output paths.
+
+        @return: genome ID to the summary statistics of its called genes.
         """
 
-        genome_id = remove_extension(genome_file)
+        file_type = 'scaffolds' if (tasks and tasks[0].meta) else 'genomes'
 
-
-
-        aa_gene_file = os.path.join(self.output_dir, genome_id + '_genes.faa.gz')
-        nt_gene_file = os.path.join(self.output_dir, genome_id + '_genes.fna.gz')
-        gff_file = os.path.join(self.output_dir, genome_id + '.gff.gz')
-
-        best_translation_table = -1
-        table_coding_density = {4: -1, 11: -1}
-        if self.called_genes:
-            os.system('cp %s %s' % (os.path.abspath(genome_file), aa_gene_file))
-        else:
-            tmp_dir = tempfile.mkdtemp()
-
-            seqs = read_fasta(genome_file)
-
-
-
-            # determine number of bases
-            total_bases = 0
-            for seq in seqs.values():
-                total_bases += len(seq)
-
-            # call genes under different translation tables
-            if self.translation_table:
-                canonical_gid = genome_id[0:genome_id.find('_', 4)]
-                if type(self.translation_table) is dict:
-                    if self.translation_table[canonical_gid]:
-                        translation_tables = [self.translation_table[canonical_gid]]
-                    else:
-                        translation_tables = [4, 11]
-                else:
-                    translation_tables = [self.translation_table]
-            else:
-                translation_tables = [4, 11]
-
-
-
-            for translation_table in translation_tables:
-                os.makedirs(os.path.join(tmp_dir, str(translation_table)))
-                # If this is a gzipped genome, re-write the uncompressed genome
-                # file to disk
-                prodigal_input = genome_file
-                if genome_file.endswith('.gz'):
-                    prodigal_input = os.path.join(
-                        tmp_dir, str(translation_table), os.path.basename(genome_file[0:-3]) + '.fna')
-                    write_fasta(seqs, prodigal_input)
-
-                aa_gene_file_tmp = os.path.join(tmp_dir, str(translation_table), genome_id + '_genes.faa')
-                nt_gene_file_tmp = os.path.join(tmp_dir, str(translation_table), genome_id + '_genes.fna')
-                gff_file_tmp = os.path.join(tmp_dir, str(translation_table), genome_id + '.gff')
-
-                # check if there is sufficient bases to calculate prodigal parameters
-                if total_bases < 100000 or self.meta:
-                    proc_str = 'meta'  # use best precalculated parameters
-                else:
-                    proc_str = 'single'  # estimate parameters from data
-
-                args = '-m'
-                if self.closed_ends:
-                    args += ' -c'
-
-                cmd = 'prodigal %s -p %s -q -f gff -g %d -a %s -d %s -i %s > %s 2> /dev/null' % (args,
-                                                                                                 proc_str,
-                                                                                                 translation_table,
-                                                                                                 aa_gene_file_tmp,
-                                                                                                 nt_gene_file_tmp,
-                                                                                                 prodigal_input,
-                                                                                                 gff_file_tmp)
-                os.system(cmd)
-
-                # determine coding density
-                prodigalParser = ProdigalGeneFeatureParser(gff_file_tmp)
-
-                codingBases = 0
-                for seq_id, _seq in seqs.items():
-                    codingBases += prodigalParser.coding_bases(seq_id)
-
-                codingDensity = float(codingBases) / total_bases
-                table_coding_density[translation_table] = codingDensity
-
-            # determine best translation table
-            if len(translation_tables) > 1:
-                best_translation_table = 11
-                if (table_coding_density[4] - table_coding_density[11] > 0.05) and table_coding_density[4] > 0.7:
-                    best_translation_table = 4
-            else:
-                if type(self.translation_table) is dict:
-                    best_translation_table = self.translation_table[canonical_gid]
-                else:
-                    best_translation_table = self.translation_table
-
-            for file in [os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.faa'),
-                         os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.fna'),
-                         os.path.join(tmp_dir, str(best_translation_table), genome_id + '.gff')]:
-                with open(file, 'rb') as f_in, gzip.open(file+'.gz', 'wb') as f_out:
-                     f_out.writelines(f_in)
-
-            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.faa.gz'), aa_gene_file)
-            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '_genes.fna.gz'), nt_gene_file)
-            shutil.copyfile(os.path.join(tmp_dir, str(best_translation_table), genome_id + '.gff.gz'), gff_file)
-
-            # clean up temporary files
-            shutil.rmtree(tmp_dir)
-
-        return (genome_id, aa_gene_file, nt_gene_file, gff_file, best_translation_table, table_coding_density[4],
-                table_coding_density[11])
-
-    def _consumer(self, produced_data, consumer_data):
-        """Consume results from producer processes.
-
-         Parameters
-        ----------
-        produced_data : tuple
-            Summary statistics for called genes for a specific genome.
-        consumer_data : list
-            Summary statistics of called genes for each genome.
-
-        Returns
-        -------
-        consumer_data: d[genome_id] -> namedtuple(aa_gene_file,
-                                                    nt_gene_file,
-                                                    gff_file,
-                                                    best_translation_table,
-                                                    coding_density_4,
-                                                    coding_density_11)
-            Summary statistics of called genes for each genome.
-        """
-
-        ConsumerData = namedtuple('ConsumerData',
-                                  'aa_gene_file nt_gene_file gff_file best_translation_table coding_density_4 coding_density_11')
-        if consumer_data == None:
-            consumer_data = defaultdict(ConsumerData)
-
-        genome_id, aa_gene_file, nt_gene_file, gff_file, best_translation_table, coding_density_4, coding_density_11 = produced_data
-
-        consumer_data[genome_id] = ConsumerData(aa_gene_file,
-                                                nt_gene_file,
-                                                gff_file,
-                                                best_translation_table,
-                                                coding_density_4,
-                                                coding_density_11)
-
-        return consumer_data
-
-    def _progress(self, processed_items, total_items):
-        """Report progress of consumer processes.
-
-        Parameters
-        ----------
-        processed_items : int
-            Number of genomes processed.
-        total_items : int
-            Total number of genomes to process.
-
-        Returns
-        -------
-        str
-            String indicating progress of data processing.
-        """
-
-        return self.progress_str % (processed_items, total_items, float(processed_items) * 100 / total_items)
-
-    def run(self,
-            genome_files,
-            output_dir,
-            called_genes=False,
-            translation_table=None,
-            meta=False,
-            closed_ends=False):
-        """Call genes with Prodigal.
-
-        Call genes with prodigal and store the results in the
-        specified output directory. For convenience, the
-        called_gene flag can be used to indicate genes have
-        previously been called and simply need to be copied
-        to the specified output directory.
-
-        Parameters
-        ----------
-        genome_files : list of str
-            Nucleotide fasta files to call genes on.
-        called_genes : boolean
-            Flag indicating if genes are already called.
-        translation_table : int
-            Specifies desired translation table, use None to automatically
-            select between tables 4 and 11.
-        meta : boolean
-            Flag indicating if prodigal should call genes with the metagenomics procedure.
-        closed_ends : boolean
-            If True, do not allow genes to run off edges (throws -c flag).
-        output_dir : str
-            Directory to store called genes.
-
-        Returns
-        -------
-        d[genome_id] -> namedtuple(best_translation_table
-                                            coding_density_4
-                                            coding_density_11)
-            Summary statistics of called genes for each genome.
-        """
-
-        self.called_genes = called_genes
-        self.translation_table = translation_table
-        self.meta = meta
-        self.closed_ends = closed_ends
-        self.output_dir = output_dir
-
-        make_sure_path_exists(self.output_dir)
-
-        progress_func = None
         if self.verbose:
-            file_type = 'genomes'
-            self.progress_str = '  Finished processing %d of %d (%.2f%%) genomes.'
-            if meta:
-                file_type = 'scaffolds'
-                if len(genome_files):
-                    file_type = ntpath.basename(genome_files[0])
-
-                self.progress_str = '  Finished processing %d of %d (%.2f%%) files.'
-
             self.logger.info('Identifying genes within %s: ' % file_type)
-            progress_func = self._progress
 
-        parallel = Parallel(self.cpus)
-        summary_stats = parallel.run(self._producer, self._consumer, genome_files, progress_func)
+        # imap_unordered, so that a genome Prodigal failed on raises here rather
+        # than leaving the run to report success with a genome missing. The results
+        # are collected in the parent, as the vendored Parallel class collected them
+        summary_stats = {}
+        with mp.Pool(processes=self.cpus) as pool:
+            results = pool.imap_unordered(call_genes, tasks)
+            for produced in tqdm(results, total=len(tasks),
+                                 ncols=100,
+                                 unit=file_type.rstrip('s'),
+                                 disable=not self.verbose):
+                genome_id, *stats = produced
+                summary_stats[genome_id] = ConsumerData(*stats)
 
         return summary_stats
 
@@ -302,81 +361,83 @@ class Prodigal(object):
 class ProdigalGeneFeatureParser():
     """Parses prodigal gene feature files (GFF) output."""
 
-    def __init__(self, filename):
+    def __init__(self, filename: str) -> None:
         """Initialization.
 
         Parameters
         ----------
         filename : str
             GFF file to parse.
+
+        @return: None
         """
         check_file_exists(filename)
 
-        self.genes = {}
-        self.last_coding_base = {}
+        self.genes: Dict[str, List[List[int]]] = {}
+        self.last_coding_base: Dict[str, int] = {}
 
         self.__parseGFF(filename)
 
-        self.coding_base_masks = {}
+        self.coding_base_masks: Dict[str, np.ndarray] = {}
         for seq_id in self.genes:
             self.coding_base_masks[seq_id] = self.__build_coding_base_mask(seq_id)
 
-    def __parseGFF(self, filename):
-        """Parse genes from GFF file.
+    def __parseGFF(self, filename: str) -> None:
+        """Read the genes of each contig as a list of [start, end] intervals.
+
+        Intervals rather than gene IDs of this module's own making: the counter
+        those IDs came from was reset only when a contig was first met, so a GFF
+        returning to an earlier contig overwrote that contig's own genes. Nothing
+        read the IDs.
 
         Parameters
         ----------
         filename : str
             GFF file to parse.
+
+        @return: None
         """
-        bGetTranslationTable = True
-        for line in open(filename):
-            if bGetTranslationTable and line.startswith('# Model Data'):
-                self.translationTable = line.split(';')[4]
-                self.translationTable = int(self.translationTable[self.translationTable.find('=') + 1:])
-                bGetTranslationTable = False
+        with open(filename) as handle:
+            for line in handle:
+                if line.startswith('#'):
+                    continue
 
-            if line[0] == '#':
-                continue
+                line_split = line.split('\t')
+                seq_id = line_split[0]
+                if seq_id not in self.genes:
+                    self.genes[seq_id] = []
+                    self.last_coding_base[seq_id] = 0
 
-            line_split = line.split('\t')
-            seq_id = line_split[0]
-            if seq_id not in self.genes:
-                geneCounter = 0
-                self.genes[seq_id] = {}
-                self.last_coding_base[seq_id] = 0
+                start = int(line_split[3])
+                end = int(line_split[4])
 
-            geneId = seq_id + '_' + str(geneCounter)
-            geneCounter += 1
+                self.genes[seq_id].append([start, end])
+                self.last_coding_base[seq_id] = max(self.last_coding_base[seq_id], end)
 
-            start = int(line_split[3])
-            end = int(line_split[4])
+    def __build_coding_base_mask(self, seq_id: str) -> np.ndarray:
+        """Mark which bases of a contig are coding.
 
-            self.genes[seq_id][geneId] = [start, end]
-            self.last_coding_base[seq_id] = max(self.last_coding_base[seq_id], end)
-
-    def __build_coding_base_mask(self, seq_id):
-        """Build mask indicating which bases in a sequences are coding.
+        A mask rather than a sum of gene lengths, so that overlapping genes are
+        counted once.
 
         Parameters
         ----------
         seq_id : str
             Unique id of sequence.
+
+        @return: one entry per base, True where the base is within a gene.
         """
 
-        # safe way to calculate coding bases as it accounts
-        # for the potential of overlapping genes
-        coding_base_mask = np.zeros(self.last_coding_base[seq_id])
-        for pos in self.genes[seq_id].values():
-            coding_base_mask[pos[0]:pos[1] + 1] = 1
+        # bool, not the float64 np.zeros() gives by default: one byte a base
+        # rather than eight, and every worker holds a genome's worth
+        coding_base_mask = np.zeros(self.last_coding_base[seq_id], dtype=bool)
+        for pos in self.genes[seq_id]:
+            coding_base_mask[pos[0]:pos[1] + 1] = True
 
         return coding_base_mask
 
-    def coding_bases(self, seq_id, start=0, end=None):
-        """Calculate number of coding bases in sequence between [start, end).
-
-        To process the entire sequence set start to 0, and
-        end to None.
+    def coding_bases(self, seq_id: str, start: int = 0, end: Optional[int] = None) -> int:
+        """Number of coding bases in a contig between [start, end).
 
         Parameters
         ----------
@@ -385,7 +446,9 @@ class ProdigalGeneFeatureParser():
         start : int
             Start calculation at this position in sequence.
         end : int
-            End calculation just before this position in the sequence.
+            End calculation just before this position; None for the last gene's end.
+
+        @return: number of coding bases, 0 for a contig with no genes.
         """
 
         # check if sequence has any genes
@@ -393,7 +456,7 @@ class ProdigalGeneFeatureParser():
             return 0
 
         # set end to last coding base if not specified
-        if end == None:
+        if end is None:
             end = self.last_coding_base[seq_id]
 
-        return np.sum(self.coding_base_masks[seq_id][start:end])
+        return int(np.count_nonzero(self.coding_base_masks[seq_id][start:end]))

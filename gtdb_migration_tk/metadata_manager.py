@@ -18,12 +18,12 @@
 import os
 import datetime
 import logging
+import multiprocessing as mp
 import ntpath
 
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists, get_num_lines
-from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 from gtdb_migration_tk.genometk_lite.metadata_genes import MetadataGenes
 from gtdb_migration_tk.genometk_lite.metadata_nucleotide import MetadataNucleotide
@@ -556,13 +556,16 @@ class MetadataManager(object):
                 gff_file = os.path.join(gpath, 'prodigal', gid + '_protein.gff.gz')
                 input_files.append([genome_file, gff_file])
 
-        # process each genome
-        self.logger.info('Generating metadata for each genome:')
-        parallel = Parallel(cpus=self.cpus)
-        parallel.run(self._producer,
-                     None,
-                     input_files,
-                     self._progress)
+        # process each genome. imap_unordered rather than the vendored Parallel
+        # class: a producer that raised there killed its worker silently, and the
+        # run went on to report success having processed fewer genomes than it was
+        # given. Here the exception reaches this loop and stops the command.
+        self.logger.info('Generating metadata for {:,} genomes:'.format(
+            len(input_files)))
+        with mp.Pool(processes=self.cpus) as pool:
+            for _ in tqdm(pool.imap_unordered(self._producer, input_files),
+                          total=len(input_files), ncols=100, unit='genome'):
+                pass
 
     def _producer(self, input_files):
         """Process each genome."""
@@ -634,10 +637,3 @@ class MetadataManager(object):
 
 
 
-    def _progress(self, processed_items, total_items):
-        current_time_utc = datetime.datetime.utcnow().replace(microsecond=0)
-        if processed_items > 0:
-            time_left= (current_time_utc - self.starttime) * (total_items-processed_items)/ processed_items
-            return '  Processed {} of {} ({}%) genomes. (ETA {})           '.format(processed_items,
-                                                               total_items,
-                                                               round(processed_items * 100.0 / total_items,2),time_left)

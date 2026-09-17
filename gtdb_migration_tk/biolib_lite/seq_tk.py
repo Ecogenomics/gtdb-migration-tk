@@ -25,6 +25,8 @@ __email__ = 'donovan.parks@gmail.com'
 
 from collections import Counter
 
+from gtdb_migration_tk.biolib_lite.seq_io import read_fasta_seq
+
 
 """Sequence manipulation and statistics."""
 
@@ -33,6 +35,25 @@ from collections import Counter
 #def rev_comp(seq):
 #    """Reverse complement a sequence."""
 #    return seq.translate(_complements)[::-1]
+
+
+def genome_size(genome_file):
+    """Total number of bases in a genome.
+
+    The sequences are streamed rather than read into a dictionary: the caller
+    wants one number, and holding every contig of every genome in memory is what
+    makes a run over a release proportional to the largest genome times the
+    number of workers rather than to one genome. The file may be gzipped.
+
+    Parameters
+    ----------
+    genome_file : str
+        Fasta file containing the genome, optionally gzipped.
+
+    @return: number of bases in the genome.
+    """
+
+    return sum(len(seq) for _seq_id, seq in read_fasta_seq(genome_file))
 
 
 def count_nt(seq):

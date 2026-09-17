@@ -2344,20 +2344,20 @@ def add_sync_arguments(parser):
     # when that is what was given.
     table = required.add_mutually_exclusive_group(required=True)
     table.add_argument("-g", "--gtdb_selected_genomes", dest="summary", metavar="FILE",
-                       help="the table written by select_genomes (gtdb_selected_genomes.tsv.gz). "
+                       help="The table written by select_genomes (gtdb_selected_genomes.tsv.gz). "
                             "Genomes are taken from its assembly_accession and ftp_path columns, "
                             "and it defines the mirror: every genome directory under --root that "
                             "it does not list is REMOVED before syncing. A subset, or a .fail/.bad "
                             "file, belongs to --retry.")
     table.add_argument("--retry", metavar="FILE",
-                       help="a <log>.fail or <log>.bad from an earlier run (same columns): sync "
+                       help="A <log>.fail or <log>.bad from an earlier run (same columns): sync "
                             "only the genomes it lists and remove nothing it does not list. "
                             "With --delete each listed genome's directory is removed and "
                             "refetched, which is what a .bad needs.")
     required.add_argument("--root", required=True, metavar="DIR",
-                          help="mirror root directory, e.g. genomes")
+                          help="Mirror root directory, e.g. genomes")
     required.add_argument("-l", "--log", required=True, metavar="FILE",
-                          help="log file, appended across runs. It also names this run's "
+                          help="Log file, appended across runs. It also names this run's "
                                "outputs, with .log stripped and written beside it: "
                                "sync.log -> sync.fail, sync.bad, sync.rm, sync.rm_dry_run, "
                                "sync.extra. Give each round its own log so one round "
@@ -2365,26 +2365,26 @@ def add_sync_arguments(parser):
 
     optional = parser.add_argument_group('options arguments')
     optional.add_argument("--dry-run", action="store_true",
-                          help="report how many genome directories would be removed, added, and "
+                          help="Report how many genome directories would be removed, added, and "
                                "checked for updates (already present), list the removals in "
                                "<log>.rm_dry_run, and exit. Nothing is downloaded, removed or "
                                "verified, and no lock is taken.")
     optional.add_argument("-j", "--jobs", type=int, default=8,
-                        help="parallel workers (default %(default)s). Bandwidth parallelism "
+                        help="Parallel workers (default %(default)s). Bandwidth parallelism "
                              "only; --rate is what bounds the request rate.")
     optional.add_argument("--rate", type=float, default=20.0,
-                        help="global cap on requests/second across ALL workers (default "
+                        help="Global cap on requests/second across ALL workers (default "
                              "%(default)s; 0 disables). This, not -j, is what keeps NCBI from "
                              "throttling -- see RATE LIMITING in the file header.")
     optional.add_argument("--nfs-jobs", type=int, default=NFS_JOBS,
-                        help="threads for the mirror walk and the removal (default "
+                        help="Threads for the mirror walk and the removal (default "
                              "%(default)s). These read and delete on the local mirror, not "
                              "at NCBI, so --rate does not apply: the work is one NFS round "
                              "trip after another and the threads overlap them. Measured "
                              "4.1x over serial at 8, and 16 bought a further 16%% -- lower "
                              "it when others are working on the mirror.")
     optional.add_argument("--verify-jobs", type=int, default=20,
-                        help="workers for the verification pass (default %(default)s). "
+                        help="Workers for the verification pass (default %(default)s). "
                              "Local md5, so not NCBI-limited -- see TUNING in the file "
                              "header for why more does not help. A file that fails its "
                              "md5checksums.txt entry does cost one request, for NCBI's "
@@ -2392,14 +2392,14 @@ def add_sync_arguments(parser):
                              "makes the deciding one; only uncompressed files are eligible, "
                              "and a clean mirror asks nothing.")
     optional.add_argument("--verify", action="store_true",
-                        help="after syncing, md5-verify every genome against its manifest; "
+                        help="After syncing, md5-verify every genome against its manifest; "
                              "given the selection, also check the mirror holds nothing else "
                              "(directories it does not list go to <log>.extra)")
     optional.add_argument("--verify-only", action="store_true",
-                        help="skip the sync; only verify, both checks above. Removes nothing "
+                        help="Skip the sync; only verify, both checks above. Removes nothing "
                              "without --delete.")
     optional.add_argument("--delete", action="store_true",
-                        help="remove genome directories rather than repair them. With "
+                        help="Remove genome directories rather than repair them. With "
                              "--retry: each listed genome's directory is removed "
                              "immediately before that genome is fetched, so one run "
                              "rebuilds the .fail/.bad from scratch. With "
@@ -2410,17 +2410,17 @@ def add_sync_arguments(parser):
                              "bare --gtdb_selected_genomes sync, which would mean "
                              "re-downloading the whole mirror.")
     optional.add_argument("--max-age", type=float, default=14.0, metavar="DAYS",
-                        help="a genome confirmed complete against NCBI within DAYS days "
+                        help="A genome confirmed complete against NCBI within DAYS days "
                              "(its .last_synced marker) is skipped with NO request, after "
                              "a local check that every listed file is still present "
                              "(default %(default)s; 0 = always ask NCBI). Makes a crash "
                              "restart cheap -- see RESTART AND FRESHNESS in the header.")
     optional.add_argument("--full", action="store_true",
-                        help="bypass the manifest fast path AND --max-age: re-hash and "
+                        help="Bypass the manifest fast path AND --max-age: re-hash and "
                              "repair every file")
-    optional.add_argument("--fail", help="failure log (default: <log>.fail beside --log)")
-    optional.add_argument("--bad", help="verification failures (default: <log>.bad beside --log)")
-    optional.add_argument("--silent", action="store_true", help="suppress output")
+    optional.add_argument("--fail", help="Failure log (default: <log>.fail beside --log)")
+    optional.add_argument("--bad", help="Verification failures (default: <log>.bad beside --log)")
+    optional.add_argument("--silent", action="store_true", help="Suppress output")
     return required, optional
 
 

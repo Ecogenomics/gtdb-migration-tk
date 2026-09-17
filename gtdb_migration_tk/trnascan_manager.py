@@ -27,6 +27,7 @@ import tempfile
 
 from tqdm import tqdm
 
+from gtdb_migration_tk.ncbi_utils import assembly_accession
 from gtdb_migration_tk.biolib_lite.checksum import sha256
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 
@@ -72,7 +73,7 @@ class tRNAScan(object):
 
             assembly_dir, filename = os.path.split(genome_file)
             trna_dir = os.path.join(assembly_dir, 'trna')
-            genome_id = filename[0:filename.find('_', 4)]
+            genome_id = assembly_accession(filename)
 
             if not os.path.exists(trna_dir):
                 os.makedirs(trna_dir)
@@ -282,7 +283,7 @@ class tRNAScan(object):
 
         assembly_dir, filename = os.path.split(genome_file)
         trna_dir = os.path.join(assembly_dir, 'trna')
-        genome_id = filename[0:filename.find('_', 4)]
+        genome_id = assembly_accession(filename)
 
         if not os.path.exists(trna_dir):
             os.makedirs(trna_dir)

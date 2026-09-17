@@ -36,7 +36,8 @@ Every step is a subcommand of a single `gtdb_migration_tk` executable.
 
   | Tool | Used by |
   | --- | --- |
-  | `prodigal` | `prodigal`, `prodigal_check` |
+  | `prodigal` | `prodigal`, `trans_table` (via gTranslate) |
+  | `gtranslate` | `trans_table` |
   | `hmmsearch` | `hmmsearch`, `top_hit` |
   | `blastn`, `blastp`, `makeblastdb` | `rna_silva`, `rna_ltp`, `generate_ltp_db` |
   | `nhmmer` | `rna_silva`, `rna_ltp` |
@@ -254,8 +255,8 @@ it on a file server shared with other work.
 
 | Command | Description |
 | --- | --- |
-| `prodigal` | Call genes using Prodigal |
-| `prodigal_check` | Check the Prodigal translation table matches NCBI |
+| `trans_table` | Predict the translation table of each genome using gTranslate |
+| `prodigal` | Call genes using Prodigal, under the translation table `trans_table` predicted |
 | `hmmsearch` | Run HMMER on new and modified genomes |
 | `top_hit` | Generate TopHit file for TIGRFAM or Pfam |
 | `metadata` | Generate metadata derived from nucleotide and protein files |
@@ -264,6 +265,63 @@ it on a file server shared with other work.
 | `update_silva` | Update taxonomy files and BLAST database from the latest SILVA release |
 | `generate_ltp_db` | Generate BLAST database from the LTP website |
 | `trnascan` | Identify tRNAs in genomes |
+
+`trans_table` runs gTranslate over the genomes of a release in batches of
+`--batch_size` (default 10,000), each batch a directory of its own under
+`--out_dir`:
+
+```
+<out_dir>/
+  batch_000001/
+    gtranslate_batchfile.tsv            the genomes of this batch
+    RUNNING                             a machine is working on it (host, PID, time)
+    SUCCESS                             it finished; its results are complete
+    FAILED                              it was attempted and gTranslate returned non-zero
+    gtranslate.translation_table_summary.tsv
+    ncbi_tt_comparison.tsv              this batch, compared against NCBI
+  batch_000002/
+  ncbi_tt_comparison.tsv                the whole release, once every batch has SUCCESS
+  gtranslate.translation_table_summary.tsv
+```
+
+A batch is the unit of restart and of sharing. Several machines may be given the
+same `--out_dir` and will divide the release between them, each claiming batches
+no other machine holds; a machine lost mid-batch costs that batch rather than the
+run. Rerunning the command skips the batches that succeeded and retries those
+that failed. A `RUNNING` claim this host left behind in a process that no longer
+exists is reclaimed automatically; one from another host is left alone and
+reported, and taken only with `--reclaim`.
+
+The batches are settled before any of them is processed, from the genomes sorted
+by accession, so which genomes are in batch N follows from the set of genomes and
+not from the order of the genome_dirs file. Once the batchfiles exist they are
+authoritative: a later run reuses them and says so, since partitioning a release
+again that has gained a genome would move genomes between batches that are
+already finished. Remove the batch directories to partition it afresh.
+
+`ncbi_tt_comparison.tsv` covers the genomes for which an NCBI table exists:
+
+| Column | |
+| --- | --- |
+| `genome_id` | accession, as the genome_dirs file names it |
+| `gtranslate_tt` | the table gTranslate predicted |
+| `ncbi_tt` | the table NCBI declares in the genomic GFF |
+| `checkm_tt` | the table the coding density rule alone would choose, as Prodigal and CheckM do unaided; it cannot express table 25 |
+| `result` | `agree` or `conflict` |
+| `coding_density_4`, `coding_density_11` | as gTranslate measured them |
+| `ncbi_taxonomy` | lineage from `--taxonomy_file`, `na` where it holds none |
+
+A genome NCBI has not annotated declares no table, so it has nothing to compare
+against and is left out of the file rather than given a row saying so.
+
+`prodigal` takes the summary `trans_table` writes as `--trans_table` and calls each
+genome's genes under the table named there, so Prodigal no longer chooses one by
+coding density. `--tt_override` corrects it: a TSV of `genome_id` and
+`translation_table` whose rows replace the prediction. Every genome of the release
+must have a table, from one file or the other, before any genes are called — a run
+that found the gap genome by genome would find it hours in. Each genome's
+`prodigal/prodigal_translation_table.tsv` records the table used and where it came
+from, `predicted by gTranslate` or `specified by --tt_override`.
 
 ### Genome quality
 

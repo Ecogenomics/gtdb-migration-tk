@@ -24,13 +24,15 @@ import ntpath
 import re
 import shutil
 import subprocess
+import multiprocessing as mp
 import tempfile
 from typing import Tuple
+
+from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import remove_files_in_directory
 from gtdb_migration_tk.biolib_lite.external.blast import get_blastn_version
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
-from gtdb_migration_tk.biolib_lite.parallel import Parallel
 from gtdb_migration_tk.biolib_lite.seq_io import read_seq
 from gtdb_migration_tk.genometk_lite.rna import RNA
 
@@ -117,24 +119,6 @@ class RnaManagerSILVA(object):
 
         return output_dir
 
-    def _progress(self, processed_items: int, total_items: int) -> str:
-        current_time = datetime.datetime.utcnow().replace(microsecond=0)
-        if processed_items > 0:
-            time_left = (current_time - self.starttime) * \
-                (total_items - processed_items) / processed_items
-
-            progress_str = ' - processed {} of {} ({:.2f}%) genomes (ETA {})'.format(
-                processed_items,
-                total_items,
-                processed_items * 100.0 / total_items,
-                time_left)
-
-            progress_str = progress_str.ljust(72)
-
-            return progress_str
-
-        return ''
-
     def generate_rna_silva(self,
                            gtdb_genome_path_file: str,
                            gtdb_domain_file: str,
@@ -211,13 +195,16 @@ class RnaManagerSILVA(object):
                 f'Identified {len(missing_domain):} genomes without a specified domain; assumed to be bacterial.')
             self.logger.warning(f'  - {",".join(missing_domain)}')
 
-        # process each genome
-        print(f'Generating metadata for {len(input_data):} genomes:')
-        parallel = Parallel(cpus=self.cpus)
-        parallel.run(self._producer,
-                     None,
-                     input_data,
-                     self._progress)
+        # process each genome. imap_unordered rather than the vendored Parallel
+        # class: a producer that raised there killed its worker silently, and the
+        # run went on to report success having processed fewer genomes than it was
+        # given. Here the exception reaches this loop and stops the command.
+        self.logger.info('Generating rRNA metadata for {:,} genomes:'.format(
+            len(input_data)))
+        with mp.Pool(processes=self.cpus) as pool:
+            for _ in tqdm(pool.imap_unordered(self._producer, input_data),
+                          total=len(input_data), ncols=100, unit='genome'):
+                pass
 
     def rna(self, genome_file: str, domain: str, output_dir: str) -> None:
         """Identify, extract, and taxonomically classify rRNA genes in genomes."""

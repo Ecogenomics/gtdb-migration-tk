@@ -26,6 +26,7 @@ from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk import config
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
+from gtdb_migration_tk.trans_table import GTranslate
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_manager import MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
@@ -171,13 +172,30 @@ class OptionsParser():
             p.run_comparison(options.ftp_dir, options.ftp_genome_dirs,
                              options.old_genome_dirs)
 
+    def run_trans_table(self, options):
+        p = GTranslate(options.cpus,
+                       options.batch_size,
+                       options.tmp_dir,
+                       options.force,
+                       options.keep_called_genes,
+                       options.prefix,
+                       options.custom_model_path,
+                       options.reclaim)
+        check_file_exists(options.gtdb_genome_path_file)
+        check_file_exists(options.taxonomy_file)
+        make_sure_path_exists(options.output_dir)
+        p.run(options.gtdb_genome_path_file, options.taxonomy_file, options.output_dir)
+
     def run_prodigal(self, options):
         p = ProdigalManager(options.tmp_dir, options.cpus)
-        p.run(options.gtdb_genome_path_file, options.all_genomes)
-
-    def run_prodigal_check(self, options):
-        p = ProdigalManager()
-        p.run_prodigal_check(options.gtdb_genome_path_file)
+        check_file_exists(options.gtdb_genome_path_file)
+        check_file_exists(options.trans_table_file)
+        if options.tt_override:
+            check_file_exists(options.tt_override)
+        p.run(options.gtdb_genome_path_file,
+              options.trans_table_file,
+              options.tt_override,
+              options.all_genomes)
 
     def marker_folder_suffix(self, options):
         """The --folder_suffix given, or the one config.py declares for --db.
@@ -416,14 +434,14 @@ class OptionsParser():
             self.parse_genome_directory(options)
         elif options.subparser_name == 'generate_ltp_db':
             self.generate_ltp_db(options)
+        elif options.subparser_name == 'trans_table':
+            self.run_trans_table(options)
         elif options.subparser_name == 'prodigal':
             self.run_prodigal(options)
         elif options.subparser_name == 'ncbi_metadata_sync':
             self.ncbi_metadata_sync(options)
         elif options.subparser_name == 'select_genomes':
             self.select_genomes(options)
-        elif options.subparser_name == 'prodigal_check':
-            self.run_prodigal_check(options)
         elif options.subparser_name == 'hmmsearch':
             self.run_hmmsearch(options)
         elif options.subparser_name == 'top_hit':

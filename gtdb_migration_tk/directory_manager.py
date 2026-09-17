@@ -62,6 +62,7 @@ from typing import List, Set, Tuple
 
 from tqdm import tqdm
 
+from gtdb_migration_tk.ncbi_utils import assembly_accession
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.ncbi_utils import read_assembly_summary
 
@@ -148,7 +149,7 @@ class DirectoryManager(object):
                 # accession and drops the assembly name, which may itself
                 # contain underscores
                 complete_name = os.path.basename(genome_dir)
-                accession = complete_name[0:complete_name.find('_', 4)]
+                accession = assembly_accession(complete_name)
                 genomes.append((accession, genome_dir))
 
         return genomes

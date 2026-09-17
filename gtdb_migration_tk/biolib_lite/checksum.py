@@ -28,6 +28,8 @@ import hashlib
 def sha256(input_file):
     """Determine SHA256 hash for file.
 
+    Note: despite the name actually uses SHA1, not SHA256.  This is to match the behavior of the original GTDB code.
+
     Parameters
     ----------
     input_file : str
@@ -51,6 +53,8 @@ def sha256(input_file):
 
 def sha256_rb(input_file):
     """Determine SHA256 hash for binary format.
+
+    Note: despite the name actually uses SHA1, not SHA256.  This is to match the behavior of the original GTDB code.
 
     Parameters
     ----------
