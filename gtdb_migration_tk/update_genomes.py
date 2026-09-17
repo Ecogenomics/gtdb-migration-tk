@@ -86,6 +86,7 @@ import hashlib
 import logging
 import collections
 import multiprocessing as mp
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, ExitStack
 from multiprocessing.queues import Queue
 from typing import Dict, Iterable, Iterator, List, Optional, TextIO, Tuple
@@ -125,6 +126,13 @@ STATUS_TO_CURATE = 'to_curate'
 # How many distinct to_curate reasons the run names in the log. A systematic failure
 # has one cause and a handful of variants; the report holds every row regardless.
 CURATE_REASONS_LOGGED = 5
+
+# How many copies are queued per thread while genomes are being added. Submitting
+# every genome at once would build one future per genome before the first copy
+# finished -- some 850 MB of them for a release of half a million genomes, which
+# is exactly the release --fresh is for -- and a few per thread is all it takes
+# for none of them to sit idle between one copy and the next.
+COPY_QUEUE_DEPTH = 4
 
 # The comparison bar carries four running counts as well as the usual rate and ETA,
 # so it is given more room than the plain bars elsewhere in this module.
@@ -494,7 +502,7 @@ class UpdateGenomes:
         dry_run : bool
             Report the changes that would be made without modifying any files.
         cpus : int
-            Number of processes used when comparing genomes.
+            Number of genomes compared, and copied, at once.
         """
 
         # resolved here, so the genome_dirs file holds absolute paths however the
@@ -690,7 +698,7 @@ class UpdateGenomes:
             ftptools.remove_genomes(removed_genomes)
 
             added_genomes = self.generate_genomes_to_add(new_genomes, old_genomes)
-            ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir)
+            ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir, self.cpus)
 
             shared_genomes = self.generate_genomes_to_compare(new_genomes, old_genomes)
             ftptools.compare_genomes(shared_genomes, old_genomes, new_genomes,
@@ -705,6 +713,10 @@ class UpdateGenomes:
         everything derived from it is to be produced again. Nothing is recorded
         as removed either, a run with no previous release behind it having
         nothing it could be dropping.
+
+        Every genome of the release is copied here, so --cpus is what says how
+        long the run takes: it is the number of genomes copied at once, and a
+        copy is round trips to the file server rather than work for a CPU.
 
         What the run writes is what a run made against a previous release writes:
         every genome has the outcome 'new' in report.log, to_review.log is
@@ -733,7 +745,7 @@ class UpdateGenomes:
             # through the one method that decides it either way keeps the line
             # logged here the line the other run logs
             added_genomes = self.generate_genomes_to_add(new_genomes, {})
-            ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir)
+            ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir, self.cpus)
 
     def log_genome_dirs(self) -> None:
         """Report the genome directory file the run wrote.
@@ -828,7 +840,8 @@ class FTPTools():
     def add_genomes(self,
                     added_genomes: Dict[str, str],
                     ftp_dir: str,
-                    new_directory: str) -> None:
+                    new_directory: str,
+                    cpus: int = 1) -> None:
         """Copy genomes new to NCBI into the new release.
 
         These genomes are on the FTP site but were not in the previous release,
@@ -836,6 +849,32 @@ class FTPTools():
         taken whole. The mirror holds only the files GTDB keeps, the sync having
         fetched nothing else, so nothing is filtered here -- as nothing is in
         compare_genome_directories, which copies a shared genome the same way.
+
+        The copies are made by cpus THREADS, where the comparison uses processes.
+        Copying a genome directory is a few dozen round trips to an NFS server
+        and no arithmetic at all, so the thread that issues one spends its time
+        waiting in a system call with the GIL released, and threads are what
+        overlap that waiting: 300 genomes that take 6.0s copied one at a time
+        take 1.0s copied eight at a time and 0.8s copied 32 at a time. Threads also keep the reports where
+        they belong -- this process holds the only handle on them and writes
+        every row itself, so there is nothing for the listener process of
+        compare_genomes to do here. An update adds a few thousand genomes and
+        would hardly notice; a --fresh run adds the entire release, and copying
+        one genome at a time is the whole of its work.
+
+        Only COPY_QUEUE_DEPTH copies per thread are queued at a time, the next
+        genome being submitted as one finishes. Submitting the lot up front is
+        one line shorter and builds a future per genome before the first copy has
+        finished, which for the release --fresh is meant for is hundreds of
+        megabytes of them.
+
+        The report row of a genome is written before its copy is attempted, as it
+        is in a run made one genome at a time: the report is the account of every
+        genome the run HANDLED. The genome_dirs row is written once the copy has
+        returned, so it names only genomes that are there. A copy that fails
+        stops the run, whatever is queued behind it dropped rather than left to
+        finish: a release quietly short of a genome is worse than one that did
+        not finish being built.
 
         Parameters
         ----------
@@ -845,15 +884,81 @@ class FTPTools():
             Base directory of the FTP mirror, replaced to form the target path.
         new_directory : str
             Base directory of the new release.
+        cpus : int
+            Number of genomes copied at once.
         """
 
-        for gid, path_record in tqdm(added_genomes.items(), desc='Adding new genomes', ncols=100):
-            target_dir = release_genome_dir(
+        targets = {}
+        for gid, path_record in added_genomes.items():
+            targets[gid] = release_genome_dir(
                 new_directory, os.path.relpath(path_record, ftp_dir), gid)
             self.report.write("{0}\tnew\n".format(gid))
-            if not self.dry_run:
-                shutil.copytree(path_record, target_dir, symlinks=True)
-                self.record_genome_dir(gid, target_dir)
+
+        if self.dry_run:
+            return
+
+        threads = max(1, cpus)
+        copying = {}
+        pbar = tqdm(total=len(added_genomes), desc='Adding new genomes', ncols=100)
+        pool = ThreadPoolExecutor(max_workers=threads)
+        try:
+            for gid, source in added_genomes.items():
+                self.record_copied(copying, targets, pbar,
+                                   threads * COPY_QUEUE_DEPTH)
+                copying[pool.submit(shutil.copytree, source, targets[gid],
+                                    symlinks=True)] = gid
+
+            # and the copies still running when the last genome was submitted
+            self.record_copied(copying, targets, pbar, 1)
+        except Exception:
+            # shutting the pool down on its own would first run every copy already
+            # queued behind the one that failed; shutdown(cancel_futures=True) would
+            # say this in one line, but it arrived in 3.9 and the package supports 3.8
+            for future in copying:
+                future.cancel()
+            raise
+        finally:
+            pool.shutdown()
+            pbar.close()
+
+    def record_copied(self,
+                      copying: Dict[Future, str],
+                      targets: Dict[str, str],
+                      pbar: tqdm,
+                      limit: int) -> None:
+        """Wait until fewer than limit copies are outstanding, recording those done.
+
+        Each copy that has finished is taken out of copying and written to the
+        genome_dirs file, so that file names a genome once its directory is
+        there. Called with the depth of the queue to make room for the next
+        genome, and with 1 to wait for the last of them.
+
+        Parameters
+        ----------
+        copying : dict
+            Future of each copy still outstanding, to the accession it copies;
+            every future that has finished is removed.
+        targets : dict
+            Accession to the directory the genome is copied to.
+        pbar : tqdm
+            Progress bar, advanced once per genome copied.
+        limit : int
+            Return once fewer than this many copies are outstanding.
+
+        Raises
+        ------
+        Exception
+            Whatever a copy raised, so that a genome that would not copy stops
+            the run rather than being missing from the release.
+        """
+
+        while len(copying) >= limit:
+            done, _ = wait(copying, return_when=FIRST_COMPLETED)
+            for future in done:
+                gid = copying.pop(future)
+                future.result()
+                self.record_genome_dir(gid, targets[gid])
+                pbar.update()
 
     def remove_genomes(self, removed_genomes: Dict[str, str]) -> None:
         """Record the genomes NCBI no longer offers.

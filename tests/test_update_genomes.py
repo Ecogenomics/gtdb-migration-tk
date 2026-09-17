@@ -23,6 +23,7 @@ import queue
 import contextlib
 
 from gtdb_migration_tk import config
+from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk import ncbi_utils as U
 from gtdb_migration_tk import update_genomes as UG
 
@@ -1129,3 +1130,73 @@ class AddingGenomes(TempDirCase):
 
         self.assertFalse(os.path.exists(os.path.join(self.dir, 'release')))
         self.assertEqual(self.report.getvalue(), '{}\tnew\n'.format(ACCESSION))
+
+    def several(self, count=8):
+        """Several genomes of the mirror, as accession to directory."""
+        genomes = {}
+        for i in range(1, count + 1):
+            accession = 'GCF_%09d.1' % i
+            reldir = os.path.join('mirror', 'all', 'GCF', '000', '%03d' % i, '000')
+            path = os.path.join(self.dir, reldir, accession + '_ASM%dv1' % i)
+            os.makedirs(path)
+            with open(os.path.join(path, 'md5checksums.txt'), 'w') as handle:
+                handle.write(accession)
+            genomes[accession] = path
+        return genomes
+
+    def test_copying_across_several_cpus_places_every_genome(self):
+        # the copies overlap, but every genome is placed and every one of them is
+        # named in the reports: a fresh release is nothing but this loop. More
+        # genomes than 2 * COPY_QUEUE_DEPTH, so they are not all submitted at once
+        # and the genomes copied last are submitted as the first of them finish
+        genomes = self.several(count=2 * UG.COPY_QUEUE_DEPTH * 3)
+        genome_dirs = io.StringIO()
+
+        UG.FTPTools(self.report, self.review, False, genome_dirs).add_genomes(
+            genomes, os.path.join(self.dir, 'mirror'),
+            os.path.join(self.dir, 'release'), cpus=2)
+
+        placed = sorted(line.split('\t')[0] for line in
+                        genome_dirs.getvalue().splitlines())
+        self.assertEqual(placed, sorted(genomes))
+        self.assertEqual(sorted(row.split('\t')[0] for row in
+                                self.report.getvalue().splitlines()),
+                         sorted(genomes))
+        for i in range(1, len(genomes) + 1):
+            self.assertTrue(os.path.isfile(os.path.join(
+                self.dir, 'release', 'refseq', 'GCF', '000', '%03d' % i, '000',
+                'GCF_%09d.1_ASM%dv1' % (i, i), 'md5checksums.txt')))
+
+    def test_the_paths_written_are_the_paths_of_their_own_genomes(self):
+        # the one way a threaded copy could go wrong quietly: a genome_dirs row
+        # pairing one accession with another genome's directory
+        genomes = self.several()
+        genome_dirs = io.StringIO()
+
+        UG.FTPTools(self.report, self.review, False, genome_dirs).add_genomes(
+            genomes, os.path.join(self.dir, 'mirror'),
+            os.path.join(self.dir, 'release'), cpus=4)
+
+        for line in genome_dirs.getvalue().splitlines():
+            gid, path, canonical = line.split('\t')
+            self.assertEqual(os.path.basename(path).split('_ASM')[0], gid)
+            self.assertEqual(canonical, canonical_gid(gid))
+            # and it is the directory of THAT genome, as the mirror held it
+            with open(os.path.join(path, 'md5checksums.txt')) as handle:
+                self.assertEqual(handle.read(), gid)
+
+    def test_a_genome_that_will_not_copy_stops_the_run(self):
+        # a release quietly short of a genome is worse than one that did not
+        # finish being built, so the copy's exception is raised
+        genomes = self.several(count=3)
+        genomes['GCF_000000009.1'] = os.path.join(self.dir, 'mirror', 'all', 'GCF',
+                                                  '000', '009', '000', 'gone')
+
+        with self.assertRaises(OSError):
+            self.tools().add_genomes(genomes, os.path.join(self.dir, 'mirror'),
+                                     os.path.join(self.dir, 'release'), cpus=4)
+
+        # the report still names every genome the run handled, the failed one included
+        self.assertEqual(sorted(row.split('\t')[0] for row in
+                                self.report.getvalue().splitlines()),
+                         sorted(genomes))

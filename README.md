@@ -231,6 +231,11 @@ to the previous release and no derived data is carried across, so everything
 derived from the genomes is to be regenerated. It reads no
 `--old_genome_dirs_file`, which is therefore required only without it.
 
+`--cpus` is the number of genomes compared, and copied, at once. Copying a genome
+is round trips to the file server rather than work for a CPU, so it is worth
+raising well past the number of cores on a mirror held over NFS; a `--fresh` run,
+which copies the whole release, is the run it matters most to.
+
 ### Gene calling and annotation
 
 | Command | Description |
