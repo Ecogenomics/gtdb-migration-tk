@@ -232,6 +232,22 @@ to the previous release and no derived data is carried across, so everything
 derived from the genomes is to be regenerated. It reads no
 `--old_genome_dirs_file`, which is therefore required only without it.
 
+`--resume` continues a run that was interrupted -- the disk filled, the job hit a
+wall clock -- by reading the `genome_dirs.tsv` it left in `--new_directory` and
+handling again only the genomes it does not name. A genome is written to that
+file once its directory is there, so the genomes the run failed on or never
+reached are exactly the ones missing from it, and the directories it was in the
+middle of writing are replaced rather than refused. The reports of the
+interrupted run are carried forward for the genomes it finished and rewritten for
+the rest, so `report.log` describes the release once through rather than the
+fragment the second run happened to do. Without `--resume` an interrupted run
+cannot simply be repeated: every genome would be copied again, and the copy of
+the first genome already in the release would fail rather than overwrite it.
+Combined with `--dry_run` it reports what is left without building any of it, and
+leaves the `genome_dirs.tsv` it read untouched. It continues a run, so it expects
+the inputs of the run it continues: a genome the mirror has stopped offering
+since keeps the directory and the report row the interrupted run gave it.
+
 `--cpus` is the number of genomes compared, and copied, at once. It defaults to
 16. Neither half of the work is bound by the CPU: copying a genome is round trips to the file server, and the comparison only
 reads a FASTA where NCBI has reissued one. Measured against a mirror on NFS, 200

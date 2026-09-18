@@ -193,12 +193,12 @@ class UpdateGenomesTests(TempDirCase):
         self.assertEqual(os.listdir(self.dir), [])
 
 
-class RunComparisonTests(TempDirCase):
-    """The whole update of a release, run dry: compared and reported, nothing copied."""
+class ReleaseFixture:
+    """A mirror and a previous release holding one genome of every outcome.
 
-    def targets(self, rows):
-        """The release directory of each genome named by a report row."""
-        return {row.split('\t')[0]: '/release/' + row.split('\t')[0] for row in rows}
+    Shared by the tests of a release built once through and of one resumed, which
+    need the same release: the second is the first run twice.
+    """
 
     def genome(self, root, assembly, fasta_md5, sequences=None):
         # the two files the comparison reads: the manifest, and the genomic FASTA
@@ -210,6 +210,43 @@ class RunComparisonTests(TempDirCase):
         with gzip.open(os.path.join(path, assembly + '_genomic.fna.gz'), 'wt') as handle:
             handle.write(fasta() if sequences is None else sequences)
         return path
+
+    def release(self):
+        """A release with one genome of every outcome, ready to be updated.
+
+        @return: (ftp root, ftp_genome_dirs file, old_genome_dirs file, output dir)
+        """
+        ftp = os.path.join(self.dir, 'mirror')
+        gtdb = os.path.join(self.dir, 'previous')
+
+        shared = self.genome(os.path.join(ftp, 'all', 'GCF', '000', '000', '001'),
+                             'GCF_000000001.1_ASM1v1', 'a' * 32)
+        shared_old = self.genome(gtdb, 'GCF_000000001.1_ASM1v1', 'a' * 32)
+        added = self.genome(os.path.join(ftp, 'all', 'GCA', '000', '000', '002'),
+                            'GCA_000000002.1_ASM2v1', 'b' * 32)
+        # its previous release directory has gone, so it cannot be compared at all
+        curate = self.genome(os.path.join(ftp, 'all', 'GCA', '000', '000', '004'),
+                             'GCA_000000004.1_ASM4v1', 'c' * 32)
+
+        old = self.write('old_dirs.tsv',
+                         'GCF_000000001.1\t{}\n'.format(shared_old) +
+                         'GCF_000000003.1\t/gone/GCF_000000003.1_ASM3v1\n'     # removed
+                         'GCA_000000004.1\t/gone/GCA_000000004.1_ASM4v1\n')    # to_curate
+        new = self.write('ftp_dirs.tsv',
+                         'GCF_000000001.1\t{}\n'.format(shared) +
+                         'GCA_000000002.1\t{}\n'.format(added) +
+                         'GCA_000000004.1\t{}\n'.format(curate))
+        out = os.path.join(self.dir, 'release')
+        os.mkdir(out)
+
+        return ftp, new, old, out
+
+class RunComparisonTests(ReleaseFixture, TempDirCase):
+    """The whole update of a release, run dry: compared and reported, nothing copied."""
+
+    def targets(self, rows):
+        """The release directory of each genome named by a report row."""
+        return {row.split('\t')[0]: '/release/' + row.split('\t')[0] for row in rows}
 
     def test_dry_run_reports_every_genome_of_both_databases(self):
         # the one run updates RefSeq and GenBank together: no genome of either is
@@ -242,36 +279,6 @@ class RunComparisonTests(TempDirCase):
                                 ['GCF_000000003.1', 'new']])
         # a dry run compares but copies nothing: only the two reports appear
         self.assertEqual(sorted(os.listdir(out)), ['report.log', 'to_review.log'])
-
-    def release(self):
-        """A release with one genome of every outcome, ready to be updated.
-
-        @return: (ftp root, ftp_genome_dirs file, old_genome_dirs file, output dir)
-        """
-        ftp = os.path.join(self.dir, 'mirror')
-        gtdb = os.path.join(self.dir, 'previous')
-
-        shared = self.genome(os.path.join(ftp, 'all', 'GCF', '000', '000', '001'),
-                             'GCF_000000001.1_ASM1v1', 'a' * 32)
-        shared_old = self.genome(gtdb, 'GCF_000000001.1_ASM1v1', 'a' * 32)
-        added = self.genome(os.path.join(ftp, 'all', 'GCA', '000', '000', '002'),
-                            'GCA_000000002.1_ASM2v1', 'b' * 32)
-        # its previous release directory has gone, so it cannot be compared at all
-        curate = self.genome(os.path.join(ftp, 'all', 'GCA', '000', '000', '004'),
-                             'GCA_000000004.1_ASM4v1', 'c' * 32)
-
-        old = self.write('old_dirs.tsv',
-                         'GCF_000000001.1\t{}\n'.format(shared_old) +
-                         'GCF_000000003.1\t/gone/GCF_000000003.1_ASM3v1\n'     # removed
-                         'GCA_000000004.1\t/gone/GCA_000000004.1_ASM4v1\n')    # to_curate
-        new = self.write('ftp_dirs.tsv',
-                         'GCF_000000001.1\t{}\n'.format(shared) +
-                         'GCA_000000002.1\t{}\n'.format(added) +
-                         'GCA_000000004.1\t{}\n'.format(curate))
-        out = os.path.join(self.dir, 'release')
-        os.mkdir(out)
-
-        return ftp, new, old, out
 
     def test_a_release_holds_refseq_and_genbank_in_their_own_trees(self):
         ftp, new, old, out = self.release()
@@ -543,6 +550,179 @@ class RunComparisonTests(TempDirCase):
 
         self.assertIn('failed=1', drawn.getvalue())
         self.assertIn('unchanged=0', drawn.getvalue())
+
+
+# ----------------------------------------------------------------- resuming a run
+
+class ResumeTests(ReleaseFixture, TempDirCase):
+    """Continuing a run that stopped part way, from the genome_dirs file it left.
+
+    The release built by these tests holds one genome of every outcome, so a run
+    of it places two genomes, reports one removed and fails to compare one. What
+    a resume must then do is settled by which of those are in the genome_dirs
+    file: the two that were placed, and neither of the others.
+    """
+
+    def interrupted(self):
+        """A release built once through, standing in for a run that was stopped.
+
+        Nothing here is interrupted for real -- a run killed mid-copy is not
+        something a test can arrange reliably -- but what a resume reads is the
+        genome_dirs file, and a complete run leaves one of exactly the same shape.
+        The tests that need a genome to be missing from it take it out.
+
+        @return: (ftp root, ftp_genome_dirs file, old_genome_dirs file, output dir)
+        """
+
+        ftp, new, old, out = self.release()
+        UG.UpdateGenomes(out).run_comparison(ftp, new, old)
+        return ftp, new, old, out
+
+    def placed(self, out):
+        """Accession to genome directory, as the run's genome_dirs file names them."""
+        with open(os.path.join(out, 'genome_dirs.tsv')) as handle:
+            return dict(line.split('\t')[:2] for line in handle)
+
+    def rows(self, out, report='report.log'):
+        with open(os.path.join(out, report)) as handle:
+            return [line.rstrip('\n').split('\t') for line in handle]
+
+    def test_without_resume_a_run_will_not_build_over_one_already_there(self):
+        # what makes the flag necessary: an interrupted run cannot simply be
+        # repeated, because the first genome of the add pass is already in place
+        ftp, new, old, out = self.interrupted()
+
+        with self.assertRaises(FileExistsError):
+            UG.UpdateGenomes(out).run_comparison(ftp, new, old)
+
+    def test_a_genome_already_in_the_release_is_not_handled_again(self):
+        # the whole point of the flag: a genome the genome_dirs file names is left
+        # exactly as it is, neither compared nor copied over
+        ftp, new, old, out = self.interrupted()
+        sentinels = []
+        for genome_dir in self.placed(out).values():
+            sentinels.append(os.path.join(genome_dir, 'untouched'))
+            open(sentinels[-1], 'w').close()
+
+        UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        for sentinel in sentinels:
+            self.assertTrue(os.path.exists(sentinel), sentinel)
+
+    def test_the_release_is_described_once_through(self):
+        # the report of a resumed run is the report of the release, not of the
+        # fragment the second run happened to do, and no genome is in it twice
+        ftp, new, old, out = self.interrupted()
+        before = self.rows(out)
+
+        UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        after = self.rows(out)
+        self.assertEqual(sorted(row[0] for row in after),
+                         sorted(row[0] for row in before))
+        self.assertEqual(len(after), len(set(row[0] for row in after)))
+
+    def test_what_was_said_about_a_genome_that_finished_is_kept(self):
+        ftp, new, old, out = self.interrupted()
+        before = self.rows(out, 'to_review.log')
+        self.assertTrue(before, 'the fixture should leave rows to review')
+
+        UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        self.assertEqual(self.rows(out, 'to_review.log'), before)
+
+    def test_a_genome_the_run_could_not_place_is_tried_again(self):
+        # it is not in the genome_dirs file, so its row is not carried: it is
+        # compared again and described by what happens to it this time
+        ftp, new, old, out = self.interrupted()
+
+        with self.assertLogs('timestamp', level='INFO') as logged:
+            UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        resuming = ' '.join(line for line in logged.output if 'Resuming:' in line)
+        self.assertIn('leaving 0 to add', resuming)
+        self.assertIn('leaving 1 to compare', resuming)
+        curate = [row for row in self.rows(out) if row[0] == 'GCA_000000004.1']
+        self.assertEqual(len(curate), 1)
+        self.assertTrue(curate[0][1].startswith('to_curate;'), curate)
+
+    def test_the_genome_dirs_file_still_names_the_whole_release(self):
+        # every later step is pointed at this file, so a resumed run must leave it
+        # naming the release rather than the part of it the second run did
+        ftp, new, old, out = self.interrupted()
+        before = self.placed(out)
+
+        UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        self.assertEqual(self.placed(out), before)
+
+    def test_a_directory_the_run_was_part_way_through_is_replaced(self):
+        # a genome being copied when the run stopped never reached the genome_dirs
+        # file, so it is placed again -- over whatever the copy had got through
+        ftp, new, old, out = self.interrupted()
+        added = self.placed(out)['GCA_000000002.1']
+        half_written = os.path.join(added, 'half_written.tmp')
+        open(half_written, 'w').close()
+        with open(os.path.join(out, 'genome_dirs.tsv')) as handle:
+            kept = [line for line in handle if not line.startswith('GCA_000000002.1\t')]
+        with open(os.path.join(out, 'genome_dirs.tsv'), 'w') as handle:
+            handle.writelines(kept)
+
+        UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        self.assertFalse(os.path.exists(half_written))
+        self.assertTrue(os.path.exists(os.path.join(added, 'md5checksums.txt')))
+        self.assertIn('GCA_000000002.1', self.placed(out))
+
+    def test_a_row_that_never_finished_being_written_is_not_trusted(self):
+        # the one thing a killed run can leave here; the genome it half-names is
+        # placed again, and named once when it has been
+        ftp, new, old, out = self.interrupted()
+        genome_dirs = os.path.join(out, 'genome_dirs.tsv')
+        with open(genome_dirs) as handle:
+            written = handle.readlines()
+        torn = written[-1].split('\t')[0]
+        with open(genome_dirs, 'w') as handle:
+            handle.writelines(written[:-1] + [written[-1].rstrip('\n')])
+
+        UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        named = [row[0] for row in self.rows(out, 'genome_dirs.tsv')]
+        self.assertIn(torn, named)
+        self.assertEqual(named.count(torn), 1)
+
+    def test_a_run_with_nothing_to_resume_from_builds_the_release_from_the_start(self):
+        ftp, new, old, out = self.release()
+
+        UG.UpdateGenomes(out, resume=True).run_comparison(ftp, new, old)
+
+        self.assertEqual(sorted(self.placed(out)),
+                         ['GCA_000000002.1', 'GCF_000000001.1'])
+
+    def test_a_dry_run_reports_what_is_left_without_disturbing_the_record(self):
+        # a dry run opens no genome_dirs file, so a resume can be sized without
+        # putting the record it would resume from at risk
+        ftp, new, old, out = self.interrupted()
+        with open(os.path.join(out, 'genome_dirs.tsv')) as handle:
+            before = handle.read()
+
+        UG.UpdateGenomes(out, dry_run=True, resume=True).run_comparison(ftp, new, old)
+
+        with open(os.path.join(out, 'genome_dirs.tsv')) as handle:
+            self.assertEqual(handle.read(), before)
+
+    def test_a_fresh_run_resumes_from_what_it_placed(self):
+        # --fresh copies the whole mirror, so it is the run with the most to lose
+        ftp, new, old, out = self.release()
+        UG.UpdateGenomes(out).run_fresh(ftp, new)
+        before = self.placed(out)
+        sentinel = os.path.join(sorted(before.values())[0], 'untouched')
+        open(sentinel, 'w').close()
+
+        UG.UpdateGenomes(out, resume=True).run_fresh(ftp, new)
+
+        self.assertTrue(os.path.exists(sentinel))
+        self.assertEqual(self.placed(out), before)
 
 
 class FreshRunTests(TempDirCase):
