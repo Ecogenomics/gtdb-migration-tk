@@ -77,6 +77,24 @@ list_genomes afterwards would only recover what this run already knew: it placed
 every directory. Only genomes whose directory was actually written are in it --
 see FTPTools.record_genome_dir() -- and a dry run, having written none, writes no
 genome_dirs.tsv either.
+
+An interrupted run is resumed with --resume, which reads that genome_dirs.tsv back
+and does again only what it does not name. The file is what makes this possible
+without a bookkeeping file of its own: a genome is written to it once its
+directory is there, so a run stopped part way -- the disk filled, the job hit a
+wall clock -- leaves behind an exact account of what survived it, and the genomes
+it failed on or never reached are simply the ones missing from it. A directory it
+was in the middle of writing is not named there either, so the genome is placed
+again over whatever was got through.
+
+What a resumed run writes is what one uninterrupted run would have written. The
+reports are rewritten rather than appended to, because the rows the earlier run
+wrote for the genomes it did NOT finish must not survive into the release's
+account of itself -- a genome that failed for want of disk is to be described by
+what happens to it this time, not by that. The rows for the genomes it did finish
+are carried across before the rest of the release is handled, so report.log
+describes every genome once through rather than the fragment the second run
+happened to do.
 """
 
 import os
@@ -89,7 +107,8 @@ import multiprocessing as mp
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, ExitStack
 from multiprocessing.queues import Queue
-from typing import Dict, Iterable, Iterator, List, Optional, TextIO, Tuple
+from typing import (Collection, Dict, Iterable, Iterator, List, Optional,
+                    TextIO, Tuple)
 
 from tqdm import tqdm
 
@@ -492,7 +511,8 @@ class UpdateGenomes:
     def __init__(self,
                  new_genome_dir: str,
                  dry_run: bool = False,
-                 cpus: int = 1) -> None:
+                 cpus: int = 1,
+                 resume: bool = False) -> None:
         """Record where the release is written and how it is to be built.
 
         Parameters
@@ -503,6 +523,9 @@ class UpdateGenomes:
             Report the changes that would be made without modifying any files.
         cpus : int
             Number of genomes compared, and copied, at once.
+        resume : bool
+            Continue an interrupted run, handling again only the genomes its
+            genome_dirs file does not name.
         """
 
         # resolved here, so the genome_dirs file holds absolute paths however the
@@ -510,6 +533,7 @@ class UpdateGenomes:
         self.new_genome_dir = os.path.abspath(new_genome_dir)
         self.dry_run = dry_run
         self.cpus = cpus
+        self.resume = resume
         self.logger = logging.getLogger('timestamp')
 
     def report_file(self) -> str:
@@ -535,6 +559,110 @@ class UpdateGenomes:
         """
 
         return os.path.join(self.new_genome_dir, 'genome_dirs.tsv')
+
+    def completed_genomes(self) -> Dict[str, str]:
+        """The genomes an interrupted run has already placed in the release.
+
+        Read from the genome_dirs file of the OUTPUT directory, which names a
+        genome only once its directory has been written -- see
+        FTPTools.record_genome_dir() -- and is therefore the account of what an
+        interrupted run left behind rather than of what it set out to do. A genome
+        it failed on, or never reached, is absent from it and so is done again.
+
+        The rows are taken as they stand rather than checked against the mirror.
+        Verifying 1.2M placed genomes costs hours of stat calls on a mirror held
+        over NFS, against seconds to read this file, and it would be answering a
+        question the file has already answered: the row exists because the copy
+        returned. Whether a tree holds what it should is ncbi_genome_sync --verify,
+        which is where that check belongs and where it is already written.
+
+        A row that never finished being written is the one thing a killed run can
+        leave behind here, and it is dropped -- the genome it half-names is then
+        placed again like any other the file does not name.
+
+        @return: accession to genome directory for the genomes already placed;
+                 empty when not resuming, or when there is no file to resume from.
+        """
+
+        if not self.resume:
+            return {}
+
+        genome_dirs_file = self.genome_dirs_file()
+        if not os.path.exists(genome_dirs_file):
+            self.logger.info(
+                'Nothing to resume from at {}: the release is built from the start.'.format(
+                    genome_dirs_file))
+            return {}
+
+        placed = {}
+        with open(genome_dirs_file) as handle:
+            for line in handle:
+                fields = line.rstrip('\n').split('\t')
+                if not line.endswith('\n') or len(fields) < 2:
+                    self.logger.warning(
+                        'Ignoring an unfinished row of {}: {!r}.'.format(
+                            genome_dirs_file, line))
+                    continue
+                placed[fields[0]] = fields[1]
+
+        self.logger.info('Resuming from {}: {:,} genomes are already in the release: {}.'.format(
+            genome_dirs_file, len(placed), count_by_database(placed)))
+
+        return placed
+
+    def carried_rows(self, report_file: str, placed: Dict[str, str]) -> List[str]:
+        """The rows of an interrupted run's report that still describe the release.
+
+        What the earlier run said about a genome it FINISHED still stands, and is
+        carried into the report the resumed run writes. What it said about one it
+        did not finish does not: that genome is handled again, and the row it gets
+        this time is the one the release is described by.
+
+        Parameters
+        ----------
+        report_file : str
+            Report of the interrupted run, read before it is opened for writing.
+        placed : dict
+            Accessions the interrupted run placed, from completed_genomes().
+
+        @return: rows to write at the head of the new report, in their original
+                 order; empty when not resuming or when there is no report to read.
+        """
+
+        if not placed or not os.path.exists(report_file):
+            return []
+
+        with open(report_file) as handle:
+            return [line for line in handle
+                    if line.endswith('\n') and line.split('\t')[0] in placed]
+
+    def skip_completed(self,
+                       genomes: Collection[str],
+                       placed: Dict[str, str],
+                       step: str) -> List[str]:
+        """The genomes of a step that an interrupted run has not already placed.
+
+        Parameters
+        ----------
+        genomes : collection
+            Accessions the step would handle were the run not being resumed.
+        placed : dict
+            Accessions the interrupted run placed, from completed_genomes().
+        step : str
+            What the step does with them, for the line logged: 'add' or 'compare'.
+
+        @return: accessions left to handle, in the order given.
+        """
+
+        remaining = [gid for gid in genomes if gid not in placed]
+        if placed:
+            self.logger.info(
+                'Resuming: {:,} of the {:,} genomes to {} are already in the release, '
+                'leaving {:,} to {}: {}.'.format(
+                    len(genomes) - len(remaining), len(genomes), step,
+                    len(remaining), step, count_by_database(remaining)))
+
+        return remaining
 
     def load_genome_dirs(self, genome_dirs_file: str) -> Dict[str, str]:
         """Read the genomes of a release from a genome directory file.
@@ -632,20 +760,38 @@ class UpdateGenomes:
         return shared_genomes
 
     @contextmanager
-    def release_reports(self) -> Iterator['FTPTools']:
+    def release_reports(self, placed: Optional[Dict[str, str]] = None) -> Iterator['FTPTools']:
         """Open the files a run writes, and hand back what writes them.
 
         The reports are opened for the duration of the run and line buffered, so
         a run that fails part way through leaves behind the account of what it
-        had done rather than an empty file.
+        had done rather than an empty file. That is what a resumed run reads, and
+        what it then writes: the rows an interrupted run left for the genomes it
+        finished are carried into the new reports here, BEFORE the files are
+        opened for writing, which truncates them.
+
+        A dry run never opens the genome_dirs file, so a resume can be run dry to
+        report what is left without putting the record it resumes from at risk.
 
         Shared by both ways of building a release -- from the previous release
         and afresh from the mirror -- because what a run writes does not depend
         on how it decided what to write: the same two reports, and the same
         genome_dirs file naming what was placed.
 
+        Parameters
+        ----------
+        placed : dict
+            Accessions an interrupted run already placed, from completed_genomes();
+            None or empty for a run that is not being resumed.
+
         @return: context manager yielding the FTPTools the run is to use.
         """
+
+        placed = placed or {}
+        # read while the files still hold the interrupted run's account of itself
+        carried = [self.carried_rows(report, placed)
+                   for report in (self.report_file(), self.review_file(),
+                                  self.genome_dirs_file())]
 
         with ExitStack() as reports:
             report = reports.enter_context(open(self.report_file(), 'w', 1))
@@ -658,7 +804,12 @@ class UpdateGenomes:
                 genome_dirs = reports.enter_context(
                     open(self.genome_dirs_file(), 'w', 1))
 
-            yield FTPTools(report, genomes_to_review, self.dry_run, genome_dirs)
+            for rows, handle in zip(carried, (report, genomes_to_review, genome_dirs)):
+                if handle is not None:
+                    handle.writelines(rows)
+
+            yield FTPTools(report, genomes_to_review, self.dry_run, genome_dirs,
+                           self.resume)
 
             # inside the stack, so the handle is still open and line buffered: every
             # row written is on disk, and reading them back is how the count is of
@@ -690,17 +841,24 @@ class UpdateGenomes:
 
         self.logger.info('Updating the GTDB genome directories from the NCBI mirror.')
 
-        with self.release_reports() as ftptools:
+        placed = self.completed_genomes()
+        with self.release_reports(placed) as ftptools:
             old_genomes = self.load_genome_dirs(old_genome_dirs)
             new_genomes = self.load_genome_dirs(ftp_genome_dirs)
 
+            # a genome that has gone from NCBI is not in the release, so it is not
+            # in what was placed and is reported again rather than carried across
             removed_genomes = self.generate_genomes_to_remove(new_genomes, old_genomes)
             ftptools.remove_genomes(removed_genomes)
 
             added_genomes = self.generate_genomes_to_add(new_genomes, old_genomes)
+            added_genomes = {gid: added_genomes[gid] for gid
+                             in self.skip_completed(added_genomes, placed, 'add')}
             ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir, self.cpus)
 
-            shared_genomes = self.generate_genomes_to_compare(new_genomes, old_genomes)
+            shared_genomes = self.skip_completed(
+                self.generate_genomes_to_compare(new_genomes, old_genomes),
+                placed, 'compare')
             ftptools.compare_genomes(shared_genomes, old_genomes, new_genomes,
                                      ftp_dir, self.new_genome_dir, self.cpus)
 
@@ -737,7 +895,8 @@ class UpdateGenomes:
             'Building the GTDB genome directories afresh from the NCBI mirror, '
             'with no comparison to a previous release.')
 
-        with self.release_reports() as ftptools:
+        placed = self.completed_genomes()
+        with self.release_reports(placed) as ftptools:
             new_genomes = self.load_genome_dirs(ftp_genome_dirs)
 
             # against an empty previous release: every genome the mirror holds is
@@ -745,6 +904,8 @@ class UpdateGenomes:
             # through the one method that decides it either way keeps the line
             # logged here the line the other run logs
             added_genomes = self.generate_genomes_to_add(new_genomes, {})
+            added_genomes = {gid: added_genomes[gid] for gid
+                             in self.skip_completed(added_genomes, placed, 'add')}
             ftptools.add_genomes(added_genomes, ftp_dir, self.new_genome_dir, self.cpus)
 
     def log_genome_dirs(self) -> None:
@@ -792,7 +953,8 @@ class FTPTools():
                  report: TextIO,
                  genomes_to_review: TextIO,
                  dry_run: bool,
-                 genome_dirs: Optional[TextIO] = None) -> None:
+                 genome_dirs: Optional[TextIO] = None,
+                 resume: bool = False) -> None:
         """Record the files to be written.
 
         Parameters
@@ -806,12 +968,16 @@ class FTPTools():
         genome_dirs : file
             Open genome directory file describing the new release, or None to
             write none, as a dry run does.
+        resume : bool
+            Continue an interrupted run, whose part-written genome directories
+            are to be replaced rather than refused.
         """
 
         self.report = report
         self.genomes_to_review = genomes_to_review
         self.dry_run = dry_run
         self.genome_dirs = genome_dirs
+        self.resume = resume
         self.logger = logging.getLogger('timestamp')
 
     def record_genome_dir(self, gid: str, genome_dir: str) -> None:
@@ -836,6 +1002,33 @@ class FTPTools():
 
         if self.genome_dirs is not None:
             self.genome_dirs.write(genome_dirs_row(gid, genome_dir))
+
+    def copy_genome(self, source: str, target: str) -> None:
+        """Copy a genome's directory out of the mirror and into the release.
+
+        copytree refuses a directory that is already there, which is the right
+        answer for a run that is not being resumed: a release being written over
+        the top of another is a mistake, and one caught before it has taken the
+        wrong genome's files for its own. A RESUMED run meets that directory
+        legitimately -- the genomes the interrupted run was copying when it
+        stopped are not in its genome_dirs file, so they are placed again, and
+        what is on disk is however far each copy had got. So the directory is
+        removed first rather than the refusal being turned off, which would leave
+        a half-copied genome with the files the new copy does not overwrite.
+
+        Parameters
+        ----------
+        source : str
+            Genome directory on the NCBI FTP mirror.
+        target : str
+            Genome directory to write for the new release.
+
+        @return: None
+        """
+
+        if self.resume and os.path.exists(target):
+            shutil.rmtree(target)
+        shutil.copytree(source, target, symlinks=True)
 
     def add_genomes(self,
                     added_genomes: Dict[str, str],
@@ -907,8 +1100,7 @@ class FTPTools():
             for gid, source in added_genomes.items():
                 self.record_copied(copying, targets, pbar,
                                    threads * COPY_QUEUE_DEPTH)
-                copying[pool.submit(shutil.copytree, source, targets[gid],
-                                    symlinks=True)] = gid
+                copying[pool.submit(self.copy_genome, source, targets[gid])] = gid
 
             # and the copies still running when the last genome was submitted
             self.record_copied(copying, targets, pbar, 1)

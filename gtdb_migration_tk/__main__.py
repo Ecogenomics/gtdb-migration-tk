@@ -454,6 +454,19 @@ def __fresh(group):
                             'regenerated. --old_genome_dirs_file is not read.')
 
 
+def __resume(group):
+    group.add_argument('--resume', action='store_true',
+                       help='Continue a run that was interrupted, reading the '
+                            'genome_dirs.tsv it left in --new_directory and handling '
+                            'again only the genomes it does not name. A genome is '
+                            'written to that file once its directory is there, so the '
+                            'genomes the run failed on or never reached are the ones '
+                            'missing from it. The reports of the interrupted run are '
+                            'carried forward for the genomes it finished, so the '
+                            'release ends up described once through. Combine with '
+                            '--dry_run to report what is left without building it.')
+
+
 def __only_ncbi(group):
     group.add_argument('--only_ncbi', help='Only process NCBI genomes.',
                        action='store_true')
@@ -1033,6 +1046,7 @@ def get_main_parser():
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
             __fresh(grp)
+            __resume(grp)
             __dry_run(grp)
             # neither half of the work is bound by the CPU: copying a genome is
             # round trips to the file server, and a FASTA is read only where NCBI

@@ -163,7 +163,8 @@ class OptionsParser():
         make_sure_path_exists(options.output_dir)
 
         # RefSeq and GenBank in one pass, with one pair of reports for the release
-        p = UpdateGenomes(options.output_dir, options.dry_run, options.cpus)
+        p = UpdateGenomes(options.output_dir, options.dry_run, options.cpus,
+                          options.resume)
 
         if options.fresh:
             # the mirror is the release: nothing compared, nothing inherited
