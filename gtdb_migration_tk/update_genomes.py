@@ -116,7 +116,7 @@ from gtdb_migration_tk import config
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.ncbi_utils import (GENOMIC_FASTA_EXT, MD5_MANIFEST,
                                           NCBI_DATABASES, NCBIDatabase,
-                                          read_md5_manifest)
+                                          file_md5, read_md5_manifest)
 from gtdb_migration_tk.utils.common import count_lines
 
 
@@ -1489,6 +1489,17 @@ class FTPTools():
         the sequences themselves differ is the derived data left behind, to be
         regenerated.
 
+        The previous release's MD5 is not always there to be read. NCBI has served
+        a md5checksums.txt naming files of its own that have nothing to do with
+        the genome, and a release built while it did carries that manifest still.
+        previous_genomic_fasta_md5() hashes the FASTA itself in that case, which
+        is what the manifest was standing in for, so a genome is not recomputed
+        over a file NCBI has since corrected. Only if the previous release cannot
+        produce a readable FASTA either is the genome built from the mirror alone,
+        as a new genome is. Both are noted in the review report: the previous
+        release holds something that wants looking at, whichever way the genome
+        went.
+
         A derived directory the previous release lacks is not an error, as a
         genome may not have had every step run on it; it is noted in the review
         report so that the step can be run this time.
@@ -1512,7 +1523,7 @@ class FTPTools():
         """
 
         ftp_md5 = self.genomic_fasta_md5(ftp_dir)
-        prev_md5 = self.genomic_fasta_md5(prev_gtdb_dir)
+        prev_md5 = self.previous_genomic_fasta_md5(prev_gtdb_dir, genome_record)
 
         if not self.dry_run:
             # a rerun must not inherit derived data from a run made before the
@@ -1520,6 +1531,13 @@ class FTPTools():
             if os.path.exists(target_dir):
                 shutil.rmtree(target_dir)
             shutil.copytree(ftp_dir, target_dir, symlinks=True)
+
+        if prev_md5 is None:
+            # nothing the previous release holds can be shown to be this genome, so
+            # there is nothing to carry across: it is built from the mirror alone,
+            # exactly as a genome new to NCBI is, and reported as changed because
+            # that is what the release does with it
+            return '{}\t{}\n'.format(genome_record, STATUS_FASTA_CHANGED)
 
         if ftp_md5 != prev_md5:
             # the published MD5s disagree, which is not yet a reason to throw the
@@ -1548,12 +1566,67 @@ class FTPTools():
 
         return '{}\t{}\n'.format(genome_record, status)
 
+    def previous_genomic_fasta_md5(self,
+                                   prev_gtdb_dir: str,
+                                   genome_record: str) -> Optional[str]:
+        """The MD5 of the previous release's genomic FASTA, hashed if the manifest cannot say.
+
+        The manifest is asked first, as it is for the mirror, because reading it
+        costs nothing. What it cannot answer is asked of the file: NCBI has
+        published a md5checksums.txt listing its own scratch files and no genome
+        file at all, and a release built while that was being served holds it to
+        this day. The genome is not in doubt -- the FASTA is there and the mirror
+        publishes an MD5 for it -- only the previous release's record of it, so
+        the record is recomputed rather than the genome abandoned. Eight genomes
+        of release 232 are in exactly that state.
+
+        A previous release directory that is not there at all is a different
+        thing: not one genome's bad manifest but an --old_genome_dirs_file naming
+        a tree that has moved, which every genome of the run is about to hit. It
+        is left to fail so that the run says so once, rather than quietly
+        rebuilding the whole release as though nothing had come before.
+
+        Parameters
+        ----------
+        prev_gtdb_dir : str
+            Genome directory in the previous GTDB release.
+        genome_record : str
+            Accession of the genome, for the review report.
+
+        @return: hex MD5 of the previous release's genomic FASTA, or None if the
+            previous release cannot describe the genome at all.
+        """
+
+        try:
+            return self.genomic_fasta_md5(prev_gtdb_dir)
+        except (ValueError, OSError) as manifest_error:
+            if not os.path.isdir(prev_gtdb_dir):
+                raise
+
+            try:
+                checksum = file_md5(genomic_fasta(prev_gtdb_dir))
+            except OSError as fasta_error:
+                self.genomes_to_review.write(
+                    '{}\ttreated as new: the previous release can neither name nor hold '
+                    'its genomic FASTA ({}; {})\n'.format(
+                        genome_record, tsv_safe(manifest_error), tsv_safe(fasta_error)))
+                return None
+
+            self.genomes_to_review.write(
+                '{}\tgenomic FASTA of the previous release hashed, its manifest being '
+                'unusable ({})\n'.format(genome_record, tsv_safe(manifest_error)))
+            return checksum
+
     def genomic_fasta_md5(self, genome_dir: str) -> str:
         """Read the MD5 NCBI publishes for the genomic FASTA of a genome.
 
         The entry wanted is the file genomic_fasta() names, looked up by name
         rather than searched for. The manifest is read by
         ncbi_utils.read_md5_manifest(), as the sync reads it to mirror and verify.
+        A manifest that cannot name the FASTA is an error here; what the previous
+        release does about it is previous_genomic_fasta_md5()'s to decide, and the
+        mirror's manifest not naming it is left to fail, being a genome the sync
+        has something to answer for.
 
         Parameters
         ----------

@@ -1171,6 +1171,110 @@ class ComparisonOutcome(TempDirCase):
         self.assertFalse(os.path.exists(os.path.join(self.target(), 'prodigal')))
 
 
+class AnUnusableManifestInThePreviousRelease(TempDirCase):
+    """NCBI has served a md5checksums.txt that names none of the genome's files.
+
+    A release built while it was being served holds that manifest still -- eight
+    genomes of release 232 do -- and the FASTA beside it is intact and identical
+    to the mirror's. The genome has not changed, so its derived data must not be
+    thrown away over a manifest NCBI has since corrected.
+    """
+
+    def break_manifest(self, genome_dir):
+        """The manifest release 232 holds for those genomes: NCBI's own scratch files."""
+        with open(os.path.join(genome_dir, U.MD5_MANIFEST), 'w') as handle:
+            handle.write('{}  ./fix_md5sum.sh\n'.format(MD5_R))
+
+    def mirror_of(self, prev, name='mirror'):
+        """A mirror directory holding the same FASTA byte for byte, manifest and all."""
+        path = os.path.join(self.dir, name, ASSEMBLY)
+        os.makedirs(path)
+        shutil.copy(os.path.join(prev, FASTA), os.path.join(path, FASTA))
+        with open(os.path.join(path, REPORT), 'w') as handle:
+            handle.write('report')
+        with open(os.path.join(path, U.MD5_MANIFEST), 'w') as handle:
+            handle.write(manifest(U.file_md5(os.path.join(path, FASTA))))
+        return path
+
+    def test_the_fasta_is_hashed_and_the_derived_data_kept(self):
+        prev = self.genome_dir('previous', MD5_A, derived=config.GTDB_DERIVED_DIRS_TO_COPY)
+        self.break_manifest(prev)
+        ftp = self.mirror_of(prev)
+
+        row = self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
+
+        self.assertEqual(self.status(row), UG.STATUS_FASTA_UNCHANGED)
+        for derived in config.GTDB_DERIVED_DIRS_TO_COPY:
+            self.assertTrue(os.path.isdir(os.path.join(self.target(), derived)), derived)
+
+    def test_hashing_the_fasta_is_noted_for_review(self):
+        # the previous release holds something that wants correcting, whatever the
+        # comparison made of it
+        prev = self.genome_dir('previous', MD5_A, derived=config.GTDB_DERIVED_DIRS_TO_COPY)
+        self.break_manifest(prev)
+        ftp = self.mirror_of(prev)
+
+        self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
+
+        review = self.review.getvalue()
+        self.assertIn(ACCESSION, review)
+        self.assertIn(U.MD5_MANIFEST, review)
+
+    def test_a_changed_genome_is_still_seen_as_changed(self):
+        # the fallback says what the previous release held, not that it is unchanged
+        prev = self.genome_dir('previous', MD5_A, derived=config.GTDB_DERIVED_DIRS_TO_COPY)
+        self.break_manifest(prev)
+        ftp = self.genome_dir('mirror', MD5_B, sequences=fasta('TTTTTTTTTT'))
+
+        row = self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
+
+        self.assertEqual(self.status(row), UG.STATUS_FASTA_CHANGED)
+        self.assertFalse(os.path.exists(os.path.join(self.target(), 'prodigal')))
+
+    def test_a_previous_release_with_no_manifest_at_all_is_hashed_too(self):
+        prev = self.genome_dir('previous', MD5_A, derived=config.GTDB_DERIVED_DIRS_TO_COPY)
+        os.remove(os.path.join(prev, U.MD5_MANIFEST))
+        ftp = self.mirror_of(prev)
+
+        row = self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
+
+        self.assertEqual(self.status(row), UG.STATUS_FASTA_UNCHANGED)
+        self.assertTrue(os.path.isdir(os.path.join(self.target(), 'prodigal')))
+
+    def test_a_previous_release_without_a_readable_fasta_is_treated_as_new(self):
+        # nothing there can be shown to be this genome, so nothing comes across
+        prev = self.genome_dir('previous', MD5_A, derived=config.GTDB_DERIVED_DIRS_TO_COPY)
+        self.break_manifest(prev)
+        os.remove(os.path.join(prev, FASTA))
+        ftp = self.genome_dir('mirror', MD5_A)
+
+        row = self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
+
+        self.assertEqual(self.status(row), UG.STATUS_FASTA_CHANGED)
+        self.assertEqual(sorted(os.listdir(self.target())),
+                         sorted([FASTA, REPORT, U.MD5_MANIFEST]))
+        self.assertIn('treated as new', self.review.getvalue())
+
+    def test_a_previous_release_directory_that_is_gone_is_still_a_failure(self):
+        # a whole tree that has moved is not one genome's bad manifest: it must not
+        # pass for a release in which everything is new
+        ftp = self.genome_dir('mirror', MD5_A)
+
+        with self.assertRaises(OSError):
+            self.tools().compare_genome_directories(
+                os.path.join(self.dir, 'gone', ASSEMBLY), ftp, self.target(), ACCESSION)
+
+    def test_the_mirrors_own_manifest_is_never_hashed_around(self):
+        # the mirror not naming its FASTA is the sync's to answer for, and stays a
+        # failure the report calls out for curation
+        prev = self.genome_dir('previous', MD5_A)
+        ftp = self.genome_dir('mirror', MD5_A)
+        self.break_manifest(ftp)
+
+        with self.assertRaises(ValueError):
+            self.tools().compare_genome_directories(prev, ftp, self.target(), ACCESSION)
+
+
 class DryRun(TempDirCase):
     def test_dry_run_reports_the_real_outcome_but_copies_nothing(self):
         # the report of a dry run must be the report the real run would write
