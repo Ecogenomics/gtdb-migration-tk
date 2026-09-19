@@ -16,6 +16,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from gtdb_migration_tk import trans_table as G
 
@@ -82,34 +83,144 @@ class ReadGenomeDirsTests(TempDirCase):
 
 # ------------------------------------------------------------- what is asked about
 
-class BatchfileRowsTests(TempDirCase):
-    """A genome with no FASTA must be named here, not fail mid-run."""
+class SplitByFastaTests(TempDirCase):
+    """gTranslate refuses a whole batch over one missing path, so one is left out here."""
 
-    def test_genome_with_a_fasta_is_included(self):
-        path = self.genome_dir('GCF_000001405.39_GRCh38.p13')
-        rows, missing = G.batchfile_rows([('GCF_000001405.39', path)])
+    def rows(self, *genomes):
+        """(FASTA path, accession) as a batchfile names them."""
+        return [(G.genomic_fasta(path), accession) for accession, path in genomes]
+
+    def test_genome_with_a_fasta_is_kept(self):
+        rows = self.rows(('GCF_000001405.39',
+                          self.genome_dir('GCF_000001405.39_GRCh38.p13')))
+        present, missing = G.split_by_fasta(rows)
         self.assertEqual(missing, [])
-        self.assertEqual(rows[0][1], 'GCF_000001405.39')
-        self.assertTrue(rows[0][0].endswith('_genomic.fna.gz'))
+        self.assertEqual(present, rows)
 
     def test_genome_without_a_fasta_is_left_out_and_named(self):
-        path = self.genome_dir('GCA_1.1_ASM1', fasta=False)
-        rows, missing = G.batchfile_rows([('GCA_1.1', path)])
-        self.assertEqual(rows, [])
+        rows = self.rows(('GCA_1.1', self.genome_dir('GCA_1.1_ASM1', fasta=False)))
+        present, missing = G.split_by_fasta(rows)
+        self.assertEqual(present, [])
         self.assertEqual(missing, ['GCA_1.1'])
 
     def test_empty_fasta_is_left_out(self):
-        path = self.genome_dir('GCA_2.1_ASM2', empty=True)
-        rows, missing = G.batchfile_rows([('GCA_2.1', path)])
-        self.assertEqual(rows, [])
+        rows = self.rows(('GCA_2.1', self.genome_dir('GCA_2.1_ASM2', empty=True)))
+        present, missing = G.split_by_fasta(rows)
+        self.assertEqual(present, [])
         self.assertEqual(missing, ['GCA_2.1'])
 
-    def test_the_rest_of_the_release_survives_one_missing_genome(self):
-        good = self.genome_dir('GCF_1.1_ASM1')
-        bad = self.genome_dir('GCA_2.1_ASM2', fasta=False)
-        rows, missing = G.batchfile_rows([('GCF_1.1', good), ('GCA_2.1', bad)])
-        self.assertEqual(len(rows), 1)
+    def test_the_rest_of_the_batch_survives_one_missing_genome(self):
+        rows = self.rows(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')),
+                         ('GCA_2.1', self.genome_dir('GCA_2.1_ASM2', fasta=False)))
+        present, missing = G.split_by_fasta(rows)
+        self.assertEqual(len(present), 1)
         self.assertEqual(missing, ['GCA_2.1'])
+
+    def test_the_order_given_is_the_order_returned_whatever_the_thread_count(self):
+        # it is the order gTranslate is handed the genomes in, and the answer must
+        # not depend on how the pool happened to be scheduled
+        genomes = []
+        for i in range(1, 60):
+            # every third genome has no FASTA, so both lists are interleaved
+            genomes.append(('GCF_%09d.1' % i,
+                            self.genome_dir('GCF_%09d.1_ASM%dv1' % (i, i),
+                                            fasta=bool(i % 3))))
+        rows = self.rows(*genomes)
+
+        serial = G.split_by_fasta(rows, threads=1)
+        parallel = G.split_by_fasta(rows, threads=16)
+
+        self.assertEqual(serial, parallel)
+        self.assertEqual([accession for _, accession in serial[0]],
+                         [accession for accession, _ in genomes
+                          if int(accession.split('_')[1].split('.')[0]) % 3])
+        self.assertEqual(len(serial[1]), 19)
+
+    def test_more_genomes_than_one_chunk_are_all_answered(self):
+        # the pool is fed a chunk at a time, and a genome must not be lost at the seam
+        rows = self.rows(*[('GCF_%09d.1' % i,
+                            self.genome_dir('GCF_%09d.1_ASM%dv1' % (i, i)))
+                           for i in range(1, 12)])
+
+        with mock.patch.object(G, 'STAT_CHUNK', 4):
+            present, missing = G.split_by_fasta(rows, threads=3)
+
+        self.assertEqual(missing, [])
+        self.assertEqual(present, rows)
+
+
+class CheckBatchFastasTests(TempDirCase):
+    """The check belongs to the batch that is about to run, not to the plan."""
+
+    def batch(self, *genomes):
+        """A batch directory holding the batchfile the plan would have cut."""
+        batch_dir = os.path.join(self.dir, 'batch_000001')
+        os.makedirs(batch_dir)
+        G.write_batchfile([(G.genomic_fasta(path), accession)
+                           for accession, path in genomes],
+                          os.path.join(batch_dir, G.BATCHFILE_NAME))
+        return batch_dir
+
+    def test_a_whole_batch_is_handed_over_as_it_stands(self):
+        # nothing is written where nothing is wrong, and gTranslate reads the
+        # batchfile the plan cut
+        batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')),
+                               ('GCF_2.1', self.genome_dir('GCF_2.1_ASM2')))
+
+        batchfile, present, missing = G.check_batch_fastas(batch_dir)
+
+        self.assertEqual(batchfile, os.path.join(batch_dir, G.BATCHFILE_NAME))
+        self.assertEqual(len(present), 2)
+        self.assertEqual(missing, [])
+        self.assertEqual(os.listdir(batch_dir), [G.BATCHFILE_NAME])
+
+    def test_a_missing_genome_is_left_out_of_what_gtranslate_is_handed(self):
+        batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')),
+                               ('GCA_2.1', self.genome_dir('GCA_2.1_ASM2', fasta=False)),
+                               ('GCF_3.1', self.genome_dir('GCF_3.1_ASM3')))
+
+        batchfile, present, missing = G.check_batch_fastas(batch_dir)
+
+        self.assertEqual(batchfile,
+                         os.path.join(batch_dir, G.PRESENT_BATCHFILE_NAME))
+        self.assertEqual([accession for _, accession in G.read_batchfile(batchfile)],
+                         ['GCF_1.1', 'GCF_3.1'])
+        self.assertEqual(missing, ['GCA_2.1'])
+
+    def test_the_genome_left_out_is_named_in_the_batch_directory(self):
+        batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')),
+                               ('GCA_2.1', self.genome_dir('GCA_2.1_ASM2', fasta=False)))
+
+        G.check_batch_fastas(batch_dir)
+
+        with open(os.path.join(batch_dir, G.MISSING_NAME)) as handle:
+            self.assertEqual(handle.read().split(), ['GCA_2.1'])
+
+    def test_the_batchfile_the_plan_cut_is_left_as_the_record_of_the_batch(self):
+        # the comparison reads it to know which genomes the batch was, and a
+        # filtered copy must not become that record
+        batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')),
+                               ('GCA_2.1', self.genome_dir('GCA_2.1_ASM2', fasta=False)))
+
+        G.check_batch_fastas(batch_dir)
+
+        self.assertEqual([accession for _, accession in G.read_batchfile(
+            os.path.join(batch_dir, G.BATCHFILE_NAME))], ['GCF_1.1', 'GCA_2.1'])
+
+
+class FastaSizeTests(TempDirCase):
+    """One stat, where two calls asked the file server the same question twice."""
+
+    def test_the_size_of_a_fasta_is_returned(self):
+        path = G.genomic_fasta(self.genome_dir('GCF_1.1_ASM1'))
+        self.assertEqual(G.fasta_size(path), os.path.getsize(path))
+
+    def test_a_file_that_is_not_there_has_no_size_rather_than_raising(self):
+        self.assertEqual(G.fasta_size(os.path.join(self.dir, 'no_such.fna.gz')), 0)
+
+    def test_an_empty_fasta_has_no_size(self):
+        path = G.genomic_fasta(self.genome_dir('GCA_2.1_ASM2', empty=True))
+        self.assertEqual(G.fasta_size(path), 0)
 
 
 class WriteBatchfileTests(TempDirCase):
@@ -223,6 +334,35 @@ class PlanBatchesTests(TempDirCase):
         batches = G.create_batches(self.rows('GCF_1.1'), 10, self.dir)
         self.assertEqual(G.read_batchfile(os.path.join(batches[0], G.BATCHFILE_NAME)),
                          self.rows('GCF_1.1'))
+
+    def test_the_plan_is_cut_from_the_genome_dirs_file_without_touching_a_genome(self):
+        # the plan must be written at once rather than after hours of stat calls
+        # over NFS, so a genome whose FASTA is not there is still planned; whether
+        # the file exists is the running batch's question, not the plan's
+        out_dir = os.path.join(self.dir, 'out')
+        os.makedirs(out_dir)
+        genome_dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        with open(genome_dirs, 'w') as handle:
+            handle.write('GCF_2.1\t{}\tG2\n'.format(
+                self.genome_dir('GCF_2.1_ASM2', fasta=False)))
+            handle.write('GCF_1.1\t/gone/GCF_1.1_ASM1\tG1\n')
+
+        with mock.patch.object(G, 'check_dependencies', lambda *a, **k: True):
+            batches = G.GTranslate(batch_size=10).plan_batches(genome_dirs, out_dir)
+
+        # sorted by accession, and both of them there
+        self.assertEqual([accession for _, accession in G.read_batchfile(
+            os.path.join(batches[0], G.BATCHFILE_NAME))], ['GCF_1.1', 'GCF_2.1'])
+
+    def test_a_genome_dirs_file_naming_nothing_is_an_error(self):
+        out_dir = os.path.join(self.dir, 'out')
+        os.makedirs(out_dir)
+        empty = os.path.join(self.dir, 'empty.tsv')
+        open(empty, 'w').close()
+
+        with mock.patch.object(G, 'check_dependencies', lambda *a, **k: True):
+            with self.assertRaises(RuntimeError):
+                G.GTranslate().plan_batches(empty, out_dir)
 
 
 # ------------------------------------------------------------- the canaries
