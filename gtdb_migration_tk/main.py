@@ -181,7 +181,8 @@ class OptionsParser():
                        options.keep_called_genes,
                        options.prefix,
                        options.custom_model_path,
-                       options.reclaim)
+                       options.reclaim,
+                       options.lease * 60 * 60)
         check_file_exists(options.gtdb_genome_path_file)
         check_file_exists(options.taxonomy_file)
         make_sure_path_exists(options.output_dir)

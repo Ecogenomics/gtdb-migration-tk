@@ -291,8 +291,13 @@ it on a file server shared with other work.
   batch_000001/
     gtranslate_batchfile.tsv            the genomes of this batch
     RUNNING                             a machine is working on it (host, PID, time)
+    PREDICTED                           gTranslate has run; its results are final
     SUCCESS                             it finished; its results are complete
-    FAILED                              it was attempted and gTranslate returned non-zero
+    FAILED                              it was attempted and something went wrong
+    FAILED.20260919T140328              what an earlier attempt said, kept
+    trans_table.log                     what this command did to this batch
+    gtranslate.log                      what gTranslate did to it
+    no_prediction.tsv                   genomes gTranslate returned nothing for
     gtranslate.translation_table_summary.tsv
     ncbi_tt_comparison.tsv              this batch, compared against NCBI
   batch_000002/
@@ -304,9 +309,38 @@ A batch is the unit of restart and of sharing. Several machines may be given the
 same `--out_dir` and will divide the release between them, each claiming batches
 no other machine holds; a machine lost mid-batch costs that batch rather than the
 run. Rerunning the command skips the batches that succeeded and retries those
-that failed. A `RUNNING` claim this host left behind in a process that no longer
-exists is reclaimed automatically; one from another host is left alone and
-reported, and taken only with `--reclaim`.
+that failed.
+
+**A claim is a lease.** The machine holding a batch touches its `RUNNING` file
+every five minutes, and a claim untouched for `--lease` hours (2 by default) is
+taken by whichever machine next comes to the batch, whatever host made it. A
+claim of this host's whose process has gone is taken at once. `--reclaim` takes a
+claim before its lease is up, which is only ever right when the machine holding
+it is known to have stopped. The lease is measured against the file server's
+clock, so the machines sharing an `--out_dir` need not agree about the time.
+
+**Hours are not redone.** `PREDICTED` is written the moment gTranslate returns,
+so a batch taken over between the prediction and the comparison is compared
+rather than predicted again. Within a batch gTranslate resumes by itself, keeping
+each genome's called genes with a checksum beside them and skipping a genome
+whose files verify, so a batch interrupted at genome 7,000 of 10,000 carries on
+from there. Nothing removes a batch directory before retrying it, for that
+reason.
+
+**One bad genome does not cost a batch.** gTranslate ends a run when a worker
+dies, and a genome it cannot process -- a few hundred bases with no genes to
+count codons in, an assembly Prodigal refuses for its runs of N -- would take the
+other 9,999 with it on every retry. It is therefore given `--force`, which drops
+such a genome and carries on; the accessions dropped are written to
+`no_prediction.tsv` in the batch directory and warned about, since `prodigal`
+needs a table for every genome of the release. `--no_force` restores the older
+behaviour of stopping the batch.
+
+**Each machine writes its own log.** Several machines appending to one `--log`
+over NFS overwrite one another and leave the file full of holes, so pass a
+different `-l` per machine. What happens to a batch is written to
+`trans_table.log` in the batch's own directory as well, which no other machine
+writes to.
 
 The batches are settled before any of them is processed, from the genomes sorted
 by accession, so which genomes are in batch N follows from the set of genomes and
