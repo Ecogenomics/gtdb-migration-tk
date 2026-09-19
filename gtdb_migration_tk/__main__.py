@@ -568,13 +568,22 @@ def __batch_size(group, default=10000):
 
 def __reclaim(group):
     group.add_argument('--reclaim', action='store_true',
-                       help='Take over batches another machine claimed and did not finish. '
-                            'A claim this host left behind is reclaimed without it.')
+                       help='Take over a batch another machine holds before its claim has '
+                            'expired. A claim untouched for --lease hours, and one this host '
+                            'left behind in a process that has gone, are taken without it.')
 
 
-def __gtranslate_force(group):
-    group.add_argument('--force', action='store_true',
-                       help='Continue when a single genome fails rather than stopping the run.')
+def __lease(group, default=2.0):
+    group.add_argument('--lease', type=float, default=default,
+                       help='Hours a claim on a batch survives without the machine holding '
+                            'it saying so, after which another machine may take the batch.')
+
+
+def __gtranslate_no_force(group):
+    group.add_argument('--no_force', dest='force', action='store_false',
+                       help='Stop a batch when a single genome fails. gTranslate is given '
+                            '--force otherwise, a genome it cannot process being named in '
+                            'no_prediction.tsv rather than costing the whole batch.')
 
 
 def __keep_called_genes(group):
@@ -753,7 +762,8 @@ def get_main_parser():
             __cpus(grp)
             __batch_size(grp)
             __reclaim(grp)
-            __gtranslate_force(grp)
+            __lease(grp)
+            __gtranslate_no_force(grp)
             __keep_called_genes(grp)
             __gtranslate_prefix(grp)
             __custom_model_path(grp)

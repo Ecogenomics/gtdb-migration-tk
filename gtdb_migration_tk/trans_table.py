@@ -54,20 +54,64 @@ CANARIES
 A batch directory carries its state in files, because a file is what two machines
 can both see and what survives the process that wrote it:
 
-    RUNNING   a machine is working on this batch, and names itself, its PID and
-              when it started
-    SUCCESS   the batch finished and its results are complete
-    FAILED    the batch was attempted and gTranslate returned non-zero
+    RUNNING    a machine is working on this batch, and names itself, its PID
+               and when it started
+    PREDICTED  gTranslate has run over this batch and its predictions are final
+    SUCCESS    the batch finished and its results are complete
+    FAILED     the batch was attempted and something went wrong
 
 RUNNING is created by linking a uniquely named file to it, not by opening it with
 O_EXCL: the release lives on NFS, where link() is the operation that is atomic
 across machines. A batch already claimed is left to the machine that claimed it,
-and reported at the end rather than waited for. The exception is a claim this host
-made in a process that no longer exists, which is what a machine reset leaves
-behind and is reclaimed automatically; a claim from another host cannot be
-checked from here and is taken only when --reclaim says to take it. A batch that
-FAILED is retried by the next run without a flag, the machine that failed it
-having cleared its own claim.
+and reported at the end rather than waited for. A batch that FAILED is retried by
+the next run without a flag, the machine that failed it having cleared its own
+claim; what it wrote is kept as FAILED.<timestamp> rather than deleted, so the
+retry does not erase the record of why the batch failed in the first place.
+
+THE CLAIM IS A LEASE
+The machine holding a batch touches its RUNNING file every HEARTBEAT_SECONDS
+while it works, and a claim that has not been touched for CLAIM_LEASE_SECONDS is
+taken by whichever machine next comes to the batch. A claim of this host's whose
+PID has gone is still taken at once, that being certain rather than inferred, but
+it is no longer the only way a batch is freed: PIDs are reused, so after a reset
+the PID a claim names is as likely to belong to something else as to be missing,
+and a batch would then be skipped as busy by every machine forever. The lease
+also frees a batch held by a machine that is running but wedged -- a process hung
+on a dead NFS mount cannot touch its own claim any more than a dead one can,
+which is the case a liveness check by PID reads exactly backwards.
+
+The age of a claim is measured against the FILE SERVER's clock and not against
+this machine's: the lease is compared with the time a file created in the same
+directory is given, so nothing depends on two machines agreeing about the time.
+--reclaim remains, for taking a claim before its lease is up.
+
+WHAT IS DONE IS NOT DONE AGAIN
+gTranslate is the hours of a batch; the comparison that follows is seconds. So
+the prediction step records PREDICTED the moment gTranslate returns 0, and a
+batch reclaimed after that compares what is already there rather than predicting
+it again. Within a batch gTranslate resumes by itself: it writes each genome's
+called genes with a checksum beside them and skips a genome whose files verify,
+and it clears those intermediates only when it exits cleanly, so a batch
+interrupted at genome 7,000 of 10,000 carries on from genome 7,000. Nothing here
+removes a batch directory before retrying it, for that reason.
+
+A GENOME THAT CANNOT BE PREDICTED IS NOT A REASON TO LOSE THE BATCH
+gTranslate calls genes in worker processes and ends the whole run when one of
+them dies, so a single genome it cannot handle -- a 255 bp fragment with no genes
+to count codons in, an assembly Prodigal refuses for its runs of N -- takes the
+other 9,999 with it, and takes them again on every retry. --force, which gTranslate
+answers by dropping such a genome and carrying on, is therefore passed unless
+--no_force says not to. What it drops is what a batch cannot say anything about,
+so the accessions gTranslate returned no prediction for are written to the batch
+directory as no_prediction.tsv rather than being left to be discovered by prodigal
+refusing the release.
+
+THE LOG OF A BATCH IS KEPT WITH THE BATCH
+Every machine writes what it does to its own --log, and several machines sharing
+one log file over NFS do not append to it, they overwrite one another and leave
+the file full of holes. So what happens to a batch is also written to
+trans_table.log in the batch's own directory, which no other machine writes to:
+whatever became of the run that started a batch, the batch says.
 
 THE COMPARISON
 gTranslate predicts a table; NCBI declares one in the GFF it serves for a genome
@@ -84,6 +128,7 @@ prediction summary for the whole release at the top of --out_dir, so that a
 release finished across several machines is one file to read.
 """
 
+import contextlib
 import csv
 import datetime
 import logging
@@ -91,9 +136,12 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
+import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 from tqdm import tqdm
 
@@ -139,11 +187,30 @@ BATCHFILE_NAME = 'gtranslate_batchfile.tsv'
 PRESENT_BATCHFILE_NAME = 'gtranslate_batchfile_present.tsv'
 MISSING_NAME = 'missing_genomic_fasta.tsv'
 
+# The accessions gTranslate was given and returned no prediction for, which is
+# what --force leaves behind. Written only when there are some, so the file being
+# there at all says a batch holds genomes no table was predicted for.
+NO_PREDICTION_NAME = 'no_prediction.tsv'
+
+# What this command does to a batch, written in the batch's own directory as well
+# as to --log: every machine sharing an --out_dir writes its own log, and one log
+# file appended to from several machines over NFS holds none of them.
+BATCH_LOG_NAME = 'trans_table.log'
+
 # The state of a batch, held in files so that another machine can see it and so
 # that it outlives the process that wrote it.
 RUNNING_CANARY = 'RUNNING'
+PREDICTED_CANARY = 'PREDICTED'
 SUCCESS_CANARY = 'SUCCESS'
 FAILED_CANARY = 'FAILED'
+
+# How often the machine holding a batch says it is still there, and how long a
+# claim outlives the last thing said. The interval is small against the hours a
+# batch takes and the lease is large against the interval, so a claim is freed
+# only by a machine that has genuinely stopped touching it, not by one whose
+# heartbeat was late to reach the file server.
+HEARTBEAT_SECONDS = 300
+CLAIM_LEASE_SECONDS = 2 * 60 * 60
 
 STATE_PENDING = 'pending'
 STATE_RUNNING = 'running'
@@ -552,6 +619,162 @@ def process_alive(pid: str) -> bool:
     return True
 
 
+def server_time(directory: str) -> float:
+    """What time it is by the clock of the file server holding a directory.
+
+    A lease is only as good as the clock it is measured against, and the machines
+    sharing an --out_dir have a clock each. What they do share is the file server,
+    so a file is created in the directory and the time the server gives it is
+    taken as now. Skew between the machines then cannot expire a live claim or
+    hold a dead one.
+
+    Parameters
+    ----------
+    directory : str
+        Directory to ask about, which is the batch directory holding the claim.
+
+    @return: the server's idea of now, as a POSIX timestamp; this machine's own
+             clock where the directory cannot be written to.
+    """
+
+    handle, temp = None, None
+    try:
+        handle, temp = tempfile.mkstemp(prefix='.now.', dir=directory)
+        return os.fstat(handle).st_mtime
+    except OSError:
+        return time.time()
+    finally:
+        if handle is not None:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+        if temp is not None:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+
+
+def claim_age(running_file: str) -> Optional[float]:
+    """How long it is since the machine holding a batch last said so.
+
+    Parameters
+    ----------
+    running_file : str
+        The RUNNING canary of a batch.
+
+    @return: seconds since the claim was last touched, or None if it has gone.
+    """
+
+    try:
+        touched = os.stat(running_file).st_mtime
+    except OSError:
+        return None
+
+    return max(0.0, server_time(os.path.dirname(running_file)) - touched)
+
+
+class Heartbeat(object):
+    """Touch a claim while its batch is worked on, so that it does not expire.
+
+    The beating stops when the process holding the batch stops, whether it
+    returns, is killed or wedges, which is the whole point: a claim outlives the
+    process that made it by one lease and no longer.
+    """
+
+    def __init__(self, running_file: str, interval: float = HEARTBEAT_SECONDS) -> None:
+        """Initialization.
+
+        Parameters
+        ----------
+        running_file : str
+            The RUNNING canary to keep alive.
+        interval : float
+            Seconds between touches.
+
+        @return: None
+        """
+
+        self.running_file = running_file
+        self.interval = interval
+        self.stop = threading.Event()
+        self.thread = None
+
+    def beat(self) -> None:
+        """Touch the claim until asked to stop.
+
+        @return: None
+        """
+
+        # wait() returns True only when it was set, so the loop ends the moment
+        # the batch does rather than after one more interval
+        while not self.stop.wait(self.interval):
+            try:
+                os.utime(self.running_file, None)
+            except OSError:
+                # the claim has gone, which another machine taking the batch or
+                # the batch finishing both look like; there is nothing to keep
+                return
+
+    def __enter__(self) -> 'Heartbeat':
+        self.thread = threading.Thread(target=self.beat, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.stop.set()
+        if self.thread is not None:
+            self.thread.join(timeout=self.interval)
+
+
+@contextlib.contextmanager
+def batch_log(batch_dir: str, logger: logging.Logger) -> Iterator[None]:
+    """Write what happens to a batch into the batch's own directory as well.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory, which takes trans_table.log.
+    logger : logging.Logger
+        The logger to tee, which is the 'timestamp' logger of the run.
+
+    @return: a context in which the logger also writes to the batch.
+    """
+
+    handler = logging.FileHandler(os.path.join(batch_dir, BATCH_LOG_NAME), 'a')
+    handler.setFormatter(logging.Formatter(
+        fmt='[%(asctime)s] %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+
+def age_phrase(age: Optional[float]) -> str:
+    """How long ago something was, as a log line says it.
+
+    Parameters
+    ----------
+    age : float
+        Seconds ago, or None where there is nothing to say.
+
+    @return: a phrase naming the time, for a log message.
+    """
+
+    if age is None:
+        return 'never'
+    if age < 90:
+        return '{:.0f}s ago'.format(age)
+    if age < 5400:
+        return '{:.0f}m ago'.format(age / 60)
+
+    return '{:.1f}h ago'.format(age / 3600)
+
+
 def batch_state(batch_dir: str) -> str:
     """What has happened to a batch.
 
@@ -573,30 +796,92 @@ def batch_state(batch_dir: str) -> str:
     return STATE_PENDING
 
 
-def stale_claim(running_file: str) -> bool:
-    """Whether a claim was left behind by a process of this host that has gone.
+def stale_claim(running_file: str,
+                lease: float = CLAIM_LEASE_SECONDS) -> bool:
+    """Whether a claim has been given up by the machine that made it.
 
-    This is what a machine reset leaves: a RUNNING file naming a PID on this host
-    that no longer exists. A claim from another host is never stale here, however
-    old, because nothing on this machine can tell a reset host from a busy one.
+    Two things say so. A claim of this host's whose process has gone is dead and
+    known to be dead, which is what a reset leaves behind on the machine that
+    reset. Any claim that has not been touched for a lease is dead as well: the
+    machine holding a batch says so every HEARTBEAT_SECONDS for as long as it
+    works, so silence for far longer than that is a machine that stopped, and
+    whether it stopped by dying, by being killed or by wedging on a mount is
+    neither knowable from here nor worth knowing.
+
+    The second rule is what makes a batch recoverable from ANOTHER machine, and
+    it is also the more reliable of the two: PIDs are reused, so after a reset
+    the PID a claim names is as likely to belong to something new as to be
+    missing, and a liveness check then holds a dead claim forever.
 
     Parameters
     ----------
     running_file : str
         The RUNNING canary of a batch.
+    lease : float
+        Seconds a claim survives without being touched.
 
     @return: True if the claim can be taken over without being asked to.
     """
 
     fields = read_canary(running_file)
-    if not fields:
-        return False
+    if (fields.get('host') == socket.gethostname()
+            and not process_alive(fields.get('pid', ''))):
+        return True
 
-    return (fields.get('host') == socket.gethostname()
-            and not process_alive(fields.get('pid', '')))
+    age = claim_age(running_file)
+
+    return age is not None and age > lease
 
 
-def claim_batch(batch_dir: str, reclaim: bool = False) -> bool:
+def keep_failure_record(batch_dir: str) -> None:
+    """Move a previous attempt's FAILED aside instead of deleting it.
+
+    A batch is retried by claiming it, and the claim has to clear FAILED or the
+    batch would still read as failed while it runs. Deleting it takes with it the
+    only record of why the batch failed, which on a batch that fails the same way
+    every time is the thing a person needs to read. It is kept under the time it
+    was cleared, beside the batch it belongs to.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory.
+
+    @return: None
+    """
+
+    failed = os.path.join(batch_dir, FAILED_CANARY)
+    kept = '{}.{}'.format(failed, datetime.datetime.now().strftime('%Y%m%dT%H%M%S'))
+    try:
+        os.rename(failed, kept)
+    except OSError:
+        pass
+
+
+def release_claim(batch_dir: str) -> None:
+    """Give up a claim without saying anything about how the batch went.
+
+    What an interrupted run leaves: the batch was neither finished nor tried and
+    found wanting, and the machine that held it is about to stop. Releasing it
+    has the next run take it up rather than wait out the lease.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory.
+
+    @return: None
+    """
+
+    try:
+        os.unlink(os.path.join(batch_dir, RUNNING_CANARY))
+    except OSError:
+        pass
+
+
+def claim_batch(batch_dir: str,
+                reclaim: bool = False,
+                lease: float = CLAIM_LEASE_SECONDS) -> bool:
     """Take a batch for this machine, if no other machine holds it.
 
     The claim is made by linking a uniquely named file onto RUNNING rather than by
@@ -611,8 +896,10 @@ def claim_batch(batch_dir: str, reclaim: bool = False) -> bool:
     batch_dir : str
         Batch directory to claim.
     reclaim : bool
-        Take a batch another host has claimed. Only ever right when that host is
-        known not to be working on it.
+        Take a batch another machine holds before its claim has expired. Only
+        ever right when that machine is known not to be working on it.
+    lease : float
+        Seconds a claim survives without being touched.
 
     @return: True if this machine now holds the batch.
     """
@@ -620,7 +907,7 @@ def claim_batch(batch_dir: str, reclaim: bool = False) -> bool:
     running_file = os.path.join(batch_dir, RUNNING_CANARY)
 
     if os.path.exists(running_file):
-        if not (reclaim or stale_claim(running_file)):
+        if not (reclaim or stale_claim(running_file, lease)):
             return False
         try:
             os.unlink(running_file)
@@ -644,12 +931,10 @@ def claim_batch(batch_dir: str, reclaim: bool = False) -> bool:
         except OSError:
             pass
 
-    # a previous attempt on this batch is no longer what happened to it
+    # a previous attempt on this batch is no longer what happened to it, though
+    # what it had to say about itself is kept
     if claimed:
-        try:
-            os.unlink(os.path.join(batch_dir, FAILED_CANARY))
-        except OSError:
-            pass
+        keep_failure_record(batch_dir)
 
     return claimed
 
@@ -678,6 +963,83 @@ def finish_batch(batch_dir: str, **extra: object) -> None:
         os.unlink(os.path.join(batch_dir, RUNNING_CANARY))
     except OSError:
         pass
+
+
+def mark_predicted(batch_dir: str, **extra: object) -> None:
+    """Record that gTranslate has run over a batch and its results are final.
+
+    Written the moment gTranslate returns 0, which is hours of work, and read by
+    whoever next takes the batch, which after a machine is lost between the
+    prediction and the comparison is another machine a minute later. The
+    comparison that follows is seconds and is simply done again.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory.
+    extra : dict
+        Further fields to record in the canary.
+
+    @return: None
+    """
+
+    with open(os.path.join(batch_dir, PREDICTED_CANARY), 'w') as handle:
+        handle.write(canary_payload(**extra))
+
+
+def already_predicted(batch_dir: str, summary: str) -> bool:
+    """Whether gTranslate has already run over a batch.
+
+    The canary alone is not enough: it is taken to mean the predictions are there
+    only alongside the summary gTranslate wrote, since a canary without the
+    results it speaks for would have the comparison read a file that is not
+    there.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory.
+    summary : str
+        Name of gTranslate's summary within the batch directory.
+
+    @return: True if the predictions are there to be compared.
+    """
+
+    return (os.path.exists(os.path.join(batch_dir, PREDICTED_CANARY))
+            and os.path.exists(os.path.join(batch_dir, summary)))
+
+
+def report_no_prediction(batch_dir: str,
+                         given: Sequence[str],
+                         predicted: Sequence[str]) -> List[str]:
+    """Name the genomes gTranslate was given and said nothing about.
+
+    With --force gTranslate drops a genome it cannot process and carries on,
+    which is what keeps one bad genome from costing a batch of ten thousand. A
+    genome dropped that way is simply absent from the summary, so without this it
+    is discovered by prodigal refusing to call a release for want of a table.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory.
+    given : sequence of str
+        Accessions handed to gTranslate.
+    predicted : sequence of str
+        Accessions the summary holds a prediction for.
+
+    @return: the accessions with no prediction, in the order they were given.
+    """
+
+    missing = [accession for accession in given if accession not in set(predicted)]
+    if not missing:
+        return missing
+
+    with open(os.path.join(batch_dir, NO_PREDICTION_NAME), 'w') as handle:
+        for accession in missing:
+            handle.write('{}\n'.format(accession))
+
+    return missing
 
 
 def fail_batch(batch_dir: str, reason: str) -> None:
@@ -920,11 +1282,13 @@ class GTranslate(object):
                  cpus: int = 1,
                  batch_size: int = DEFAULT_BATCH_SIZE,
                  tmp_dir: Optional[str] = None,
-                 force: bool = False,
+                 force: bool = True,
                  keep_called_genes: bool = False,
                  prefix: Optional[str] = None,
                  custom_model_path: Optional[str] = None,
-                 reclaim: bool = False) -> None:
+                 reclaim: bool = False,
+                 lease: float = CLAIM_LEASE_SECONDS,
+                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
         """Initialization.
 
         Parameters
@@ -944,7 +1308,11 @@ class GTranslate(object):
         custom_model_path : str
             Classifiers to predict with, or None to use GTRANSLATE_MODEL_PATH.
         reclaim : bool
-            Take over batches another machine claimed and did not finish.
+            Take over a batch another machine holds before its claim has expired.
+        lease : float
+            Seconds a claim survives without the machine holding it saying so.
+        heartbeat : float
+            Seconds between this machine saying so about a batch of its own.
 
         @return: None
         """
@@ -957,6 +1325,8 @@ class GTranslate(object):
         self.prefix = prefix
         self.custom_model_path = custom_model_path
         self.reclaim = reclaim
+        self.lease = lease
+        self.heartbeat = heartbeat
 
         check_dependencies(['gtranslate', 'prodigal'])
 
@@ -1066,8 +1436,27 @@ class GTranslate(object):
                               stderr=subprocess.STDOUT if silent else None)
 
         if proc.returncode != 0:
-            raise RuntimeError('{} returned exit code {}.'.format(
-                GTRANSLATE_BIN, proc.returncode))
+            raise RuntimeError('{} returned exit code {}; {} says what it was '
+                               'doing.'.format(GTRANSLATE_BIN, proc.returncode,
+                                               os.path.join(batch_dir, 'gtranslate.log')))
+
+        # the hours of the batch are over and what they produced is final, so a
+        # machine that takes this batch after here compares rather than predicts
+        mark_predicted(batch_dir, genomes=len(present))
+
+        # --force has gTranslate drop a genome it cannot process rather than end
+        # the batch, and a genome dropped that way is simply absent from the
+        # summary; it is named here rather than found by prodigal later
+        predicted = read_translation_table_summary(
+            os.path.join(batch_dir, summary_name(self.prefix)))
+        no_prediction = report_no_prediction(
+            batch_dir, [accession for _, accession in present], list(predicted))
+        if no_prediction:
+            self.logger.warning(
+                'warning: gTranslate returned no prediction for {:,} genome(s) of '
+                '{}; the first is {}. They are named in {}.'.format(
+                    len(no_prediction), os.path.basename(batch_dir),
+                    no_prediction[0], NO_PREDICTION_NAME))
 
     def compare_batch(self, batch_dir: str, taxonomy: Dict[str, str]) -> int:
         """Compare a batch's predictions against the tables NCBI declares.
@@ -1169,28 +1558,49 @@ class GTranslate(object):
                 self.logger.info('{}: already finished, skipping.'.format(label))
                 continue
 
-            if not claim_batch(batch_dir, self.reclaim):
+            if not claim_batch(batch_dir, self.reclaim, self.lease):
                 owner = read_canary(os.path.join(batch_dir, RUNNING_CANARY))
                 held += 1
-                self.logger.info('{}: held by {} since {}, skipping.'.format(
-                    label, owner.get('host', 'another machine'),
-                    owner.get('time', 'an unknown time')))
+                self.logger.info('{}: held by {} since {}, last heard from {}, '
+                                 'skipping.'.format(
+                                     label, owner.get('host', 'another machine'),
+                                     owner.get('time', 'an unknown time'),
+                                     age_phrase(claim_age(
+                                         os.path.join(batch_dir, RUNNING_CANARY)))))
                 continue
 
-            self.logger.info('{}: starting.'.format(label))
-            try:
-                self.run_gtranslate(batch_dir)
-                compared = self.compare_batch(batch_dir, taxonomy)
-            except Exception as exc:
-                failed += 1
-                fail_batch(batch_dir, str(exc))
-                self.logger.error('{}: failed and will be retried by a later '
-                                  'run: {}'.format(label, exc))
-                continue
+            # the batch has its own log from here, since this is where anything
+            # happens to it and every machine of a run writes its own --log
+            with batch_log(batch_dir, self.logger):
+                self.logger.info('{}: starting.'.format(label))
+                try:
+                    with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY),
+                                   self.heartbeat):
+                        if already_predicted(batch_dir, summary_name(self.prefix)):
+                            self.logger.info(
+                                '{}: gTranslate has already run over it; comparing '
+                                'what it wrote.'.format(label))
+                        else:
+                            self.run_gtranslate(batch_dir)
+                        compared = self.compare_batch(batch_dir, taxonomy)
+                except KeyboardInterrupt:
+                    # nothing was decided about the batch, and the machine that
+                    # held it is stopping, so it is handed back rather than left
+                    # to sit out its lease
+                    release_claim(batch_dir)
+                    self.logger.error('{}: interrupted; the claim is given up and '
+                                      'the batch carries on where it stopped.'.format(label))
+                    raise
+                except Exception as exc:
+                    failed += 1
+                    fail_batch(batch_dir, str(exc))
+                    self.logger.error('{}: failed and will be retried by a later '
+                                      'run: {}'.format(label, exc))
+                    continue
 
-            finish_batch(batch_dir, compared=compared)
-            done += 1
-            self.logger.info('{}: done.'.format(label))
+                finish_batch(batch_dir, compared=compared)
+                done += 1
+                self.logger.info('{}: done.'.format(label))
 
         self.logger.info(
             '{:,} batch(es) finished here, {:,} held by another machine, '

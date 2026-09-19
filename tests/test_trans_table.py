@@ -12,9 +12,11 @@ the wrong genomes to it, or the right ones under the wrong names, is this module
 """
 
 import gzip
+import logging
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -429,11 +431,274 @@ class ClaimTests(TempDirCase):
         G.claim_batch(batch)
         self.assertFalse(os.path.exists(os.path.join(batch, G.FAILED_CANARY)))
 
+    def test_what_a_failed_batch_said_survives_the_retry(self):
+        """A batch failing the same way each time is read by what it wrote."""
+        batch = self.batch()
+        G.fail_batch(batch, 'gtranslate returned exit code 1.')
+        G.claim_batch(batch)
+        kept = [name for name in os.listdir(batch)
+                if name.startswith(G.FAILED_CANARY + '.')]
+        self.assertEqual(len(kept), 1)
+        self.assertIn('exit code 1',
+                      G.read_canary(os.path.join(batch, kept[0]))['reason'])
+
     def test_success_outranks_running(self):
         batch = self.batch()
         G.claim_batch(batch)
         open(os.path.join(batch, G.SUCCESS_CANARY), 'w').close()
         self.assertEqual(G.batch_state(batch), G.STATE_SUCCESS)
+
+
+# ------------------------------------------------------------- the lease
+
+class LeaseTests(TempDirCase):
+    """A claim is held by saying so, not by having said so once."""
+
+    def batch(self):
+        path = os.path.join(self.dir, 'batch_000001')
+        os.makedirs(path)
+        return path
+
+    def other_machine_claims(self, batch, age=0.0):
+        """A RUNNING file of another host, last touched age seconds ago."""
+        running = os.path.join(batch, G.RUNNING_CANARY)
+        with open(running, 'w') as handle:
+            handle.write('host\tsome-other-machine\npid\t1\ntime\tnow\n')
+        touched = G.server_time(batch) - age
+        os.utime(running, (touched, touched))
+        return running
+
+    def test_a_claim_that_has_stopped_being_touched_is_taken(self):
+        """The machine holding it reset, wedged or was killed; nothing else says so."""
+        batch = self.batch()
+        self.other_machine_claims(batch, age=3 * G.CLAIM_LEASE_SECONDS)
+        self.assertTrue(G.claim_batch(batch))
+
+    def test_a_claim_still_being_touched_is_left_alone_however_old_the_run(self):
+        """A batch of 10,000 genomes runs for hours and stays its machine's."""
+        batch = self.batch()
+        self.other_machine_claims(batch, age=1.0)
+        self.assertFalse(G.claim_batch(batch))
+
+    def test_the_lease_is_what_says_when_a_claim_has_gone_quiet(self):
+        batch = self.batch()
+        running = self.other_machine_claims(batch, age=600.0)
+        self.assertFalse(G.stale_claim(running, lease=3600))
+        self.assertTrue(G.stale_claim(running, lease=60))
+
+    def test_a_heartbeat_keeps_a_claim_from_expiring(self):
+        batch = self.batch()
+        running = self.other_machine_claims(batch, age=600.0)
+        with G.Heartbeat(running, interval=0.05):
+            time.sleep(0.3)
+            self.assertFalse(G.stale_claim(running, lease=60))
+
+    def test_the_heartbeat_stops_with_the_batch(self):
+        """A claim outlives the process holding it by one lease and no longer."""
+        batch = self.batch()
+        running = self.other_machine_claims(batch)
+        with G.Heartbeat(running, interval=0.05) as beat:
+            time.sleep(0.1)
+        self.assertTrue(beat.stop.is_set())
+        self.assertFalse(beat.thread.is_alive())
+
+    def test_the_age_of_a_claim_is_the_time_since_it_was_touched(self):
+        batch = self.batch()
+        running = self.other_machine_claims(batch, age=1800.0)
+        self.assertAlmostEqual(G.claim_age(running), 1800.0, delta=30)
+
+    def test_a_claim_that_has_gone_has_no_age_rather_than_raising(self):
+        self.assertIsNone(G.claim_age(os.path.join(self.dir, 'nothing')))
+
+    def test_the_clock_a_lease_is_measured_against_is_the_file_servers(self):
+        """Not this machine's: the machines sharing an --out_dir have a clock each."""
+        with mock.patch.object(G.time, 'time', return_value=0.0):
+            self.assertGreater(G.server_time(self.dir), 1e9)
+
+    def test_an_interrupted_batch_hands_its_claim_straight_back(self):
+        batch = self.batch()
+        G.claim_batch(batch)
+        G.release_claim(batch)
+        self.assertEqual(G.batch_state(batch), G.STATE_PENDING)
+        self.assertTrue(G.claim_batch(batch))
+
+
+# ------------------------------------------------------------- work already done
+
+class PredictedTests(TempDirCase):
+    """gTranslate is the hours of a batch; it is not run twice over one batch."""
+
+    def batch(self, summary=True, canary=True):
+        path = os.path.join(self.dir, 'batch_000001')
+        os.makedirs(path)
+        if summary:
+            open(os.path.join(path, G.summary_name()), 'w').close()
+        if canary:
+            G.mark_predicted(path, genomes=10)
+        return path
+
+    def test_a_batch_gtranslate_finished_is_not_predicted_again(self):
+        self.assertTrue(G.already_predicted(self.batch(), G.summary_name()))
+
+    def test_the_canary_alone_is_not_taken_for_results(self):
+        """A batch whose summary is not there has nothing for the comparison to read."""
+        self.assertFalse(G.already_predicted(self.batch(summary=False),
+                                             G.summary_name()))
+
+    def test_results_without_the_canary_are_not_assumed_final(self):
+        """gTranslate writes as it goes; only its exit code says the batch is done."""
+        self.assertFalse(G.already_predicted(self.batch(canary=False),
+                                             G.summary_name()))
+
+    def test_what_was_predicted_is_recorded_with_the_canary(self):
+        batch = self.batch()
+        self.assertEqual(
+            G.read_canary(os.path.join(batch, G.PREDICTED_CANARY))['genomes'], '10')
+
+    def test_a_predicted_batch_is_still_unfinished(self):
+        """Nothing is finished until it has been compared and said so."""
+        self.assertEqual(G.batch_state(self.batch()), G.STATE_PENDING)
+
+
+# ------------------------------------------------------------- genomes dropped
+
+class NoPredictionTests(TempDirCase):
+    """A genome --force drops is named, not discovered by prodigal months later."""
+
+    def batch(self):
+        path = os.path.join(self.dir, 'batch_000001')
+        os.makedirs(path)
+        return path
+
+    def test_a_genome_with_no_prediction_is_named(self):
+        batch = self.batch()
+        missing = G.report_no_prediction(batch, ['G1', 'G2', 'G3'], ['G1', 'G3'])
+        self.assertEqual(missing, ['G2'])
+        self.assertEqual(
+            open(os.path.join(batch, G.NO_PREDICTION_NAME)).read().split(), ['G2'])
+
+    def test_nothing_is_written_when_every_genome_was_predicted(self):
+        """The file being there at all says a batch lost genomes."""
+        batch = self.batch()
+        self.assertEqual(G.report_no_prediction(batch, ['G1'], ['G1']), [])
+        self.assertFalse(os.path.exists(os.path.join(batch, G.NO_PREDICTION_NAME)))
+
+    def test_the_order_the_genomes_were_given_in_is_kept(self):
+        batch = self.batch()
+        self.assertEqual(G.report_no_prediction(batch, ['G3', 'G1', 'G2'], []),
+                         ['G3', 'G1', 'G2'])
+
+
+# ------------------------------------------------------------- the batch's own log
+
+class BatchLogTests(TempDirCase):
+    """Several machines share an --out_dir; no two of them share a log file."""
+
+    def test_what_happens_to_a_batch_is_written_in_the_batch(self):
+        batch = os.path.join(self.dir, 'batch_000001')
+        os.makedirs(batch)
+        logger = logging.getLogger('trans_table_test_batch_log')
+        with G.batch_log(batch, logger):
+            logger.error('batch_000001: failed for a reason')
+        self.assertIn('failed for a reason',
+                      open(os.path.join(batch, G.BATCH_LOG_NAME)).read())
+
+    def test_the_log_is_let_go_of_when_the_batch_is(self):
+        """A run works through many batches and must not hold a handle on each."""
+        batch = os.path.join(self.dir, 'batch_000001')
+        os.makedirs(batch)
+        logger = logging.getLogger('trans_table_test_batch_log_handles')
+        before = len(logger.handlers)
+        with G.batch_log(batch, logger):
+            self.assertEqual(len(logger.handlers), before + 1)
+        self.assertEqual(len(logger.handlers), before)
+
+
+# ------------------------------------------------------------- the run over a release
+
+class RunTests(TempDirCase):
+    """What a run does to a batch it finds part-done, and to one it is stopped in."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.out_dir = os.path.join(self.dir, 'out')
+        self.genome_dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        with open(self.genome_dirs, 'w') as handle:
+            handle.write('GCA_000001.1\t{}\tG000001\n'.format(
+                self.genome_dir('GCA_000001.1_ASM1')))
+        self.taxonomy = os.path.join(self.dir, 'taxonomy.tsv')
+        open(self.taxonomy, 'w').close()
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def manager(self):
+        return G.GTranslate(batch_size=1)
+
+    def run_one(self, manager):
+        return manager.run(self.genome_dirs, self.taxonomy, self.out_dir)
+
+    def comparison(self, manager, batch_dir, taxonomy):
+        """Stands in for compare_batch, leaving what the run aggregates."""
+        for name in (G.COMPARISON_NAME, G.summary_name()):
+            with open(os.path.join(batch_dir, name), 'w') as handle:
+                handle.write('genome_id\n')
+        return 1
+
+    def test_a_batch_gtranslate_already_finished_is_only_compared(self):
+        """The prediction is hours and the comparison is seconds; a lost machine
+        between the two must not cost the hours."""
+        manager = self.manager()
+        manager.plan_batches(self.genome_dirs, self.out_dir)
+        batch = os.path.join(self.out_dir, 'batch_000001')
+        open(os.path.join(batch, G.summary_name()), 'w').close()
+        G.mark_predicted(batch)
+
+        with mock.patch.object(G.GTranslate, 'run_gtranslate') as predict, \
+                mock.patch.object(G.GTranslate, 'compare_batch', autospec=True,
+                                  side_effect=self.comparison) as compare:
+            self.run_one(manager)
+
+        self.assertFalse(predict.called)
+        self.assertTrue(compare.called)
+        self.assertEqual(G.batch_state(batch), G.STATE_SUCCESS)
+
+    def test_a_batch_nothing_has_been_done_to_is_predicted(self):
+        manager = self.manager()
+        with mock.patch.object(G.GTranslate, 'run_gtranslate') as predict, \
+                mock.patch.object(G.GTranslate, 'compare_batch', autospec=True,
+                                  side_effect=self.comparison):
+            self.run_one(manager)
+
+        self.assertTrue(predict.called)
+
+    def test_a_run_interrupted_in_a_batch_gives_the_batch_back(self):
+        """Ctrl-C is not a failure of the batch, and the next run should not wait
+        out a lease on a machine that has already stopped."""
+        manager = self.manager()
+        with mock.patch.object(G.GTranslate, 'run_gtranslate',
+                               side_effect=KeyboardInterrupt):
+            self.assertRaises(KeyboardInterrupt, self.run_one, manager)
+
+        batch = os.path.join(self.out_dir, 'batch_000001')
+        self.assertEqual(G.batch_state(batch), G.STATE_PENDING)
+
+    def test_what_happened_to_a_batch_is_written_in_the_batch(self):
+        manager = self.manager()
+        with mock.patch.object(G.GTranslate, 'run_gtranslate',
+                               side_effect=RuntimeError('gtranslate returned exit code 1.')):
+            self.run_one_expecting_failure(manager)
+
+        batch = os.path.join(self.out_dir, 'batch_000001')
+        log = open(os.path.join(batch, G.BATCH_LOG_NAME)).read()
+        self.assertIn('exit code 1', log)
+        self.assertEqual(G.batch_state(batch), G.STATE_FAILED)
+
+    def run_one_expecting_failure(self, manager):
+        """A run ending with a failed batch raises, having done the others."""
+        self.assertRaises(RuntimeError, self.run_one, manager)
 
 
 # ------------------------------------------------------------- the comparison
