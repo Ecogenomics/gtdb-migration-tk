@@ -42,6 +42,14 @@ authoritative: a later run reuses them and says so rather than partitioning the
 release again, since a second partition of a release that has gained a genome
 would move genomes between batches that are already finished.
 
+The plan is cut from the genome_dirs file and nothing else. Whether a genome's
+FASTA is actually on disk is asked of each batch as that batch is run, not of
+the release beforehand: gTranslate checks the paths of a batchfile itself and
+refuses the whole batch if one is missing, so the check has to happen, but asked
+of 1.35M genomes over NFS it is hours in which nothing is written and nothing
+can be resumed, where asked of ten thousand it is a minute against a batch that
+then runs for hours. A genome left out is named in the batch's own directory.
+
 CANARIES
 A batch directory carries its state in files, because a file is what two machines
 can both see and what survives the process that wrote it:
@@ -84,6 +92,7 @@ import shutil
 import socket
 import subprocess
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from tqdm import tqdm
@@ -123,6 +132,13 @@ BATCH_DIR_FORMAT = BATCH_DIR_PREFIX + '{:06d}'
 # read to agree on that without partitioning the release again.
 BATCHFILE_NAME = 'gtranslate_batchfile.tsv'
 
+# What gTranslate is handed when some genome of the batch has no FASTA to process,
+# and the accessions left out of it. Written only in that case, so the file being
+# there at all says a batch had something wrong with it. BATCHFILE_NAME stays the
+# record of which genomes the batch IS, which is what the comparison reads.
+PRESENT_BATCHFILE_NAME = 'gtranslate_batchfile_present.tsv'
+MISSING_NAME = 'missing_genomic_fasta.tsv'
+
 # The state of a batch, held in files so that another machine can see it and so
 # that it outlives the process that wrote it.
 RUNNING_CANARY = 'RUNNING'
@@ -149,6 +165,24 @@ COMPARISON_NAME = 'ncbi_tt_comparison.tsv'
 COMPARISON_HEADER = ('genome_id', 'gtranslate_tt', 'ncbi_tt', 'checkm_tt',
                      'result', 'coding_density_4', 'coding_density_11',
                      'ncbi_taxonomy')
+
+# How many of the release's genomic FASTA files are asked about at once while the
+# batches are planned. The question is one stat per genome and nothing else, so
+# what it costs is round trips to the file server and not CPU. Measured against
+# r237 over the NFS the genomes are held on, one at a time takes 12-23 ms a
+# genome -- 4 to 8 hours for 1.35M genomes -- against 3-7 ms with 32 outstanding
+# at once, so a few hours become one or two. Beyond 32 nothing further was
+# measurable: the limit is the server and the load it is already under, not the
+# number of threads asking. Threads rather than processes because a stat spends
+# its time in the kernel waiting and brings back one number.
+STAT_THREADS = 32
+
+# How many genomes are handed to the pool at a time. Executor.map() submits every
+# item it is given before the first result can be read, one future per genome, so
+# the whole release at once builds a million-odd futures before a single answer
+# comes back. A chunk is large enough that no thread waits for the next one to be
+# cut and small enough to be nothing in memory.
+STAT_CHUNK = 50000
 
 # The two outcomes a comparison has. A genome NCBI declares no table for is not
 # one of them: it is left out of the file, there being nothing to compare.
@@ -207,32 +241,76 @@ def read_genome_dirs(gtdb_genome_path_file: str) -> List[Tuple[str, str]]:
     return genomes
 
 
-def batchfile_rows(genomes: Sequence[Tuple[str, str]]) -> Tuple[List[Tuple[str, str]], List[str]]:
-    """Sort the genomes into those that can be asked about and those that cannot.
+def fasta_size(fasta: str) -> int:
+    """Size of a genomic FASTA, and 0 where there is no file to have one.
 
-    A genome is asked about only where its genomic FASTA is on disk and is not
-    empty. gTranslate calls genes on the file it is given, so an absent or empty
-    one would fail in the middle of a batch rather than here, where the accession
-    can be named and the rest of the release still answered.
+    One stat rather than os.path.exists() and os.path.getsize(), which ask the
+    file server the same question twice; over NFS, and once per genome of a
+    release, that is half the cost of planning a run. A file that has gone
+    between the two calls also raises from the second, where here it is simply a
+    genome with nothing to process.
 
     Parameters
     ----------
-    genomes : sequence of tuple
-        (accession, genome directory) as read from the genome_dirs file.
+    fasta : str
+        Path of the genomic FASTA.
 
-    @return: (rows, missing), the (FASTA path, accession) pairs to write and the
-             accessions of the genomes left out.
+    @return: size in bytes, or 0 if the file is absent or cannot be read.
     """
 
-    rows, missing = [], []
-    for accession, genome_dir in genomes:
-        fasta = genomic_fasta(genome_dir)
-        if os.path.exists(fasta) and os.path.getsize(fasta) > 0:
-            rows.append((fasta, accession))
-        else:
-            missing.append(accession)
+    try:
+        return os.stat(fasta).st_size
+    except OSError:
+        return 0
 
-    return rows, missing
+
+def split_by_fasta(rows: Sequence[Tuple[str, str]],
+                   threads: int = STAT_THREADS) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """Sort a batch's genomes into those that can be asked about and those that cannot.
+
+    A genome is asked about only where its genomic FASTA is on disk and is not
+    empty. gTranslate checks the paths of a batchfile before it starts and
+    refuses the WHOLE batch if one of them is missing, so a single absent file
+    would cost the other ten thousand genomes of the batch -- and would cost them
+    again on every retry, the batch failing identically each time. Filtering here
+    leaves the batch to run and the accession to be named.
+
+    The files are asked about many at a time, the genomes being held over NFS
+    where a stat is a round trip to a server rather than a lookup in a cache.
+    Nothing is computed here to be divided up: what the pool is for is having many
+    round trips outstanding at once rather than one.
+
+    The answer does not depend on how many threads asked: results are read back in
+    the order the genomes were given, which is the order gTranslate is handed them.
+
+    Parameters
+    ----------
+    rows : sequence of tuple
+        (FASTA path, accession) for the genomes of a batch.
+    threads : int
+        Stat calls to keep in flight at once.
+
+    @return: (present, missing), the rows to hand gTranslate and the accessions
+             of the genomes left out.
+    """
+
+    present, missing = [], []
+    # leave=False, as the bar reading the genome_dirs file is: it is worth having
+    # while the batch is checked over and worth nothing once it is
+    with tqdm(total=len(rows), ncols=100, leave=False,
+              desc='Checking genomes') as pbar, \
+            ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
+        for start in range(0, len(rows), STAT_CHUNK):
+            chunk = rows[start:start + STAT_CHUNK]
+            for (fasta, accession), size in zip(
+                    chunk, pool.map(fasta_size, [fasta for fasta, _ in chunk])):
+                if size > 0:
+                    present.append((fasta, accession))
+                else:
+                    missing.append(accession)
+                pbar.update()
+
+    return present, missing
 
 
 def write_batchfile(rows: Sequence[Tuple[str, str]], batchfile: str) -> None:
@@ -283,6 +361,48 @@ def read_batchfile(batchfile: str) -> List[Tuple[str, str]]:
             rows.append((fasta, accession))
 
     return rows
+
+
+def check_batch_fastas(batch_dir: str,
+                       threads: int = STAT_THREADS
+                       ) -> Tuple[str, List[Tuple[str, str]], List[str]]:
+    """Check over the genomes of one batch, just before gTranslate is run on it.
+
+    The check belongs to the batch rather than to the plan. Asked of the whole
+    release up front it is hours of stat calls before a single batch directory
+    exists -- on r237, 1.35M genomes over NFS -- and a run stopped in it has
+    nothing to resume from, the plan not yet written. Asked of a batch it is ten
+    thousand stat calls against a batch that then runs for hours, it happens
+    while other machines are already working, and a machine lost during it costs
+    one batch. It also leaves the batch boundaries following from the genome_dirs
+    file alone, rather than from what stat said on the day the plan was cut.
+
+    Nothing is written where every genome has its FASTA, which is the normal case
+    and the one where BATCHFILE_NAME is handed straight to gTranslate.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory, holding the batchfile the plan cut.
+    threads : int
+        Stat calls to keep in flight at once.
+
+    @return: (batchfile, present, missing) -- the file to hand gTranslate, the
+             rows it names, and the accessions left out of it.
+    """
+
+    batchfile = os.path.join(batch_dir, BATCHFILE_NAME)
+    present, missing = split_by_fasta(read_batchfile(batchfile), threads)
+
+    if not missing:
+        return batchfile, present, missing
+
+    write_batchfile(present, os.path.join(batch_dir, PRESENT_BATCHFILE_NAME))
+    with open(os.path.join(batch_dir, MISSING_NAME), 'w') as handle:
+        for accession in missing:
+            handle.write('{}\n'.format(accession))
+
+    return os.path.join(batch_dir, PRESENT_BATCHFILE_NAME), present, missing
 
 
 def summary_name(prefix: Optional[str] = None) -> str:
@@ -876,15 +996,17 @@ class GTranslate(object):
         # genomes, and not from the order the genome_dirs file was written in
         genomes.sort(key=lambda genome: genome[0])
 
-        rows, missing = batchfile_rows(genomes)
-        if missing:
-            self.logger.warning(
-                'warning: {:,} genome(s) have no genomic FASTA and were left out; '
-                'the first is {}.'.format(len(missing), missing[0]))
+        # named, not stat-ed: whether the file is there is asked of each batch as
+        # it is run, where ten thousand stat calls are nothing against the hours
+        # gTranslate then spends, rather than of the whole release here, where on
+        # r237 it is hours over NFS before a single batch directory exists and a
+        # run stopped in it has no plan to resume from. It also leaves which
+        # genomes share a batch following from the genome_dirs file alone.
+        rows = [(genomic_fasta(genome_dir), accession)
+                for accession, genome_dir in genomes]
         if not rows:
             raise RuntimeError(
-                'None of the {:,} genomes read has a genomic FASTA to process.'.format(
-                    len(genomes)))
+                '{} names no genomes.'.format(gtdb_genome_path_file))
 
         batches = create_batches(rows, self.batch_size, out_dir)
         self.logger.info('Planned {:,} genomes as {:,} batch(es) of up to {:,}.'.format(
@@ -903,7 +1025,24 @@ class GTranslate(object):
         @return: None
         """
 
-        cmd = detect_table_command(os.path.join(batch_dir, BATCHFILE_NAME),
+        # gTranslate checks the paths of a batchfile before it starts and refuses
+        # the whole batch if one of them is missing, so a genome whose FASTA is
+        # not there costs the other ten thousand -- and costs them again on every
+        # retry, the batch failing identically each time. It is left out here and
+        # named in the batch directory instead.
+        batchfile, present, missing = check_batch_fastas(batch_dir)
+        if missing:
+            self.logger.warning(
+                'warning: {:,} genome(s) of {} have no genomic FASTA and were left '
+                'out; the first is {}. They are named in {}.'.format(
+                    len(missing), os.path.basename(batch_dir), missing[0],
+                    MISSING_NAME))
+        if not present:
+            raise RuntimeError(
+                'None of the {:,} genomes of {} has a genomic FASTA to process.'.format(
+                    len(missing), batch_dir))
+
+        cmd = detect_table_command(batchfile,
                                    batch_dir,
                                    cpus=self.cpus,
                                    tmp_dir=self.tmp_dir,
