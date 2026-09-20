@@ -358,6 +358,7 @@ not the one NCBI declares, one row each:
 | `gtranslate_tt` | the table gTranslate predicted |
 | `ncbi_tt` | the table NCBI declares in the genomic GFF |
 | `checkm_tt` | the table the coding density rule alone would choose, as Prodigal and CheckM do unaided; it cannot express table 25 |
+| `checkm_conflict` | `True` where gTranslate and that rule disagree about the genome being recoded at all: 11 against 4, or 4 or 25 against 11. 25 against 4 is `False` -- the rule picks between 4 and 11 alone, so 4 is the closest it can come to saying 25 |
 | `coding_density_4`, `coding_density_11` | as gTranslate measured them |
 | `ncbi_taxonomy` | lineage from `--taxonomy_file`, `na` where it holds none |
 

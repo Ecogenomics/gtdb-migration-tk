@@ -765,7 +765,7 @@ class ComparisonTests(TempDirCase):
         nothing else on every line of the release."""
         self.assertNotIn('result', G.CONFLICT_HEADER)
         path = os.path.join(self.dir, 'conflicts.tsv')
-        G.write_conflicts([('GCF_1.1', '4', '11', '4', '90.1', '64.2', 'na')], path)
+        G.write_conflicts([('GCF_1.1', '4', '11', '4', 'True', '90.1', '64.2', 'na')], path)
         with open(path) as handle:
             header, row = handle.read().splitlines()
         self.assertEqual(header.split('\t'), list(G.CONFLICT_HEADER))
@@ -828,6 +828,47 @@ class ComparisonTests(TempDirCase):
         self.assertEqual(row[G.CONFLICT_HEADER.index('gtranslate_tt')], '25')
         self.assertEqual(row[G.CONFLICT_HEADER.index('checkm_tt')], '4')
 
+    def test_checkm_conflict_is_true_where_the_two_disagree_about_recoding(self):
+        """11 against 4, and 4 or 25 against 11, are calls of different kinds:
+        genes called under the wrong one break at every TGA."""
+        for predicted, checkm in (('11', 4), ('4', 11), ('25', 11)):
+            with self.subTest(gtranslate=predicted, checkm=checkm):
+                self.assertTrue(G.checkm_conflict(predicted, checkm))
+
+    def test_checkm_conflict_is_false_where_the_rule_cannot_say_otherwise(self):
+        """The density rule picks between 4 and 11 alone, so 4 is the only
+        recoding it can return; 25 against 4 is as close to agreement as it
+        gets, which is the whole reason gTranslate is run."""
+        for predicted, checkm in (('11', 11), ('4', 4), ('25', 4)):
+            with self.subTest(gtranslate=predicted, checkm=checkm):
+                self.assertFalse(G.checkm_conflict(predicted, checkm))
+
+    def test_checkm_conflict_is_false_where_either_table_is_unknown(self):
+        self.assertFalse(G.checkm_conflict('11', None))
+        self.assertFalse(G.checkm_conflict('', 4))
+        self.assertFalse(G.checkm_conflict('na', 11))
+
+    def test_checkm_conflict_is_reported_beside_the_checkm_table(self):
+        """It qualifies checkm_tt, so it is read next to it rather than hunted
+        for at the end of the row."""
+        self.assertEqual(G.CONFLICT_HEADER.index('checkm_conflict'),
+                         G.CONFLICT_HEADER.index('checkm_tt') + 1)
+
+        path = self.genome_dir('GCF_1.1', ncbi_table=4)
+        rows, _, _ = G.conflict_rows(
+            G.read_translation_table_summary(self.summary(('GCF_1.1', '11'))),
+            {'GCF_1.1': path}, {})
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('checkm_tt')], '4')
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('checkm_conflict')], 'True')
+
+    def test_checkm_conflict_is_false_on_a_row_the_density_rule_agrees_with(self):
+        path = self.genome_dir('GCF_1.1', ncbi_table=11)
+        rows, _, _ = G.conflict_rows(
+            G.read_translation_table_summary(self.summary(('GCF_1.1', '25'))),
+            {'GCF_1.1': path}, {})
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('checkm_tt')], '4')
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('checkm_conflict')], 'False')
+
     def test_checkm_table_is_11_where_the_densities_are_close(self):
         path = self.genome_dir('GCF_1.1', ncbi_table=4)
         summary = os.path.join(self.dir, 'close.tsv')
@@ -849,8 +890,8 @@ class AggregationTests(TempDirCase):
         return path
 
     def test_headers_are_not_repeated(self):
-        first = self.comparison('a.tsv', ('GCF_1.1', '4', '11', '4', '', '', 'na'))
-        second = self.comparison('b.tsv', ('GCF_2.1', '25', '11', '4', '', '', 'na'))
+        first = self.comparison('a.tsv', ('GCF_1.1', '4', '11', '4', 'True', '', '', 'na'))
+        second = self.comparison('b.tsv', ('GCF_2.1', '25', '11', '4', 'False', '', '', 'na'))
         out = os.path.join(self.dir, 'all.tsv')
         self.assertEqual(G.concatenate([first, second], out), 2)
         with open(out) as handle:

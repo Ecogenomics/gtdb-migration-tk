@@ -117,8 +117,9 @@ THE COMPARISON
 gTranslate predicts a table; NCBI declares one in the GFF it serves for a genome
 that it has annotated. Each batch compares the two wherever both are known and
 writes ncbi_tt_conflict.tsv, which holds the genomes they DISAGREE about and
-carries for each the coding densities the prediction was made from and the
-genome's NCBI taxonomy.
+carries for each the coding densities the prediction was made from, the genome's
+NCBI taxonomy, the table the coding density rule alone would have chosen, and
+whether that rule and gTranslate disagree about the genome being recoded at all.
 
 Only the disagreements are written because they are the whole point of asking:
 a genome whose genes GTDB would call under a table NCBI does not agree with is
@@ -234,9 +235,17 @@ CONFLICT_NAME = 'ncbi_tt_conflict.tsv'
 # disagreed. It is the table the coding density rule alone would choose, which is
 # what Prodigal and CheckM do unaided, and it cannot express table 25 at all -- a
 # genome gTranslate calls 25 is one the old rule was never able to get right.
+# checkm_conflict follows it, saying whether that matters: see checkm_conflict().
 # There is no result column: every row of the file is a conflict.
 CONFLICT_HEADER = ('genome_id', 'gtranslate_tt', 'ncbi_tt', 'checkm_tt',
-                   'coding_density_4', 'coding_density_11', 'ncbi_taxonomy')
+                   'checkm_conflict', 'coding_density_4', 'coding_density_11',
+                   'ncbi_taxonomy')
+
+# The standard genetic code, and the two recoded ones gTranslate chooses between
+# it and: 4 for the genomes that read TGA as tryptophan, 25 for those that read
+# it as glycine. The density rule cannot express 25, only 4 and 11.
+STANDARD_TABLE = 11
+RECODED_TABLES = (4, 25)
 
 # How many of the release's genomic FASTA files are asked about at once while the
 # batches are planned. The question is one stat per genome and nothing else, so
@@ -1176,6 +1185,50 @@ def lineage_of(accession: str, taxonomy: Dict[str, str]) -> str:
     return taxonomy.get(canonical_gid(accession), NCBI_NA)
 
 
+def checkm_conflict(gtranslate_table: str, checkm_table: Optional[int]) -> bool:
+    """Whether the density rule would have called this genome's genes recoded or
+    not recoded the other way from gTranslate.
+
+    What matters about the two tables is not that they are different numbers but
+    that they are different KINDS of answer: 11 is the standard code and 4 and 25
+    are recodings of it, and a genome called under the wrong kind has its genes
+    truncated or run together at every TGA. So gTranslate saying 11 where the
+    density rule says 4, and gTranslate saying 4 or 25 where the rule says 11,
+    are the conflicts.
+
+    25 against 4 is NOT one of them. The density rule calls genes under tables 4
+    and 11 and picks between those two alone, so 4 is the only recoding it can
+    ever return; a genome gTranslate calls 25 and the rule calls 4 is one the two
+    agree about as far as the rule is able to say, which is what makes table 25
+    the thing gTranslate is for.
+
+    Parameters
+    ----------
+    gtranslate_table : str
+        Table gTranslate predicted, as the summary gives it.
+    checkm_table : int
+        Table the density rule chose, or None where it could not be worked out.
+
+    @return: True where the two disagree about whether the genome is recoded.
+    """
+
+    try:
+        predicted = int(gtranslate_table)
+    except (TypeError, ValueError):
+        return False
+
+    if checkm_table is None:
+        return False
+
+    if predicted == STANDARD_TABLE:
+        return checkm_table in RECODED_TABLES
+
+    if predicted in RECODED_TABLES:
+        return checkm_table == STANDARD_TABLE
+
+    return False
+
+
 def conflict_rows(predictions: Dict[str, Dict[str, str]],
                   genome_dirs: Dict[str, str],
                   taxonomy: Dict[str, str]) -> Tuple[List[Tuple[str, ...]], int, int]:
@@ -1226,6 +1279,7 @@ def conflict_rows(predictions: Dict[str, Dict[str, str]],
                      table,
                      str(ncbi_table),
                      str(checkm_table) if checkm_table else NCBI_NA,
+                     str(checkm_conflict(table.strip(), checkm_table)),
                      density_4,
                      density_11,
                      lineage_of(accession, taxonomy)))
