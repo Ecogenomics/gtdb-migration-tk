@@ -642,7 +642,7 @@ class RunTests(TempDirCase):
 
     def comparison(self, manager, batch_dir, taxonomy):
         """Stands in for compare_batch, leaving what the run aggregates."""
-        for name in (G.COMPARISON_NAME, G.summary_name()):
+        for name in (G.CONFLICT_NAME, G.summary_name()):
             with open(os.path.join(batch_dir, name), 'w') as handle:
                 handle.write('genome_id\n')
         return 1
@@ -717,7 +717,8 @@ class RunTests(TempDirCase):
 # ------------------------------------------------------------- the comparison
 
 class ComparisonTests(TempDirCase):
-    """A conflict is a genome GTDB would call genes for under a table NCBI rejects."""
+    """A conflict is a genome GTDB would call genes for under a table NCBI rejects,
+    and a conflict is the only thing the file holds."""
 
     def genome_dir(self, accession, ncbi_table=None):
         assembly = '{}_ASM1'.format(accession)
@@ -739,49 +740,77 @@ class ComparisonTests(TempDirCase):
                 handle.write('{}\t{}\t90.1\t64.2\t1.0\n'.format(accession, table))
         return path
 
-    def test_matching_tables_agree(self):
+    def test_a_genome_agreeing_with_ncbi_is_counted_and_not_reported(self):
+        """Agreement is nearly every genome of a release; the file is the
+        disagreements, and the count is what says how many were looked at."""
         path = self.genome_dir('GCF_1.1', ncbi_table=11)
-        rows, _ = G.comparison_rows(G.read_translation_table_summary(self.summary(('GCF_1.1', '11'))),
-                                    {'GCF_1.1': path}, {})
-        self.assertEqual(rows[0][G.COMPARISON_HEADER.index('result')], G.AGREE)
+        rows, compared, _ = G.conflict_rows(
+            G.read_translation_table_summary(self.summary(('GCF_1.1', '11'))),
+            {'GCF_1.1': path}, {})
+        self.assertEqual(rows, [])
+        self.assertEqual(compared, 1)
 
     def test_differing_tables_conflict(self):
         path = self.genome_dir('GCF_1.1', ncbi_table=11)
-        rows, _ = G.comparison_rows(G.read_translation_table_summary(self.summary(('GCF_1.1', '4'))),
-                                    {'GCF_1.1': path}, {})
-        self.assertEqual(rows[0][G.COMPARISON_HEADER.index('result')], G.CONFLICT)
+        rows, compared, _ = G.conflict_rows(
+            G.read_translation_table_summary(self.summary(('GCF_1.1', '4'))),
+            {'GCF_1.1': path}, {})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('gtranslate_tt')], '4')
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('ncbi_tt')], '11')
+        self.assertEqual(compared, 1)
+
+    def test_the_file_says_nothing_about_whether_a_row_is_a_conflict(self):
+        """Every row of it is one, so a result column would say 'conflict' and
+        nothing else on every line of the release."""
+        self.assertNotIn('result', G.CONFLICT_HEADER)
+        path = os.path.join(self.dir, 'conflicts.tsv')
+        G.write_conflicts([('GCF_1.1', '4', '11', '4', '90.1', '64.2', 'na')], path)
+        with open(path) as handle:
+            header, row = handle.read().splitlines()
+        self.assertEqual(header.split('\t'), list(G.CONFLICT_HEADER))
+        self.assertEqual(len(row.split('\t')), len(G.CONFLICT_HEADER))
+
+    def test_a_batch_with_nothing_to_report_still_writes_the_file(self):
+        """The release file is every batch's concatenated, so a batch that
+        conflicted nowhere has to leave a header behind."""
+        path = os.path.join(self.dir, 'none.tsv')
+        G.write_conflicts([], path)
+        self.assertEqual(open(path).read().splitlines(), ['\t'.join(G.CONFLICT_HEADER)])
 
     def test_genome_ncbi_declares_no_table_for_is_left_out(self):
         path = self.genome_dir('GCF_1.1')
-        rows, no_table = G.comparison_rows(
+        rows, compared, no_table = G.conflict_rows(
             G.read_translation_table_summary(self.summary(('GCF_1.1', '11'))), {'GCF_1.1': path}, {})
         self.assertEqual(rows, [])
+        self.assertEqual(compared, 0)
         self.assertEqual(no_table, 1)
 
     def test_coding_densities_and_lineage_are_carried(self):
         path = self.genome_dir('GCF_1.1', ncbi_table=11)
-        rows, _ = G.comparison_rows(
-            G.read_translation_table_summary(self.summary(('GCF_1.1', '11'))),
+        rows, _, _ = G.conflict_rows(
+            G.read_translation_table_summary(self.summary(('GCF_1.1', '4'))),
             {'GCF_1.1': path},
             {'GCF_1.1': 'd__Bacteria;p__Pseudomonadota;s__Escherichia coli'})
-        self.assertEqual(rows[0][G.COMPARISON_HEADER.index('coding_density_4')], '90.1')
-        self.assertEqual(rows[0][G.COMPARISON_HEADER.index('coding_density_11')], '64.2')
-        self.assertIn('d__Bacteria', rows[0][G.COMPARISON_HEADER.index('ncbi_taxonomy')])
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('coding_density_4')], '90.1')
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('coding_density_11')], '64.2')
+        self.assertIn('d__Bacteria', rows[0][G.CONFLICT_HEADER.index('ncbi_taxonomy')])
 
     def test_lineage_is_found_through_the_canonical_accession(self):
         """A GenBank genome takes the lineage held against its RefSeq counterpart."""
         path = self.genome_dir('GCA_005435135.1', ncbi_table=11)
-        rows, _ = G.comparison_rows(
-            G.read_translation_table_summary(self.summary(('GCA_005435135.1', '11'))),
+        rows, _, _ = G.conflict_rows(
+            G.read_translation_table_summary(self.summary(('GCA_005435135.1', '4'))),
             {'GCA_005435135.1': path},
             G.read_taxonomy(self.write_taxonomy('GCF_005435135.1\td__Bacteria;s__X\n')))
-        self.assertEqual(rows[0][G.COMPARISON_HEADER.index('ncbi_taxonomy')], 'd__Bacteria;s__X')
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('ncbi_taxonomy')], 'd__Bacteria;s__X')
 
-    def test_genome_missing_from_the_taxonomy_is_still_compared(self):
+    def test_genome_missing_from_the_taxonomy_is_still_reported(self):
         path = self.genome_dir('GCF_1.1', ncbi_table=4)
-        rows, _ = G.comparison_rows(G.read_translation_table_summary(self.summary(('GCF_1.1', '4'))),
-                                    {'GCF_1.1': path}, {})
-        self.assertEqual(rows[0][G.COMPARISON_HEADER.index('ncbi_taxonomy')], 'na')
+        rows, _, _ = G.conflict_rows(
+            G.read_translation_table_summary(self.summary(('GCF_1.1', '11'))),
+            {'GCF_1.1': path}, {})
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('ncbi_taxonomy')], 'na')
 
     def write_taxonomy(self, text):
         path = os.path.join(self.dir, 'taxonomy.tsv')
@@ -792,23 +821,23 @@ class ComparisonTests(TempDirCase):
     def test_checkm_table_is_reported_beside_the_others(self):
         """The density rule alone cannot express 25, which is the point of it."""
         path = self.genome_dir('GCF_1.1', ncbi_table=11)
-        rows, _ = G.comparison_rows(
+        rows, _, _ = G.conflict_rows(
             G.read_translation_table_summary(self.summary(('GCF_1.1', '25'))),
             {'GCF_1.1': path}, {})
         row = rows[0]
-        self.assertEqual(row[G.COMPARISON_HEADER.index('gtranslate_tt')], '25')
-        self.assertEqual(row[G.COMPARISON_HEADER.index('checkm_tt')], '4')
+        self.assertEqual(row[G.CONFLICT_HEADER.index('gtranslate_tt')], '25')
+        self.assertEqual(row[G.CONFLICT_HEADER.index('checkm_tt')], '4')
 
     def test_checkm_table_is_11_where_the_densities_are_close(self):
-        path = self.genome_dir('GCF_1.1', ncbi_table=11)
+        path = self.genome_dir('GCF_1.1', ncbi_table=4)
         summary = os.path.join(self.dir, 'close.tsv')
         with open(summary, 'w') as handle:
             handle.write('user_genome\tbest_tln_table\tcoding_density_4\t'
                          'coding_density_11\n')
             handle.write('GCF_1.1\t11\t86.24689\t86.64953\n')
-        rows, _ = G.comparison_rows(
+        rows, _, _ = G.conflict_rows(
             G.read_translation_table_summary(summary), {'GCF_1.1': path}, {})
-        self.assertEqual(rows[0][G.COMPARISON_HEADER.index('checkm_tt')], '11')
+        self.assertEqual(rows[0][G.CONFLICT_HEADER.index('checkm_tt')], '11')
 
 
 class AggregationTests(TempDirCase):
@@ -816,12 +845,12 @@ class AggregationTests(TempDirCase):
 
     def comparison(self, name, *rows):
         path = os.path.join(self.dir, name)
-        G.write_comparison(rows, path)
+        G.write_conflicts(rows, path)
         return path
 
     def test_headers_are_not_repeated(self):
-        first = self.comparison('a.tsv', ('GCF_1.1', '11', '11', 'agree', '', '', 'na'))
-        second = self.comparison('b.tsv', ('GCF_2.1', '4', '11', 'conflict', '', '', 'na'))
+        first = self.comparison('a.tsv', ('GCF_1.1', '4', '11', '4', '', '', 'na'))
+        second = self.comparison('b.tsv', ('GCF_2.1', '25', '11', '4', '', '', 'na'))
         out = os.path.join(self.dir, 'all.tsv')
         self.assertEqual(G.concatenate([first, second], out), 2)
         with open(out) as handle:
