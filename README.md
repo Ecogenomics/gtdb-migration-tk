@@ -299,9 +299,9 @@ it on a file server shared with other work.
     gtranslate.log                      what gTranslate did to it
     no_prediction.tsv                   genomes gTranslate returned nothing for
     gtranslate.translation_table_summary.tsv
-    ncbi_tt_comparison.tsv              this batch, compared against NCBI
+    ncbi_tt_conflict.tsv                genomes of this batch NCBI disagrees about
   batch_000002/
-  ncbi_tt_comparison.tsv                the whole release, once every batch has SUCCESS
+  ncbi_tt_conflict.tsv                  the whole release, once every batch has SUCCESS
   gtranslate.translation_table_summary.tsv
 ```
 
@@ -349,7 +349,8 @@ authoritative: a later run reuses them and says so, since partitioning a release
 again that has gained a genome would move genomes between batches that are
 already finished. Remove the batch directories to partition it afresh.
 
-`ncbi_tt_comparison.tsv` covers the genomes for which an NCBI table exists:
+`ncbi_tt_conflict.tsv` holds the genomes where the table gTranslate predicted is
+not the one NCBI declares, one row each:
 
 | Column | |
 | --- | --- |
@@ -357,12 +358,15 @@ already finished. Remove the batch directories to partition it afresh.
 | `gtranslate_tt` | the table gTranslate predicted |
 | `ncbi_tt` | the table NCBI declares in the genomic GFF |
 | `checkm_tt` | the table the coding density rule alone would choose, as Prodigal and CheckM do unaided; it cannot express table 25 |
-| `result` | `agree` or `conflict` |
+| `checkm_conflict` | `True` where gTranslate and that rule disagree about the genome being recoded at all: 11 against 4, or 4 or 25 against 11. 25 against 4 is `False` -- the rule picks between 4 and 11 alone, so 4 is the closest it can come to saying 25 |
 | `coding_density_4`, `coding_density_11` | as gTranslate measured them |
 | `ncbi_taxonomy` | lineage from `--taxonomy_file`, `na` where it holds none |
 
-A genome NCBI has not annotated declares no table, so it has nothing to compare
-against and is left out of the file rather than given a row saying so.
+Every row is a conflict, so there is no column saying so. A genome the two agree
+about is counted and not written, agreement being nearly every genome of a
+release; a genome NCBI has not annotated declares no table and cannot be compared
+at all. How many agreed, how many conflicted and how many NCBI declares no table
+for is logged for each batch.
 
 `prodigal` takes the summary `trans_table` writes as `--trans_table` and calls each
 genome's genes under the table named there, so Prodigal no longer chooses one by
