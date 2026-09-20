@@ -697,8 +697,21 @@ class RunTests(TempDirCase):
         self.assertEqual(G.batch_state(batch), G.STATE_FAILED)
 
     def run_one_expecting_failure(self, manager):
-        """A run ending with a failed batch raises, having done the others."""
-        self.assertRaises(RuntimeError, self.run_one, manager)
+        """A run ending with a failed batch says so, having done the others."""
+        self.assertFalse(self.run_one(manager))
+
+    def test_a_failed_batch_is_reported_rather_than_raised(self):
+        """The batch says why it failed and is retried by the next run; a
+        traceback out of days of work over five machines adds nothing."""
+        manager = self.manager()
+        with mock.patch.object(G.GTranslate, 'run_gtranslate',
+                               side_effect=RuntimeError('gtranslate returned exit code 1.')):
+            with self.assertLogs(manager.logger, level='ERROR') as logged:
+                finished = self.run_one(manager)
+
+        self.assertFalse(finished)
+        self.assertTrue(any('1 batch(es) failed' in message
+                            for message in logged.output))
 
 
 # ------------------------------------------------------------- the comparison

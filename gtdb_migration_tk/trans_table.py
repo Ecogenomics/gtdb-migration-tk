@@ -1537,7 +1537,8 @@ class GTranslate(object):
         out_dir : str
             Directory the batches and their results are written to.
 
-        @return: True once every batch this machine took has finished.
+        @return: True where every batch this machine took has finished, False
+                 where one failed and is left to a later run.
         """
 
         binary = shutil.which(GTRANSLATE_BIN)
@@ -1608,10 +1609,15 @@ class GTranslate(object):
 
         self.aggregate(batches, out_dir)
 
+        # a batch that failed has already said why, in its own log and in its
+        # FAILED file, and the batches that succeeded are finished and staying
+        # that way; there is nothing left for a traceback to add, and a run of
+        # five machines over days should not end by printing one
         if failed:
-            raise RuntimeError(
+            self.logger.error(
                 '{:,} batch(es) failed; they are the directories holding a {} '
                 'file and are retried by running the command again.'.format(
                     failed, FAILED_CANARY))
+            return False
 
         return True
