@@ -290,7 +290,8 @@ it on a file server shared with other work.
 ```
 <out_dir>/
   batch_000001/
-    gtranslate_batchfile.tsv            the genomes of this batch
+    gtranslate_batchfile.tsv.gz         the genomes of this batch
+    gtranslate_batchfile_present.tsv    the copy gTranslate reads, while it runs
     RUNNING                             a machine is working on it (host, PID, time)
     PREDICTED                           gTranslate has run; its results are final
     SUCCESS                             it finished; its results are complete
@@ -301,14 +302,22 @@ it on a file server shared with other work.
     no_prediction.tsv                   genomes gTranslate returned nothing for
     gtranslate.translation_table_summary.tsv
     ncbi_tt_conflict.tsv                genomes of this batch NCBI disagrees about
+    gtranslate_ncbi_tt_comparison.tsv.gz  every genome of this batch both called
   batch_000002/
-  checkm2/
-    input/table_25/                     the conflicting genomes, linked by accession
-    table_25/quality_report.tsv         what CheckM2 made of them under table 25
-    table_11/, table_4/                 the same under the other tables in dispute
+  checkm2/                              working space, removed once the estimates
+                                        are in ncbi_tt_conflict.tsv
   ncbi_tt_conflict.tsv                  the whole release, once every batch has SUCCESS
-  gtranslate.translation_table_summary.tsv
+  gtranslate_ncbi_tt_comparison.tsv.gz
+  gtranslate_no_prediction.tsv          genomes the release has no table for
+  gtranslate.translation_table_summary.tsv.gz
 ```
+
+The release summary is gzipped -- a row per genome, 116 MB of text for r237 and
+34 MB compressed -- while `ncbi_tt_conflict.tsv` is a few hundred rows meant to
+be read and is not. A batch's own summary is gTranslate's output and is left as
+gTranslate wrote it. `prodigal` takes either: the summary is read by its first two
+bytes rather than by its name, so a release summary that has been gunzipped, or
+renamed on the way to another machine, still reads.
 
 A batch is the unit of restart and of sharing. Several machines may be given the
 same `--out_dir` and will divide the release between them, each claiming batches
@@ -324,6 +333,16 @@ claim before its lease is up, which is only ever right when the machine holding
 it is known to have stopped. The lease is measured against the file server's
 clock, so the machines sharing an `--out_dir` need not agree about the time.
 
+**The plan is kept compressed; gTranslate is handed a copy.** gTranslate opens a
+batchfile with a plain `open()`, so `gtranslate_batchfile_present.tsv` is written
+before it starts and removed once it has finished: a finished batch keeps
+`gtranslate_batchfile.tsv.gz` alone. A batch taken over mid-run writes that copy
+again from the plan, and a batch gTranslate failed on keeps it, being what a retry
+looks at to see what went in. A batch planned by an earlier version holds an
+uncompressed `gtranslate_batchfile.tsv`, which is read as it stands -- a release
+whose batches looked unplanned would be partitioned again with its batches already
+done.
+
 **Hours are not redone.** `PREDICTED` is written the moment gTranslate returns,
 so a batch taken over between the prediction and the comparison is compared
 rather than predicted again. Within a batch gTranslate resumes by itself, keeping
@@ -331,6 +350,26 @@ each genome's called genes with a checksum beside them and skipping a genome
 whose files verify, so a batch interrupted at genome 7,000 of 10,000 carries on
 from there. Nothing removes a batch directory before retrying it, for that
 reason.
+
+**The genomes with no table are named once, for the release.**
+`gtranslate_no_prediction.tsv` lists every genome the release has no translation
+table for, with the reason:
+
+| `reason` | |
+| --- | --- |
+| `gtranslate_returned_no_prediction` | gTranslate was handed the genome and returned nothing for it |
+| `no_genomic_fasta` | the genome had no genomic FASTA, so it was never handed over |
+
+The two are different failures and the row says which, because reporting a missing
+file as a prediction failure sends the reader looking at the wrong thing. The file
+is written even when there is nothing in it, so a release with nothing missing
+says so. It is worked out per batch from what the batch was asked about against
+what its summary answered, not concatenated from the batches' own
+`no_prediction.tsv` -- those are written by the run that *predicts* a batch, and a
+batch already predicted is never predicted again. For r237 it is eight genomes of
+1,346,118: six of the first kind and two of the second. `prodigal` needs a table
+for every genome of the release, so this is the list to correct with
+`--tt_override`.
 
 **One bad genome does not cost a batch.** gTranslate ends a run when a worker
 dies, and a genome it cannot process -- a few hundred bases with no genes to
@@ -365,14 +404,34 @@ not the one NCBI declares, one row each:
 | `checkm_tt` | the table the coding density rule alone would choose, as Prodigal and CheckM do unaided; it cannot express table 25 |
 | `checkm_conflict` | `True` where gTranslate and that rule disagree about the genome being recoded at all: 11 against 4, or 4 or 25 against 11. 25 against 4 is `False` -- the rule picks between 4 and 11 alone, so 4 is the closest it can come to saying 25 |
 | `coding_density_4`, `coding_density_11` | as gTranslate measured them |
+| `gc_percent`, `n50`, `genome_size` | as gTranslate measured them; what tells a conflict about a real genome from one about 200 kb of something barely assembled |
 | `cm2_completeness_gtranslate_tt`, `cm2_contamination_gtranslate_tt` | what CheckM2 makes of the genome with its genes called under `gtranslate_tt` |
+| `pass_qc_gtranslate_tt` | `True` where those pass standard GTDB QC, `na` where CheckM2 returned nothing |
 | `cm2_completeness_ncbi_tt`, `cm2_contamination_ncbi_tt` | the same under `ncbi_tt` |
+| `pass_qc_ncbi_tt` | and the same verdict under `ncbi_tt` |
 | `ncbi_taxonomy` | lineage from `--taxonomy_file`, `na` where it holds none |
 
-Every row is a conflict, so there is no column saying so. A genome the two agree
-about is counted and not written, agreement being nearly every genome of a
-release; a genome NCBI has not annotated declares no table and cannot be compared
-at all. How many genomes NCBI declares a table for, how many of those the two
+Every row is a conflict, so there is no column saying so -- `ncbi_conflict` lives
+in the comparison, where it tells the rows apart. A genome NCBI has not annotated
+declares no table and is in neither file.
+
+`gtranslate_ncbi_tt_comparison.tsv.gz` holds **every** genome the two both called,
+agreements and all -- 786,144 of r237's 1.35M, which is why it is gzipped in the
+batch as well as in the release:
+
+| Column | |
+| --- | --- |
+| `genome_id`, `gtranslate_tt`, `ncbi_tt`, `checkm_tt` | as in the conflict file |
+| `ncbi_conflict` | `True` where gTranslate and NCBI named different tables; these are the rows the conflict file holds |
+| `checkm_conflict` | the narrower question, as above: whether gTranslate and the density rule disagree about the genome being recoded at all |
+| `coding_density_4`, `coding_density_11`, `gc_percent`, `n50`, `genome_size` | as gTranslate measured them |
+| `ncbi_taxonomy` | lineage from `--taxonomy_file` |
+
+The agreements are there because the rate the two differ at, and whether the
+genomes they differ about are unlike the ones they agree about, are questions the
+agreements have to be present to answer. The conflicts are that file filtered, not
+a second walk over the genomes -- every GFF has already been read once -- so the
+two cannot come to disagree about which genomes conflicted. How many genomes NCBI declares a table for, how many of those the two
 agree and disagree about, and what percentage of them disagree is logged for each
 batch and again for the release. The rate is of the genomes that could be
 compared, not of the release: a genome NCBI has not annotated is not one the two
@@ -387,6 +446,16 @@ genome at all. CheckM2's own choice is not asked for -- left to itself it picks
 between tables 4 and 11 by coding density, which is what `checkm_tt` already
 reports.
 
+**Standard GTDB QC** is completeness > 50%, contamination < 10%, and a quality
+score of `completeness - 5 * contamination` > 50. All three must hold: the score
+alone would keep a genome 96% complete and 9% contaminated, and the completeness
+alone would keep anything that had been sequenced. The thresholds are exclusive,
+so a genome exactly 50% complete does not pass. The verdict is given per table
+because a genome can pass under one and fail under the other -- which is the case
+worth looking at, the conflict having changed whether the release keeps the
+genome at all and not merely by how much. A genome CheckM2 returned nothing for
+is `na` rather than `False`: it was not looked at and found wanting.
+
 These runs are made once for the release, after every batch has succeeded, and
 grouped by table: the conflicts are a few hundred genomes of a million-odd, and
 CheckM2 searches the whole DIAMOND database once per run whatever the run holds.
@@ -395,20 +464,72 @@ A release already predicted therefore picks them up by running the command again
 release files are written. Run that pass on ONE machine: the batches are claimed
 one machine at a time but the release files are not, so several machines re-run
 together would each start CheckM2 in the same directories, and `checkm2 predict
---force` empties its output directory as it starts. A machine arriving after one
-has finished is harmless -- a run whose `quality_report.tsv` is already there is
-read rather than made again. A genome with no FASTA, or a run that fails, leaves
+--force` empties its output directory as it starts.
+
+The `checkm2/` directory is removed once the estimates are in
+`ncbi_tt_conflict.tsv`. What it holds -- the staged genomes, the called proteins,
+the DIAMOND output -- is about 600 KB per genome per table and says nothing the
+conflict file does not now say. Running the command again therefore makes those
+runs afresh rather than reading them, which is minutes for the few hundred
+genomes a release conflicts about; the batches are what must never be redone, and
+they are not. A table CheckM2 produced nothing for keeps the directory, so
+retrying it does not also redo the tables that worked. A genome with no FASTA, or a run that fails, leaves
 `na` in those four columns and the rest of the row intact; nothing here can cost
 the release the comparison, which is written and counted before CheckM2 starts.
 
 `prodigal` takes the summary `trans_table` writes as `--trans_table` and calls each
 genome's genes under the table named there, so Prodigal no longer chooses one by
 coding density. `--tt_override` corrects it: a TSV of `genome_id` and
-`translation_table` whose rows replace the prediction. Every genome of the release
-must have a table, from one file or the other, before any genes are called — a run
-that found the gap genome by genome would find it hours in. Each genome's
-`prodigal/prodigal_translation_table.tsv` records the table used and where it came
-from, `predicted by gTranslate` or `specified by --tt_override`.
+`translation_table` whose rows replace the prediction.
+
+`prodigal` takes an `--out_dir` and cuts the release into batches under it, the
+same machinery `trans_table` uses (`batching.py`). Several machines may be given
+the same `--out_dir` and will divide the release between them, each claiming
+batches no other machine holds; `--batch_size`, `--reclaim` and `--lease` behave
+as they do there, and a batch is skipped once it has `SUCCESS`.
+
+**`--out_dir` holds the state of the run and nothing else.** The called genes go
+into each genome's own `prodigal/` directory, as they always have, which is also
+why two machines on different batches never write to the same place:
+
+```
+<out_dir>/
+  batch_000001/
+    prodigal_batchfile.tsv.gz         the genomes of this batch
+    RUNNING / SUCCESS / FAILED        as in trans_table
+    prodigal.log                      what this command did to this batch
+    not_called.tsv                    genomes of this batch that got no genes
+  prodigal_not_called.tsv             the whole release, once every batch has SUCCESS
+```
+
+`prodigal_not_called.tsv` names every genome the release has no genes for, with
+the reason: `no_translation_table`, `no_genomic_fasta`, or `prodigal_failed`. The
+next command needs to know which genomes have no proteins, and it should not have
+to look in 135 directories to find out.
+
+A rerun skips finished batches rather than re-reading the proteins of the whole
+release, which is what batching buys over the per-genome checksum alone. The
+checksum still decides genome by genome inside a batch that is not finished, which
+is what a batch retried after a failure leans on. `--all_genomes` does the
+finished batches again, since otherwise it would skip every batch it was asked to
+redo.
+
+**A genome with no table is not called.** gTranslate returns no prediction for a
+handful of genomes of a release — eight of r237's 1.35M, two of which have no
+genomic FASTA to predict from at all — and there is nothing to call their genes
+under; letting Prodigal pick a table by coding density is the very thing handing it
+the summary prevents. They are named in the log and left, and `--tt_override` is
+how one is given a table and called after all. `trans_table` lists them in full in
+`gtranslate_no_prediction.tsv`.
+
+Which genomes those are is settled before any genes are called rather than
+discovered one at a time, because a run that meets the gap genome by genome meets
+it hours in. A summary covering **no** genome of the release still stops the run:
+that is the wrong file rather than a few unpredictable genomes, and carrying on
+would call nothing and report that the run had finished.
+
+Each genome's `prodigal/prodigal_translation_table.tsv` records the table used and
+where it came from, `predicted by gTranslate` or `specified by --tt_override`.
 
 ### Genome quality
 

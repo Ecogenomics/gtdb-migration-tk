@@ -4,10 +4,22 @@ import gzip
 import logging
 import multiprocessing as mp
 import shutil
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from tqdm import tqdm
 
+from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
+                                        DEFAULT_BATCH_SIZE, HEARTBEAT_SECONDS,
+                                        RUNNING_CANARY, STATE_SUCCESS,
+                                        SUCCESS_CANARY,
+                                        STAT_THREADS, BatchLayout, Heartbeat,
+                                        age_phrase, batch_log, batch_state,
+                                        batchfile_path, claim_batch, claim_age,
+                                        concatenate, fail_batch, finish_batch,
+                                        plan_batches, read_batchfile,
+                                        read_canary, release_claim,
+                                        split_by_fasta, tally_reasons,
+                                        write_table)
 from gtdb_migration_tk.biolib_lite.checksum import sha256_rb
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.prodigal import Prodigal, ProdigalTask
@@ -27,7 +39,45 @@ OVERRIDE_TABLE = 'translation_table'
 SOURCE_PREDICTED = 'predicted by gTranslate'
 SOURCE_OVERRIDE = 'specified by --tt_override'
 
-# How many genomes without a translation table are named before the run gives up.
+# What this command calls the files of its own batches. The batchfile is the
+# record of which genomes a batch is; --out_dir holds nothing else of the run's
+# results, the called genes going into the genome directories as they always
+# have. There is no older name to look for: this command has never had batches
+# before.
+BATCHFILE_NAME = 'prodigal_batchfile.tsv.gz'
+BATCH_LOG_NAME = 'prodigal.log'
+LAYOUT = BatchLayout(batchfiles=(BATCHFILE_NAME,), log=BATCH_LOG_NAME)
+
+# The genomes of a batch that came out of it with no genes, and the same gathered
+# for the release. Three things can leave a genome uncalled and they are
+# different failures: no table was predicted for it, its genomic FASTA is not
+# where the release says it is, or Prodigal was run over it and produced nothing.
+# The next command needs to know which genomes have no proteins, and it should
+# not have to look in 135 directories to find out.
+NOT_CALLED_NAME = 'not_called.tsv'
+NOT_CALLED_RELEASE_NAME = 'prodigal_not_called.tsv'
+NOT_CALLED_HEADER = ('genome_id', 'reason')
+REASON_NO_TABLE = 'no_translation_table'
+REASON_NO_FASTA = 'no_genomic_fasta'
+REASON_FAILED = 'prodigal_failed'
+
+
+class BatchCounts(NamedTuple):
+    """What calling the genes of one batch came to.
+
+    Recorded in the batch's SUCCESS canary, because the release totals are added
+    up from the batches and a machine that ran the last batch has called the
+    genes of none of the others.
+    """
+
+    called: int
+    already_called: int
+    not_called: int
+
+
+# How many genomes without a translation table are named in the warning. The
+# whole list is trans_table's gtranslate_no_prediction.tsv, which is where to
+# read it; this is enough to recognise the kind of thing being left out.
 MISSING_TABLES_LOGGED = 5
 
 
@@ -84,7 +134,13 @@ class ProdigalManager(object):
     writes into each genome's own directory.
     """
 
-    def __init__(self, tmp_dir: str = '/tmp/', cpus: int = 1) -> None:
+    def __init__(self,
+                 tmp_dir: str = '/tmp/',
+                 cpus: int = 1,
+                 batch_size: int = DEFAULT_BATCH_SIZE,
+                 reclaim: bool = False,
+                 lease: float = CLAIM_LEASE_SECONDS,
+                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
         """Initialization.
 
         Prodigal is checked for here rather than when it is first called, so a
@@ -99,12 +155,24 @@ class ProdigalManager(object):
         cpus : int
             Number of genomes gene called at once, and the size of the pool that
             decides which genomes need it.
+        batch_size : int
+            Genomes per batch.
+        reclaim : bool
+            Take over a batch another machine holds before its claim has expired.
+        lease : float
+            Seconds a claim survives without the machine holding it saying so.
+        heartbeat : float
+            Seconds between this machine saying so about a batch of its own.
 
         @return: None
         """
 
         self.tmp_dir = tmp_dir
         self.cpus = cpus
+        self.batch_size = batch_size
+        self.reclaim = reclaim
+        self.lease = lease
+        self.heartbeat = heartbeat
 
         check_dependencies(['prodigal'])
 
@@ -113,6 +181,7 @@ class ProdigalManager(object):
     def run(self,
             gtdb_genome_path_file: str,
             trans_table_file: str,
+            out_dir: str,
             tt_override_file: Optional[str] = None,
             all_genomes: bool = False) -> bool:
         """Call genes for every genome of a release that still needs them.
@@ -123,33 +192,42 @@ class ProdigalManager(object):
         of calling them under tables 4 and 11 and keeping whichever coded more of the
         genome, which is a rule that cannot express table 25 at all.
 
-        Every genome of the release must have a table before any genes are called. A
-        release the predictions do not cover is a mistake made upstream, and a run
-        that discovers it genome by genome discovers it hours in, having already
-        called the genes of everything ahead of the gap.
+        The release is cut into batches under --out_dir and a batch is claimed
+        before it is worked on, so several machines can be pointed at one --out_dir
+        and will divide the release between them. The batching is the same
+        machinery trans_table uses, in batching.py. What --out_dir holds is the
+        state of the run and nothing else: the genes go into each genome's own
+        prodigal/ directory, as they always have, which is why two machines on
+        different batches never write to the same place.
 
-        Two passes then, because deciding is cheap and calling is not. The first
-        spreads prodigal_parser() over the pool to sort the release into genomes
-        whose proteins are already there and vouched for and genomes that are not;
-        the second hands what is left to run_prodigal(). A release is mostly carried
-        over from the one before, so the first pass is what keeps a run proportional
-        to the genomes that are actually new.
+        A genome with no table is not called. gTranslate returns no prediction for a
+        few genomes of a release -- eight of r237's 1.35M, some of which have no
+        genomic FASTA to predict from at all -- and there is nothing to call their
+        genes under: Prodigal choosing a table by coding density is the very thing
+        the summary is handed over to prevent. They are recorded and left, and
+        --tt_override is how one is given a table and called after all.
+
+        A summary covering NO genome of the release stops the run before any batch
+        is claimed. That is the wrong file rather than a few unpredictable genomes,
+        and carrying on would call nothing at all and report that the run had
+        finished.
 
         Parameters
         ----------
         gtdb_genome_path_file : str
             genome_dirs file of the release, accession and genome directory per line.
         trans_table_file : str
-            gtranslate.translation_table_summary.tsv, as trans_table writes it.
+            gtranslate.translation_table_summary.tsv.gz, as trans_table writes it.
+        out_dir : str
+            Directory the batches and the state of the run are written to.
         tt_override_file : str
             Corrections to those predictions, or None.
         all_genomes : bool
             Call genes for every genome, discarding the previous results, rather than
             only for those that need it (default = False).
 
-        @return: True, unconditionally. It reports that the run finished rather than
-                 that every genome succeeded; a genome that could not be called is
-                 warned about as it is met.
+        @return: True where every batch this machine took finished, False where one
+                 failed and is left to a later run.
         """
 
         tables, sources = read_translation_tables(trans_table_file, tt_override_file)
@@ -159,47 +237,263 @@ class ProdigalManager(object):
             ', {:,} of them corrected by {}'.format(corrected, tt_override_file)
             if tt_override_file else ''))
 
-        # get all path to genome data files for all genomes in GTDB release
-        list_genome_tuples = []
-        with open(gtdb_genome_path_file,'r') as fh :
-            for line in tqdm(fh, ncols=100, leave=False, desc='Reading genomes'):
-                tokens = line.strip().split('\t')
-                gid = tokens[0]
-                gpath = tokens[1]
-                list_genome_tuples.append((gid, gpath, all_genomes))
+        batches = self.plan_batches(gtdb_genome_path_file, out_dir, tables)
 
-        missing = [gid for gid, _, _ in list_genome_tuples if gid not in tables]
-        if missing:
-            raise RuntimeError(
-                '{:,} of {:,} genomes have no translation table in {}: {}{}. Every '
-                'genome needs one before any genes are called; correct them with '
-                '--tt_override or rerun trans_table over this release.'.format(
-                    len(missing), len(list_genome_tuples), trans_table_file,
-                    ', '.join(missing[:MISSING_TABLES_LOGGED]),
-                    ' ...' if len(missing) > MISSING_TABLES_LOGGED else ''))
+        if all_genomes:
+            self.logger.warning(
+                'warning: --all_genomes discards the results of every genome and '
+                'calls its genes again, so batches already finished are done again '
+                'too. Without it a finished batch is skipped.')
 
-        # determine which genomes need to be processed by Prodigal
-        self.logger.info('Running prodigal on genomes.')
-        with mp.Pool(processes=self.cpus) as pool:
-            genome_paths = list(tqdm(pool.imap_unordered(self.prodigal_parser, list_genome_tuples),
-                                    total=len(list_genome_tuples), unit='genome'))
+        done, held, failed = 0, 0, 0
+        for index, batch_dir in enumerate(batches, start=1):
+            label = 'Batch {:,} of {:,} ({})'.format(
+                index, len(batches), os.path.basename(batch_dir))
 
+            if not all_genomes and batch_state(batch_dir) == STATE_SUCCESS:
+                self.logger.info('{}: already finished, skipping.'.format(label))
+                continue
 
-        # run Prodigal on genomes requiring gene calling
-        genome_paths = [x for x in genome_paths if x != ('null', 'null')]
+            if not claim_batch(batch_dir, self.reclaim, self.lease):
+                owner = read_canary(os.path.join(batch_dir, RUNNING_CANARY))
+                held += 1
+                self.logger.info('{}: held by {} since {}, last heard from {}, '
+                                 'skipping.'.format(
+                                     label, owner.get('host', 'another machine'),
+                                     owner.get('time', 'an unknown time'),
+                                     age_phrase(claim_age(
+                                         os.path.join(batch_dir, RUNNING_CANARY)))))
+                continue
 
-        # what the first pass was for: a release is mostly carried over from the
-        # one before, so the two counts are how much of this run is work and how
-        # much of it was already done. A run over a whole release that reports
-        # every genome as requiring gene calling has not carried anything across
-        skipped = len(list_genome_tuples) - len(genome_paths)
+            # the batch has its own log from here, since this is where anything
+            # happens to it and every machine of a run writes its own --log
+            with batch_log(batch_dir, self.logger, LAYOUT):
+                self.logger.info('{}: starting.'.format(label))
+                try:
+                    with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY),
+                                   self.heartbeat):
+                        counts = self.call_batch(batch_dir, tables, sources,
+                                                 all_genomes)
+                except KeyboardInterrupt:
+                    # the machine holding it is stopping, so the batch is handed
+                    # back rather than left to sit out its lease
+                    release_claim(batch_dir)
+                    self.logger.error('{}: interrupted; the claim is given up and '
+                                      'the batch carries on where it stopped.'.format(label))
+                    raise
+                except Exception as exc:
+                    failed += 1
+                    fail_batch(batch_dir, str(exc))
+                    self.logger.error('{}: failed and will be retried by a later '
+                                      'run: {}'.format(label, exc))
+                    continue
+
+                finish_batch(batch_dir,
+                             called=counts.called,
+                             already_called=counts.already_called,
+                             not_called=counts.not_called)
+                done += 1
+                self.logger.info('{}: done.'.format(label))
+
         self.logger.info(
-            '{:,} genome(s) require gene calling; {:,} already have valid '
-            'Prodigal results.'.format(len(genome_paths), skipped))
+            '{:,} batch(es) finished here, {:,} held by another machine, '
+            '{:,} failed.'.format(done, held, failed))
 
-        self.run_prodigal(genome_paths, tables, sources)
+        self.aggregate(batches, out_dir)
+
+        # a batch that failed has already said why, in its own log and in its
+        # FAILED file, and a run of several machines over days should not end by
+        # printing a traceback out of the argparse frames
+        if failed:
+            self.logger.error(
+                '{:,} batch(es) failed; they are the directories holding a FAILED '
+                'file and are retried by running the command again.'.format(failed))
+            return False
 
         return True
+
+    def plan_batches(self,
+                     gtdb_genome_path_file: str,
+                     out_dir: str,
+                     tables: Dict[str, int]) -> List[str]:
+        """Settle which genomes are in which batch, once for every machine.
+
+        The release is checked against the predictions BEFORE any batch is cut, so
+        that a --trans_table for another release is met here rather than by every
+        batch in turn reporting that it called nothing.
+
+        Parameters
+        ----------
+        gtdb_genome_path_file : str
+            genome_dirs file of the release.
+        out_dir : str
+            Output directory of the run.
+        tables : dict
+            Accession to translation table, as read_translation_tables() gave them.
+
+        @return: paths of the batch directories, in batch order.
+        """
+
+        covered = 0
+        total = 0
+        with open(gtdb_genome_path_file) as handle:
+            for line in handle:
+                if line.strip():
+                    total += 1
+                    if line.split('\t')[0] in tables:
+                        covered += 1
+
+        if total and not covered:
+            raise RuntimeError(
+                'None of the {:,} genomes of this release has a translation table. '
+                'That file is for another release, or trans_table has not been run '
+                'over this one.'.format(total))
+
+        return plan_batches(gtdb_genome_path_file, out_dir, self.batch_size,
+                            LAYOUT, self.logger)
+
+
+    def call_batch(self,
+                   batch_dir: str,
+                   tables: Dict[str, int],
+                   sources: Dict[str, str],
+                   all_genomes: bool = False) -> BatchCounts:
+        """Call the genes of one batch, and record the genomes that got none.
+
+        The genomes are taken from the batch's own batchfile, so the work asks
+        about the genomes the batch was cut from rather than about whatever a
+        genome_dirs file says now.
+
+        Two passes, because deciding is cheap and calling is not: the first sorts
+        the batch into genomes whose proteins are already there and vouched for
+        and genomes that are not, the second calls what is left. A release is
+        mostly carried over from the one before, so the first pass is what keeps a
+        run proportional to the genomes that are actually new -- and doing it per
+        batch rather than over the release means a rerun re-reads the proteins of
+        one batch at a time instead of all 1.35M before it starts.
+
+        Parameters
+        ----------
+        batch_dir : str
+            Batch directory.
+        tables : dict
+            Accession to the translation table its genes are to be called under.
+        sources : dict
+            Accession to where that table came from.
+        all_genomes : bool
+            Discard what is there and call every genome of the batch again.
+
+        @return: what the batch came to, which run() records in its canary.
+        """
+
+        rows = read_batchfile(batchfile_path(batch_dir, LAYOUT))
+
+        # a genome with no table has nothing to call its genes under, and the
+        # coding density rule is the very thing the summary is handed over to
+        # prevent being fallen back on
+        not_called = [(accession, REASON_NO_TABLE) for _, accession in rows
+                      if accession not in tables]
+        with_table = [(fasta, accession) for fasta, accession in rows
+                      if accession in tables]
+
+        present, missing = split_by_fasta(with_table, STAT_THREADS)
+        not_called += [(accession, REASON_NO_FASTA) for accession in missing]
+
+        # named for what it asks, which is not what split_by_fasta() above asks:
+        # that one stats the genomic FASTA going in, this one reads the called
+        # genes already sitting there. Two bars a batch saying the same thing
+        # would leave a reader unable to tell which pass they were watching.
+        work = [(accession, os.path.dirname(fasta), all_genomes)
+                for fasta, accession in present]
+        with mp.Pool(processes=self.cpus) as pool:
+            decided = list(tqdm(pool.imap_unordered(self.prodigal_parser, work),
+                                total=len(work), unit='genome', ncols=100,
+                                leave=False, desc='Checking called genes'))
+
+        genome_paths = [answer for answer in decided if answer != ('null', 'null')]
+        already_called = len(work) - len(genome_paths)
+        self.logger.info(
+            '{:,} genome(s) require gene calling; {:,} already have valid '
+            'Prodigal results.'.format(len(genome_paths), already_called))
+
+        called = self.run_prodigal(genome_paths, tables, sources)
+
+        # a genome the wrapper was given that has no proteins afterwards was
+        # tried and produced nothing; it is named rather than left to be found by
+        # the next command
+        not_called += [(accession, REASON_FAILED) for accession, _ in genome_paths
+                       if accession not in called]
+
+        not_called.sort()
+        write_table(not_called, os.path.join(batch_dir, NOT_CALLED_NAME),
+                    header=NOT_CALLED_HEADER)
+
+        if not_called:
+            self.logger.warning(
+                'warning: {:,} genome(s) of this batch have no called genes: '
+                '{}.'.format(len(not_called),
+                             '; '.join('{:,} {}'.format(count, reason)
+                                       for reason, count
+                                       in sorted(tally_reasons(not_called).items()))))
+
+        return BatchCounts(called=len(called),
+                           already_called=already_called,
+                           not_called=len(not_called))
+
+    def aggregate(self, batches: Sequence[str], out_dir: str) -> None:
+        """Report the release, once every batch has succeeded.
+
+        Written only when they all have, so that the file at the top of the output
+        directory is either the whole release or absent, and never a part of it
+        that reads like the whole.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run, in batch order.
+        out_dir : str
+            Output directory of the run.
+
+        @return: None
+        """
+
+        unfinished = [batch for batch in batches
+                      if batch_state(batch) != STATE_SUCCESS]
+        if unfinished:
+            self.logger.info(
+                '{:,} of {:,} batch(es) are done; the release files are '
+                'written once they all are.'.format(
+                    len(batches) - len(unfinished), len(batches)))
+            return
+
+        path = os.path.join(out_dir, NOT_CALLED_RELEASE_NAME)
+        written = concatenate(
+            [os.path.join(batch, NOT_CALLED_NAME) for batch in batches], path)
+
+        totals = {'called': 0, 'already_called': 0}
+        for batch_dir in batches:
+            canary = read_canary(os.path.join(batch_dir, SUCCESS_CANARY))
+            for field in totals:
+                try:
+                    totals[field] += int(canary[field])
+                except (KeyError, ValueError):
+                    pass
+
+        # of the release and not of this machine: the counts are added up from
+        # every batch's canary, and the batches were shared out
+        self.logger.info(
+            'Release: {:,} genome(s) had their genes called, {:,} already had '
+            'valid Prodigal results.'.format(totals['called'],
+                                             totals['already_called']))
+
+        if written:
+            self.logger.warning(
+                'warning: {:,} genome(s) of the release have no called genes and '
+                'are named in {}.'.format(written, path))
+        else:
+            self.logger.info(
+                'Every genome of the release has called genes; wrote {} with no '
+                'rows.'.format(path))
 
     def prodigal_parser(self, data: Tuple[str, str, bool]) -> Tuple[str, str]:
         """Decide whether one genome still needs its genes called.
@@ -258,7 +552,7 @@ class ProdigalManager(object):
     def run_prodigal(self,
                      genome_paths: List[Tuple[str, str]],
                      tables: Dict[str, int],
-                     sources: Dict[str, str]) -> None:
+                     sources: Dict[str, str]) -> List[str]:
         """Call genes for the genomes run() decided need them, and file the results.
 
         The table of each genome is passed to Prodigal, which then calls the genes
@@ -286,7 +580,10 @@ class ProdigalManager(object):
         sources : dict
             Accession to where that table came from, recorded with it.
 
-        @return: None; the results are written into the genome directories.
+        @return: the accessions that have proteins afterwards. A genome the
+                 wrapper was given that has none was tried and produced nothing,
+                 and call_batch() names it rather than leaving it to be found by
+                 the next command.
         """
 
         self.logger.info(
@@ -338,7 +635,15 @@ class ProdigalManager(object):
         # that called its genes; this is the one record the wrapper has no
         # business knowing about
         self.logger.info('Recording the translation table of each genome.')
+        called = []
         for task in tasks:
+            # the proteins are what the genome is carried into the release by, so
+            # they are what says the genome was called and not the exit status of
+            # a worker that may have written nothing
+            if not os.path.exists(task.aa_gene_file):
+                continue
+
+            called.append(task.genome_id)
             table_file = os.path.join(os.path.dirname(task.aa_gene_file),
                                       'prodigal_translation_table.tsv')
             with open(table_file, 'w') as handle:
@@ -346,3 +651,5 @@ class ProdigalManager(object):
                     'best_translation_table',
                     summary_stats[task.genome_id].best_translation_table,
                     sources.get(task.genome_id, SOURCE_PREDICTED)))
+
+        return called

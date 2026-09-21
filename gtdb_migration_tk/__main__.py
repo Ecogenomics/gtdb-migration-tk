@@ -551,7 +551,8 @@ def __second_domain_report(group, required):
 def __trans_table_file(group, required):
     group.add_argument('--trans_table', dest='trans_table_file', required=required,
                        help='Translation table of each genome '
-                            '(gtranslate.translation_table_summary.tsv, written by trans_table).')
+                            '(gtranslate.translation_table_summary.tsv.gz, written by '
+                            'trans_table; gzipped or not is read either way).')
 
 
 def __tt_override(group):
@@ -772,12 +773,16 @@ def get_main_parser():
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
             __trans_table_file(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
             __tt_override(grp)
             __tmp_dir(grp)
             __cpus(grp)
+            __batch_size(grp)
+            __reclaim(grp)
+            __lease(grp)
             __all_genomes(grp)
 
     # Search Pfam Tigrfam markers
