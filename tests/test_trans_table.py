@@ -276,7 +276,7 @@ class DetectTableCommandTests(unittest.TestCase):
 # ------------------------------------------------------------- the manager itself
 
 class ManagerTests(unittest.TestCase):
-    """gtranslate and prodigal are checked for when the manager is built."""
+    """gtranslate, checkm2 and prodigal are checked for when the manager is built."""
 
     def setUp(self):
         # the real check exits the process, and neither tool is wanted offline
@@ -285,12 +285,15 @@ class ManagerTests(unittest.TestCase):
     def tearDown(self):
         G.check_dependencies = self._check
 
-    def test_both_third_party_tools_are_checked_for(self):
-        """gTranslate calls Prodigal, and its package does not depend on it."""
+    def test_every_third_party_tool_is_checked_for(self):
+        """gTranslate calls Prodigal and its package does not depend on it, and
+        CheckM2 is run from an environment of its own, so neither arrives with
+        this package and a run that cannot find one should say so before it
+        spends hours finding out."""
         asked = []
         G.check_dependencies = lambda programs, *a, **k: asked.extend(programs)
         G.GTranslate()
-        self.assertEqual(sorted(asked), ['gtranslate', 'prodigal'])
+        self.assertEqual(sorted(asked), ['checkm2', 'gtranslate', 'prodigal'])
 
     def test_batch_size_default_matches_the_command_line(self):
         """The two defaults are written out separately and must not drift apart."""
@@ -642,10 +645,10 @@ class RunTests(TempDirCase):
 
     def comparison(self, manager, batch_dir, taxonomy):
         """Stands in for compare_batch, leaving what the run aggregates."""
-        for name in (G.CONFLICT_NAME, G.summary_name()):
-            with open(os.path.join(batch_dir, name), 'w') as handle:
-                handle.write('genome_id\n')
-        return 1
+        G.write_conflicts([], os.path.join(batch_dir, G.CONFLICT_NAME))
+        with open(os.path.join(batch_dir, G.summary_name()), 'w') as handle:
+            handle.write('genome_id\n')
+        return G.ComparisonCounts(compared=1, conflicts=0, no_ncbi_table=0)
 
     def test_a_batch_gtranslate_already_finished_is_only_compared(self):
         """The prediction is hours and the comparison is seconds; a lost machine
@@ -898,3 +901,444 @@ class AggregationTests(TempDirCase):
             lines = handle.read().splitlines()
         self.assertEqual(len(lines), 3)
         self.assertEqual(lines[0].split('\t')[0], 'genome_id')
+
+
+# ------------------------------------------- how much of the release NCBI annotates
+
+class DisagreementRateTests(unittest.TestCase):
+    """The rate is of the genomes that could be compared, not of the release."""
+
+    def test_the_denominator_is_the_genomes_ncbi_declares_a_table_for(self):
+        """Counting the unannotated genomes in would make the number a measure of
+        how much of the release NCBI has annotated, not of how often the two
+        differ."""
+        self.assertAlmostEqual(G.disagreement_rate(1, 4), 25.0)
+
+    def test_a_release_nothing_could_be_compared_in_has_a_rate_of_zero(self):
+        """A batch of genomes NCBI has annotated none of divides by nothing, and
+        the log line is still written."""
+        self.assertEqual(G.disagreement_rate(0, 0), 0.0)
+
+
+class BatchCountsTests(TempDirCase):
+    """The release counts come from the batches' canaries, which is the only place
+    a batch run on another machine leaves them."""
+
+    def batch(self, name, **fields):
+        path = os.path.join(self.dir, name)
+        os.makedirs(path)
+        G.finish_batch(path, **fields)
+        return path
+
+    def test_the_counts_of_every_batch_are_added_up(self):
+        batches = [self.batch('batch_000001', compared=10, no_ncbi_table=2),
+                   self.batch('batch_000002', compared=7, no_ncbi_table=3)]
+        self.assertEqual(G.batch_counts(batches), (17, 5))
+
+    def test_a_batch_finished_before_the_field_existed_leaves_that_total_unknown(self):
+        """r237 was predicted before no_ncbi_table was recorded. Its release line
+        still reports the genomes compared and the rate, and says nothing about
+        the genomes NCBI declares no table for rather than reporting a total that
+        is short by every batch predicted then."""
+        batches = [self.batch('batch_000001', compared=10, no_ncbi_table=2),
+                   self.batch('batch_000002', compared=7)]
+        compared, no_ncbi_table = G.batch_counts(batches)
+        self.assertEqual(compared, 17)
+        self.assertIsNone(no_ncbi_table)
+
+
+# --------------------------------------------- the quality of a conflicting genome
+
+class ConflictTableTests(unittest.TestCase):
+    """A conflicting genome is asked about under BOTH of the tables in dispute."""
+
+    def row(self, accession, gtranslate_tt, ncbi_tt):
+        return (accession, gtranslate_tt, ncbi_tt, '4', 'False', '90.1', '64.2', 'na')
+
+    def test_a_genome_is_run_under_each_of_the_two_tables_it_disputes(self):
+        """Completeness under a table is the evidence about that table; one run
+        would say how good the genome is, two say which table makes it look like
+        a genome at all."""
+        tables = G.conflict_tables([self.row('GCA_1.1', '25', '11')])
+        self.assertEqual(tables, {25: ['GCA_1.1'], 11: ['GCA_1.1']})
+
+    def test_the_genomes_disputing_one_table_are_gathered_into_one_run(self):
+        """CheckM2 searches the whole DIAMOND database once per run whatever the
+        run holds, so the cost is the number of runs and barely the number of
+        genomes."""
+        tables = G.conflict_tables([self.row('GCA_2.1', '4', '11'),
+                                    self.row('GCA_1.1', '25', '11')])
+        self.assertEqual(tables[11], ['GCA_1.1', 'GCA_2.1'])
+        self.assertEqual(sorted(tables), [4, 11, 25])
+
+    def test_a_table_that_is_not_a_number_is_not_run(self):
+        """There is nothing to force Prodigal to, and the genome keeps its row."""
+        tables = G.conflict_tables([self.row('GCA_1.1', '25', 'na')])
+        self.assertEqual(tables, {25: ['GCA_1.1']})
+
+
+class StageCheckM2InputTests(TempDirCase):
+    """CheckM2 names a result for the file it read, so the file is named for the
+    accession the conflict row is keyed by."""
+
+    def test_a_genome_is_linked_under_its_accession(self):
+        """NCBI names the FASTA for the assembly, so the genome would otherwise
+        come back as GCA_000238995.1_ASM23899v1_genomic and join to nothing."""
+        path = self.genome_dir('GCA_1.1_ASM1')
+        fasta = os.path.join(path, 'GCA_1.1_ASM1_genomic.fna.gz')
+        staged = G.stage_checkm2_input(['GCA_1.1'], {'GCA_1.1': fasta},
+                                       os.path.join(self.dir, 'input'))
+        self.assertEqual([os.path.basename(link) for link in staged],
+                         ['GCA_1.1.fna.gz'])
+        self.assertEqual(os.path.realpath(staged[0]), os.path.realpath(fasta))
+
+    def test_a_genome_with_no_fasta_is_left_out_rather_than_linked_to_nothing(self):
+        """The row stays and reports na; a dangling link would fail the whole run
+        of that table."""
+        staged = G.stage_checkm2_input(
+            ['GCA_1.1'], {'GCA_1.1': os.path.join(self.dir, 'gone.fna.gz')},
+            os.path.join(self.dir, 'input'))
+        self.assertEqual(staged, [])
+
+    def test_staging_again_replaces_the_link_rather_than_failing(self):
+        """A table whose run failed is staged again by the next run."""
+        path = self.genome_dir('GCA_1.1_ASM1')
+        fasta = os.path.join(path, 'GCA_1.1_ASM1_genomic.fna.gz')
+        staging = os.path.join(self.dir, 'input')
+        G.stage_checkm2_input(['GCA_1.1'], {'GCA_1.1': fasta}, staging)
+        staged = G.stage_checkm2_input(['GCA_1.1'], {'GCA_1.1': fasta}, staging)
+        self.assertEqual(len(staged), 1)
+
+
+class CheckM2CommandTests(unittest.TestCase):
+    """The table is forced; letting CheckM2 choose would ask a question that is
+    already answered."""
+
+    def command(self, **kwargs):
+        options = dict(fastas=['/x/GCA_1.1.fna.gz'], table=25,
+                       out_dir='/out/table_25', threads=8)
+        options.update(kwargs)
+        return G.checkm2_command(**options)
+
+    def test_the_table_is_forced(self):
+        """CheckM2 left to itself picks between 4 and 11 by coding density, which
+        is the rule checkm_tt already reports and cannot express 25 at all."""
+        cmd = self.command()
+        self.assertEqual(cmd[cmd.index('--ttable') + 1], '25')
+
+    def test_the_genomes_come_last_because_input_takes_the_rest_of_the_line(self):
+        """--input is nargs='+', so anything after it is read as a genome."""
+        cmd = self.command(fastas=['/x/a.fna.gz', '/x/b.fna.gz'])
+        self.assertEqual(cmd[-3:], ['--input', '/x/a.fna.gz', '/x/b.fna.gz'])
+
+    def test_the_output_directory_is_the_one_the_report_is_read_from(self):
+        cmd = self.command()
+        self.assertEqual(cmd[cmd.index('--output-directory') + 1], '/out/table_25')
+
+
+class ReadCheckM2ReportTests(TempDirCase):
+    """The report is read by column name, as the NCBI tables are."""
+
+    def report(self, header, *rows):
+        path = os.path.join(self.dir, G.CHECKM2_REPORT)
+        with open(path, 'w') as handle:
+            handle.write('\t'.join(header) + '\n')
+            for row in rows:
+                handle.write('\t'.join(row) + '\n')
+        return path
+
+    def test_the_columns_are_found_by_name_and_not_by_position(self):
+        """CheckM2 writes a dozen columns and has added to them between releases;
+        the two wanted sit in the middle of the rest."""
+        path = self.report(('Name', 'Translation_Table_Used', 'Contamination',
+                            'Completeness'),
+                           ('GCA_1.1', '25', '0.17', '94.3'))
+        self.assertEqual(G.read_checkm2_report(path), {'GCA_1.1': ('94.3', '0.17')})
+
+    def test_a_run_that_wrote_no_report_is_not_an_exception(self):
+        """A failed run costs four columns and not the release."""
+        self.assertEqual(G.read_checkm2_report(os.path.join(self.dir, 'gone.tsv')), {})
+
+    def test_a_report_with_no_recognisable_header_is_read_as_nothing(self):
+        path = self.report(('something', 'else'), ('a', 'b'))
+        self.assertEqual(G.read_checkm2_report(path), {})
+
+
+class AnnotateConflictsTests(unittest.TestCase):
+    """Each genome carries the estimate made under each of its two tables."""
+
+    def row(self, accession='GCA_1.1', gtranslate_tt='25', ncbi_tt='11'):
+        return [accession, gtranslate_tt, ncbi_tt, '4', 'False', '90.1', '64.2',
+                'd__Bacteria']
+
+    def annotated(self, rows, quality):
+        return G.annotate_conflicts(rows, quality)[0]
+
+    def field(self, row, column):
+        return row[G.CONFLICT_HEADER_CHECKM2.index(column)]
+
+    def test_each_estimate_goes_under_the_table_it_was_made_for(self):
+        """The columns pair by name with gtranslate_tt and ncbi_tt, and mixing
+        them up would reverse what the table says about the conflict."""
+        row = self.annotated([self.row()],
+                             {25: {'GCA_1.1': ('94.3', '0.17')},
+                              11: {'GCA_1.1': ('51.0', '16.4')}})
+        self.assertEqual(self.field(row, 'cm2_completeness_gtranslate_tt'), '94.3')
+        self.assertEqual(self.field(row, 'cm2_contamination_gtranslate_tt'), '0.17')
+        self.assertEqual(self.field(row, 'cm2_completeness_ncbi_tt'), '51.0')
+        self.assertEqual(self.field(row, 'cm2_contamination_ncbi_tt'), '16.4')
+
+    def test_the_lineage_stays_the_last_field_of_the_row(self):
+        """It is the longest field and the columns of the comparison belong
+        together; a row read by eye is unreadable otherwise."""
+        row = self.annotated([self.row()], {})
+        self.assertEqual(row[-1], 'd__Bacteria')
+        self.assertEqual(len(row), len(G.CONFLICT_HEADER_CHECKM2))
+
+    def test_a_genome_checkm2_returned_nothing_for_keeps_its_row(self):
+        """The row is the conflict, and the conflict is there whether or not its
+        quality could be estimated."""
+        row = self.annotated([self.row()], {25: {}, 11: {}})
+        self.assertEqual(self.field(row, 'cm2_completeness_gtranslate_tt'), G.NCBI_NA)
+        self.assertEqual(self.field(row, 'cm2_completeness_ncbi_tt'), G.NCBI_NA)
+        self.assertEqual(row[0], 'GCA_1.1')
+
+    def test_a_genome_estimated_under_one_table_only_keeps_that_one(self):
+        """One table's run failing does not cost the other table's answer."""
+        row = self.annotated([self.row()], {25: {'GCA_1.1': ('94.3', '0.17')}})
+        self.assertEqual(self.field(row, 'cm2_completeness_gtranslate_tt'), '94.3')
+        self.assertEqual(self.field(row, 'cm2_completeness_ncbi_tt'), G.NCBI_NA)
+
+
+class ConflictHeaderTests(unittest.TestCase):
+    """The release header is derived from the batch header and must stay so."""
+
+    def test_the_release_header_is_the_batch_header_plus_the_checkm2_columns(self):
+        """A batch file has no CheckM2 columns: the runs are made once for the
+        release, over the genomes every batch together found."""
+        self.assertEqual(len(G.CONFLICT_HEADER_CHECKM2),
+                         len(G.CONFLICT_HEADER) + len(G.CHECKM2_COLUMNS))
+        for column in G.CONFLICT_HEADER:
+            self.assertIn(column, G.CONFLICT_HEADER_CHECKM2)
+
+    def test_the_columns_the_batch_writes_keep_their_positions(self):
+        """concatenate() takes the header from the first batch file, so the
+        release file starts as a batch file and is annotated afterwards."""
+        self.assertEqual(G.CONFLICT_HEADER_CHECKM2[:len(G.CONFLICT_HEADER) - 1],
+                         G.CONFLICT_HEADER[:-1])
+
+
+class ReadConflictsTests(TempDirCase):
+    """A batch that conflicted about nothing still writes its header."""
+
+    def test_a_file_of_nothing_but_a_header_holds_no_conflicts(self):
+        path = os.path.join(self.dir, G.CONFLICT_NAME)
+        G.write_conflicts([], path)
+        self.assertEqual(G.read_conflicts(path), [])
+
+    def test_a_row_is_read_back_as_it_was_written(self):
+        path = os.path.join(self.dir, G.CONFLICT_NAME)
+        row = ('GCA_1.1', '25', '11', '4', 'False', '90.1', '64.2', 'd__Bacteria')
+        G.write_conflicts([row], path)
+        self.assertEqual(G.read_conflicts(path), [list(row)])
+
+    def test_a_file_already_annotated_is_read_as_the_row_it_was_made_from(self):
+        """The command is run again over a finished output directory, so the
+        release file it reads is one it has already annotated; the columns are
+        taken by name so the CheckM2 ones are simply not among them."""
+        path = os.path.join(self.dir, G.CONFLICT_NAME)
+        row = ('GCA_1.1', '25', '11', '4', 'False', '90.1', '64.2', 'd__Bacteria')
+        G.write_conflicts(
+            [list(row[:-1]) + ['94.3', '0.17', '51.0', '16.4'] + [row[-1]]],
+            path, header=G.CONFLICT_HEADER_CHECKM2)
+        self.assertEqual(G.read_conflicts(path), [list(row)])
+
+    def test_a_file_that_is_not_a_conflict_file_is_refused(self):
+        """It is written by this command and read by it, so one that does not
+        look like one is a bug, and annotating it would put one genome's quality
+        against another genome's conflict."""
+        path = os.path.join(self.dir, G.CONFLICT_NAME)
+        with open(path, 'w') as handle:
+            handle.write('genome_id\nGCA_1.1\n')
+        self.assertRaises(G.BadConflictFile, G.read_conflicts, path)
+
+
+class ReleaseFastasTests(TempDirCase):
+    """Where a genome is, is taken from the batchfiles for the reason the
+    comparison takes it from them: they say what the release was RUN on."""
+
+    def batch(self, name, *rows):
+        path = os.path.join(self.dir, name)
+        os.makedirs(path)
+        G.write_batchfile(rows, os.path.join(path, G.BATCHFILE_NAME))
+        return path
+
+    def test_a_genome_is_found_in_whichever_batch_holds_it(self):
+        batches = [self.batch('batch_000001', ('/m/a.fna.gz', 'GCA_1.1')),
+                   self.batch('batch_000002', ('/m/b.fna.gz', 'GCA_2.1'))]
+        self.assertEqual(G.release_fastas(batches, ['GCA_2.1']),
+                         {'GCA_2.1': '/m/b.fna.gz'})
+
+    def test_only_the_genomes_asked_about_are_kept(self):
+        """The batchfiles are the whole release and the conflicts are a few
+        hundred of it."""
+        batches = [self.batch('batch_000001', ('/m/a.fna.gz', 'GCA_1.1'),
+                              ('/m/b.fna.gz', 'GCA_2.1'))]
+        self.assertEqual(list(G.release_fastas(batches, ['GCA_1.1'])), ['GCA_1.1'])
+
+    def test_a_batch_with_no_batchfile_is_skipped_rather_than_raising(self):
+        batches = [self.batch('batch_000001', ('/m/a.fna.gz', 'GCA_1.1')),
+                   os.path.join(self.dir, 'batch_000002')]
+        os.makedirs(batches[1])
+        self.assertEqual(G.release_fastas(batches, ['GCA_1.1']),
+                         {'GCA_1.1': '/m/a.fna.gz'})
+
+
+class EstimateConflictQualityTests(TempDirCase):
+    """CheckM2 runs once for the release, and what it says lands in the release
+    conflict file."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.out_dir = os.path.join(self.dir, 'out')
+        os.makedirs(self.out_dir)
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def conflicts(self, *rows):
+        G.write_conflicts(rows, os.path.join(self.out_dir, G.CONFLICT_NAME))
+
+    def release(self):
+        with open(os.path.join(self.out_dir, G.CONFLICT_NAME)) as handle:
+            return [line.rstrip('\n').split('\t') for line in handle]
+
+    def row(self, accession='GCA_1.1', gtranslate_tt='25', ncbi_tt='11'):
+        return (accession, gtranslate_tt, ncbi_tt, '4', 'False', '90.1', '64.2',
+                'd__Bacteria')
+
+    def test_the_release_file_gains_the_checkm2_columns(self):
+        self.conflicts(self.row())
+        with mock.patch.object(G.GTranslate, 'checkm2_table', autospec=True,
+                               return_value={'GCA_1.1': ('94.3', '0.17')}):
+            G.GTranslate().estimate_conflict_quality([], self.out_dir)
+
+        lines = self.release()
+        self.assertEqual(tuple(lines[0]), G.CONFLICT_HEADER_CHECKM2)
+        self.assertEqual(lines[1][G.CONFLICT_HEADER_CHECKM2.index(
+            'cm2_completeness_gtranslate_tt')], '94.3')
+
+    def test_one_run_is_made_for_each_table_in_dispute_and_no_more(self):
+        """Two genomes disputing 25 against 11 are three runs between them at
+        most, and are two: one per table."""
+        self.conflicts(self.row('GCA_1.1'), self.row('GCA_2.1'))
+        with mock.patch.object(G.GTranslate, 'checkm2_table', autospec=True,
+                               return_value={}) as run:
+            G.GTranslate().estimate_conflict_quality([], self.out_dir)
+
+        self.assertEqual(sorted(call.args[4] for call in run.call_args_list),
+                         [11, 25])
+
+    def test_a_file_that_cannot_be_read_costs_the_columns_and_not_the_run(self):
+        """A run of five machines over days should not end in a traceback for
+        want of four columns."""
+        with open(os.path.join(self.out_dir, G.CONFLICT_NAME), 'w') as handle:
+            handle.write('genome_id\nGCA_1.1\n')
+        with mock.patch.object(G.GTranslate, 'checkm2_table', autospec=True) as run:
+            G.GTranslate().estimate_conflict_quality([], self.out_dir)
+
+        self.assertFalse(run.called)
+
+    def test_a_release_that_conflicted_about_nothing_runs_checkm2_not_at_all(self):
+        self.conflicts()
+        with mock.patch.object(G.GTranslate, 'checkm2_table', autospec=True) as run:
+            G.GTranslate().estimate_conflict_quality([], self.out_dir)
+
+        self.assertFalse(run.called)
+
+    def test_annotating_twice_does_not_double_the_columns(self):
+        """The command is run again over a finished output directory to pick this
+        up at all, so the release file it reads is one it has already written."""
+        self.conflicts(self.row())
+        with mock.patch.object(G.GTranslate, 'checkm2_table', autospec=True,
+                               return_value={'GCA_1.1': ('94.3', '0.17')}):
+            G.GTranslate().estimate_conflict_quality([], self.out_dir)
+            G.GTranslate().estimate_conflict_quality([], self.out_dir)
+
+        self.assertEqual(tuple(self.release()[0]), G.CONFLICT_HEADER_CHECKM2)
+        self.assertEqual(len(self.release()[1]), len(G.CONFLICT_HEADER_CHECKM2))
+
+
+class CheckM2RunTests(TempDirCase):
+    """A run already made is not made again, and a run that fails costs the
+    release four columns and nothing else."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.checkm2_dir = os.path.join(self.dir, 'checkm2')
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def report(self, table, *rows):
+        path = os.path.join(self.checkm2_dir, G.CHECKM2_TABLE_DIR.format(table))
+        os.makedirs(path)
+        with open(os.path.join(path, G.CHECKM2_REPORT), 'w') as handle:
+            handle.write('Name\tCompleteness\tContamination\n')
+            for row in rows:
+                handle.write('\t'.join(row) + '\n')
+
+    def test_a_table_already_run_is_read_rather_than_run_again(self):
+        """The release is finished by whichever machine happens to be last, and
+        every run over a finished output directory reaches this."""
+        self.report(25, ('GCA_1.1', '94.3', '0.17'))
+        with mock.patch.object(G.subprocess, 'run') as run:
+            quality = G.GTranslate().checkm2_table(
+                ['GCA_1.1'], {}, self.checkm2_dir, 25)
+
+        self.assertFalse(run.called)
+        self.assertEqual(quality, {'GCA_1.1': ('94.3', '0.17')})
+
+    def test_a_table_no_genome_could_be_staged_for_is_not_run(self):
+        """A run with no genomes in it is a run that fails."""
+        with mock.patch.object(G.subprocess, 'run') as run:
+            quality = G.GTranslate().checkm2_table(
+                ['GCA_1.1'], {'GCA_1.1': '/gone.fna.gz'}, self.checkm2_dir, 25)
+
+        self.assertFalse(run.called)
+        self.assertEqual(quality, {})
+
+    def test_a_failed_run_gives_back_nothing_rather_than_raising(self):
+        """The conflicts are found, written and counted before this runs, and
+        they are what the command is for."""
+        path = self.genome_dir('GCA_1.1_ASM1')
+        fasta = os.path.join(path, 'GCA_1.1_ASM1_genomic.fna.gz')
+        with mock.patch.object(G.subprocess, 'run',
+                               return_value=mock.Mock(returncode=1)):
+            quality = G.GTranslate().checkm2_table(
+                ['GCA_1.1'], {'GCA_1.1': fasta}, self.checkm2_dir, 25)
+
+        self.assertEqual(quality, {})
+
+    def test_the_staged_genomes_are_not_written_under_the_run_directory(self):
+        """--force empties the output directory before CheckM2 starts, so
+        staging under it would delete the genomes about to be read."""
+        path = self.genome_dir('GCA_1.1_ASM1')
+        fasta = os.path.join(path, 'GCA_1.1_ASM1_genomic.fna.gz')
+        seen = {}
+
+        def record(cmd, **kwargs):
+            seen['input'] = cmd[cmd.index('--input') + 1:]
+            seen['out'] = cmd[cmd.index('--output-directory') + 1]
+            return mock.Mock(returncode=1)
+
+        with mock.patch.object(G.subprocess, 'run', side_effect=record):
+            G.GTranslate().checkm2_table(['GCA_1.1'], {'GCA_1.1': fasta},
+                                         self.checkm2_dir, 25)
+
+        for staged in seen['input']:
+            self.assertFalse(staged.startswith(seen['out'] + os.sep))

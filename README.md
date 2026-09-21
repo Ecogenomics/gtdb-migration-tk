@@ -38,6 +38,7 @@ Every step is a subcommand of a single `gtdb_migration_tk` executable.
   | --- | --- |
   | `prodigal` | `prodigal`, `trans_table` (via gTranslate) |
   | `gtranslate` | `trans_table` |
+  | `checkm2` | `trans_table` (quality of the genomes NCBI disagrees about) |
   | `hmmsearch` | `hmmsearch`, `top_hit` |
   | `blastn`, `blastp`, `makeblastdb` | `rna_silva`, `rna_ltp`, `generate_ltp_db` |
   | `nhmmer` | `rna_silva`, `rna_ltp` |
@@ -301,6 +302,10 @@ it on a file server shared with other work.
     gtranslate.translation_table_summary.tsv
     ncbi_tt_conflict.tsv                genomes of this batch NCBI disagrees about
   batch_000002/
+  checkm2/
+    input/table_25/                     the conflicting genomes, linked by accession
+    table_25/quality_report.tsv         what CheckM2 made of them under table 25
+    table_11/, table_4/                 the same under the other tables in dispute
   ncbi_tt_conflict.tsv                  the whole release, once every batch has SUCCESS
   gtranslate.translation_table_summary.tsv
 ```
@@ -360,13 +365,41 @@ not the one NCBI declares, one row each:
 | `checkm_tt` | the table the coding density rule alone would choose, as Prodigal and CheckM do unaided; it cannot express table 25 |
 | `checkm_conflict` | `True` where gTranslate and that rule disagree about the genome being recoded at all: 11 against 4, or 4 or 25 against 11. 25 against 4 is `False` -- the rule picks between 4 and 11 alone, so 4 is the closest it can come to saying 25 |
 | `coding_density_4`, `coding_density_11` | as gTranslate measured them |
+| `cm2_completeness_gtranslate_tt`, `cm2_contamination_gtranslate_tt` | what CheckM2 makes of the genome with its genes called under `gtranslate_tt` |
+| `cm2_completeness_ncbi_tt`, `cm2_contamination_ncbi_tt` | the same under `ncbi_tt` |
 | `ncbi_taxonomy` | lineage from `--taxonomy_file`, `na` where it holds none |
 
 Every row is a conflict, so there is no column saying so. A genome the two agree
 about is counted and not written, agreement being nearly every genome of a
 release; a genome NCBI has not annotated declares no table and cannot be compared
-at all. How many agreed, how many conflicted and how many NCBI declares no table
-for is logged for each batch.
+at all. How many genomes NCBI declares a table for, how many of those the two
+agree and disagree about, and what percentage of them disagree is logged for each
+batch and again for the release. The rate is of the genomes that could be
+compared, not of the release: a genome NCBI has not annotated is not one the two
+agree or disagree about.
+
+**The two CheckM2 columns per table are the evidence about that table.** Genes
+called under the wrong genetic code are truncated at every TGA and the markers
+CheckM2 counts go with them, so each conflicting genome is put to CheckM2 twice,
+once with Prodigal forced to `gtranslate_tt` and once forced to `ncbi_tt`. One
+run would say how good the genome is; two say which table makes it look like a
+genome at all. CheckM2's own choice is not asked for -- left to itself it picks
+between tables 4 and 11 by coding density, which is what `checkm_tt` already
+reports.
+
+These runs are made once for the release, after every batch has succeeded, and
+grouped by table: the conflicts are a few hundred genomes of a million-odd, and
+CheckM2 searches the whole DIAMOND database once per run whatever the run holds.
+A release already predicted therefore picks them up by running the command again
+-- the batches are `SUCCESS` and are skipped, and the work happens where the
+release files are written. Run that pass on ONE machine: the batches are claimed
+one machine at a time but the release files are not, so several machines re-run
+together would each start CheckM2 in the same directories, and `checkm2 predict
+--force` empties its output directory as it starts. A machine arriving after one
+has finished is harmless -- a run whose `quality_report.tsv` is already there is
+read rather than made again. A genome with no FASTA, or a run that fails, leaves
+`na` in those four columns and the rest of the row intact; nothing here can cost
+the release the comparison, which is written and counted before CheckM2 starts.
 
 `prodigal` takes the summary `trans_table` writes as `--trans_table` and calls each
 genome's genes under the table named there, so Prodigal no longer chooses one by

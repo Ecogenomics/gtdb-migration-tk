@@ -133,10 +133,50 @@ read by ncbi_utils.ncbi_translation_table(), which prodigal reads it with too.
 Once every batch has succeeded the run also writes the conflicts and the
 prediction summary for the whole release at the top of --out_dir, so that a
 release finished across several machines is one file to read.
+
+WHAT THE RATE IS OF
+Every batch says how many of its genomes NCBI declares a table for and what share
+of THOSE gTranslate disagrees about, and the release says the same about all of
+them together. The denominator is the genomes that could be compared and not the
+genomes of the release: a genome NCBI has not annotated is not one the two agree
+or disagree about, and counting it in would turn the number into a measure of how
+much of the release NCBI has annotated. The release figure is added up from the
+batches' SUCCESS canaries rather than recomputed, because a release is predicted
+by several machines and the machine running the last batch has compared none of
+the others; the canary is what every machine leaves behind.
+
+THE QUALITY OF A CONFLICTING GENOME
+A conflict is a genome two callers disagree about, and the question it raises is
+which of them is right. Completeness is the evidence: genes called under the
+wrong code are truncated at every TGA, and the markers CheckM2 counts go with
+them. So each conflicting genome is put to CheckM2 TWICE, once under gTranslate's
+table and once under NCBI's, and ncbi_tt_conflict.tsv carries both answers --
+one run would say how good the genome is, two say which table makes it look like
+a genome at all. CheckM2's own choice is not asked for: left to itself it picks
+between tables 4 and 11 by coding density, which is the rule checkm_tt already
+reports and which cannot express 25.
+
+The runs are made once for the RELEASE and grouped by table, not once per batch.
+The conflicts are a few hundred genomes of a million-odd -- two or three per batch
+-- and CheckM2 loads its models and searches the whole DIAMOND database once per
+run whatever the run holds, so the cost is the number of runs. Grouped by table
+the whole release is one run per table in dispute, which is three; per batch it
+would be hundreds. That also means a release already predicted picks this up by
+running the command again: every batch is SUCCESS and is skipped, and the work
+happens where the release files are written.
+
+CheckM2 is not installed beside this toolkit -- the TensorFlow it needs wants an
+icu the release environment cannot hold -- so it is an external program like
+gTranslate, found on PATH, and is checked for before a run starts. It names a
+result for the file it read and NCBI names the file for the assembly, so each
+genome is linked as <accession>.fna.gz before the run: the link is what joins the
+report back to the conflict rows. Nothing about this step can cost the release
+the comparison, which is done, written and counted before it starts -- a genome
+with no FASTA, a run that fails, a table CheckM2 returns nothing for all leave
+their genomes with na in those four columns and the rest of the row intact.
 """
 
 import contextlib
-import csv
 import datetime
 import logging
 import os
@@ -148,7 +188,8 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import (Dict, Iterator, List, NamedTuple, Optional, Sequence,
+                    Tuple)
 
 from tqdm import tqdm
 
@@ -240,6 +281,54 @@ CONFLICT_NAME = 'ncbi_tt_conflict.tsv'
 CONFLICT_HEADER = ('genome_id', 'gtranslate_tt', 'ncbi_tt', 'checkm_tt',
                    'checkm_conflict', 'coding_density_4', 'coding_density_11',
                    'ncbi_taxonomy')
+
+# The executable that estimates the quality of a conflicting genome, looked up on
+# PATH as gTranslate is. It is not installable beside this toolkit -- the
+# TensorFlow it needs wants an icu the release environment cannot hold -- so it
+# lives in an environment of its own and is reached as an external program.
+CHECKM2_BIN = 'checkm2'
+
+# Where the CheckM2 runs of a release are kept, one directory per table, and the
+# file each writes. The directory is per table because a genome is asked about
+# under two tables and CheckM2 names its results for the genome alone.
+CHECKM2_DIR = 'checkm2'
+CHECKM2_TABLE_DIR = 'table_{}'
+CHECKM2_REPORT = 'quality_report.tsv'
+
+# Where the staged genomes of a table's run are put. It is NOT inside the run's
+# own directory: --force empties the output directory before CheckM2 starts, so a
+# staging directory under it would be deleted along with the last run's results.
+CHECKM2_INPUT_DIR = 'input'
+
+# What a staged genome is named. CheckM2 labels a result with the basename minus
+# the last two extensions, so <accession>.fna.gz comes back as the accession
+# while NCBI's own _genomic.fna.gz comes back as the assembly name. The extension
+# is therefore part of the join between the report and the conflict rows, not a
+# detail of it: see stage_checkm2_input().
+CHECKM2_LINK_EXT = '.fna.gz'
+
+# The columns of that report this reads. CheckM2 writes a dozen more -- the
+# coding density, the N50, the model it chose -- which are about the run and not
+# about the conflict, and are left in the report for whoever wants them.
+CHECKM2_NAME = 'Name'
+CHECKM2_COMPLETENESS = 'Completeness'
+CHECKM2_CONTAMINATION = 'Contamination'
+
+# A conflicting genome is asked about TWICE, once under each of the tables in
+# dispute, because completeness under a table is the evidence about that table:
+# genes called under the wrong code are truncated at every TGA, and the markers
+# CheckM2 counts go with them. One run under one table would say how good the
+# genome is; two say which table makes it look like a genome at all.
+CHECKM2_COLUMNS = ('cm2_completeness_gtranslate_tt', 'cm2_contamination_gtranslate_tt',
+                   'cm2_completeness_ncbi_tt', 'cm2_contamination_ncbi_tt')
+
+# The release file carries the CheckM2 columns and a batch file does not: CheckM2
+# runs once for the release, over the few hundred genomes every batch together
+# found, rather than once per batch over the two or three each found on its own.
+# They go before ncbi_taxonomy so that the lineage stays the last and longest
+# field of the row, and so that the columns of the comparison stay together.
+CONFLICT_HEADER_CHECKM2 = (CONFLICT_HEADER[:-1] + CHECKM2_COLUMNS
+                           + CONFLICT_HEADER[-1:])
 
 # The standard genetic code, and the two recoded ones gTranslate chooses between
 # it and: 4 for the genomes that read TGA as tryptophan, 25 for those that read
@@ -1229,6 +1318,95 @@ def checkm_conflict(gtranslate_table: str, checkm_table: Optional[int]) -> bool:
     return False
 
 
+class BadConflictFile(ValueError):
+    """A conflict file without the columns a conflict file has.
+
+    Raised rather than skipped: the file is written by this command and read by
+    it, so one that does not look like one is a bug or a truncated write, and
+    carrying on would annotate a release with the wrong genomes' quality.
+    """
+
+
+class ComparisonCounts(NamedTuple):
+    """What comparing a batch against NCBI found.
+
+    The three are kept together because the release line needs all of them and
+    gets them from the batches' canaries, which is the only place a batch run on
+    another machine leaves them.
+    """
+
+    compared: int
+    conflicts: int
+    no_ncbi_table: int
+
+
+def disagreement_rate(conflicts: int, compared: int) -> float:
+    """What share of the genomes NCBI declares a table for gTranslate disagrees
+    with.
+
+    The denominator is the genomes that COULD be compared and not the genomes of
+    the release: a genome NCBI has not annotated is not a genome the two agree or
+    disagree about, and counting it would make the rate a measure of how much of
+    the release NCBI has annotated rather than of how often the two differ.
+
+    Parameters
+    ----------
+    conflicts : int
+        Genomes the two disagree about.
+    compared : int
+        Genomes NCBI declares a table for, which are the ones compared.
+
+    @return: the percentage, and 0.0 where nothing could be compared.
+    """
+
+    if compared <= 0:
+        return 0.0
+
+    return 100.0 * conflicts / compared
+
+
+def batch_counts(batches: Sequence[str]) -> Tuple[int, Optional[int]]:
+    """Add up what every batch of the release recorded about its comparison.
+
+    The counts are read from the batches' SUCCESS canaries rather than
+    recomputed, because a release is predicted by several machines and a machine
+    running the last batch has compared none of the others; the canary is what
+    every machine leaves behind.
+
+    Only `compared` is certain to be there. The field saying how many genomes
+    NCBI declares no table for was added after r237 had been predicted, so its
+    batches record the one and not the other, and a release finished before the
+    change can still report the number asked for and the rate. Where any batch is
+    missing it, None is returned and the release line leaves that clause out
+    rather than reporting a total that is short by whatever those batches found.
+
+    Parameters
+    ----------
+    batches : sequence of str
+        Every batch directory of the run.
+
+    @return: (compared, no_ncbi_table), the second None where any batch's canary
+             does not record it.
+    """
+
+    compared, no_ncbi_table = 0, 0
+    complete = True
+    for batch_dir in batches:
+        canary = read_canary(os.path.join(batch_dir, SUCCESS_CANARY))
+        try:
+            compared += int(canary['compared'])
+        except (KeyError, ValueError):
+            complete = False
+            continue
+
+        try:
+            no_ncbi_table += int(canary['no_ncbi_table'])
+        except (KeyError, ValueError):
+            complete = False
+
+    return compared, no_ncbi_table if complete else None
+
+
 def conflict_rows(predictions: Dict[str, Dict[str, str]],
                   genome_dirs: Dict[str, str],
                   taxonomy: Dict[str, str]) -> Tuple[List[Tuple[str, ...]], int, int]:
@@ -1287,7 +1465,8 @@ def conflict_rows(predictions: Dict[str, Dict[str, str]],
     return rows, compared, no_ncbi_table
 
 
-def write_conflicts(rows: Sequence[Tuple[str, ...]], path: str) -> None:
+def write_conflicts(rows: Sequence[Sequence[str]], path: str,
+                    header: Sequence[str] = CONFLICT_HEADER) -> None:
     """Write the conflicts of a batch, or of the release.
 
     The file is written whether or not there are any: a batch that finished with
@@ -1296,18 +1475,284 @@ def write_conflicts(rows: Sequence[Tuple[str, ...]], path: str) -> None:
 
     Parameters
     ----------
-    rows : sequence of tuple
-        Conflicting rows, as conflict_rows() returned them.
+    rows : sequence of sequence of str
+        Conflicting rows, as conflict_rows() returned them, or as
+        annotate_conflicts() returned them for the release.
     path : str
         File to write.
+    header : sequence of str
+        Column names, CONFLICT_HEADER for a batch and CONFLICT_HEADER_CHECKM2 for
+        the release, which carries the CheckM2 columns as well.
 
     @return: None
     """
 
     with open(path, 'w') as handle:
-        handle.write('\t'.join(CONFLICT_HEADER) + '\n')
+        handle.write('\t'.join(header) + '\n')
         for row in rows:
             handle.write('\t'.join(row) + '\n')
+
+
+def read_conflicts(path: str) -> List[List[str]]:
+    """Read a conflict file back as the columns a batch writes.
+
+    The columns are taken by name, so a release file that has ALREADY been
+    annotated is read back as the unannotated row it was made from and can be
+    annotated again. Without that the CheckM2 columns would be appended to a row
+    that already had them every time the command was run over a finished output
+    directory, which is what running it again is for.
+
+    Parameters
+    ----------
+    path : str
+        Conflict file, of a batch or of the release.
+
+    @return: its rows in CONFLICT_HEADER order, each a list of fields, and an
+             empty list where the file holds nothing but a header.
+    """
+
+    rows = []
+    with open(path) as handle:
+        header = handle.readline().rstrip('\n').split('\t')
+        try:
+            columns = [header.index(column) for column in CONFLICT_HEADER]
+        except ValueError:
+            raise BadConflictFile(
+                '{} does not have the columns of a conflict file.'.format(path))
+
+        for line in handle:
+            if not line.strip():
+                continue
+            fields = line.rstrip('\n').split('\t')
+            if len(fields) <= columns[-1]:
+                continue
+            rows.append([fields[column] for column in columns])
+
+    return rows
+
+
+def conflict_tables(rows: Sequence[Sequence[str]]) -> Dict[int, List[str]]:
+    """Which genomes have to have their quality estimated under which table.
+
+    A genome is asked about under BOTH of the tables its row disputes, so every
+    accession appears under two of them. Grouping by table rather than by genome
+    is what makes this a handful of CheckM2 runs instead of hundreds: CheckM2
+    loads its models and searches the whole DIAMOND database once per run,
+    whatever the run holds, so the cost is in the number of runs and barely in
+    the number of genomes.
+
+    Parameters
+    ----------
+    rows : sequence of sequence of str
+        Conflicting rows, in CONFLICT_HEADER order.
+
+    @return: table to the accessions to be run under it, in accession order.
+    """
+
+    columns = (CONFLICT_HEADER.index('gtranslate_tt'),
+               CONFLICT_HEADER.index('ncbi_tt'))
+
+    tables = {}
+    for row in rows:
+        for column in columns:
+            try:
+                table = int(row[column])
+            except (IndexError, TypeError, ValueError):
+                # a row whose table is not a number is one nothing can be run
+                # under; it keeps its other table and gets NCBI_NA for this one
+                continue
+            tables.setdefault(table, set()).add(row[0])
+
+    return {table: sorted(accessions) for table, accessions in tables.items()}
+
+
+def release_fastas(batches: Sequence[str],
+                   accessions: Sequence[str]) -> Dict[str, str]:
+    """Where the genomic FASTA of each named genome is, across every batch.
+
+    The batchfiles are read rather than the genome_dirs file, for the reason
+    compare_batch() reads them: they say what the release was run on, and a
+    genome_dirs file says what it says now. Only the genomes asked about are
+    kept, which is a few hundred of a million-odd lines.
+
+    Parameters
+    ----------
+    batches : sequence of str
+        Every batch directory of the run.
+    accessions : sequence of str
+        Genomes wanted.
+
+    @return: accession to genomic FASTA, omitting any the batchfiles do not name.
+    """
+
+    wanted = set(accessions)
+
+    fastas = {}
+    for batch_dir in batches:
+        batchfile = os.path.join(batch_dir, BATCHFILE_NAME)
+        if not os.path.exists(batchfile):
+            continue
+        for fasta, accession in read_batchfile(batchfile):
+            if accession in wanted:
+                fastas[accession] = fasta
+
+    return fastas
+
+
+def stage_checkm2_input(accessions: Sequence[str],
+                        fastas: Dict[str, str],
+                        staging: str) -> List[str]:
+    """Name each genome's FASTA for its accession, so CheckM2 gives it back.
+
+    CheckM2 names a result for the file it read, and NCBI names the file for the
+    assembly and not for the accession: GCA_000238995.1_ASM23899v1_genomic.fna.gz
+    comes back as GCA_000238995.1_ASM23899v1_genomic, which no conflict row is
+    keyed by. A symlink named <accession>.fna.gz comes back as the accession,
+    which is what joins the report to the rows. Symlinks rather than copies
+    because the genomes are the release and are read, not written.
+
+    Parameters
+    ----------
+    accessions : sequence of str
+        Genomes to stage.
+    fastas : dict
+        Accession to the genomic FASTA of that genome.
+    staging : str
+        Directory the links are made in, created if it is not there.
+
+    @return: the staged paths, which omit any genome whose FASTA is missing.
+    """
+
+    os.makedirs(staging, exist_ok=True)
+
+    staged = []
+    for accession in accessions:
+        fasta = fastas.get(accession)
+        if not fasta or not os.path.exists(fasta):
+            continue
+
+        link = os.path.join(staging, accession + CHECKM2_LINK_EXT)
+        if os.path.islink(link) or os.path.exists(link):
+            os.unlink(link)
+        os.symlink(fasta, link)
+        staged.append(link)
+
+    return staged
+
+
+def checkm2_command(fastas: Sequence[str],
+                    table: int,
+                    out_dir: str,
+                    threads: int) -> List[str]:
+    """The CheckM2 command run over the genomes disputing one table.
+
+    --ttable is the whole point of the run: CheckM2 left to itself calls genes
+    under whichever of tables 4 and 11 gives the better coding density, which is
+    the rule the checkm_tt column already reports and is not what is being asked.
+    Forcing the table asks what the genome looks like if that table is right.
+
+    Parameters
+    ----------
+    fastas : sequence of str
+        Staged genomic FASTA files, named for their accessions.
+    table : int
+        Translation table genes are called under.
+    out_dir : str
+        Directory CheckM2 writes its report and intermediates to.
+    threads : int
+        Threads CheckM2 is given.
+
+    @return: the command as a list of arguments, ready for subprocess.
+    """
+
+    # --input takes the rest of the command line, so it goes last
+    return [CHECKM2_BIN, 'predict',
+            '--ttable', str(table),
+            '--threads', str(threads),
+            '--force',
+            '--output-directory', out_dir,
+            '--input'] + list(fastas)
+
+
+def read_checkm2_report(path: str) -> Dict[str, Tuple[str, str]]:
+    """Read the completeness and contamination CheckM2 estimated.
+
+    Read by column name rather than by position, as the NCBI tables are: CheckM2
+    has added columns between releases and puts the ones this wants in the middle
+    of a dozen it does not.
+
+    Parameters
+    ----------
+    path : str
+        quality_report.tsv of one CheckM2 run.
+
+    @return: accession to (completeness, contamination), empty where the file is
+             absent or has no header to find the columns by.
+    """
+
+    quality = {}
+    try:
+        with open(path) as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+            try:
+                name = header.index(CHECKM2_NAME)
+                completeness = header.index(CHECKM2_COMPLETENESS)
+                contamination = header.index(CHECKM2_CONTAMINATION)
+            except ValueError:
+                return {}
+
+            for line in handle:
+                if not line.strip():
+                    continue
+                fields = line.rstrip('\n').split('\t')
+                if len(fields) <= max(name, completeness, contamination):
+                    continue
+                quality[fields[name]] = (fields[completeness],
+                                         fields[contamination])
+    except OSError:
+        return {}
+
+    return quality
+
+
+def annotate_conflicts(rows: Sequence[Sequence[str]],
+                       quality: Dict[int, Dict[str, Tuple[str, str]]]
+                       ) -> List[List[str]]:
+    """Put each genome's two CheckM2 estimates into its conflict row.
+
+    A genome CheckM2 returned nothing for -- one whose FASTA is missing, one a
+    run failed on, one CheckM2 itself dropped -- keeps its row and gets NCBI_NA
+    for what is not known. The row is the conflict, and the conflict is there
+    whether or not its quality could be estimated.
+
+    Parameters
+    ----------
+    rows : sequence of sequence of str
+        Conflicting rows, in CONFLICT_HEADER order.
+    quality : dict
+        Table to the report of the run made under it, as read_checkm2_report()
+        returned each.
+
+    @return: the rows in CONFLICT_HEADER_CHECKM2 order.
+    """
+
+    gtranslate = CONFLICT_HEADER.index('gtranslate_tt')
+    ncbi = CONFLICT_HEADER.index('ncbi_tt')
+
+    annotated = []
+    for row in rows:
+        estimates = []
+        for column in (gtranslate, ncbi):
+            try:
+                table = int(row[column])
+            except (IndexError, TypeError, ValueError):
+                table = None
+            estimates.extend(quality.get(table, {}).get(row[0],
+                                                        (NCBI_NA, NCBI_NA)))
+
+        annotated.append(list(row[:-1]) + estimates + [row[-1]])
+
+    return annotated
 
 
 def concatenate(files: Sequence[str], path: str) -> int:
@@ -1391,7 +1836,7 @@ class GTranslate(object):
         self.lease = lease
         self.heartbeat = heartbeat
 
-        check_dependencies(['gtranslate', 'prodigal'])
+        check_dependencies([GTRANSLATE_BIN, 'checkm2', 'prodigal'])
 
         self.logger = logging.getLogger('timestamp')
 
@@ -1521,7 +1966,9 @@ class GTranslate(object):
                     len(no_prediction), os.path.basename(batch_dir),
                     no_prediction[0], NO_PREDICTION_NAME))
 
-    def compare_batch(self, batch_dir: str, taxonomy: Dict[str, str]) -> int:
+    def compare_batch(self,
+                      batch_dir: str,
+                      taxonomy: Dict[str, str]) -> ComparisonCounts:
         """Compare a batch's predictions against the tables NCBI declares.
 
         The genome directories are taken from the batch's own batchfile, so the
@@ -1535,7 +1982,8 @@ class GTranslate(object):
         taxonomy : dict
             Taxonomy as read_taxonomy() returned it.
 
-        @return: number of genomes compared.
+        @return: what the comparison found, which run() records in the batch's
+                 canary for the release line to add up.
         """
 
         genome_dirs = {accession: os.path.dirname(fasta) for fasta, accession
@@ -1550,18 +1998,56 @@ class GTranslate(object):
         # the agreements are not written anywhere, so this line is the only place
         # a batch says how many genomes it actually compared
         self.logger.info(
-            'Compared {:,} genomes: {:,} agree with NCBI, {:,} conflict; '
-            '{:,} genome(s) have no table from NCBI to compare.'.format(
-                compared, compared - len(rows), len(rows), no_ncbi_table))
+            'Compared {:,} genomes with a translation table from NCBI: {:,} agree, '
+            '{:,} conflict ({:.2f}%); {:,} genome(s) have no table from NCBI to '
+            'compare.'.format(compared, compared - len(rows), len(rows),
+                              disagreement_rate(len(rows), compared),
+                              no_ncbi_table))
 
-        return compared
+        return ComparisonCounts(compared=compared,
+                                conflicts=len(rows),
+                                no_ncbi_table=no_ncbi_table)
+
+    def report_comparison(self, batches: Sequence[str], conflicts: int) -> None:
+        """Say for the whole release how much of it NCBI declares a table for and
+        how often gTranslate disagrees.
+
+        Every batch has said this about itself, in its own log, on whichever of
+        the machines took it; this is the line that says it about the release,
+        and it is written by whichever machine finishes last.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run.
+        conflicts : int
+            Rows of the release conflict file, which are the disagreements.
+
+        @return: None
+        """
+
+        compared, no_ncbi_table = batch_counts(batches)
+
+        line = ('Release: {:,} genome(s) have a translation table from NCBI, and '
+                'gTranslate disagrees with NCBI about {:,} of them ({:.2f}%).'.format(
+                    compared, conflicts, disagreement_rate(conflicts, compared)))
+
+        if no_ncbi_table is not None:
+            line += ' {:,} genome(s) have no table from NCBI to compare.'.format(
+                no_ncbi_table)
+
+        self.logger.info(line)
 
     def aggregate(self, batches: Sequence[str], out_dir: str) -> None:
-        """Write the conflicts and the summary for the whole release.
+        """Write the conflicts and the summary for the whole release, report the
+        comparison, and estimate the quality of the genomes it conflicted about.
 
         Written only once every batch has succeeded, so that the files at the top
         of the output directory are either the whole release or absent, and never
-        a part of it that reads like the whole.
+        a part of it that reads like the whole. This is also where the work that
+        is about the release rather than about a batch belongs: the rate NCBI and
+        gTranslate disagree at, and the CheckM2 runs, which are made once over the
+        genomes every batch together found.
 
         Parameters
         ----------
@@ -1582,11 +2068,162 @@ class GTranslate(object):
                     len(batches) - len(unfinished), len(batches)))
             return
 
+        conflicts = 0
         for name in (CONFLICT_NAME, summary_name(self.prefix)):
             written = concatenate([os.path.join(batch, name) for batch in batches],
                                   os.path.join(out_dir, name))
+            if name == CONFLICT_NAME:
+                conflicts = written
             self.logger.info('Wrote {:,} rows to {}.'.format(
                 written, os.path.join(out_dir, name)))
+
+        self.report_comparison(batches, conflicts)
+
+        # after the concatenation, which has just rewritten the release file from
+        # the batches and so has just removed any CheckM2 columns a previous run
+        # added: the annotation is applied to the file as it stands, and applying
+        # it twice would otherwise double the columns
+        self.estimate_conflict_quality(batches, out_dir)
+
+    def checkm2_table(self,
+                      accessions: Sequence[str],
+                      fastas: Dict[str, str],
+                      checkm2_dir: str,
+                      table: int) -> Dict[str, Tuple[str, str]]:
+        """Estimate the quality of every genome disputing one table, under it.
+
+        A run whose report is already there is not made again, for the reason a
+        batch already predicted is not predicted again: the release is finished
+        by whichever machine happens to be last, and aggregate() is reached by
+        every run over a finished output directory.
+
+        Parameters
+        ----------
+        accessions : sequence of str
+            Genomes to run under this table.
+        fastas : dict
+            Accession to the genomic FASTA of that genome.
+        checkm2_dir : str
+            Directory the runs of the release are kept in.
+        table : int
+            Translation table genes are called under.
+
+        @return: accession to (completeness, contamination), empty where the run
+                 could not be made or failed.
+        """
+
+        table_dir = os.path.join(checkm2_dir, CHECKM2_TABLE_DIR.format(table))
+        report = os.path.join(table_dir, CHECKM2_REPORT)
+
+        if os.path.exists(report):
+            self.logger.info(
+                'Table {}: {} has already run over these {:,} genome(s); reading '
+                '{}.'.format(table, CHECKM2_BIN, len(accessions), report))
+            return read_checkm2_report(report)
+
+        staged = stage_checkm2_input(
+            accessions, fastas,
+            os.path.join(checkm2_dir, CHECKM2_INPUT_DIR,
+                         CHECKM2_TABLE_DIR.format(table)))
+
+        if len(staged) != len(accessions):
+            self.logger.warning(
+                'warning: {:,} of {:,} genome(s) disputing table {} have no '
+                'genomic FASTA to estimate the quality of; they keep their row '
+                'and are reported as {}.'.format(
+                    len(accessions) - len(staged), len(accessions), table, NCBI_NA))
+
+        if not staged:
+            return {}
+
+        cmd = checkm2_command(staged, table, table_dir, self.cpus)
+        self.logger.info(
+            'Table {}: estimating the quality of {:,} genome(s).'.format(
+                table, len(staged)))
+        self.logger.info('Command: {} ... ({:,} genomes)'.format(
+            ' '.join(cmd[:cmd.index('--input') + 1]), len(staged)))
+
+        silent = getattr(self.logger, 'is_silent', False)
+        proc = subprocess.run(cmd,
+                              stdout=subprocess.DEVNULL if silent else None,
+                              stderr=subprocess.STDOUT if silent else None)
+
+        # a failed run costs the release four columns for the genomes of one
+        # table and nothing else: the conflicts are found, written and counted
+        # before this runs, and they are what the command is for
+        if proc.returncode != 0:
+            self.logger.error(
+                'error: {} returned exit code {} for table {}; those genomes are '
+                'reported as {} and the run can be repeated by running the '
+                'command again.'.format(CHECKM2_BIN, proc.returncode, table,
+                                        NCBI_NA))
+            return {}
+
+        return read_checkm2_report(report)
+
+    def estimate_conflict_quality(self, batches: Sequence[str], out_dir: str) -> None:
+        """Add to the release conflict file what CheckM2 makes of each genome
+        under each of the two tables in dispute.
+
+        Run once for the release rather than once per batch. The conflicts are a
+        few hundred genomes of a million-odd, which is two or three per batch,
+        and CheckM2 loads its models and searches the whole DIAMOND database once
+        per run whatever the run holds; grouped by table the whole release is
+        three runs, and per batch it would be hundreds.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run.
+        out_dir : str
+            Output directory of the run.
+
+        @return: None
+        """
+
+        conflict_file = os.path.join(out_dir, CONFLICT_NAME)
+
+        # the conflicts themselves are found, written and counted before this
+        # runs, so a file this cannot read costs the release four columns and not
+        # the run -- which after days on five machines is the difference that
+        # matters
+        try:
+            rows = read_conflicts(conflict_file)
+        except (BadConflictFile, OSError) as exc:
+            self.logger.error(
+                'error: the quality of the conflicting genomes could not be '
+                'estimated: {}'.format(exc))
+            return
+
+        if not rows:
+            self.logger.info(
+                'No genome of the release is a conflict, so there is no quality '
+                'to estimate.')
+            return
+
+        tables = conflict_tables(rows)
+        fastas = release_fastas(batches, [row[0] for row in rows])
+
+        self.logger.info(
+            'Estimating with {} the quality of {:,} conflicting genome(s) under '
+            'each of the {:,} table(s) in dispute: {}.'.format(
+                CHECKM2_BIN, len(rows), len(tables),
+                ', '.join(str(table) for table in sorted(tables))))
+
+        checkm2_dir = os.path.join(out_dir, CHECKM2_DIR)
+        quality = {table: self.checkm2_table(accessions, fastas,
+                                             checkm2_dir, table)
+                   for table, accessions in sorted(tables.items())}
+
+        annotated = annotate_conflicts(rows, quality)
+        write_conflicts(annotated, conflict_file, header=CONFLICT_HEADER_CHECKM2)
+
+        first = CONFLICT_HEADER_CHECKM2.index(CHECKM2_COLUMNS[0])
+        estimated = sum(1 for row in annotated
+                        if NCBI_NA not in row[first:first + len(CHECKM2_COLUMNS)])
+        self.logger.info(
+            'Wrote {} with {} for {:,} of {:,} conflicting genome(s).'.format(
+                conflict_file, ', '.join(CHECKM2_COLUMNS), estimated, len(rows)))
 
     def run(self, gtdb_genome_path_file: str, taxonomy_file: str, out_dir: str) -> bool:
         """Predict the translation table of every genome of a release.
@@ -1646,7 +2283,7 @@ class GTranslate(object):
                                 'what it wrote.'.format(label))
                         else:
                             self.run_gtranslate(batch_dir)
-                        compared = self.compare_batch(batch_dir, taxonomy)
+                        counts = self.compare_batch(batch_dir, taxonomy)
                 except KeyboardInterrupt:
                     # nothing was decided about the batch, and the machine that
                     # held it is stopping, so it is handed back rather than left
@@ -1662,7 +2299,13 @@ class GTranslate(object):
                                       'run: {}'.format(label, exc))
                     continue
 
-                finish_batch(batch_dir, compared=compared)
+                # the counts go in the canary because the release line adds them
+                # up across batches, and a batch run on another machine leaves
+                # them nowhere else
+                finish_batch(batch_dir,
+                             compared=counts.compared,
+                             conflicts=counts.conflicts,
+                             no_ncbi_table=counts.no_ncbi_table)
                 done += 1
                 self.logger.info('{}: done.'.format(label))
 
