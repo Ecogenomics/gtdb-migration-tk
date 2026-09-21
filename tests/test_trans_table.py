@@ -1599,6 +1599,8 @@ class AggregateSummaryTests(TempDirCase):
         G.write_table([], os.path.join(self.batch, G.CONFLICT_NAME))
         G.write_table([], os.path.join(self.batch, G.COMPARISON_NAME),
                       header=G.COMPARISON_HEADER, compress=True)
+        G.write_batchfile([('/m/a.fna.gz', 'GCA_1.1')],
+                          os.path.join(self.batch, G.BATCHFILE_NAME), compress=True)
         with open(os.path.join(self.batch, G.summary_name()), 'w') as handle:
             handle.write('user_genome\tbest_tln_table\nGCA_1.1\t25\n')
         G.finish_batch(self.batch, compared=1, conflicts=0, no_ncbi_table=0)
@@ -1768,6 +1770,8 @@ class ComparisonAggregationTests(TempDirCase):
             G.write_table([row], os.path.join(batch, G.COMPARISON_NAME),
                           header=G.COMPARISON_HEADER, compress=True)
             G.write_table([], os.path.join(batch, G.CONFLICT_NAME))
+            G.write_batchfile([('/m/{}.fna.gz'.format(accession), accession)],
+                              os.path.join(batch, G.BATCHFILE_NAME), compress=True)
             with open(os.path.join(batch, G.summary_name()), 'w') as handle:
                 handle.write('user_genome\tbest_tln_table\n{}\t25\n'.format(accession))
             G.finish_batch(batch, compared=1, conflicts=1, no_ncbi_table=0)
@@ -1894,3 +1898,105 @@ class BatchfileCleanupTests(TempDirCase):
         self.assertRaises(RuntimeError, self.predict, returncode=1)
         self.assertTrue(os.path.exists(
             os.path.join(self.batch_dir, G.PRESENT_BATCHFILE_NAME)))
+
+
+# --------------------------------------- the genomes the release has no table for
+
+class NoPredictionReleaseTests(TempDirCase):
+    """The one file that says which genomes the release has no answer for."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.out_dir = os.path.join(self.dir, 'out')
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def batch(self, index, planned, predicted, no_fasta=()):
+        batch_dir = os.path.join(self.out_dir, 'batch_{:06d}'.format(index))
+        os.makedirs(batch_dir)
+        G.write_batchfile([('/m/{}.fna.gz'.format(a), a) for a in planned],
+                          os.path.join(batch_dir, G.BATCHFILE_NAME), compress=True)
+        with open(os.path.join(batch_dir, G.summary_name()), 'w') as handle:
+            handle.write('user_genome\tbest_tln_table\n')
+            for accession in predicted:
+                handle.write('{}\t11\n'.format(accession))
+        if no_fasta:
+            with open(os.path.join(batch_dir, G.MISSING_NAME), 'w') as handle:
+                for accession in no_fasta:
+                    handle.write('{}\n'.format(accession))
+        return batch_dir
+
+    def test_a_genome_gtranslate_returned_nothing_for_is_named(self):
+        batch = self.batch(1, ['GCA_1.1', 'GCA_2.1'], ['GCA_1.1'])
+        self.assertEqual(G.no_prediction_rows([batch]),
+                         [('GCA_2.1', G.REASON_NO_PREDICTION)])
+
+    def test_a_genome_with_no_fasta_is_reported_as_that_and_not_as_a_failure(self):
+        """gTranslate was never given it, so calling it a prediction failure
+        would send whoever reads this looking at the wrong thing."""
+        batch = self.batch(1, ['GCA_1.1', 'GCA_2.1'], ['GCA_1.1'],
+                           no_fasta=['GCA_2.1'])
+        self.assertEqual(G.no_prediction_rows([batch]),
+                         [('GCA_2.1', G.REASON_NO_FASTA)])
+
+    def test_the_two_kinds_are_both_reported_and_told_apart(self):
+        batch = self.batch(1, ['GCA_1.1', 'GCA_2.1', 'GCA_3.1'], ['GCA_1.1'],
+                           no_fasta=['GCA_3.1'])
+        self.assertEqual(G.no_prediction_rows([batch]),
+                         [('GCA_2.1', G.REASON_NO_PREDICTION),
+                          ('GCA_3.1', G.REASON_NO_FASTA)])
+
+    def test_every_batch_of_the_release_is_gathered_in_accession_order(self):
+        """They were in 135 directories, to be found by whoever thought to look."""
+        batches = [self.batch(1, ['GCA_9.1', 'GCA_1.1'], ['GCA_1.1']),
+                   self.batch(2, ['GCA_5.1'], [])]
+        self.assertEqual([row[0] for row in G.no_prediction_rows(batches)],
+                         ['GCA_5.1', 'GCA_9.1'])
+
+    def test_a_batch_that_never_wrote_no_prediction_tsv_is_still_accounted_for(self):
+        """It is worked out from what the batch was asked against what it
+        answered, not read from the file the predicting run wrote -- a batch
+        already predicted is never predicted again, so that file may not be
+        there."""
+        batch = self.batch(1, ['GCA_1.1', 'GCA_2.1'], ['GCA_1.1'])
+        self.assertFalse(os.path.exists(os.path.join(batch, G.NO_PREDICTION_NAME)))
+        self.assertEqual(len(G.no_prediction_rows([batch])), 1)
+
+    def test_a_release_with_nothing_missing_yields_no_rows(self):
+        batch = self.batch(1, ['GCA_1.1'], ['GCA_1.1'])
+        self.assertEqual(G.no_prediction_rows([batch]), [])
+
+    def test_the_file_is_written_even_when_there_is_nothing_to_report(self):
+        """A release with nothing missing says so, rather than leaving the
+        question open."""
+        self.batch(1, ['GCA_1.1'], ['GCA_1.1'])
+        G.GTranslate().report_no_prediction(
+            [os.path.join(self.out_dir, 'batch_000001')], self.out_dir)
+        path = os.path.join(self.out_dir, G.NO_PREDICTION_RELEASE_NAME)
+        self.assertEqual(open(path).read().splitlines(),
+                         ['\t'.join(G.NO_PREDICTION_HEADER)])
+
+    def test_the_file_names_the_genomes_and_why(self):
+        batch = self.batch(1, ['GCA_1.1', 'GCA_2.1', 'GCA_3.1'], ['GCA_1.1'],
+                           no_fasta=['GCA_3.1'])
+        G.GTranslate().report_no_prediction([batch], self.out_dir)
+        with open(os.path.join(self.out_dir, G.NO_PREDICTION_RELEASE_NAME)) as handle:
+            lines = handle.read().splitlines()
+        self.assertEqual(lines[0].split('\t'), list(G.NO_PREDICTION_HEADER))
+        self.assertEqual(lines[1:], ['GCA_2.1\t' + G.REASON_NO_PREDICTION,
+                                     'GCA_3.1\t' + G.REASON_NO_FASTA])
+
+    def test_the_reasons_are_tallied_for_the_log(self):
+        rows = [('GCA_1.1', G.REASON_NO_PREDICTION),
+                ('GCA_2.1', G.REASON_NO_PREDICTION),
+                ('GCA_3.1', G.REASON_NO_FASTA)]
+        self.assertEqual(G.tally_reasons(rows),
+                         {G.REASON_NO_PREDICTION: 2, G.REASON_NO_FASTA: 1})
+
+    def test_a_batch_with_no_plan_is_skipped_rather_than_raising(self):
+        empty = os.path.join(self.out_dir, 'batch_000009')
+        os.makedirs(empty)
+        self.assertEqual(G.no_prediction_rows([empty]), [])

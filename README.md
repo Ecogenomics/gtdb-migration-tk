@@ -308,6 +308,7 @@ it on a file server shared with other work.
                                         are in ncbi_tt_conflict.tsv
   ncbi_tt_conflict.tsv                  the whole release, once every batch has SUCCESS
   gtranslate_ncbi_tt_comparison.tsv.gz
+  gtranslate_no_prediction.tsv          genomes the release has no table for
   gtranslate.translation_table_summary.tsv.gz
 ```
 
@@ -349,6 +350,26 @@ each genome's called genes with a checksum beside them and skipping a genome
 whose files verify, so a batch interrupted at genome 7,000 of 10,000 carries on
 from there. Nothing removes a batch directory before retrying it, for that
 reason.
+
+**The genomes with no table are named once, for the release.**
+`gtranslate_no_prediction.tsv` lists every genome the release has no translation
+table for, with the reason:
+
+| `reason` | |
+| --- | --- |
+| `gtranslate_returned_no_prediction` | gTranslate was handed the genome and returned nothing for it |
+| `no_genomic_fasta` | the genome had no genomic FASTA, so it was never handed over |
+
+The two are different failures and the row says which, because reporting a missing
+file as a prediction failure sends the reader looking at the wrong thing. The file
+is written even when there is nothing in it, so a release with nothing missing
+says so. It is worked out per batch from what the batch was asked about against
+what its summary answered, not concatenated from the batches' own
+`no_prediction.tsv` -- those are written by the run that *predicts* a batch, and a
+batch already predicted is never predicted again. For r237 it is eight genomes of
+1,346,118: six of the first kind and two of the second. `prodigal` needs a table
+for every genome of the release, so this is the list to correct with
+`--tt_override`.
 
 **One bad genome does not cost a batch.** gTranslate ends a run when a worker
 dies, and a genome it cannot process -- a few hundred bases with no genes to

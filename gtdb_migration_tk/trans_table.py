@@ -118,6 +118,23 @@ so the accessions gTranslate returned no prediction for are written to the batch
 directory as no_prediction.tsv rather than being left to be discovered by prodigal
 refusing the release.
 
+Once every batch has succeeded they are gathered into gtranslate_no_prediction.tsv
+at the top of --out_dir, which is the one file that says which genomes the release
+has no table for: in 135 batch directories they were there to be found by whoever
+thought to look. It is worked out per batch from what the batch was ASKED about
+against what its summary answered, rather than concatenated from the batches'
+own no_prediction.tsv files -- those are written by the run that predicts a batch,
+and a batch already predicted is never predicted again, so a release resumed or
+finished across several machines can hold batches that never wrote one. The two
+files every batch certainly has cannot miss a genome that way.
+
+A genome is there for one of two reasons, and they are different failures:
+gTranslate was handed it and returned nothing, or it had no genomic FASTA to be
+handed over at all. The row says which, because reporting a missing file as a
+prediction failure sends whoever reads it looking at the wrong thing. Of r237's
+1,346,118 genomes, eight are here -- six of the first kind and two of the
+second.
+
 THE LOG OF A BATCH IS KEPT WITH THE BATCH
 Every machine writes what it does to its own --log, and several machines sharing
 one log file over NFS do not append to it, they overwrite one another and leave
@@ -309,6 +326,17 @@ MISSING_NAME = 'missing_genomic_fasta.tsv'
 # what --force leaves behind. Written only when there are some, so the file being
 # there at all says a batch holds genomes no table was predicted for.
 NO_PREDICTION_NAME = 'no_prediction.tsv'
+
+# The same for the release, and the only place the genomes a release has no table
+# for are gathered. There are two ways to be one, and they are different
+# failures: gTranslate was handed the genome and returned nothing for it, or the
+# genome had no genomic FASTA to hand over in the first place. Merging them would
+# report a missing file as a prediction failure. Of r237's 1,346,118 genomes,
+# eight are here -- six of the first kind and two of the second.
+NO_PREDICTION_RELEASE_NAME = 'gtranslate_no_prediction.tsv'
+NO_PREDICTION_HEADER = ('genome_id', 'reason')
+REASON_NO_PREDICTION = 'gtranslate_returned_no_prediction'
+REASON_NO_FASTA = 'no_genomic_fasta'
 
 # What this command does to a batch, written in the batch's own directory as well
 # as to --log: every machine sharing an --out_dir writes its own log, and one log
@@ -1267,6 +1295,72 @@ def already_predicted(batch_dir: str, summary: str) -> bool:
             and os.path.exists(os.path.join(batch_dir, summary)))
 
 
+def read_accessions(path: str) -> List[str]:
+    """Read a file of one accession per line.
+
+    Parameters
+    ----------
+    path : str
+        File to read, which may not exist.
+
+    @return: the accessions, and an empty list where there is no file.
+    """
+
+    try:
+        with open(path) as handle:
+            return [line.strip() for line in handle if line.strip()]
+    except OSError:
+        return []
+
+
+def no_prediction_rows(batches: Sequence[str],
+                       prefix: Optional[str] = None) -> List[Tuple[str, str]]:
+    """Every genome of the release that has no translation table, and why.
+
+    Worked out per batch from what the batch was ASKED about against what its
+    summary answered, rather than concatenated from the no_prediction.tsv files
+    the batches wrote. Those are written by the run that predicts a batch, and a
+    batch already predicted is never predicted again -- so a release finished
+    across several machines, or resumed, can hold batches that never wrote one.
+    Asking the two files each batch certainly has cannot miss a genome that way.
+
+    A genome whose FASTA was missing is reported as that and not as a prediction
+    failure: gTranslate was never given it. Which genomes those were is read from
+    the batch's missing_genomic_fasta.tsv.
+
+    Parameters
+    ----------
+    batches : sequence of str
+        Every batch directory of the run.
+    prefix : str
+        The --prefix the run passed gTranslate, or None for its default.
+
+    @return: (accession, reason) for each, in accession order.
+    """
+
+    rows = []
+    for batch_dir in batches:
+        # a batch with no plan is one nothing can be said about: what it was
+        # asked is what the genomes it answered for are measured against
+        batchfile = batchfile_path(batch_dir)
+        if not os.path.exists(batchfile):
+            continue
+
+        planned = [accession for _, accession in read_batchfile(batchfile)]
+        predicted = read_translation_table_summary(
+            os.path.join(batch_dir, summary_name(prefix)))
+        no_fasta = set(read_accessions(os.path.join(batch_dir, MISSING_NAME)))
+
+        for accession in planned:
+            if accession in predicted:
+                continue
+            rows.append((accession,
+                         REASON_NO_FASTA if accession in no_fasta
+                         else REASON_NO_PREDICTION))
+
+    return sorted(rows)
+
+
 def report_no_prediction(batch_dir: str,
                          given: Sequence[str],
                          predicted: Sequence[str]) -> List[str]:
@@ -1498,6 +1592,24 @@ class ComparisonCounts(NamedTuple):
     compared: int
     conflicts: int
     no_ncbi_table: int
+
+
+def tally_reasons(rows: Sequence[Tuple[str, str]]) -> Dict[str, int]:
+    """How many genomes there are of each reason.
+
+    Parameters
+    ----------
+    rows : sequence of tuple
+        (accession, reason), as no_prediction_rows() returned them.
+
+    @return: reason to the number of genomes with it.
+    """
+
+    counts = {}
+    for _, reason in rows:
+        counts[reason] = counts.get(reason, 0) + 1
+
+    return counts
 
 
 def disagreement_rate(conflicts: int, compared: int) -> float:
@@ -2322,6 +2434,48 @@ class GTranslate(object):
                                 conflicts=len(conflicts),
                                 no_ncbi_table=no_ncbi_table)
 
+    def report_no_prediction(self, batches: Sequence[str], out_dir: str) -> None:
+        """Name the genomes of the release that have no translation table.
+
+        Every batch names its own in no_prediction.tsv as it is predicted, which
+        is where they were reported and nowhere else: a release finished across
+        five machines over days left them in 135 directories, to be found by
+        whoever thought to look. This is the one file that says which genomes the
+        release has no answer for, and prodigal needs a table for every genome of
+        it.
+
+        The file is written whether or not there are any, so that a release with
+        nothing missing says so rather than leaving the question open.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run.
+        out_dir : str
+            Output directory of the run.
+
+        @return: None
+        """
+
+        rows = no_prediction_rows(batches, self.prefix)
+        path = os.path.join(out_dir, NO_PREDICTION_RELEASE_NAME)
+        write_table(rows, path, header=NO_PREDICTION_HEADER)
+
+        if not rows:
+            self.logger.info(
+                'Every genome of the release has a translation table; wrote {} '
+                'with no rows.'.format(path))
+            return
+
+        by_reason = tally_reasons(rows)
+        self.logger.warning(
+            'warning: {:,} genome(s) of the release have no translation table and '
+            'are named in {}: {}. prodigal needs a table for every genome of the '
+            'release.'.format(
+                len(rows), path,
+                '; '.join('{:,} {}'.format(count, reason)
+                          for reason, count in sorted(by_reason.items()))))
+
     def report_comparison(self, batches: Sequence[str], conflicts: int) -> None:
         """Say for the whole release how much of it NCBI declares a table for and
         how often gTranslate disagrees.
@@ -2414,6 +2568,7 @@ class GTranslate(object):
                 'Removed {}, which an earlier run wrote uncompressed and {} now '
                 'replaces.'.format(stale, summary))
 
+        self.report_no_prediction(batches, out_dir)
         self.report_comparison(batches, conflicts)
 
         # after the concatenation, which has just rewritten the release file from
