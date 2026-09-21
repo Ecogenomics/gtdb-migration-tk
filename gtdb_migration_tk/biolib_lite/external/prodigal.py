@@ -283,17 +283,55 @@ def compress_to(source: str, destination: str) -> str:
     destination : str
         Path of the gzipped copy.
 
+    The gzip is built beside the destination and moved onto it, rather than
+    written into it. os.replace() is atomic within a filesystem, so a reader --
+    the next run deciding whether this genome still needs calling, or the command
+    that takes the release -- sees either the whole file or the one that was there
+    before, and never a half-written one.
+
+    That matters because these files are the release itself rather than scratch,
+    and two writers can meet on one genome: prodigal divides a release into
+    batches of disjoint genomes, so it takes two machines holding the SAME batch,
+    which --reclaim does deliberately and an expired lease does to a machine that
+    has stalled rather than stopped. Writing into the destination directly left
+    them interleaving into one file and leaving a corrupt gzip behind.
+
+    It does not make two writers safe, and is not meant to: the proteins of one
+    and the .sha256 of the other still pair up wrongly. What it buys is that the
+    mismatch is DETECTED -- the digest will not match the file, so the genome is
+    called again by the next run -- where a corrupt gzip was simply carried into
+    the release.
+
     @return: digest of the uncompressed bytes, in the form sha256_rb() returns.
     """
 
     digest = hashlib.sha1()
-    with open(source, 'rb') as f_in, gzip.open(destination, 'wb') as f_out:
-        while True:
-            block = f_in.read(CHUNK)
-            if not block:
-                break
-            digest.update(block)
-            f_out.write(block)
+
+    # beside the destination, so the move is a rename within one filesystem and
+    # not a copy; the leading dot keeps it out of anything globbing the directory
+    handle, staged = tempfile.mkstemp(
+        dir=os.path.dirname(destination),
+        prefix='.{}.'.format(os.path.basename(destination)))
+    os.close(handle)
+
+    try:
+        with open(source, 'rb') as f_in, gzip.open(staged, 'wb') as f_out:
+            while True:
+                block = f_in.read(CHUNK)
+                if not block:
+                    break
+                digest.update(block)
+                f_out.write(block)
+
+        os.replace(staged, destination)
+    except BaseException:
+        # including KeyboardInterrupt: a half-written file left beside the
+        # genome would be swept up by nothing, this directory not being scratch
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        raise
 
     return digest.hexdigest()
 
