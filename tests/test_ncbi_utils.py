@@ -204,6 +204,20 @@ class ReadSummaryRows(TempDirCase):
             list(U.read_summary_rows(path, required=('ftp_path',)))
 
 
+class GenomicFastaTests(TempDirCase):
+    """The genes of a genome end in the same suffix as the genome itself."""
+
+    def test_fasta_is_named_for_the_assembly_directory(self):
+        path = U.genomic_fasta('/rel/genbank/GCA/047/639/395/GCA_047639395.1_ASM4763939v1')
+        self.assertEqual(os.path.basename(path),
+                         'GCA_047639395.1_ASM4763939v1_genomic.fna.gz')
+
+    def test_trailing_separator_does_not_change_the_name(self):
+        without = U.genomic_fasta('/rel/refseq/GCF/000/001/405/GCF_000001405.39_GRCh38.p13')
+        with_sep = U.genomic_fasta('/rel/refseq/GCF/000/001/405/GCF_000001405.39_GRCh38.p13/')
+        self.assertEqual(without, with_sep)
+
+
 if __name__ == '__main__':
     unittest.main()
 
