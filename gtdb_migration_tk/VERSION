@@ -1,3 +1,6 @@
+0.1.22
+- The second progress bar of a prodigal batch says "Checking called genes" rather than "Checking genomes", which the first one says. They ask different questions -- the first stats the genomic FASTA going in, on threads, to find the genomes the release does not hold; the second reads the called genes already sitting there, on the worker processes, to find the genomes that need no calling -- and two bars a batch under one label left a reader unable to tell which pass they were watching
+
 0.1.21
 - prodigal takes an --out_dir and cuts the release into batches under it, so that several machines can be pointed at one directory and divide the release between them as they already do for trans_table. --batch_size, --reclaim and --lease behave as they do there, a batch is claimed before it is worked on and skipped once it has SUCCESS, what happens to a batch is written in the batch, and a batch that fails is retried by a later run rather than costing the release. --out_dir is now required
 - What --out_dir holds is the state of the run and nothing else. The called genes go into each genome's own prodigal/ directory, as they always have, which is also why two machines working on different batches never write to the same place: the batches are disjoint sets of genomes and the results follow the genome, not the batch

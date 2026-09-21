@@ -399,12 +399,16 @@ class ProdigalManager(object):
         present, missing = split_by_fasta(with_table, STAT_THREADS)
         not_called += [(accession, REASON_NO_FASTA) for accession in missing]
 
+        # named for what it asks, which is not what split_by_fasta() above asks:
+        # that one stats the genomic FASTA going in, this one reads the called
+        # genes already sitting there. Two bars a batch saying the same thing
+        # would leave a reader unable to tell which pass they were watching.
         work = [(accession, os.path.dirname(fasta), all_genomes)
                 for fasta, accession in present]
         with mp.Pool(processes=self.cpus) as pool:
             decided = list(tqdm(pool.imap_unordered(self.prodigal_parser, work),
                                 total=len(work), unit='genome', ncols=100,
-                                leave=False, desc='Checking genomes'))
+                                leave=False, desc='Checking called genes'))
 
         genome_paths = [answer for answer in decided if answer != ('null', 'null')]
         already_called = len(work) - len(genome_paths)
