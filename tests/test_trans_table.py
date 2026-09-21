@@ -1417,3 +1417,69 @@ class QCColumnTests(unittest.TestCase):
         row = G.annotate_conflicts([self.row()], {})[0]
         self.assertEqual(self.field(row, 'pass_qc_gtranslate_tt'), G.NCBI_NA)
         self.assertEqual(self.field(row, 'pass_qc_ncbi_tt'), G.NCBI_NA)
+
+
+class RemoveCheckM2DirTests(TempDirCase):
+    """The working directory goes once what it was for is in the conflict file."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.out_dir = os.path.join(self.dir, 'out')
+        os.makedirs(self.out_dir)
+        self.checkm2_dir = os.path.join(self.out_dir, G.CHECKM2_DIR)
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def conflicts(self, *rows):
+        G.write_conflicts(rows, os.path.join(self.out_dir, G.CONFLICT_NAME))
+
+    def row(self, accession='GCA_1.1'):
+        return (accession, '25', '11', '4', 'False', '90.1', '64.2', 'd__Bacteria')
+
+    def estimate(self, quality):
+        """Run the stage with CheckM2 standing in, leaving a directory behind."""
+        def stand_in(manager, accessions, fastas, checkm2_dir, table):
+            os.makedirs(os.path.join(checkm2_dir, G.CHECKM2_TABLE_DIR.format(table)),
+                        exist_ok=True)
+            return quality.get(table, {})
+
+        with mock.patch.object(G.GTranslate, 'checkm2_table', autospec=True,
+                               side_effect=stand_in):
+            G.GTranslate().estimate_conflict_quality([], self.out_dir)
+
+    def test_the_directory_is_gone_once_every_table_has_been_run(self):
+        self.conflicts(self.row())
+        self.estimate({25: {'GCA_1.1': ('94.3', '0.17')},
+                       11: {'GCA_1.1': ('51.0', '16.4')}})
+        self.assertFalse(os.path.exists(self.checkm2_dir))
+
+    def test_the_estimates_are_in_the_table_before_the_directory_goes(self):
+        """Removing it is the last thing done, so nothing is swept up that has
+        not landed."""
+        self.conflicts(self.row())
+        self.estimate({25: {'GCA_1.1': ('94.3', '0.17')},
+                       11: {'GCA_1.1': ('51.0', '16.4')}})
+        with open(os.path.join(self.out_dir, G.CONFLICT_NAME)) as handle:
+            rows = handle.read().splitlines()
+        self.assertEqual(rows[1].split('\t')[
+            G.CONFLICT_HEADER_CHECKM2.index('cm2_completeness_gtranslate_tt')], '94.3')
+
+    def test_a_table_that_produced_nothing_keeps_the_directory(self):
+        """The tables that succeeded are then read rather than run again, which
+        is what makes retrying a failed table cheap."""
+        self.conflicts(self.row())
+        self.estimate({25: {'GCA_1.1': ('94.3', '0.17')}, 11: {}})
+        self.assertTrue(os.path.isdir(self.checkm2_dir))
+
+    def test_a_release_that_conflicted_about_nothing_removes_nothing(self):
+        """There is no directory to remove, and rmtree on a path that was never
+        made should not be how that is found out."""
+        self.conflicts()
+        self.estimate({})
+        self.assertFalse(os.path.exists(self.checkm2_dir))
+
+    def test_removing_a_directory_that_is_not_there_is_not_an_error(self):
+        G.remove_checkm2_dir(os.path.join(self.dir, 'never_made'))

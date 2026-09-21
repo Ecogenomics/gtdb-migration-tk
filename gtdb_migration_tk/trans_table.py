@@ -175,6 +175,16 @@ would be hundreds. That also means a release already predicted picks this up by
 running the command again: every batch is SUCCESS and is skipped, and the work
 happens where the release files are written.
 
+The directory those runs work in is removed once the estimates are in the
+conflict file, which is where they were wanted. What it holds is the staged
+links, the called proteins and the DIAMOND output -- about 600 KB per genome per
+table, a few hundred megabytes for a release -- and none of it says anything the
+conflict file does not now say. What that gives up is a later run reading the
+reports rather than making them again, which is minutes for a few hundred
+genomes, against the days the batches protect: which is why the batches are never
+removed and this is. A table CheckM2 produced nothing for keeps the directory, so
+that retrying it does not also redo the tables that worked.
+
 CheckM2 is not installed beside this toolkit -- the TensorFlow it needs wants an
 icu the release environment cannot hold -- so it is an external program like
 gTranslate, found on PATH, and is checked for before a run starts. It names a
@@ -1797,6 +1807,36 @@ def passes_qc(completeness: str, contamination: str) -> Optional[bool]:
                               estimated_contamination) > QC_MIN_QUALITY)
 
 
+def remove_checkm2_dir(checkm2_dir: str) -> None:
+    """Remove what the CheckM2 runs left behind.
+
+    Called once the estimates are in ncbi_tt_conflict.tsv, which is where they
+    were wanted: what is left is the staged links, the called proteins and the
+    DIAMOND output, about 600 KB per genome per table, and for a release that is
+    a few hundred megabytes of a metadata directory holding nothing the conflict
+    file does not now hold.
+
+    What is given up by removing it is that a later run reads the reports rather
+    than making them again. That is a few minutes for the few hundred genomes a
+    release conflicts about -- CheckM2 spends most of a small run loading its
+    models and opening the database -- against the days of prediction the batches
+    protect, which is why they are not removed and this is.
+
+    Errors are ignored. The directory is this command's own working space, and a
+    release whose conflicts are written and annotated is finished whether or not
+    the leftovers could be swept up.
+
+    Parameters
+    ----------
+    checkm2_dir : str
+        The CheckM2 directory of the run.
+
+    @return: None
+    """
+
+    shutil.rmtree(checkm2_dir, ignore_errors=True)
+
+
 def annotate_conflicts(rows: Sequence[Sequence[str]],
                        quality: Dict[int, Dict[str, Tuple[str, str]]]
                        ) -> List[List[str]]:
@@ -2318,6 +2358,23 @@ class GTranslate(object):
             'table NCBI declares.'.format(
                 conflict_file, estimated, len(rows),
                 passing['pass_qc_gtranslate_tt'], passing['pass_qc_ncbi_tt']))
+
+        # only now: the working directory goes once what it was for is in the
+        # file, and never before, so that nothing is swept up that has not landed
+        incomplete = sorted(table for table, estimates in quality.items()
+                            if not estimates)
+        if incomplete:
+            self.logger.info(
+                '{} is kept: {} produced nothing for table(s) {}, and the tables '
+                'that did are read rather than run again when the command is run '
+                'again.'.format(checkm2_dir, CHECKM2_BIN,
+                                ', '.join(str(table) for table in incomplete)))
+            return
+
+        remove_checkm2_dir(checkm2_dir)
+        self.logger.info(
+            'Removed {}: the called proteins and the DIAMOND output it held say '
+            'nothing {} does not.'.format(checkm2_dir, conflict_file))
 
     def run(self, gtdb_genome_path_file: str, taxonomy_file: str, out_dir: str) -> bool:
         """Predict the translation table of every genome of a release.

@@ -302,10 +302,8 @@ it on a file server shared with other work.
     gtranslate.translation_table_summary.tsv
     ncbi_tt_conflict.tsv                genomes of this batch NCBI disagrees about
   batch_000002/
-  checkm2/
-    input/table_25/                     the conflicting genomes, linked by accession
-    table_25/quality_report.tsv         what CheckM2 made of them under table 25
-    table_11/, table_4/                 the same under the other tables in dispute
+  checkm2/                              working space, removed once the estimates
+                                        are in ncbi_tt_conflict.tsv
   ncbi_tt_conflict.tsv                  the whole release, once every batch has SUCCESS
   gtranslate.translation_table_summary.tsv
 ```
@@ -407,9 +405,16 @@ A release already predicted therefore picks them up by running the command again
 release files are written. Run that pass on ONE machine: the batches are claimed
 one machine at a time but the release files are not, so several machines re-run
 together would each start CheckM2 in the same directories, and `checkm2 predict
---force` empties its output directory as it starts. A machine arriving after one
-has finished is harmless -- a run whose `quality_report.tsv` is already there is
-read rather than made again. A genome with no FASTA, or a run that fails, leaves
+--force` empties its output directory as it starts.
+
+The `checkm2/` directory is removed once the estimates are in
+`ncbi_tt_conflict.tsv`. What it holds -- the staged genomes, the called proteins,
+the DIAMOND output -- is about 600 KB per genome per table and says nothing the
+conflict file does not now say. Running the command again therefore makes those
+runs afresh rather than reading them, which is minutes for the few hundred
+genomes a release conflicts about; the batches are what must never be redone, and
+they are not. A table CheckM2 produced nothing for keeps the directory, so
+retrying it does not also redo the tables that worked. A genome with no FASTA, or a run that fails, leaves
 `na` in those four columns and the rest of the row intact; nothing here can cost
 the release the comparison, which is written and counted before CheckM2 starts.
 
