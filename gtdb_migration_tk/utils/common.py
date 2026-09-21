@@ -13,6 +13,13 @@ TT_SUMMARY_TABLE = 'best_tln_table'
 TT_SUMMARY_DENSITY_4 = 'coding_density_4'
 TT_SUMMARY_DENSITY_11 = 'coding_density_11'
 
+# gTranslate measures these of every genome it predicts for, so the comparison
+# carries them rather than reading 1.3M FASTA files to learn what has already
+# been read. The output files name them as gTranslate does.
+TT_SUMMARY_GC = 'gc_percent'
+TT_SUMMARY_N50 = 'n50'
+TT_SUMMARY_GENOME_SIZE = 'genome_size'
+
 # The coding densities gTranslate reports are PERCENTAGES, where the rule below
 # was written against fractions, so the thresholds are scaled rather than the
 # values: 0.05 of 1 is 5 of 100, and 0.7 of 1 is 70 of 100.

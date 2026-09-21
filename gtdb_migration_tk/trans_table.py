@@ -121,14 +121,30 @@ carries for each the coding densities the prediction was made from, the genome's
 NCBI taxonomy, the table the coding density rule alone would have chosen, and
 whether that rule and gTranslate disagree about the genome being recoded at all.
 
-Only the disagreements are written because they are the whole point of asking:
-a genome whose genes GTDB would call under a table NCBI does not agree with is
-something to look at, and whether such genomes fall together in the taxonomy is
-what the lineage is there to answer. Agreement is the ordinary case -- it is
-nearly every genome of a release -- and a row saying so says nothing that the
-count in the log does not. How many agreed, how many conflicted and how many
-NCBI declares no table for is logged for every batch. The table NCBI declares is
-read by ncbi_utils.ncbi_translation_table(), which prodigal reads it with too.
+Two files come out of it. gtranslate_ncbi_tt_comparison.tsv.gz holds every genome
+the two BOTH called, agreements and all, because the rate they differ at and
+whether the genomes they differ about are unlike the ones they agree about are
+questions the agreements have to be present to answer. ncbi_tt_conflict.tsv holds
+the disagreements alone, which is the few hundred rows of a release worth looking
+at: a genome whose genes GTDB would call under a table NCBI does not agree with
+is something to go and read, and it should not have to be filtered out of a
+million rows first. The conflicts are the comparison FILTERED rather than a
+second walk over the genomes -- every GFF has already been read once -- so the
+two can never come to disagree about which genomes conflicted.
+
+The comparison is gzipped and the conflicts are not, in the batch as well as in
+the release: one is a row per genome compared, 786,144 of r237's 1.35M, and the
+other is meant to be opened and read. A genome NCBI has not annotated is in
+neither, having nothing to compare against and no ncbi_conflict to report; how
+many there were is logged, with how many agreed and how many conflicted, for
+every batch. The table NCBI declares is read by
+ncbi_utils.ncbi_translation_table(), which prodigal reads it with too.
+
+Both files carry the genome's GC, N50 and size as gTranslate measured them, taken
+from its summary. They are what tells a conflict that is a real disagreement
+about a real genome from one about 200 kb of something barely assembled, and
+measuring them here would be reading 1.3M genomes a second time to learn what has
+already been learnt.
 
 Once every batch has succeeded the run also writes the conflicts and the
 prediction summary for the whole release at the top of --out_dir, so that a
@@ -227,8 +243,12 @@ from gtdb_migration_tk.ncbi_utils import (GENOMIC_FASTA_EXT, NCBI_NA,
                                           genomic_gff, ncbi_translation_table)
 from gtdb_migration_tk.utils.common import (TT_SUMMARY_DENSITY_4,
                                             TT_SUMMARY_DENSITY_11,
+                                            TT_SUMMARY_GC,
+                                            TT_SUMMARY_GENOME_SIZE,
+                                            TT_SUMMARY_N50,
                                             TT_SUMMARY_TABLE,
                                             checkm_translation_table,
+                                            open_text,
                                             read_translation_table_summary)
 
 
@@ -307,6 +327,26 @@ GZIP_EXT = '.gz'
 
 CONFLICT_NAME = 'ncbi_tt_conflict.tsv'
 
+# The comparison of every genome the two BOTH called, agreements and all. It is a
+# row per genome NCBI declares a table for -- 786,144 of r237's 1.35M -- which is
+# why it is gzipped in the batch as well as in the release, and why the conflicts
+# keep a file of their own: the few hundred rows worth looking at should not have
+# to be filtered out of a million first. A genome NCBI has not annotated is not
+# here at all, having nothing to be compared against and no ncbi_conflict to
+# report; how many there were is logged.
+COMPARISON_NAME = 'gtranslate_ncbi_tt_comparison.tsv.gz'
+
+# ncbi_conflict is the plain inequality -- gTranslate said one table and NCBI
+# another -- and is what decides whether a genome is in ncbi_tt_conflict.tsv.
+# checkm_conflict beside it is the narrower question of whether the coding
+# density rule and gTranslate disagree about the genome being RECODED at all:
+# see checkm_conflict(). The genome statistics are gTranslate's own measurements,
+# carried through rather than measured again.
+COMPARISON_HEADER = ('genome_id', 'gtranslate_tt', 'ncbi_tt', 'checkm_tt',
+                     'ncbi_conflict', 'checkm_conflict',
+                     'coding_density_4', 'coding_density_11',
+                     'gc_percent', 'n50', 'genome_size', 'ncbi_taxonomy')
+
 # checkm_tt sits beside the other two tables rather than at the end: the three
 # are the answers to one question, gtranslate_tt and ncbi_tt being the two that
 # disagreed. It is the table the coding density rule alone would choose, which is
@@ -316,7 +356,7 @@ CONFLICT_NAME = 'ncbi_tt_conflict.tsv'
 # There is no result column: every row of the file is a conflict.
 CONFLICT_HEADER = ('genome_id', 'gtranslate_tt', 'ncbi_tt', 'checkm_tt',
                    'checkm_conflict', 'coding_density_4', 'coding_density_11',
-                   'ncbi_taxonomy')
+                   'gc_percent', 'n50', 'genome_size', 'ncbi_taxonomy')
 
 # The executable that estimates the quality of a conflicting genome, looked up on
 # PATH as gTranslate is. It is not installable beside this toolkit -- the
@@ -1474,29 +1514,39 @@ def batch_counts(batches: Sequence[str]) -> Tuple[int, Optional[int]]:
     return compared, no_ncbi_table if complete else None
 
 
-def conflict_rows(predictions: Dict[str, Dict[str, str]],
-                  genome_dirs: Dict[str, str],
-                  taxonomy: Dict[str, str]) -> Tuple[List[Tuple[str, ...]], int, int]:
-    """Find the genomes gTranslate and NCBI disagree about.
+def comparison_rows(predictions: Dict[str, Dict[str, str]],
+                    genome_dirs: Dict[str, str],
+                    taxonomy: Dict[str, str]) -> Tuple[List[List[str]], int, int]:
+    """Compare what gTranslate predicted against what NCBI declares, for every
+    genome the two both called.
 
     Only a genome NCBI declares a table for can be compared at all: a genome NCBI
-    has not annotated has nothing to compare against, and is counted rather than
-    reported. Of those compared, only the disagreements are returned -- agreement
-    is nearly every genome of a release, and a row saying so says nothing the
-    count does not.
+    has not annotated has nothing to compare against and no ncbi_conflict to
+    report, so it is counted rather than given a row saying nothing.
+
+    Every genome that CAN be compared gets a row, agreements included, which is
+    what separates this from the conflicts: the rate the two differ at, and
+    whether the genomes they differ about are unlike the ones they agree about,
+    are questions the agreements have to be present to answer. The conflicts are
+    then this file filtered, by conflicts_from_comparison(), so that the two can
+    never come to disagree about which genomes conflicted.
+
+    The genome statistics are gTranslate's own measurements of the FASTA it read,
+    carried through from the summary. Measuring them here would be reading 1.3M
+    genomes a second time to learn what has already been learnt.
 
     Parameters
     ----------
     predictions : dict
-        Predictions as read_predictions() returned them.
+        Predictions as read_translation_table_summary() returned them.
     genome_dirs : dict
         Accession to genome directory, for the genomes of the batch.
     taxonomy : dict
         Taxonomy as read_taxonomy() returned it.
 
-    @return: (rows, compared, no_ncbi_table), the conflicting genomes in
-             accession order, the number of genomes compared, and the number of
-             genomes NCBI declared no table for.
+    @return: (rows, compared, no_ncbi_table), the comparison in accession order
+             and in COMPARISON_HEADER order, the number of genomes compared, and
+             the number of genomes NCBI declared no table for.
     """
 
     rows, compared, no_ncbi_table = [], 0, 0
@@ -1510,51 +1560,84 @@ def conflict_rows(predictions: Dict[str, Dict[str, str]],
             no_ncbi_table += 1
             continue
 
+        compared += 1
+
         predicted = predictions[accession]
         table = predicted.get(TT_SUMMARY_TABLE, '')
-        compared += 1
-        if table.strip() == str(ncbi_table):
-            continue
-
         density_4 = predicted.get(TT_SUMMARY_DENSITY_4, '')
         density_11 = predicted.get(TT_SUMMARY_DENSITY_11, '')
         checkm_table = checkm_translation_table(density_4, density_11)
 
-        rows.append((accession,
+        rows.append([accession,
                      table,
                      str(ncbi_table),
                      str(checkm_table) if checkm_table else NCBI_NA,
+                     str(table.strip() != str(ncbi_table)),
                      str(checkm_conflict(table.strip(), checkm_table)),
                      density_4,
                      density_11,
-                     lineage_of(accession, taxonomy)))
+                     predicted.get(TT_SUMMARY_GC) or NCBI_NA,
+                     predicted.get(TT_SUMMARY_N50) or NCBI_NA,
+                     predicted.get(TT_SUMMARY_GENOME_SIZE) or NCBI_NA,
+                     lineage_of(accession, taxonomy)])
 
     return rows, compared, no_ncbi_table
 
 
-def write_conflicts(rows: Sequence[Sequence[str]], path: str,
-                    header: Sequence[str] = CONFLICT_HEADER) -> None:
-    """Write the conflicts of a batch, or of the release.
+def conflicts_from_comparison(rows: Sequence[Sequence[str]]) -> List[List[str]]:
+    """The genomes of a comparison that gTranslate and NCBI disagree about.
 
-    The file is written whether or not there are any: a batch that finished with
-    nothing to report says so with a header and no rows, and the release file is
-    then the concatenation of every batch's, however many conflicted.
+    The conflicts are the comparison filtered rather than a second walk over the
+    genomes: the GFF of every genome has already been read once to make the
+    comparison, and reading it again would be hours of a release spent finding
+    out what is already known.
+
+    ncbi_conflict does not come with them. Every row of the conflict file is a
+    conflict, so a column saying so would say 'True' and nothing else; the column
+    exists in the comparison because there it distinguishes the rows.
 
     Parameters
     ----------
     rows : sequence of sequence of str
-        Conflicting rows, as conflict_rows() returned them, or as
-        annotate_conflicts() returned them for the release.
+        Comparison rows, in COMPARISON_HEADER order.
+
+    @return: the conflicting rows, in CONFLICT_HEADER order.
+    """
+
+    verdict = COMPARISON_HEADER.index('ncbi_conflict')
+    keep = [COMPARISON_HEADER.index(column) for column in CONFLICT_HEADER]
+
+    return [[row[column] for column in keep]
+            for row in rows if row[verdict] == 'True']
+
+
+def write_table(rows: Sequence[Sequence[str]], path: str,
+                header: Sequence[str] = CONFLICT_HEADER,
+                compress: bool = False) -> None:
+    """Write a comparison or a conflict table, of a batch or of the release.
+
+    The file is written whether or not there are any rows: a batch that finished
+    with nothing to report says so with a header and no rows, and the release
+    file is then the concatenation of every batch's, however many they found.
+
+    Parameters
+    ----------
+    rows : sequence of sequence of str
+        Rows, as comparison_rows(), conflicts_from_comparison() or
+        annotate_conflicts() returned them.
     path : str
         File to write.
     header : sequence of str
-        Column names, CONFLICT_HEADER for a batch and CONFLICT_HEADER_CHECKM2 for
-        the release, which carries the CheckM2 columns as well.
+        Column names: COMPARISON_HEADER, CONFLICT_HEADER for a batch, or
+        CONFLICT_HEADER_CHECKM2 for the release, which carries the CheckM2
+        columns as well.
+    compress : bool
+        Write it gzipped, which the comparison is and the conflicts are not.
 
     @return: None
     """
 
-    with open(path, 'w') as handle:
+    with (gzip.open(path, 'wt') if compress else open(path, 'w')) as handle:
         handle.write('\t'.join(header) + '\n')
         for row in rows:
             handle.write('\t'.join(row) + '\n')
@@ -1579,7 +1662,7 @@ def read_conflicts(path: str) -> List[List[str]]:
     """
 
     rows = []
-    with open(path) as handle:
+    with open_text(path) as handle:
         header = handle.readline().rstrip('\n').split('\t')
         try:
             columns = [header.index(column) for column in CONFLICT_HEADER]
@@ -1931,7 +2014,9 @@ def concatenate(files: Sequence[str], path: str, compress: bool = False) -> int:
     written = 0
     with (gzip.open(path, 'wt') if compress else open(path, 'w')) as out:
         for index, name in enumerate(files):
-            with open(name) as handle:
+            # open_text: a batch's comparison is gzipped and its conflicts are
+            # not, and gTranslate's summary is whatever gTranslate wrote
+            with open_text(name) as handle:
                 header = handle.readline()
                 if index == 0:
                     out.write(header)
@@ -2152,20 +2237,27 @@ class GTranslate(object):
         predictions = read_translation_table_summary(
             os.path.join(batch_dir, summary_name(self.prefix)))
 
-        rows, compared, no_ncbi_table = conflict_rows(predictions, genome_dirs, taxonomy)
-        write_conflicts(rows, os.path.join(batch_dir, CONFLICT_NAME))
+        rows, compared, no_ncbi_table = comparison_rows(
+            predictions, genome_dirs, taxonomy)
+        write_table(rows, os.path.join(batch_dir, COMPARISON_NAME),
+                    header=COMPARISON_HEADER, compress=True)
 
-        # the agreements are not written anywhere, so this line is the only place
-        # a batch says how many genomes it actually compared
+        # the conflicts are the comparison filtered, so the two cannot come to
+        # disagree about which genomes conflicted
+        conflicts = conflicts_from_comparison(rows)
+        write_table(conflicts, os.path.join(batch_dir, CONFLICT_NAME))
+
+        # the genomes NCBI declares no table for are in neither file, having
+        # nothing to compare, so this line is the only place they are counted
         self.logger.info(
             'Compared {:,} genomes with a translation table from NCBI: {:,} agree, '
             '{:,} conflict ({:.2f}%); {:,} genome(s) have no table from NCBI to '
-            'compare.'.format(compared, compared - len(rows), len(rows),
-                              disagreement_rate(len(rows), compared),
+            'compare.'.format(compared, compared - len(conflicts), len(conflicts),
+                              disagreement_rate(len(conflicts), compared),
                               no_ncbi_table))
 
         return ComparisonCounts(compared=compared,
-                                conflicts=len(rows),
+                                conflicts=len(conflicts),
                                 no_ncbi_table=no_ncbi_table)
 
     def report_comparison(self, batches: Sequence[str], conflicts: int) -> None:
@@ -2233,6 +2325,14 @@ class GTranslate(object):
             os.path.join(out_dir, CONFLICT_NAME))
         self.logger.info('Wrote {:,} rows to {}.'.format(
             conflicts, os.path.join(out_dir, CONFLICT_NAME)))
+
+        # a row per genome the two both called, which for r237 is 786,144 of its
+        # 1.35M genomes; gzipped for the same reason the summary is
+        comparison = os.path.join(out_dir, COMPARISON_NAME)
+        written = concatenate(
+            [os.path.join(batch, COMPARISON_NAME) for batch in batches],
+            comparison, compress=True)
+        self.logger.info('Wrote {:,} rows to {}.'.format(written, comparison))
 
         # a row per genome of the release, which for r237 is 116 MB of text and
         # 34 MB compressed; prodigal reads it either way, by its first two bytes
@@ -2391,7 +2491,7 @@ class GTranslate(object):
                    for table, accessions in sorted(tables.items())}
 
         annotated = annotate_conflicts(rows, quality)
-        write_conflicts(annotated, conflict_file, header=CONFLICT_HEADER_CHECKM2)
+        write_table(annotated, conflict_file, header=CONFLICT_HEADER_CHECKM2)
 
         first = CONFLICT_HEADER_CHECKM2.index(CHECKM2_COLUMNS[0])
         estimated = sum(1 for row in annotated

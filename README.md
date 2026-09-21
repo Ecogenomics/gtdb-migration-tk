@@ -301,10 +301,12 @@ it on a file server shared with other work.
     no_prediction.tsv                   genomes gTranslate returned nothing for
     gtranslate.translation_table_summary.tsv
     ncbi_tt_conflict.tsv                genomes of this batch NCBI disagrees about
+    gtranslate_ncbi_tt_comparison.tsv.gz  every genome of this batch both called
   batch_000002/
   checkm2/                              working space, removed once the estimates
                                         are in ncbi_tt_conflict.tsv
   ncbi_tt_conflict.tsv                  the whole release, once every batch has SUCCESS
+  gtranslate_ncbi_tt_comparison.tsv.gz
   gtranslate.translation_table_summary.tsv.gz
 ```
 
@@ -370,16 +372,34 @@ not the one NCBI declares, one row each:
 | `checkm_tt` | the table the coding density rule alone would choose, as Prodigal and CheckM do unaided; it cannot express table 25 |
 | `checkm_conflict` | `True` where gTranslate and that rule disagree about the genome being recoded at all: 11 against 4, or 4 or 25 against 11. 25 against 4 is `False` -- the rule picks between 4 and 11 alone, so 4 is the closest it can come to saying 25 |
 | `coding_density_4`, `coding_density_11` | as gTranslate measured them |
+| `gc_percent`, `n50`, `genome_size` | as gTranslate measured them; what tells a conflict about a real genome from one about 200 kb of something barely assembled |
 | `cm2_completeness_gtranslate_tt`, `cm2_contamination_gtranslate_tt` | what CheckM2 makes of the genome with its genes called under `gtranslate_tt` |
 | `pass_qc_gtranslate_tt` | `True` where those pass standard GTDB QC, `na` where CheckM2 returned nothing |
 | `cm2_completeness_ncbi_tt`, `cm2_contamination_ncbi_tt` | the same under `ncbi_tt` |
 | `pass_qc_ncbi_tt` | and the same verdict under `ncbi_tt` |
 | `ncbi_taxonomy` | lineage from `--taxonomy_file`, `na` where it holds none |
 
-Every row is a conflict, so there is no column saying so. A genome the two agree
-about is counted and not written, agreement being nearly every genome of a
-release; a genome NCBI has not annotated declares no table and cannot be compared
-at all. How many genomes NCBI declares a table for, how many of those the two
+Every row is a conflict, so there is no column saying so -- `ncbi_conflict` lives
+in the comparison, where it tells the rows apart. A genome NCBI has not annotated
+declares no table and is in neither file.
+
+`gtranslate_ncbi_tt_comparison.tsv.gz` holds **every** genome the two both called,
+agreements and all -- 786,144 of r237's 1.35M, which is why it is gzipped in the
+batch as well as in the release:
+
+| Column | |
+| --- | --- |
+| `genome_id`, `gtranslate_tt`, `ncbi_tt`, `checkm_tt` | as in the conflict file |
+| `ncbi_conflict` | `True` where gTranslate and NCBI named different tables; these are the rows the conflict file holds |
+| `checkm_conflict` | the narrower question, as above: whether gTranslate and the density rule disagree about the genome being recoded at all |
+| `coding_density_4`, `coding_density_11`, `gc_percent`, `n50`, `genome_size` | as gTranslate measured them |
+| `ncbi_taxonomy` | lineage from `--taxonomy_file` |
+
+The agreements are there because the rate the two differ at, and whether the
+genomes they differ about are unlike the ones they agree about, are questions the
+agreements have to be present to answer. The conflicts are that file filtered, not
+a second walk over the genomes -- every GFF has already been read once -- so the
+two cannot come to disagree about which genomes conflicted. How many genomes NCBI declares a table for, how many of those the two
 agree and disagree about, and what percentage of them disagree is logged for each
 batch and again for the release. The rate is of the genomes that could be
 compared, not of the release: a genome NCBI has not annotated is not one the two
