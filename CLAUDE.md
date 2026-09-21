@@ -11,22 +11,36 @@ PostgreSQL database. Python 3.8 or later.
 
 ## Commands
 
+Run the toolkit, its tests, and anything that imports it in the
+`gtdb_migration_tk-r237` conda environment. That is the environment the r237
+release is being built with: it holds every `install_requires` dependency, and
+the package is installed in it against the working checkout, so what runs there
+is the code in the tree rather than a copy of it. A change is verified by running
+it there -- not under whatever `python` happens to be on `PATH`, which is an
+interpreter too old to import the package.
+
 ```bash
-pip install -e ".[test]"                  # editable install with pytest
+conda activate gtdb_migration_tk-r237     # before anything below
 gtdb_migration_tk                         # list commands
 gtdb_migration_tk <command> -h            # help for one command
 python -m gtdb_migration_tk <command>     # equivalent
 bin/gtdb_migration_tk <command>           # from a source checkout, no install needed
 ```
 
-Tests are plain `unittest`, offline, and need no mirror or database:
+Tests are plain `unittest`, offline, and need no mirror or database. `pytest` is
+not installed in that environment, so run them with `unittest`, which the suite
+is written in and which needs nothing extra:
 
 ```bash
-pytest                                                # whole suite (testpaths in pyproject.toml)
-pytest tests/test_ncbi_genome_sync.py -k manifest -v  # one file / one match
-python -m unittest discover -s tests                  # without pytest
-python -m unittest -v tests.test_select_genomes      # one module
+python -m unittest discover -s tests                         # whole suite
+python -m unittest tests.test_ncbi_utils                     # one module
+python -m unittest -v tests.test_update_genomes.ResumeTests  # one class
 ```
+
+`pip install -e ".[test]"` is how a NEW environment is set up, and brings pytest
+with it (`pytest`, `testpaths` in `pyproject.toml`). Do not run it against
+`gtdb_migration_tk-r237`: that environment is building a release, and it is not
+the place to be resolving dependencies.
 
 There is no linter or formatter configured. Releases are cut by publishing a
 GitHub release, which builds a conda package on the `ace-internal` channel from
@@ -68,6 +82,25 @@ than creating its own. `--log` sets the log file; without it the log goes to
 `./gtdb_migration_tk.log`. `parse_options()` returns an exit code, and `main()`
 only calls `sys.exit()` when it is non-zero. Today only `ncbi_genome_sync` returns a
 meaningful code (see README for the table); every other command returns 0.
+
+### `batching.py` is the coordination both long commands share
+
+A release is a million-odd genomes and the work over it takes days, so `trans_table`
+and `prodigal` both cut it into batches and let several machines divide them by
+claiming batch directories under one `--out_dir`. That machinery -- the batchfiles,
+the RUNNING/SUCCESS/FAILED canaries, claims as leases with a heartbeat, the
+per-batch log, `plan_batches()`, and `write_table()`/`concatenate()` -- lives in
+`batching.py` and knows nothing about gTranslate or Prodigal. What differs between
+the commands in name alone -- what the batchfile is called, what the batch's log is
+called -- travels in a `BatchLayout`, one per command. Add to `batching.py` rather
+than to either command when both would want it.
+
+What stays with a command is what a batch is FOR: `trans_table` owns `PREDICTED`
+(the hours are over, only the comparison is left) and the files it hands gTranslate;
+`prodigal` owns the decision that a genome's proteins are already vouched for.
+`prodigal`'s `--out_dir` holds only the state of the run -- the called genes go into
+the genome directories, which is why two machines on different batches never write
+to the same place.
 
 ### `ncbi_genome_sync.py` is deliberately self-contained
 
@@ -214,6 +247,21 @@ shadowed by it and never importable. Put small shared helpers in
 - Tests live in `tests/test_<module>.py`, one `TempDirCase` base for anything
   touching disk. Test names read as sentences about the contract that would
   otherwise break silently in production.
-- Commit messages use `feat:`, `fix:`, `chore:` prefixes. Work happens on
-  feature branches merged to `master` by pull request.
+- Commit messages use `feat:`, `fix:`, `chore:` prefixes: a subject line, then
+  a body explaining why the change is shaped as it is, as the module docstrings
+  do. Work happens on feature branches merged to `master` by pull request, opened
+  with the GitHub CLI:
+
+  ```bash
+  git checkout -b <branch>             # never commit to master
+  git commit                           # feat:/fix:/chore: subject, then why
+  git push -u origin <branch>
+  gh pr create --base master --fill    # --fill takes title and body from the commit
+  gh pr view --web                     # open it in a browser
+  ```
+
+  `gh` is GitHub's CLI and does what `git` does not: pull requests, issues,
+  reviews, releases, Actions. It authenticates separately from `git push`, once,
+  with `gh auth login`. Useful afterwards: `gh pr list`, `gh pr checks`,
+  `gh pr view <n>`, `gh pr merge <n>`.
 - Capitalisation in prose and messages: GTDB, RefSeq, GenBank, NCBI.

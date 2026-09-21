@@ -497,6 +497,26 @@ def assembly_summary_database(filename: str) -> Optional[NCBIDatabase]:
     return None
 
 
+def genomic_fasta(genome_dir: str) -> str:
+    """The genomic FASTA NCBI serves for a genome.
+
+    NCBI names the file for the assembly and names the genome directory the same,
+    so the file is named rather than searched for -- _cds_from_genomic.fna.gz and
+    _rna_from_genomic.fna.gz end the same way and are different files.
+
+    Parameters
+    ----------
+    genome_dir : str
+        Genome directory, of a release or of the mirror.
+
+    @return: path of the genomic FASTA in that directory, which may not exist.
+    """
+
+    assembly = os.path.basename(os.path.normpath(genome_dir))
+
+    return os.path.join(genome_dir, assembly + GENOMIC_FASTA_EXT)
+
+
 def read_md5_manifest(lines: Iterable[str]) -> Iterator[Tuple[str, str]]:
     """Read the (md5, name) entries of an md5checksums.txt.
 

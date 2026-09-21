@@ -189,13 +189,19 @@ class OptionsParser():
         p.run(options.gtdb_genome_path_file, options.taxonomy_file, options.output_dir)
 
     def run_prodigal(self, options):
-        p = ProdigalManager(options.tmp_dir, options.cpus)
+        p = ProdigalManager(options.tmp_dir,
+                            options.cpus,
+                            options.batch_size,
+                            options.reclaim,
+                            options.lease * 60 * 60)
         check_file_exists(options.gtdb_genome_path_file)
         check_file_exists(options.trans_table_file)
         if options.tt_override:
             check_file_exists(options.tt_override)
+        make_sure_path_exists(options.output_dir)
         p.run(options.gtdb_genome_path_file,
               options.trans_table_file,
+              options.output_dir,
               options.tt_override,
               options.all_genomes)
 

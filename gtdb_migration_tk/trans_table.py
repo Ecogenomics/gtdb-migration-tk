@@ -266,10 +266,32 @@ from typing import (Dict, Iterator, List, NamedTuple, Optional, Sequence,
 
 from tqdm import tqdm
 
+from gtdb_migration_tk.batching import (BATCH_DIR_FORMAT, BATCH_DIR_PREFIX,
+                                        CLAIM_LEASE_SECONDS, DEFAULT_BATCH_SIZE,
+                                        FAILED_CANARY, GZIP_EXT,
+                                        HEARTBEAT_SECONDS, MISSING_NAME,
+                                        RUNNING_CANARY, STATE_FAILED,
+                                        STATE_PENDING, STATE_RUNNING,
+                                        STATE_SUCCESS, STAT_CHUNK, STAT_THREADS,
+                                        SUCCESS_CANARY, BatchLayout, Heartbeat,
+                                        age_phrase, batch_dir_names, batch_log,
+                                        batch_state, batchfile_path,
+                                        canary_payload, claim_age, claim_batch,
+                                        concatenate,
+                                        create_batches, fail_batch, fasta_size,
+                                        finish_batch, keep_failure_record,
+                                        plan_batches, process_alive,
+                                        read_accessions,
+                                        read_batchfile, read_canary,
+                                        read_genome_dirs, release_claim,
+                                        server_time, split_by_fasta,
+                                        stale_claim, tally_reasons,
+                                        write_batchfile, write_table)
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.ncbi_utils import (GENOMIC_FASTA_EXT, NCBI_NA,
-                                          genomic_gff, ncbi_translation_table)
+                                          genomic_fasta, genomic_gff,
+                                          ncbi_translation_table)
 from gtdb_migration_tk.utils.common import (TT_SUMMARY_DENSITY_4,
                                             TT_SUMMARY_DENSITY_11,
                                             TT_SUMMARY_GC,
@@ -289,16 +311,6 @@ GTRANSLATE_BIN = 'gtranslate'
 # The subcommand run. gTranslate's other subcommands either train models or plot
 # what one predicted, neither of which belongs in a migration.
 DETECT_TABLE = 'detect_table'
-
-# Genomes per batch. Large enough that the cost of starting gTranslate and loading
-# its classifiers is nothing against the genomes it then processes, small enough
-# that a machine lost mid-batch costs hours and not days.
-DEFAULT_BATCH_SIZE = 10000
-
-# Batch directories are numbered rather than named for the genomes they hold: the
-# accessions of a batch are in its batchfile, and a name is a thing to sort by.
-BATCH_DIR_PREFIX = 'batch_'
-BATCH_DIR_FORMAT = BATCH_DIR_PREFIX + '{:06d}'
 
 # Written into the batch directory rather than a temporary one: it is the record
 # of which genomes the batch is, and it is what a later run and another machine
@@ -320,7 +332,6 @@ LEGACY_BATCHFILE_NAME = 'gtranslate_batchfile.tsv'
 # and removed once it has finished, so the uncompressed copy exists only while
 # the batch is being worked on and the plan kept for good is the compressed one.
 PRESENT_BATCHFILE_NAME = 'gtranslate_batchfile_present.tsv'
-MISSING_NAME = 'missing_genomic_fasta.tsv'
 
 # The accessions gTranslate was given and returned no prediction for, which is
 # what --force leaves behind. Written only when there are some, so the file being
@@ -343,37 +354,21 @@ REASON_NO_FASTA = 'no_genomic_fasta'
 # file appended to from several machines over NFS holds none of them.
 BATCH_LOG_NAME = 'trans_table.log'
 
-# The state of a batch, held in files so that another machine can see it and so
-# that it outlives the process that wrote it.
-RUNNING_CANARY = 'RUNNING'
+# What this command calls the files of its own batches, for the shared code that
+# reads them. The older uncompressed batchfile name is still looked for, so that
+# a release planned before the plan was compressed is not partitioned again.
+LAYOUT = BatchLayout(batchfiles=(BATCHFILE_NAME, LEGACY_BATCHFILE_NAME),
+                     log=BATCH_LOG_NAME)
+
+# The one canary of this command's own: RUNNING, SUCCESS and FAILED are what
+# claiming and restarting are decided by and are shared, while PREDICTED says the
+# hours of a batch are over and only the seconds of the comparison are left --
+# which is a thing only this command has.
 PREDICTED_CANARY = 'PREDICTED'
-SUCCESS_CANARY = 'SUCCESS'
-FAILED_CANARY = 'FAILED'
-
-# How often the machine holding a batch says it is still there, and how long a
-# claim outlives the last thing said. The interval is small against the hours a
-# batch takes and the lease is large against the interval, so a claim is freed
-# only by a machine that has genuinely stopped touching it, not by one whose
-# heartbeat was late to reach the file server.
-HEARTBEAT_SECONDS = 300
-CLAIM_LEASE_SECONDS = 2 * 60 * 60
-
-STATE_PENDING = 'pending'
-STATE_RUNNING = 'running'
-STATE_SUCCESS = 'success'
-STATE_FAILED = 'failed'
 
 # gTranslate names its summary for its --prefix, which this command passes through.
 DEFAULT_PREFIX = 'gtranslate'
 SUMMARY_SUFFIX = '.translation_table_summary.tsv'
-
-# The release's summary is gzipped and a batch's is not. A batch's is gTranslate's
-# own output, written by gTranslate into the batch directory and not this
-# command's to name; the release's is the concatenation of all of them, which for
-# r237 is 116 MB of text and 34 MB compressed. It is read back by
-# read_translation_table_summary(), which decides by the file's first two bytes
-# rather than by its name, so prodigal takes either.
-GZIP_EXT = '.gz'
 
 CONFLICT_NAME = 'ncbi_tt_conflict.tsv'
 
@@ -479,225 +474,6 @@ CONFLICT_HEADER_CHECKM2 = (CONFLICT_HEADER[:-1] + CHECKM2_COLUMNS
 STANDARD_TABLE = 11
 RECODED_TABLES = (4, 25)
 
-# How many of the release's genomic FASTA files are asked about at once while the
-# batches are planned. The question is one stat per genome and nothing else, so
-# what it costs is round trips to the file server and not CPU. Measured against
-# r237 over the NFS the genomes are held on, one at a time takes 12-23 ms a
-# genome -- 4 to 8 hours for 1.35M genomes -- against 3-7 ms with 32 outstanding
-# at once, so a few hours become one or two. Beyond 32 nothing further was
-# measurable: the limit is the server and the load it is already under, not the
-# number of threads asking. Threads rather than processes because a stat spends
-# its time in the kernel waiting and brings back one number.
-STAT_THREADS = 32
-
-# How many genomes are handed to the pool at a time. Executor.map() submits every
-# item it is given before the first result can be read, one future per genome, so
-# the whole release at once builds a million-odd futures before a single answer
-# comes back. A chunk is large enough that no thread waits for the next one to be
-# cut and small enough to be nothing in memory.
-STAT_CHUNK = 50000
-
-
-def genomic_fasta(genome_dir: str) -> str:
-    """The genomic FASTA NCBI serves for a genome.
-
-    NCBI names the file for the assembly and names the genome directory the same,
-    so the file is named rather than searched for -- _cds_from_genomic.fna.gz and
-    _rna_from_genomic.fna.gz end the same way and are different files.
-
-    Parameters
-    ----------
-    genome_dir : str
-        Genome directory, of a release or of the mirror.
-
-    @return: path of the genomic FASTA in that directory, which may not exist.
-    """
-
-    assembly = os.path.basename(os.path.normpath(genome_dir))
-
-    return os.path.join(genome_dir, assembly + GENOMIC_FASTA_EXT)
-
-
-def read_genome_dirs(gtdb_genome_path_file: str) -> List[Tuple[str, str]]:
-    """Read the genomes of a release from its genome_dirs file.
-
-    The file is the headerless accession / directory / canonical accession TSV
-    list_genomes and update_genomes write. Rows are split on tabs and further
-    columns ignored, as every other reader of it does, so a column appended later
-    does not reach here.
-
-    Parameters
-    ----------
-    gtdb_genome_path_file : str
-        genome_dirs file of the release.
-
-    @return: (accession, genome directory) for each genome, in the order read.
-    """
-
-    genomes = []
-    with open(gtdb_genome_path_file) as handle:
-        # leave=False: the bar is worth having while a release of half a million
-        # genomes is read and worth nothing afterwards, and a bar left behind
-        # sits in the middle of the log saying what has already been reported
-        for line in tqdm(handle, ncols=100, leave=False, desc='Reading genomes'):
-            line = line.strip()
-            if not line:
-                continue
-            tokens = line.split('\t')
-            genomes.append((tokens[0], tokens[1]))
-
-    return genomes
-
-
-def fasta_size(fasta: str) -> int:
-    """Size of a genomic FASTA, and 0 where there is no file to have one.
-
-    One stat rather than os.path.exists() and os.path.getsize(), which ask the
-    file server the same question twice; over NFS, and once per genome of a
-    release, that is half the cost of planning a run. A file that has gone
-    between the two calls also raises from the second, where here it is simply a
-    genome with nothing to process.
-
-    Parameters
-    ----------
-    fasta : str
-        Path of the genomic FASTA.
-
-    @return: size in bytes, or 0 if the file is absent or cannot be read.
-    """
-
-    try:
-        return os.stat(fasta).st_size
-    except OSError:
-        return 0
-
-
-def split_by_fasta(rows: Sequence[Tuple[str, str]],
-                   threads: int = STAT_THREADS) -> Tuple[List[Tuple[str, str]], List[str]]:
-    """Sort a batch's genomes into those that can be asked about and those that cannot.
-
-    A genome is asked about only where its genomic FASTA is on disk and is not
-    empty. gTranslate checks the paths of a batchfile before it starts and
-    refuses the WHOLE batch if one of them is missing, so a single absent file
-    would cost the other ten thousand genomes of the batch -- and would cost them
-    again on every retry, the batch failing identically each time. Filtering here
-    leaves the batch to run and the accession to be named.
-
-    The files are asked about many at a time, the genomes being held over NFS
-    where a stat is a round trip to a server rather than a lookup in a cache.
-    Nothing is computed here to be divided up: what the pool is for is having many
-    round trips outstanding at once rather than one.
-
-    The answer does not depend on how many threads asked: results are read back in
-    the order the genomes were given, which is the order gTranslate is handed them.
-
-    Parameters
-    ----------
-    rows : sequence of tuple
-        (FASTA path, accession) for the genomes of a batch.
-    threads : int
-        Stat calls to keep in flight at once.
-
-    @return: (present, missing), the rows to hand gTranslate and the accessions
-             of the genomes left out.
-    """
-
-    present, missing = [], []
-    # leave=False, as the bar reading the genome_dirs file is: it is worth having
-    # while the batch is checked over and worth nothing once it is
-    with tqdm(total=len(rows), ncols=100, leave=False,
-              desc='Checking genomes') as pbar, \
-            ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
-        for start in range(0, len(rows), STAT_CHUNK):
-            chunk = rows[start:start + STAT_CHUNK]
-            for (fasta, accession), size in zip(
-                    chunk, pool.map(fasta_size, [fasta for fasta, _ in chunk])):
-                if size > 0:
-                    present.append((fasta, accession))
-                else:
-                    missing.append(accession)
-                pbar.update()
-
-    return present, missing
-
-
-def write_batchfile(rows: Sequence[Tuple[str, str]], batchfile: str,
-                    compress: bool = False) -> None:
-    """Write the two-column batchfile gTranslate reads.
-
-    The genome ID given is the accession the genome_dirs file names, so every row
-    of the prediction table can be matched back to the genome directory it came
-    from without canonicalising anything.
-
-    Parameters
-    ----------
-    rows : sequence of tuple
-        (FASTA path, accession) for each genome to ask about.
-    batchfile : str
-        File to write.
-    compress : bool
-        Write it gzipped, which the batch's own plan is and the copy handed to
-        gTranslate is not: gTranslate reads a batchfile with a plain open().
-
-    @return: None
-    """
-
-    with (gzip.open(batchfile, 'wt') if compress else open(batchfile, 'w')) as handle:
-        for fasta, accession in rows:
-            handle.write('{}\t{}\n'.format(fasta, accession))
-
-
-def batchfile_path(batch_dir: str) -> str:
-    """Where a batch's plan is, whichever version of this command wrote it.
-
-    The plan is gzipped now and was not before, and a finished output directory
-    is still read: the command is run again over one to pick up the work that has
-    since been added to it. Asked of a batch that has neither, the answer is
-    where the plan would be written, so that a caller's error names the file it
-    was looking for.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory.
-
-    @return: path of the batchfile.
-    """
-
-    for name in (BATCHFILE_NAME, LEGACY_BATCHFILE_NAME):
-        path = os.path.join(batch_dir, name)
-        if os.path.exists(path):
-            return path
-
-    return os.path.join(batch_dir, BATCHFILE_NAME)
-
-
-def read_batchfile(batchfile: str) -> List[Tuple[str, str]]:
-    """Read back the genomes of a batch.
-
-    A batch is read from its own batchfile and not from the genome_dirs file, so
-    that a batch is self-contained: the machine that processes it needs to agree
-    with the machine that planned it about which genomes it holds, and the
-    batchfile is that agreement written down.
-
-    Parameters
-    ----------
-    batchfile : str
-        Batchfile of one batch.
-
-    @return: (FASTA path, accession) for each genome of the batch.
-    """
-
-    rows = []
-    with open_text(batchfile) as handle:
-        for line in handle:
-            line = line.rstrip('\n')
-            if not line:
-                continue
-            fasta, _, accession = line.partition('\t')
-            rows.append((fasta, accession))
-
-    return rows
 
 
 def check_batch_fastas(batch_dir: str,
@@ -731,7 +507,7 @@ def check_batch_fastas(batch_dir: str,
     """
 
     present, missing = split_by_fasta(
-        read_batchfile(batchfile_path(batch_dir)), threads)
+        read_batchfile(batchfile_path(batch_dir, LAYOUT)), threads)
 
     handed_over = os.path.join(batch_dir, PRESENT_BATCHFILE_NAME)
     write_batchfile(present, handed_over)
@@ -770,485 +546,6 @@ def release_summary_name(prefix: Optional[str] = None) -> str:
     """
 
     return summary_name(prefix) + GZIP_EXT
-
-
-def batch_dir_names(out_dir: str) -> List[str]:
-    """The batch directories already planned under an output directory.
-
-    Parameters
-    ----------
-    out_dir : str
-        Output directory of the run.
-
-    @return: paths of the batch directories holding a batchfile, in batch order.
-    """
-
-    if not os.path.isdir(out_dir):
-        return []
-
-    found = []
-    for name in sorted(os.listdir(out_dir)):
-        path = os.path.join(out_dir, name)
-        if name.startswith(BATCH_DIR_PREFIX) and os.path.isdir(path):
-            if os.path.exists(batchfile_path(path)):
-                found.append(path)
-
-    return found
-
-
-def create_batches(rows: Sequence[Tuple[str, str]],
-                   batch_size: int,
-                   out_dir: str) -> List[str]:
-    """Cut the release into batches and write the batchfile of each.
-
-    Every batchfile is written before any batch is processed, so that the plan is
-    complete the moment the first genome is worked on and a second machine
-    starting later finds the same batches rather than making its own.
-
-    Parameters
-    ----------
-    rows : sequence of tuple
-        (FASTA path, accession) for every genome of the release, in the order the
-        batches are to be cut from.
-    batch_size : int
-        Genomes per batch.
-    out_dir : str
-        Output directory of the run.
-
-    @return: paths of the batch directories created, in batch order.
-    """
-
-    created = []
-    for index, start in enumerate(range(0, len(rows), batch_size), start=1):
-        batch_dir = os.path.join(out_dir, BATCH_DIR_FORMAT.format(index))
-        os.makedirs(batch_dir, exist_ok=True)
-        write_batchfile(rows[start:start + batch_size],
-                        os.path.join(batch_dir, BATCHFILE_NAME), compress=True)
-        created.append(batch_dir)
-
-    return created
-
-
-def canary_payload(**extra: object) -> str:
-    """What a canary file says, beyond the fact that it exists.
-
-    A claim has to name its owner for another machine to know whose it is, and
-    for this machine to recognise a claim of its own left behind by a process
-    that is no longer running.
-
-    Parameters
-    ----------
-    extra : dict
-        Further fields to record, one per line.
-
-    @return: the contents of the canary file.
-    """
-
-    fields = [('host', socket.gethostname()),
-              ('pid', os.getpid()),
-              ('time', datetime.datetime.now().isoformat(timespec='seconds'))]
-    fields += sorted(extra.items())
-
-    return ''.join('{}\t{}\n'.format(key, value) for key, value in fields)
-
-
-def read_canary(path: str) -> Dict[str, str]:
-    """Read a canary file back.
-
-    Parameters
-    ----------
-    path : str
-        Canary file.
-
-    @return: its fields, empty where the file has gone or cannot be read.
-    """
-
-    fields = {}
-    try:
-        with open(path) as handle:
-            for line in handle:
-                key, _, value = line.rstrip('\n').partition('\t')
-                fields[key] = value
-    except OSError:
-        pass
-
-    return fields
-
-
-def process_alive(pid: str) -> bool:
-    """Whether a process of this host is still running.
-
-    Only ever asked about a PID this host recorded. A PID from another host says
-    nothing here and is not looked up: PIDs are reused, and taking a batch from a
-    machine that is still working on it costs more than leaving it.
-
-    Parameters
-    ----------
-    pid : str
-        Process ID, as the canary recorded it.
-
-    @return: True if the process exists or cannot be ruled out, False if it is
-             certainly gone.
-    """
-
-    try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
-        return False
-    except (ValueError, TypeError):
-        # not a PID at all, so nothing can be concluded from it
-        return True
-    except PermissionError:
-        # running as another user, which means running
-        return True
-
-    return True
-
-
-def server_time(directory: str) -> float:
-    """What time it is by the clock of the file server holding a directory.
-
-    A lease is only as good as the clock it is measured against, and the machines
-    sharing an --out_dir have a clock each. What they do share is the file server,
-    so a file is created in the directory and the time the server gives it is
-    taken as now. Skew between the machines then cannot expire a live claim or
-    hold a dead one.
-
-    Parameters
-    ----------
-    directory : str
-        Directory to ask about, which is the batch directory holding the claim.
-
-    @return: the server's idea of now, as a POSIX timestamp; this machine's own
-             clock where the directory cannot be written to.
-    """
-
-    handle, temp = None, None
-    try:
-        handle, temp = tempfile.mkstemp(prefix='.now.', dir=directory)
-        return os.fstat(handle).st_mtime
-    except OSError:
-        return time.time()
-    finally:
-        if handle is not None:
-            try:
-                os.close(handle)
-            except OSError:
-                pass
-        if temp is not None:
-            try:
-                os.unlink(temp)
-            except OSError:
-                pass
-
-
-def claim_age(running_file: str) -> Optional[float]:
-    """How long it is since the machine holding a batch last said so.
-
-    Parameters
-    ----------
-    running_file : str
-        The RUNNING canary of a batch.
-
-    @return: seconds since the claim was last touched, or None if it has gone.
-    """
-
-    try:
-        touched = os.stat(running_file).st_mtime
-    except OSError:
-        return None
-
-    return max(0.0, server_time(os.path.dirname(running_file)) - touched)
-
-
-class Heartbeat(object):
-    """Touch a claim while its batch is worked on, so that it does not expire.
-
-    The beating stops when the process holding the batch stops, whether it
-    returns, is killed or wedges, which is the whole point: a claim outlives the
-    process that made it by one lease and no longer.
-    """
-
-    def __init__(self, running_file: str, interval: float = HEARTBEAT_SECONDS) -> None:
-        """Initialization.
-
-        Parameters
-        ----------
-        running_file : str
-            The RUNNING canary to keep alive.
-        interval : float
-            Seconds between touches.
-
-        @return: None
-        """
-
-        self.running_file = running_file
-        self.interval = interval
-        self.stop = threading.Event()
-        self.thread = None
-
-    def beat(self) -> None:
-        """Touch the claim until asked to stop.
-
-        @return: None
-        """
-
-        # wait() returns True only when it was set, so the loop ends the moment
-        # the batch does rather than after one more interval
-        while not self.stop.wait(self.interval):
-            try:
-                os.utime(self.running_file, None)
-            except OSError:
-                # the claim has gone, which another machine taking the batch or
-                # the batch finishing both look like; there is nothing to keep
-                return
-
-    def __enter__(self) -> 'Heartbeat':
-        self.thread = threading.Thread(target=self.beat, daemon=True)
-        self.thread.start()
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.stop.set()
-        if self.thread is not None:
-            self.thread.join(timeout=self.interval)
-
-
-@contextlib.contextmanager
-def batch_log(batch_dir: str, logger: logging.Logger) -> Iterator[None]:
-    """Write what happens to a batch into the batch's own directory as well.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory, which takes trans_table.log.
-    logger : logging.Logger
-        The logger to tee, which is the 'timestamp' logger of the run.
-
-    @return: a context in which the logger also writes to the batch.
-    """
-
-    handler = logging.FileHandler(os.path.join(batch_dir, BATCH_LOG_NAME), 'a')
-    handler.setFormatter(logging.Formatter(
-        fmt='[%(asctime)s] %(levelname)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'))
-    logger.addHandler(handler)
-    try:
-        yield
-    finally:
-        logger.removeHandler(handler)
-        handler.close()
-
-
-def age_phrase(age: Optional[float]) -> str:
-    """How long ago something was, as a log line says it.
-
-    Parameters
-    ----------
-    age : float
-        Seconds ago, or None where there is nothing to say.
-
-    @return: a phrase naming the time, for a log message.
-    """
-
-    if age is None:
-        return 'never'
-    if age < 90:
-        return '{:.0f}s ago'.format(age)
-    if age < 5400:
-        return '{:.0f}m ago'.format(age / 60)
-
-    return '{:.1f}h ago'.format(age / 3600)
-
-
-def batch_state(batch_dir: str) -> str:
-    """What has happened to a batch.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory.
-
-    @return: one of the STATE_* constants.
-    """
-
-    if os.path.exists(os.path.join(batch_dir, SUCCESS_CANARY)):
-        return STATE_SUCCESS
-    if os.path.exists(os.path.join(batch_dir, RUNNING_CANARY)):
-        return STATE_RUNNING
-    if os.path.exists(os.path.join(batch_dir, FAILED_CANARY)):
-        return STATE_FAILED
-
-    return STATE_PENDING
-
-
-def stale_claim(running_file: str,
-                lease: float = CLAIM_LEASE_SECONDS) -> bool:
-    """Whether a claim has been given up by the machine that made it.
-
-    Two things say so. A claim of this host's whose process has gone is dead and
-    known to be dead, which is what a reset leaves behind on the machine that
-    reset. Any claim that has not been touched for a lease is dead as well: the
-    machine holding a batch says so every HEARTBEAT_SECONDS for as long as it
-    works, so silence for far longer than that is a machine that stopped, and
-    whether it stopped by dying, by being killed or by wedging on a mount is
-    neither knowable from here nor worth knowing.
-
-    The second rule is what makes a batch recoverable from ANOTHER machine, and
-    it is also the more reliable of the two: PIDs are reused, so after a reset
-    the PID a claim names is as likely to belong to something new as to be
-    missing, and a liveness check then holds a dead claim forever.
-
-    Parameters
-    ----------
-    running_file : str
-        The RUNNING canary of a batch.
-    lease : float
-        Seconds a claim survives without being touched.
-
-    @return: True if the claim can be taken over without being asked to.
-    """
-
-    fields = read_canary(running_file)
-    if (fields.get('host') == socket.gethostname()
-            and not process_alive(fields.get('pid', ''))):
-        return True
-
-    age = claim_age(running_file)
-
-    return age is not None and age > lease
-
-
-def keep_failure_record(batch_dir: str) -> None:
-    """Move a previous attempt's FAILED aside instead of deleting it.
-
-    A batch is retried by claiming it, and the claim has to clear FAILED or the
-    batch would still read as failed while it runs. Deleting it takes with it the
-    only record of why the batch failed, which on a batch that fails the same way
-    every time is the thing a person needs to read. It is kept under the time it
-    was cleared, beside the batch it belongs to.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory.
-
-    @return: None
-    """
-
-    failed = os.path.join(batch_dir, FAILED_CANARY)
-    kept = '{}.{}'.format(failed, datetime.datetime.now().strftime('%Y%m%dT%H%M%S'))
-    try:
-        os.rename(failed, kept)
-    except OSError:
-        pass
-
-
-def release_claim(batch_dir: str) -> None:
-    """Give up a claim without saying anything about how the batch went.
-
-    What an interrupted run leaves: the batch was neither finished nor tried and
-    found wanting, and the machine that held it is about to stop. Releasing it
-    has the next run take it up rather than wait out the lease.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory.
-
-    @return: None
-    """
-
-    try:
-        os.unlink(os.path.join(batch_dir, RUNNING_CANARY))
-    except OSError:
-        pass
-
-
-def claim_batch(batch_dir: str,
-                reclaim: bool = False,
-                lease: float = CLAIM_LEASE_SECONDS) -> bool:
-    """Take a batch for this machine, if no other machine holds it.
-
-    The claim is made by linking a uniquely named file onto RUNNING rather than by
-    creating RUNNING directly: this runs against NFS, where O_EXCL has never been
-    the operation that two machines can race on safely and link() is. link()
-    failing is read back rather than believed, for the same reason -- an NFS
-    client can be told a link failed that in fact succeeded, and the link count of
-    the file it made is what settles it.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory to claim.
-    reclaim : bool
-        Take a batch another machine holds before its claim has expired. Only
-        ever right when that machine is known not to be working on it.
-    lease : float
-        Seconds a claim survives without being touched.
-
-    @return: True if this machine now holds the batch.
-    """
-
-    running_file = os.path.join(batch_dir, RUNNING_CANARY)
-
-    if os.path.exists(running_file):
-        if not (reclaim or stale_claim(running_file, lease)):
-            return False
-        try:
-            os.unlink(running_file)
-        except OSError:
-            return False
-
-    tmp_file = os.path.join(batch_dir, '.{}.{}.{}'.format(
-        RUNNING_CANARY, os.getpid(), uuid.uuid4().hex))
-    with open(tmp_file, 'w') as handle:
-        handle.write(canary_payload())
-
-    try:
-        os.link(tmp_file, running_file)
-        claimed = True
-    except OSError:
-        # the link may have been made even so, and the link count says whether
-        claimed = os.stat(tmp_file).st_nlink == 2
-    finally:
-        try:
-            os.unlink(tmp_file)
-        except OSError:
-            pass
-
-    # a previous attempt on this batch is no longer what happened to it, though
-    # what it had to say about itself is kept
-    if claimed:
-        keep_failure_record(batch_dir)
-
-    return claimed
-
-
-def finish_batch(batch_dir: str, **extra: object) -> None:
-    """Record that a batch finished, and give up the claim on it.
-
-    SUCCESS is written before RUNNING is removed. The other order leaves a moment
-    in which the batch looks unclaimed and unfinished, which is the one state that
-    would have a second machine repeat it.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory.
-    extra : dict
-        Further fields to record in the canary.
-
-    @return: None
-    """
-
-    with open(os.path.join(batch_dir, SUCCESS_CANARY), 'w') as handle:
-        handle.write(canary_payload(**extra))
-
-    try:
-        os.unlink(os.path.join(batch_dir, RUNNING_CANARY))
-    except OSError:
-        pass
 
 
 def mark_predicted(batch_dir: str, **extra: object) -> None:
@@ -1295,24 +592,6 @@ def already_predicted(batch_dir: str, summary: str) -> bool:
             and os.path.exists(os.path.join(batch_dir, summary)))
 
 
-def read_accessions(path: str) -> List[str]:
-    """Read a file of one accession per line.
-
-    Parameters
-    ----------
-    path : str
-        File to read, which may not exist.
-
-    @return: the accessions, and an empty list where there is no file.
-    """
-
-    try:
-        with open(path) as handle:
-            return [line.strip() for line in handle if line.strip()]
-    except OSError:
-        return []
-
-
 def no_prediction_rows(batches: Sequence[str],
                        prefix: Optional[str] = None) -> List[Tuple[str, str]]:
     """Every genome of the release that has no translation table, and why.
@@ -1342,7 +621,7 @@ def no_prediction_rows(batches: Sequence[str],
     for batch_dir in batches:
         # a batch with no plan is one nothing can be said about: what it was
         # asked is what the genomes it answered for are measured against
-        batchfile = batchfile_path(batch_dir)
+        batchfile = batchfile_path(batch_dir, LAYOUT)
         if not os.path.exists(batchfile):
             continue
 
@@ -1392,32 +671,6 @@ def report_no_prediction(batch_dir: str,
             handle.write('{}\n'.format(accession))
 
     return missing
-
-
-def fail_batch(batch_dir: str, reason: str) -> None:
-    """Record that a batch was attempted and did not finish.
-
-    The claim is given up, so the batch is retried by the next run without
-    --reclaim: this machine is known not to be working on it, which is exactly
-    what --reclaim exists to assert about a machine that cannot be asked.
-
-    Parameters
-    ----------
-    batch_dir : str
-        Batch directory.
-    reason : str
-        What went wrong, recorded for whoever reads the directory.
-
-    @return: None
-    """
-
-    with open(os.path.join(batch_dir, FAILED_CANARY), 'w') as handle:
-        handle.write(canary_payload(reason=' '.join(str(reason).split())))
-
-    try:
-        os.unlink(os.path.join(batch_dir, RUNNING_CANARY))
-    except OSError:
-        pass
 
 
 def detect_table_command(batchfile: str,
@@ -1594,24 +847,6 @@ class ComparisonCounts(NamedTuple):
     no_ncbi_table: int
 
 
-def tally_reasons(rows: Sequence[Tuple[str, str]]) -> Dict[str, int]:
-    """How many genomes there are of each reason.
-
-    Parameters
-    ----------
-    rows : sequence of tuple
-        (accession, reason), as no_prediction_rows() returned them.
-
-    @return: reason to the number of genomes with it.
-    """
-
-    counts = {}
-    for _, reason in rows:
-        counts[reason] = counts.get(reason, 0) + 1
-
-    return counts
-
-
 def disagreement_rate(conflicts: int, compared: int) -> float:
     """What share of the genomes NCBI declares a table for gTranslate disagrees
     with.
@@ -1776,38 +1011,6 @@ def conflicts_from_comparison(rows: Sequence[Sequence[str]]) -> List[List[str]]:
             for row in rows if row[verdict] == 'True']
 
 
-def write_table(rows: Sequence[Sequence[str]], path: str,
-                header: Sequence[str] = CONFLICT_HEADER,
-                compress: bool = False) -> None:
-    """Write a comparison or a conflict table, of a batch or of the release.
-
-    The file is written whether or not there are any rows: a batch that finished
-    with nothing to report says so with a header and no rows, and the release
-    file is then the concatenation of every batch's, however many they found.
-
-    Parameters
-    ----------
-    rows : sequence of sequence of str
-        Rows, as comparison_rows(), conflicts_from_comparison() or
-        annotate_conflicts() returned them.
-    path : str
-        File to write.
-    header : sequence of str
-        Column names: COMPARISON_HEADER, CONFLICT_HEADER for a batch, or
-        CONFLICT_HEADER_CHECKM2 for the release, which carries the CheckM2
-        columns as well.
-    compress : bool
-        Write it gzipped, which the comparison is and the conflicts are not.
-
-    @return: None
-    """
-
-    with (gzip.open(path, 'wt') if compress else open(path, 'w')) as handle:
-        handle.write('\t'.join(header) + '\n')
-        for row in rows:
-            handle.write('\t'.join(row) + '\n')
-
-
 def read_conflicts(path: str) -> List[List[str]]:
     """Read a conflict file back as the columns a batch writes.
 
@@ -1904,7 +1107,7 @@ def release_fastas(batches: Sequence[str],
 
     fastas = {}
     for batch_dir in batches:
-        batchfile = batchfile_path(batch_dir)
+        batchfile = batchfile_path(batch_dir, LAYOUT)
         if not os.path.exists(batchfile):
             continue
         for fasta, accession in read_batchfile(batchfile):
@@ -2159,40 +1362,6 @@ def annotate_conflicts(rows: Sequence[Sequence[str]],
     return annotated
 
 
-def concatenate(files: Sequence[str], path: str, compress: bool = False) -> int:
-    """Join the tables of every batch into one, keeping a single header.
-
-    Parameters
-    ----------
-    files : sequence of str
-        Files to join, each with the same header, in batch order.
-    path : str
-        File to write.
-    compress : bool
-        Write it gzipped, which the release summary is and the conflicts are not:
-        the summary is a row per genome of the release and the conflicts are a few
-        hundred rows meant to be looked at.
-
-    @return: number of rows written, the header not counted.
-    """
-
-    written = 0
-    with (gzip.open(path, 'wt') if compress else open(path, 'w')) as out:
-        for index, name in enumerate(files):
-            # open_text: a batch's comparison is gzipped and its conflicts are
-            # not, and gTranslate's summary is whatever gTranslate wrote
-            with open_text(name) as handle:
-                header = handle.readline()
-                if index == 0:
-                    out.write(header)
-                for line in handle:
-                    if line.strip():
-                        out.write(line)
-                        written += 1
-
-    return written
-
-
 class GTranslate(object):
     """Predict the translation table of each genome of a release, in batches."""
 
@@ -2253,11 +1422,6 @@ class GTranslate(object):
     def plan_batches(self, gtdb_genome_path_file: str, out_dir: str) -> List[str]:
         """Settle which genomes are in which batch, once for every machine.
 
-        A plan already under the output directory is used as it stands. It is what
-        another machine is working from and what the finished batches were cut
-        from, and partitioning a release again that has since gained or lost a
-        genome would move genomes between batches that are already done.
-
         Parameters
         ----------
         gtdb_genome_path_file : str
@@ -2268,39 +1432,8 @@ class GTranslate(object):
         @return: paths of the batch directories, in batch order.
         """
 
-        existing = batch_dir_names(out_dir)
-        if existing:
-            self.logger.warning(
-                'warning: {:,} batch(es) are already planned under {}; using them '
-                'and not regenerating the batchfiles. Remove the batch directories '
-                'to partition the release again.'.format(len(existing), out_dir))
-            return existing
-
-        genomes = read_genome_dirs(gtdb_genome_path_file)
-        self.logger.info('Read {:,} genomes from {}.'.format(
-            len(genomes), gtdb_genome_path_file))
-
-        # sorted so that which genomes are in batch N follows from the set of
-        # genomes, and not from the order the genome_dirs file was written in
-        genomes.sort(key=lambda genome: genome[0])
-
-        # named, not stat-ed: whether the file is there is asked of each batch as
-        # it is run, where ten thousand stat calls are nothing against the hours
-        # gTranslate then spends, rather than of the whole release here, where on
-        # r237 it is hours over NFS before a single batch directory exists and a
-        # run stopped in it has no plan to resume from. It also leaves which
-        # genomes share a batch following from the genome_dirs file alone.
-        rows = [(genomic_fasta(genome_dir), accession)
-                for accession, genome_dir in genomes]
-        if not rows:
-            raise RuntimeError(
-                '{} names no genomes.'.format(gtdb_genome_path_file))
-
-        batches = create_batches(rows, self.batch_size, out_dir)
-        self.logger.info('Planned {:,} genomes as {:,} batch(es) of up to {:,}.'.format(
-            len(rows), len(batches), self.batch_size))
-
-        return batches
+        return plan_batches(gtdb_genome_path_file, out_dir, self.batch_size,
+                            LAYOUT, self.logger)
 
     def run_gtranslate(self, batch_dir: str) -> None:
         """Run gTranslate over the genomes of one batch.
@@ -2406,7 +1539,7 @@ class GTranslate(object):
         """
 
         genome_dirs = {accession: os.path.dirname(fasta) for fasta, accession
-                       in read_batchfile(batchfile_path(batch_dir))}
+                       in read_batchfile(batchfile_path(batch_dir, LAYOUT))}
 
         predictions = read_translation_table_summary(
             os.path.join(batch_dir, summary_name(self.prefix)))
@@ -2419,7 +1552,8 @@ class GTranslate(object):
         # the conflicts are the comparison filtered, so the two cannot come to
         # disagree about which genomes conflicted
         conflicts = conflicts_from_comparison(rows)
-        write_table(conflicts, os.path.join(batch_dir, CONFLICT_NAME))
+        write_table(conflicts, os.path.join(batch_dir, CONFLICT_NAME),
+                    header=CONFLICT_HEADER)
 
         # the genomes NCBI declares no table for are in neither file, having
         # nothing to compare, so this line is the only place they are counted
@@ -2789,7 +1923,7 @@ class GTranslate(object):
 
             # the batch has its own log from here, since this is where anything
             # happens to it and every machine of a run writes its own --log
-            with batch_log(batch_dir, self.logger):
+            with batch_log(batch_dir, self.logger, LAYOUT):
                 self.logger.info('{}: starting.'.format(label))
                 try:
                     with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY),

@@ -236,7 +236,7 @@ class CheckBatchFastasTests(TempDirCase):
         G.check_batch_fastas(batch_dir)
 
         self.assertEqual([accession for _, accession in G.read_batchfile(
-            G.batchfile_path(batch_dir))], ['GCF_1.1', 'GCA_2.1'])
+            G.batchfile_path(batch_dir, G.LAYOUT))], ['GCF_1.1', 'GCA_2.1'])
 
 
 class FastaSizeTests(TempDirCase):
@@ -344,7 +344,7 @@ class PlanBatchesTests(TempDirCase):
 
     def test_release_is_cut_into_batches_of_the_given_size(self):
         batches = G.create_batches(self.rows(*['GCF_{}.1'.format(i) for i in range(5)]),
-                                   2, self.dir)
+                                   2, self.dir, G.LAYOUT)
         self.assertEqual(len(batches), 3)
         self.assertEqual(len(G.read_batchfile(
             os.path.join(batches[0], G.BATCHFILE_NAME))), 2)
@@ -352,20 +352,20 @@ class PlanBatchesTests(TempDirCase):
             os.path.join(batches[-1], G.BATCHFILE_NAME))), 1)
 
     def test_batches_are_numbered_in_order(self):
-        batches = G.create_batches(self.rows('GCF_1.1', 'GCF_2.1'), 1, self.dir)
+        batches = G.create_batches(self.rows('GCF_1.1', 'GCF_2.1'), 1, self.dir, G.LAYOUT)
         self.assertEqual([os.path.basename(b) for b in batches],
                          ['batch_000001', 'batch_000002'])
 
     def test_an_existing_plan_is_found_and_reused(self):
-        G.create_batches(self.rows('GCF_1.1', 'GCF_2.1'), 1, self.dir)
-        self.assertEqual(len(G.batch_dir_names(self.dir)), 2)
+        G.create_batches(self.rows('GCF_1.1', 'GCF_2.1'), 1, self.dir, G.LAYOUT)
+        self.assertEqual(len(G.batch_dir_names(self.dir, G.LAYOUT)), 2)
 
     def test_a_directory_without_a_batchfile_is_not_a_batch(self):
         os.makedirs(os.path.join(self.dir, 'batch_000001'))
-        self.assertEqual(G.batch_dir_names(self.dir), [])
+        self.assertEqual(G.batch_dir_names(self.dir, G.LAYOUT), [])
 
     def test_batchfile_survives_a_round_trip(self):
-        batches = G.create_batches(self.rows('GCF_1.1'), 10, self.dir)
+        batches = G.create_batches(self.rows('GCF_1.1'), 10, self.dir, G.LAYOUT)
         self.assertEqual(G.read_batchfile(os.path.join(batches[0], G.BATCHFILE_NAME)),
                          self.rows('GCF_1.1'))
 
@@ -630,7 +630,7 @@ class BatchLogTests(TempDirCase):
         batch = os.path.join(self.dir, 'batch_000001')
         os.makedirs(batch)
         logger = logging.getLogger('trans_table_test_batch_log')
-        with G.batch_log(batch, logger):
+        with G.batch_log(batch, logger, G.LAYOUT):
             logger.error('batch_000001: failed for a reason')
         self.assertIn('failed for a reason',
                       open(os.path.join(batch, G.BATCH_LOG_NAME)).read())
@@ -641,7 +641,7 @@ class BatchLogTests(TempDirCase):
         os.makedirs(batch)
         logger = logging.getLogger('trans_table_test_batch_log_handles')
         before = len(logger.handlers)
-        with G.batch_log(batch, logger):
+        with G.batch_log(batch, logger, G.LAYOUT):
             self.assertEqual(len(logger.handlers), before + 1)
         self.assertEqual(len(logger.handlers), before)
 
@@ -674,7 +674,7 @@ class RunTests(TempDirCase):
 
     def comparison(self, manager, batch_dir, taxonomy):
         """Stands in for compare_batch, leaving what the run aggregates."""
-        G.write_table([], os.path.join(batch_dir, G.CONFLICT_NAME))
+        G.write_table([], os.path.join(batch_dir, G.CONFLICT_NAME), G.CONFLICT_HEADER)
         G.write_table([], os.path.join(batch_dir, G.COMPARISON_NAME),
                       header=G.COMPARISON_HEADER, compress=True)
         with open(os.path.join(batch_dir, G.summary_name()), 'w') as handle:
@@ -806,7 +806,7 @@ class ComparisonTests(TempDirCase):
         self.assertIn('ncbi_conflict', G.COMPARISON_HEADER)
 
         path = os.path.join(self.dir, 'conflicts.tsv')
-        G.write_table([conflict_row()], path)
+        G.write_table([conflict_row()], path, G.CONFLICT_HEADER)
         with open(path) as handle:
             header, row = handle.read().splitlines()
         self.assertEqual(header.split('\t'), list(G.CONFLICT_HEADER))
@@ -816,7 +816,7 @@ class ComparisonTests(TempDirCase):
         """The release file is every batch's concatenated, so a batch that
         conflicted nowhere has to leave a header behind."""
         path = os.path.join(self.dir, 'none.tsv')
-        G.write_table([], path)
+        G.write_table([], path, G.CONFLICT_HEADER)
         self.assertEqual(open(path).read().splitlines(), ['\t'.join(G.CONFLICT_HEADER)])
 
     def test_genome_ncbi_declares_no_table_for_is_left_out(self):
@@ -932,7 +932,7 @@ class AggregationTests(TempDirCase):
 
     def comparison(self, name, *rows):
         path = os.path.join(self.dir, name)
-        G.write_table(rows, path)
+        G.write_table(rows, path, G.CONFLICT_HEADER)
         return path
 
     def test_headers_are_not_repeated(self):
@@ -1177,13 +1177,13 @@ class ReadConflictsTests(TempDirCase):
 
     def test_a_file_of_nothing_but_a_header_holds_no_conflicts(self):
         path = os.path.join(self.dir, G.CONFLICT_NAME)
-        G.write_table([], path)
+        G.write_table([], path, G.CONFLICT_HEADER)
         self.assertEqual(G.read_conflicts(path), [])
 
     def test_a_row_is_read_back_as_it_was_written(self):
         path = os.path.join(self.dir, G.CONFLICT_NAME)
         row = conflict_row()
-        G.write_table([row], path)
+        G.write_table([row], path, G.CONFLICT_HEADER)
         self.assertEqual(G.read_conflicts(path), [row])
 
     def test_a_file_already_annotated_is_read_as_the_row_it_was_made_from(self):
@@ -1258,7 +1258,7 @@ class EstimateConflictQualityTests(TempDirCase):
         super().tearDown()
 
     def conflicts(self, *rows):
-        G.write_table(rows, os.path.join(self.out_dir, G.CONFLICT_NAME))
+        G.write_table(rows, os.path.join(self.out_dir, G.CONFLICT_NAME), G.CONFLICT_HEADER)
 
     def release(self):
         with open(os.path.join(self.out_dir, G.CONFLICT_NAME)) as handle:
@@ -1478,7 +1478,7 @@ class RemoveCheckM2DirTests(TempDirCase):
         super().tearDown()
 
     def conflicts(self, *rows):
-        G.write_table(rows, os.path.join(self.out_dir, G.CONFLICT_NAME))
+        G.write_table(rows, os.path.join(self.out_dir, G.CONFLICT_NAME), G.CONFLICT_HEADER)
 
     def row(self, accession='GCA_1.1'):
         return conflict_row(genome_id=accession)
@@ -1596,7 +1596,7 @@ class AggregateSummaryTests(TempDirCase):
         self.out_dir = os.path.join(self.dir, 'out')
         self.batch = os.path.join(self.out_dir, 'batch_000001')
         os.makedirs(self.batch)
-        G.write_table([], os.path.join(self.batch, G.CONFLICT_NAME))
+        G.write_table([], os.path.join(self.batch, G.CONFLICT_NAME), G.CONFLICT_HEADER)
         G.write_table([], os.path.join(self.batch, G.COMPARISON_NAME),
                       header=G.COMPARISON_HEADER, compress=True)
         G.write_batchfile([('/m/a.fna.gz', 'GCA_1.1')],
@@ -1769,7 +1769,7 @@ class ComparisonAggregationTests(TempDirCase):
                    '35.3', '5269725', '5269725', 'd__Bacteria']
             G.write_table([row], os.path.join(batch, G.COMPARISON_NAME),
                           header=G.COMPARISON_HEADER, compress=True)
-            G.write_table([], os.path.join(batch, G.CONFLICT_NAME))
+            G.write_table([], os.path.join(batch, G.CONFLICT_NAME), G.CONFLICT_HEADER)
             G.write_batchfile([('/m/{}.fna.gz'.format(accession), accession)],
                               os.path.join(batch, G.BATCHFILE_NAME), compress=True)
             with open(os.path.join(batch, G.summary_name()), 'w') as handle:
@@ -1817,16 +1817,16 @@ class BatchfilePathTests(TempDirCase):
 
     def test_the_gzipped_plan_is_found(self):
         batch_dir = self.batch(G.BATCHFILE_NAME)
-        self.assertEqual(G.batchfile_path(batch_dir),
+        self.assertEqual(G.batchfile_path(batch_dir, G.LAYOUT),
                          os.path.join(batch_dir, G.BATCHFILE_NAME))
 
     def test_a_plan_an_earlier_version_wrote_is_found(self):
         """r237 was planned before the plan was compressed, and the command is
         run again over a finished output directory to pick up later work."""
         batch_dir = self.batch(G.LEGACY_BATCHFILE_NAME)
-        self.assertEqual(G.batchfile_path(batch_dir),
+        self.assertEqual(G.batchfile_path(batch_dir, G.LAYOUT),
                          os.path.join(batch_dir, G.LEGACY_BATCHFILE_NAME))
-        self.assertEqual(G.read_batchfile(G.batchfile_path(batch_dir)),
+        self.assertEqual(G.read_batchfile(G.batchfile_path(batch_dir, G.LAYOUT)),
                          [('/m/a.fna.gz', 'GCA_1.1')])
 
     def test_a_batch_planned_by_an_earlier_version_is_not_planned_again(self):
@@ -1837,21 +1837,21 @@ class BatchfilePathTests(TempDirCase):
         os.makedirs(batch_dir)
         G.write_batchfile([('/m/a.fna.gz', 'GCA_1.1')],
                           os.path.join(batch_dir, G.LEGACY_BATCHFILE_NAME))
-        self.assertEqual(G.batch_dir_names(out_dir), [batch_dir])
+        self.assertEqual(G.batch_dir_names(out_dir, G.LAYOUT), [batch_dir])
 
     def test_the_gzipped_plan_wins_where_a_directory_holds_both(self):
         """A directory part-way through an upgrade reads the current one."""
         batch_dir = self.batch(G.LEGACY_BATCHFILE_NAME,
                                rows=(('/m/old.fna.gz', 'GCA_OLD.1'),))
         self.batch(G.BATCHFILE_NAME, rows=(('/m/new.fna.gz', 'GCA_NEW.1'),))
-        self.assertEqual(G.read_batchfile(G.batchfile_path(batch_dir)),
+        self.assertEqual(G.read_batchfile(G.batchfile_path(batch_dir, G.LAYOUT)),
                          [('/m/new.fna.gz', 'GCA_NEW.1')])
 
     def test_a_batch_with_no_plan_names_where_one_would_go(self):
         """So that a caller's error names the file it was looking for."""
         empty = os.path.join(self.dir, 'unplanned')
         os.makedirs(empty)
-        self.assertEqual(G.batchfile_path(empty),
+        self.assertEqual(G.batchfile_path(empty, G.LAYOUT),
                          os.path.join(empty, G.BATCHFILE_NAME))
 
 
@@ -1890,7 +1890,7 @@ class BatchfileCleanupTests(TempDirCase):
         self.assertTrue(os.path.exists(
             os.path.join(self.batch_dir, G.BATCHFILE_NAME)))
         self.assertEqual([accession for _, accession in G.read_batchfile(
-            G.batchfile_path(self.batch_dir))], ['GCF_1.1'])
+            G.batchfile_path(self.batch_dir, G.LAYOUT))], ['GCF_1.1'])
 
     def test_a_batch_gtranslate_failed_on_keeps_the_copy_it_was_given(self):
         """The batch is retried, and what it was handed is what the retry looks

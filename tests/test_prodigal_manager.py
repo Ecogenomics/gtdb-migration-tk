@@ -18,7 +18,9 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
+from gtdb_migration_tk import batching as B
 from gtdb_migration_tk import prodigal_manager as P
 
 
@@ -73,6 +75,8 @@ class TempDirCase(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix='prodigal_manager_test.')
         self.tmp_dir = os.path.join(self.dir, 'tmp')
         os.makedirs(self.tmp_dir)
+        # --out_dir holds the batches and the state of the run, never the genes
+        self.out_dir = os.path.join(self.dir, 'out')
 
         # neither the real Prodigal nor the check for it is wanted offline
         self._prodigal, P.Prodigal = P.Prodigal, StubProdigal
@@ -194,7 +198,8 @@ class MissingTableTests(TempDirCase):
         it the summary is there to prevent."""
         one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
         P.ProdigalManager(self.tmp_dir).run(
-            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')),
+                self.out_dir)
         self.assertNotIn('GCF_000000002.1', StubProdigal.genomes_called())
 
     def test_the_genomes_that_do_have_a_table_are_still_called(self):
@@ -202,7 +207,8 @@ class MissingTableTests(TempDirCase):
         wait on them."""
         one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
         P.ProdigalManager(self.tmp_dir).run(
-            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')),
+                self.out_dir)
         self.assertEqual(StubProdigal.genomes_called(), ['GCF_000000001.1'])
         self.assertEqual(StubProdigal.table_for('GCF_000000001.1'), 11)
 
@@ -213,7 +219,8 @@ class MissingTableTests(TempDirCase):
         one = self.genome('GCF_000000001.1')
         with self.assertRaises(RuntimeError) as raised:
             P.ProdigalManager(self.tmp_dir).run(
-                self.genome_dirs(one), self.summary(('GCF_000000009.1', '11')))
+                self.genome_dirs(one), self.summary(('GCF_000000009.1', '11')),
+                self.out_dir)
         self.assertIn('another release', str(raised.exception))
         self.assertIsNone(StubProdigal.last_tasks)
 
@@ -222,23 +229,33 @@ class MissingTableTests(TempDirCase):
         run, and the 1.35M that were called are called."""
         one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
         self.assertTrue(P.ProdigalManager(self.tmp_dir).run(
-            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11'))))
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')),
+                self.out_dir))
 
-    def test_the_genomes_left_uncalled_are_named_in_the_log(self):
+    def test_the_genomes_left_uncalled_are_named_in_a_file_of_the_release(self):
         """Silently calling fewer genomes than the release holds is how a gap
-        reaches the next command."""
+        reaches the next command. A batch may leave thousands, so the log says how
+        many and of what kind and the file says which."""
         one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
         with self.assertLogs('timestamp', level='WARNING') as caught:
             P.ProdigalManager(self.tmp_dir).run(
-                self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+                self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')),
+                self.out_dir)
+
         warning = '\n'.join(caught.output)
-        self.assertIn('GCF_000000002.1', warning)
-        self.assertIn('gtranslate_no_prediction.tsv', warning)
+        self.assertIn(P.REASON_NO_TABLE, warning)
+        self.assertIn(P.NOT_CALLED_RELEASE_NAME, warning)
+
+        with open(os.path.join(self.out_dir, P.NOT_CALLED_RELEASE_NAME)) as handle:
+            rows = handle.read().splitlines()
+        self.assertEqual(rows[0].split('\t'), list(P.NOT_CALLED_HEADER))
+        self.assertEqual(rows[1:], ['GCF_000000002.1\t' + P.REASON_NO_TABLE])
 
     def test_a_genome_left_uncalled_has_no_results_written_for_it(self):
         one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
         P.ProdigalManager(self.tmp_dir).run(
-            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')),
+                self.out_dir)
         self.assertFalse(os.path.exists(os.path.join(two[1], 'prodigal')))
 
     def test_an_override_can_fill_the_gap(self):
@@ -246,6 +263,7 @@ class MissingTableTests(TempDirCase):
         P.ProdigalManager(self.tmp_dir).run(
             self.genome_dirs(one),
             self.summary(('GCF_000000009.1', '11')),
+            self.out_dir,
             self.override(('GCF_000000001.1', '4')))
         self.assertEqual(StubProdigal.table_for('GCF_000000001.1'), 4)
 
@@ -258,7 +276,8 @@ class TranslationTableHandoverTests(TempDirCase):
     def test_the_predicted_table_is_passed_through(self):
         one = self.genome('GCF_000000001.1')
         P.ProdigalManager(self.tmp_dir).run(
-            self.genome_dirs(one), self.summary(('GCF_000000001.1', '25')))
+            self.genome_dirs(one), self.summary(('GCF_000000001.1', '25')),
+                self.out_dir)
         self.assertEqual(StubProdigal.table_for('GCF_000000001.1'), 25)
 
     def test_a_corrected_table_is_what_prodigal_is_given(self):
@@ -266,6 +285,7 @@ class TranslationTableHandoverTests(TempDirCase):
         P.ProdigalManager(self.tmp_dir).run(
             self.genome_dirs(one),
             self.summary(('GCF_000000001.1', '11')),
+            self.out_dir,
             self.override(('GCF_000000001.1', '4')))
         self.assertEqual(StubProdigal.table_for('GCF_000000001.1'), 4)
 
@@ -278,7 +298,8 @@ class TranslationTableFileTests(TempDirCase):
     def test_a_predicted_genome_says_so(self):
         one = self.genome('GCF_000000001.1')
         P.ProdigalManager(self.tmp_dir).run(
-            self.genome_dirs(one), self.summary(('GCF_000000001.1', '11')))
+            self.genome_dirs(one), self.summary(('GCF_000000001.1', '11')),
+                self.out_dir)
         written = self.written_table(one[1])
         self.assertIn('best_translation_table\t11', written)
         self.assertIn(P.SOURCE_PREDICTED, written)
@@ -288,6 +309,7 @@ class TranslationTableFileTests(TempDirCase):
         P.ProdigalManager(self.tmp_dir).run(
             self.genome_dirs(one),
             self.summary(('GCF_000000001.1', '11')),
+            self.out_dir,
             self.override(('GCF_000000001.1', '4')))
         written = self.written_table(one[1])
         self.assertIn('best_translation_table\t4', written)
@@ -298,6 +320,7 @@ class TranslationTableFileTests(TempDirCase):
         P.ProdigalManager(self.tmp_dir).run(
             self.genome_dirs(one, two),
             self.summary(('GCF_000000001.1', '11'), ('GCF_000000002.1', '4')),
+            self.out_dir,
             self.override(('GCF_000000002.1', '25')))
         self.assertIn(P.SOURCE_PREDICTED, self.written_table(one[1]))
         self.assertIn(P.SOURCE_OVERRIDE, self.written_table(two[1]))
@@ -306,7 +329,8 @@ class TranslationTableFileTests(TempDirCase):
         """Only one table is run now, so the wrapper never measures the other."""
         one = self.genome('GCF_000000001.1')
         P.ProdigalManager(self.tmp_dir).run(
-            self.genome_dirs(one), self.summary(('GCF_000000001.1', '11')))
+            self.genome_dirs(one), self.summary(('GCF_000000001.1', '11')),
+                self.out_dir)
         self.assertNotIn('coding_density', self.written_table(one[1]))
 
 
@@ -324,17 +348,186 @@ class RunCountsTests(TempDirCase):
         with self.assertLogs('timestamp', level='INFO') as captured:
             P.ProdigalManager(self.tmp_dir).run(
                 self.genome_dirs(one, two),
-                self.summary(('GCF_000000001.1', '11'), ('GCF_000000002.1', '4')))
+                self.summary(('GCF_000000001.1', '11'), ('GCF_000000002.1', '4')),
+                self.out_dir)
         self.assertIn('2 genome(s) require gene calling; 0 already have valid',
                       '\n'.join(captured.output))
 
-    def test_a_rerun_reports_the_genomes_it_skipped(self):
-        """The checksum written by the first run is what vouches for the second."""
+    def test_a_rerun_skips_the_batch_rather_than_rechecking_its_genomes(self):
+        """A finished batch is not looked into again. That is what batching buys
+        over the per-genome checksum alone: a rerun does not re-read the proteins
+        of 1.35M genomes to find out they are still there."""
         one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
         paths = self.genome_dirs(one, two)
         summary = self.summary(('GCF_000000001.1', '11'), ('GCF_000000002.1', '4'))
-        P.ProdigalManager(self.tmp_dir).run(paths, summary)
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        StubProdigal.last_tasks = None
         with self.assertLogs('timestamp', level='INFO') as captured:
-            P.ProdigalManager(self.tmp_dir).run(paths, summary)
+            P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertIn('already finished, skipping', '\n'.join(captured.output))
+        self.assertIsNone(StubProdigal.last_tasks)
+
+    def test_a_genome_already_called_is_skipped_within_an_unfinished_batch(self):
+        """The checksum still decides genome by genome, which is what a batch
+        retried after a failure leans on."""
+        one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
+        paths = self.genome_dirs(one, two)
+        summary = self.summary(('GCF_000000001.1', '11'), ('GCF_000000002.1', '4'))
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        # as a batch left FAILED by an earlier run would be found
+        batch = os.path.join(self.out_dir, 'batch_000001')
+        os.unlink(os.path.join(batch, 'SUCCESS'))
+
+        with self.assertLogs('timestamp', level='INFO') as captured:
+            P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
         self.assertIn('0 genome(s) require gene calling; 2 already have valid',
                       '\n'.join(captured.output))
+
+
+# ------------------------------------------ batches, and sharing them between machines
+
+class BatchingTests(TempDirCase):
+    """--out_dir holds the state of the run; the genes go to the genome directories."""
+
+    def release(self, *accessions):
+        genomes = [self.genome(a) for a in accessions]
+        return (self.genome_dirs(*genomes),
+                self.summary(*[(a, '11') for a in accessions]),
+                genomes)
+
+    def manager(self, **kwargs):
+        return P.ProdigalManager(self.tmp_dir, batch_size=kwargs.pop('batch_size', 1),
+                                 **kwargs)
+
+    def test_the_release_is_cut_into_batches_under_the_output_directory(self):
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        self.manager().run(paths, summary, self.out_dir)
+        self.assertEqual(sorted(d for d in os.listdir(self.out_dir)
+                                if d.startswith('batch_')),
+                         ['batch_000001', 'batch_000002'])
+
+    def test_no_called_genes_are_written_to_the_output_directory(self):
+        """The genes go where the rest of the toolkit looks for them, which is
+        the genome's own directory, and that is why two machines on different
+        batches never write to the same place."""
+        paths, summary, genomes = self.release('GCF_000000001.1')
+        self.manager().run(paths, summary, self.out_dir)
+
+        written = []
+        for root, _, files in os.walk(self.out_dir):
+            written.extend(files)
+        self.assertEqual([f for f in written if f.endswith('.faa.gz')], [])
+        self.assertTrue(os.path.exists(os.path.join(
+            genomes[0][1], 'prodigal', 'GCF_000000001.1_protein.faa.gz')))
+
+    def test_a_finished_batch_carries_its_canary(self):
+        paths, summary, _ = self.release('GCF_000000001.1')
+        self.manager().run(paths, summary, self.out_dir)
+        batch = os.path.join(self.out_dir, 'batch_000001')
+        self.assertEqual(B.batch_state(batch), B.STATE_SUCCESS)
+        self.assertFalse(os.path.exists(os.path.join(batch, B.RUNNING_CANARY)))
+
+    def test_a_batch_another_machine_holds_is_left_alone(self):
+        """This is what lets several machines share one --out_dir: each takes the
+        batches no other machine holds."""
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        manager = self.manager()
+        batches = manager.plan_batches(paths, self.out_dir, {'GCF_000000001.1': 11})
+
+        # a claim held by a live process, which is what another machine still
+        # working on the batch looks like from here
+        B.claim_batch(batches[0])
+        manager.run(paths, summary, self.out_dir)
+
+        self.assertEqual(B.batch_state(batches[0]), B.STATE_RUNNING)
+        self.assertEqual(B.batch_state(batches[1]), B.STATE_SUCCESS)
+
+    def test_a_batch_that_failed_is_marked_and_the_run_says_so(self):
+        """A batch lost is a batch, not the release."""
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        with mock.patch.object(P.ProdigalManager, 'call_batch',
+                               side_effect=RuntimeError('prodigal fell over')):
+            self.assertFalse(self.manager().run(paths, summary, self.out_dir))
+        batch = os.path.join(self.out_dir, 'batch_000001')
+        self.assertEqual(B.batch_state(batch), B.STATE_FAILED)
+
+    def test_a_failed_batch_is_retried_by_the_next_run(self):
+        paths, summary, _ = self.release('GCF_000000001.1')
+        with mock.patch.object(P.ProdigalManager, 'call_batch',
+                               side_effect=RuntimeError('prodigal fell over')):
+            self.manager().run(paths, summary, self.out_dir)
+
+        self.assertTrue(self.manager().run(paths, summary, self.out_dir))
+        self.assertEqual(B.batch_state(os.path.join(self.out_dir, 'batch_000001')),
+                         B.STATE_SUCCESS)
+
+    def test_an_interrupted_batch_is_given_back_rather_than_left_claimed(self):
+        """Ctrl-C is not a failure of the batch, and the next run should not wait
+        out a lease on a machine that has already stopped."""
+        paths, summary, _ = self.release('GCF_000000001.1')
+        with mock.patch.object(P.ProdigalManager, 'call_batch',
+                               side_effect=KeyboardInterrupt):
+            self.assertRaises(KeyboardInterrupt,
+                              self.manager().run, paths, summary, self.out_dir)
+        self.assertEqual(B.batch_state(os.path.join(self.out_dir, 'batch_000001')),
+                         B.STATE_PENDING)
+
+    def test_what_happened_to_a_batch_is_written_in_the_batch(self):
+        """Five machines appending to one --log over NFS leave none of it."""
+        paths, summary, _ = self.release('GCF_000000001.1')
+        # assertLogs lifts the logger to INFO, which logger_setup() does in a run
+        with self.assertLogs('timestamp', level='INFO'):
+            self.manager().run(paths, summary, self.out_dir)
+        log = os.path.join(self.out_dir, 'batch_000001', P.BATCH_LOG_NAME)
+        self.assertIn('starting', open(log).read())
+
+    def test_the_plan_is_reused_rather_than_cut_again(self):
+        """Partitioning a release again that has gained a genome would move
+        genomes between batches that are already finished."""
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        self.manager().run(paths, summary, self.out_dir)
+        before = sorted(os.listdir(os.path.join(self.out_dir, 'batch_000001')))
+
+        self.manager(batch_size=10).run(paths, summary, self.out_dir)
+        self.assertEqual(sorted(d for d in os.listdir(self.out_dir)
+                                if d.startswith('batch_')),
+                         ['batch_000001', 'batch_000002'])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out_dir, 'batch_000001'))),
+                         before)
+
+    def test_all_genomes_does_the_finished_batches_again(self):
+        """Otherwise it would discard nothing and call nothing, having skipped
+        every batch it was asked to redo."""
+        paths, summary, _ = self.release('GCF_000000001.1')
+        self.manager().run(paths, summary, self.out_dir)
+
+        StubProdigal.last_tasks = None
+        self.manager().run(paths, summary, self.out_dir, all_genomes=True)
+        self.assertEqual(StubProdigal.genomes_called(), ['GCF_000000001.1'])
+
+    def test_the_release_file_waits_for_every_batch(self):
+        """The file at the top is the whole release or absent, never a part of it
+        that reads like the whole."""
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        manager = self.manager()
+        batches = manager.plan_batches(paths, self.out_dir, {'GCF_000000001.1': 11})
+        B.claim_batch(batches[1])
+        manager.run(paths, summary, self.out_dir)
+        self.assertFalse(os.path.exists(
+            os.path.join(self.out_dir, P.NOT_CALLED_RELEASE_NAME)))
+
+    def test_a_genome_with_no_fasta_is_recorded_rather_than_called(self):
+        one = self.genome('GCF_000000001.1')
+        two = ('GCF_000000002.1', os.path.join(self.dir, 'GCF_000000002.1_ASM1'))
+        os.makedirs(two[1])
+        paths = self.genome_dirs(one, two)
+        summary = self.summary(('GCF_000000001.1', '11'), ('GCF_000000002.1', '11'))
+
+        self.manager().run(paths, summary, self.out_dir)
+
+        with open(os.path.join(self.out_dir, P.NOT_CALLED_RELEASE_NAME)) as handle:
+            rows = handle.read().splitlines()[1:]
+        self.assertEqual(rows, ['GCF_000000002.1\t' + P.REASON_NO_FASTA])

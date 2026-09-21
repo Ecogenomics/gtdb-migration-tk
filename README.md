@@ -482,6 +482,38 @@ genome's genes under the table named there, so Prodigal no longer chooses one by
 coding density. `--tt_override` corrects it: a TSV of `genome_id` and
 `translation_table` whose rows replace the prediction.
 
+`prodigal` takes an `--out_dir` and cuts the release into batches under it, the
+same machinery `trans_table` uses (`batching.py`). Several machines may be given
+the same `--out_dir` and will divide the release between them, each claiming
+batches no other machine holds; `--batch_size`, `--reclaim` and `--lease` behave
+as they do there, and a batch is skipped once it has `SUCCESS`.
+
+**`--out_dir` holds the state of the run and nothing else.** The called genes go
+into each genome's own `prodigal/` directory, as they always have, which is also
+why two machines on different batches never write to the same place:
+
+```
+<out_dir>/
+  batch_000001/
+    prodigal_batchfile.tsv.gz         the genomes of this batch
+    RUNNING / SUCCESS / FAILED        as in trans_table
+    prodigal.log                      what this command did to this batch
+    not_called.tsv                    genomes of this batch that got no genes
+  prodigal_not_called.tsv             the whole release, once every batch has SUCCESS
+```
+
+`prodigal_not_called.tsv` names every genome the release has no genes for, with
+the reason: `no_translation_table`, `no_genomic_fasta`, or `prodigal_failed`. The
+next command needs to know which genomes have no proteins, and it should not have
+to look in 135 directories to find out.
+
+A rerun skips finished batches rather than re-reading the proteins of the whole
+release, which is what batching buys over the per-genome checksum alone. The
+checksum still decides genome by genome inside a batch that is not finished, which
+is what a batch retried after a failure leans on. `--all_genomes` does the
+finished batches again, since otherwise it would skip every batch it was asked to
+redo.
+
 **A genome with no table is not called.** gTranslate returns no prediction for a
 handful of genomes of a release — eight of r237's 1.35M, two of which have no
 genomic FASTA to predict from at all — and there is nothing to call their genes
