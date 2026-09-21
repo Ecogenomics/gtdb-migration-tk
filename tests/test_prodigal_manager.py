@@ -148,6 +148,27 @@ class ReadTranslationTablesTests(TempDirCase):
         self.assertEqual(tables['GCF_9.1'], 4)
         self.assertEqual(sources['GCF_9.1'], P.SOURCE_OVERRIDE)
 
+    def test_a_gzipped_release_summary_reads_the_same_as_a_plain_one(self):
+        """trans_table writes the release summary gzipped -- 116 MB of text for
+        r237 against 34 MB -- and gTranslate writes a batch's plain."""
+        path = os.path.join(self.dir, 'gtranslate.translation_table_summary.tsv.gz')
+        with gzip.open(path, 'wt') as handle:
+            handle.write('user_genome\tbest_tln_table\tconfidence\n')
+            handle.write('GCF_1.1\t25\t1.0\n')
+        tables, sources = P.read_translation_tables(path)
+        self.assertEqual(tables['GCF_1.1'], 25)
+        self.assertEqual(sources['GCF_1.1'], P.SOURCE_PREDICTED)
+
+    def test_a_summary_is_read_by_what_it_is_and_not_by_what_it_is_called(self):
+        """A release summary gunzipped, or renamed on the way to another machine,
+        should not be the reason a release is called under the wrong tables."""
+        path = os.path.join(self.dir, 'named_plain_but_gzipped.tsv')
+        with gzip.open(path, 'wt') as handle:
+            handle.write('user_genome\tbest_tln_table\n')
+            handle.write('GCF_1.1\t4\n')
+        tables, _ = P.read_translation_tables(path)
+        self.assertEqual(tables['GCF_1.1'], 4)
+
     def test_summary_columns_are_read_by_name(self):
         """gTranslate has reordered its summary before; position must not matter."""
         path = os.path.join(self.dir, 'reordered.tsv')

@@ -1483,3 +1483,109 @@ class RemoveCheckM2DirTests(TempDirCase):
 
     def test_removing_a_directory_that_is_not_there_is_not_an_error(self):
         G.remove_checkm2_dir(os.path.join(self.dir, 'never_made'))
+
+
+# ------------------------------------------------- the release summary is gzipped
+
+class ReleaseSummaryNameTests(unittest.TestCase):
+    """A batch's summary is gTranslate's output; the release's is ours."""
+
+    def test_the_release_summary_is_the_batch_name_gzipped(self):
+        self.assertEqual(G.release_summary_name(),
+                         G.summary_name() + G.GZIP_EXT)
+
+    def test_the_prefix_is_carried_through(self):
+        """--prefix names gTranslate's output, and the release file is named for
+        the same run."""
+        self.assertEqual(G.release_summary_name('run7'),
+                         'run7.translation_table_summary.tsv.gz')
+
+
+class CompressedConcatenateTests(TempDirCase):
+    """The summary is a row per genome of the release; the conflicts are a few
+    hundred rows meant to be looked at."""
+
+    def batch_summary(self, name, *rows):
+        path = os.path.join(self.dir, name)
+        with open(path, 'w') as handle:
+            handle.write('user_genome\tbest_tln_table\n')
+            for row in rows:
+                handle.write('\t'.join(row) + '\n')
+        return path
+
+    def test_a_compressed_join_is_gzip_and_reads_back_as_the_rows(self):
+        first = self.batch_summary('a.tsv', ('GCA_1.1', '25'))
+        second = self.batch_summary('b.tsv', ('GCA_2.1', '11'))
+        out = os.path.join(self.dir, 'all.tsv.gz')
+        self.assertEqual(G.concatenate([first, second], out, compress=True), 2)
+
+        with open(out, 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+        self.assertEqual(sorted(G.read_translation_table_summary(out)),
+                         ['GCA_1.1', 'GCA_2.1'])
+
+    def test_the_header_is_still_written_once(self):
+        first = self.batch_summary('a.tsv', ('GCA_1.1', '25'))
+        second = self.batch_summary('b.tsv', ('GCA_2.1', '11'))
+        out = os.path.join(self.dir, 'all.tsv.gz')
+        G.concatenate([first, second], out, compress=True)
+        with gzip.open(out, 'rt') as handle:
+            lines = handle.read().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(lines[0].split('\t')[0], 'user_genome')
+
+    def test_an_uncompressed_join_is_still_plain_text(self):
+        """ncbi_tt_conflict.tsv is read by eye and is not compressed."""
+        first = self.batch_summary('a.tsv', ('GCA_1.1', '25'))
+        out = os.path.join(self.dir, 'all.tsv')
+        G.concatenate([first], out)
+        with open(out, 'rb') as handle:
+            self.assertNotEqual(handle.read(2), b'\x1f\x8b')
+
+
+class AggregateSummaryTests(TempDirCase):
+    """What the release directory holds afterwards."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.out_dir = os.path.join(self.dir, 'out')
+        self.batch = os.path.join(self.out_dir, 'batch_000001')
+        os.makedirs(self.batch)
+        G.write_conflicts([], os.path.join(self.batch, G.CONFLICT_NAME))
+        with open(os.path.join(self.batch, G.summary_name()), 'w') as handle:
+            handle.write('user_genome\tbest_tln_table\nGCA_1.1\t25\n')
+        G.finish_batch(self.batch, compared=1, conflicts=0, no_ncbi_table=0)
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def aggregate(self):
+        with mock.patch.object(G.GTranslate, 'checkm2_table', autospec=True,
+                               return_value={}):
+            G.GTranslate().aggregate([self.batch], self.out_dir)
+
+    def test_the_release_summary_is_written_gzipped(self):
+        self.aggregate()
+        path = os.path.join(self.out_dir, G.release_summary_name())
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(G.read_translation_table_summary(path)['GCA_1.1'
+                                                                ]['best_tln_table'], '25')
+
+    def test_the_batch_summary_is_left_as_gtranslate_wrote_it(self):
+        """It is gTranslate's output and not this command's to compress."""
+        self.aggregate()
+        with open(os.path.join(self.batch, G.summary_name()), 'rb') as handle:
+            self.assertNotEqual(handle.read(2), b'\x1f\x8b')
+
+    def test_an_uncompressed_summary_left_by_an_older_run_is_removed(self):
+        """Two files a genome apart of which one is stale is how a release gets
+        called under the wrong tables."""
+        stale = os.path.join(self.out_dir, G.summary_name())
+        with open(stale, 'w') as handle:
+            handle.write('user_genome\tbest_tln_table\nGCA_1.1\t11\n')
+        self.aggregate()
+        self.assertFalse(os.path.exists(stale))
+        self.assertTrue(os.path.exists(
+            os.path.join(self.out_dir, G.release_summary_name())))

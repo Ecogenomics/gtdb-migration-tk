@@ -305,8 +305,15 @@ it on a file server shared with other work.
   checkm2/                              working space, removed once the estimates
                                         are in ncbi_tt_conflict.tsv
   ncbi_tt_conflict.tsv                  the whole release, once every batch has SUCCESS
-  gtranslate.translation_table_summary.tsv
+  gtranslate.translation_table_summary.tsv.gz
 ```
+
+The release summary is gzipped -- a row per genome, 116 MB of text for r237 and
+34 MB compressed -- while `ncbi_tt_conflict.tsv` is a few hundred rows meant to
+be read and is not. A batch's own summary is gTranslate's output and is left as
+gTranslate wrote it. `prodigal` takes either: the summary is read by its first two
+bytes rather than by its name, so a release summary that has been gunzipped, or
+renamed on the way to another machine, still reads.
 
 A batch is the unit of restart and of sharing. Several machines may be given the
 same `--out_dir` and will divide the release between them, each claiming batches

@@ -551,7 +551,8 @@ def __second_domain_report(group, required):
 def __trans_table_file(group, required):
     group.add_argument('--trans_table', dest='trans_table_file', required=required,
                        help='Translation table of each genome '
-                            '(gtranslate.translation_table_summary.tsv, written by trans_table).')
+                            '(gtranslate.translation_table_summary.tsv.gz, written by '
+                            'trans_table; gzipped or not is read either way).')
 
 
 def __tt_override(group):

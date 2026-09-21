@@ -20,22 +20,50 @@ CHECKM_DENSITY_MARGIN = 5.0
 CHECKM_DENSITY_FLOOR = 70.0
 
 
+# The first two bytes of a gzip member. The summary is read by what the file IS
+# and not by what it is called: gTranslate writes a batch's plain and trans_table
+# writes the release's compressed, and whoever hands one to prodigal should not
+# have to have kept track of which -- nor be caught out by a release summary
+# somebody gunzipped, or one renamed on the way to another machine.
+GZIP_MAGIC = b'\x1f\x8b'
+
+
+def open_text(path: str):
+    """Open a text file whether or not it is gzipped.
+
+    Parameters
+    ----------
+    path : str
+        File to open.
+
+    @return: a file object of text lines, to be used as a context manager.
+    """
+
+    with open(path, 'rb') as handle:
+        compressed = handle.read(len(GZIP_MAGIC)) == GZIP_MAGIC
+
+    return gzip.open(path, 'rt') if compressed else open(path)
+
+
 def read_translation_table_summary(summary_file: str) -> Dict[str, Dict[str, str]]:
     """Read the translation table summary gTranslate writes.
 
     Shared by the command that writes it and the command that acts on it, so that
-    the two never disagree about which column holds what.
+    the two never disagree about which column holds what. Gzipped or not is
+    decided by the file's own first two bytes, so a batch's summary and a
+    release's read the same way.
 
     Parameters
     ----------
     summary_file : str
-        gtranslate.translation_table_summary.tsv, of one batch or of a release.
+        gtranslate.translation_table_summary.tsv of one batch, or the release's
+        gtranslate.translation_table_summary.tsv.gz.
 
     @return: genome ID to its row, keyed by column name.
     """
 
     predictions = {}
-    with open(summary_file) as handle:
+    with open_text(summary_file) as handle:
         for row in csv.DictReader(handle, delimiter='\t'):
             genome = row.get(TT_SUMMARY_GENOME)
             if genome:

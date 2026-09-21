@@ -132,7 +132,14 @@ read by ncbi_utils.ncbi_translation_table(), which prodigal reads it with too.
 
 Once every batch has succeeded the run also writes the conflicts and the
 prediction summary for the whole release at the top of --out_dir, so that a
-release finished across several machines is one file to read.
+release finished across several machines is one file to read. The release summary
+is gzipped, being a row per genome -- 116 MB of text for r237 and 34 MB
+compressed -- while the conflicts are a few hundred rows meant to be looked at
+and are not. A batch's own summary is gTranslate's output, written by gTranslate
+and not this command's to compress. Which of them prodigal is handed does not
+matter: read_translation_table_summary() decides by the file's first two bytes
+rather than by its name, so a release summary that someone gunzipped, or renamed
+on the way to another machine, still reads.
 
 WHAT THE RATE IS OF
 Every batch says how many of its genomes NCBI declares a table for and what share
@@ -198,6 +205,7 @@ their genomes with na in those four columns and the rest of the row intact.
 
 import contextlib
 import datetime
+import gzip
 import logging
 import os
 import shutil
@@ -288,6 +296,14 @@ STATE_FAILED = 'failed'
 # gTranslate names its summary for its --prefix, which this command passes through.
 DEFAULT_PREFIX = 'gtranslate'
 SUMMARY_SUFFIX = '.translation_table_summary.tsv'
+
+# The release's summary is gzipped and a batch's is not. A batch's is gTranslate's
+# own output, written by gTranslate into the batch directory and not this
+# command's to name; the release's is the concatenation of all of them, which for
+# r237 is 116 MB of text and 34 MB compressed. It is read back by
+# read_translation_table_summary(), which decides by the file's first two bytes
+# rather than by its name, so prodigal takes either.
+GZIP_EXT = '.gz'
 
 CONFLICT_NAME = 'ncbi_tt_conflict.tsv'
 
@@ -619,6 +635,20 @@ def summary_name(prefix: Optional[str] = None) -> str:
     """
 
     return (prefix or DEFAULT_PREFIX) + SUMMARY_SUFFIX
+
+
+def release_summary_name(prefix: Optional[str] = None) -> str:
+    """The name the summary of a whole release is written under.
+
+    Parameters
+    ----------
+    prefix : str
+        The --prefix the run passes gTranslate, or None for gTranslate's default.
+
+    @return: filename of the release summary at the top of the output directory.
+    """
+
+    return summary_name(prefix) + GZIP_EXT
 
 
 def batch_dir_names(out_dir: str) -> List[str]:
@@ -1881,7 +1911,7 @@ def annotate_conflicts(rows: Sequence[Sequence[str]],
     return annotated
 
 
-def concatenate(files: Sequence[str], path: str) -> int:
+def concatenate(files: Sequence[str], path: str, compress: bool = False) -> int:
     """Join the tables of every batch into one, keeping a single header.
 
     Parameters
@@ -1890,12 +1920,16 @@ def concatenate(files: Sequence[str], path: str) -> int:
         Files to join, each with the same header, in batch order.
     path : str
         File to write.
+    compress : bool
+        Write it gzipped, which the release summary is and the conflicts are not:
+        the summary is a row per genome of the release and the conflicts are a few
+        hundred rows meant to be looked at.
 
     @return: number of rows written, the header not counted.
     """
 
     written = 0
-    with open(path, 'w') as out:
+    with (gzip.open(path, 'wt') if compress else open(path, 'w')) as out:
         for index, name in enumerate(files):
             with open(name) as handle:
                 header = handle.readline()
@@ -2194,14 +2228,29 @@ class GTranslate(object):
                     len(batches) - len(unfinished), len(batches)))
             return
 
-        conflicts = 0
-        for name in (CONFLICT_NAME, summary_name(self.prefix)):
-            written = concatenate([os.path.join(batch, name) for batch in batches],
-                                  os.path.join(out_dir, name))
-            if name == CONFLICT_NAME:
-                conflicts = written
-            self.logger.info('Wrote {:,} rows to {}.'.format(
-                written, os.path.join(out_dir, name)))
+        conflicts = concatenate(
+            [os.path.join(batch, CONFLICT_NAME) for batch in batches],
+            os.path.join(out_dir, CONFLICT_NAME))
+        self.logger.info('Wrote {:,} rows to {}.'.format(
+            conflicts, os.path.join(out_dir, CONFLICT_NAME)))
+
+        # a row per genome of the release, which for r237 is 116 MB of text and
+        # 34 MB compressed; prodigal reads it either way, by its first two bytes
+        summary = os.path.join(out_dir, release_summary_name(self.prefix))
+        written = concatenate(
+            [os.path.join(batch, summary_name(self.prefix)) for batch in batches],
+            summary, compress=True)
+        self.logger.info('Wrote {:,} rows to {}.'.format(written, summary))
+
+        # a run of an older version left the same summary here uncompressed, and
+        # two files a genome apart of which one is stale is how the wrong table
+        # gets called; the one just written supersedes it
+        stale = os.path.join(out_dir, summary_name(self.prefix))
+        if os.path.exists(stale):
+            os.unlink(stale)
+            self.logger.info(
+                'Removed {}, which an earlier run wrote uncompressed and {} now '
+                'replaces.'.format(stale, summary))
 
         self.report_comparison(batches, conflicts)
 
