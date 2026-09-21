@@ -366,7 +366,9 @@ not the one NCBI declares, one row each:
 | `checkm_conflict` | `True` where gTranslate and that rule disagree about the genome being recoded at all: 11 against 4, or 4 or 25 against 11. 25 against 4 is `False` -- the rule picks between 4 and 11 alone, so 4 is the closest it can come to saying 25 |
 | `coding_density_4`, `coding_density_11` | as gTranslate measured them |
 | `cm2_completeness_gtranslate_tt`, `cm2_contamination_gtranslate_tt` | what CheckM2 makes of the genome with its genes called under `gtranslate_tt` |
+| `pass_qc_gtranslate_tt` | `True` where those pass standard GTDB QC, `na` where CheckM2 returned nothing |
 | `cm2_completeness_ncbi_tt`, `cm2_contamination_ncbi_tt` | the same under `ncbi_tt` |
+| `pass_qc_ncbi_tt` | and the same verdict under `ncbi_tt` |
 | `ncbi_taxonomy` | lineage from `--taxonomy_file`, `na` where it holds none |
 
 Every row is a conflict, so there is no column saying so. A genome the two agree
@@ -386,6 +388,16 @@ run would say how good the genome is; two say which table makes it look like a
 genome at all. CheckM2's own choice is not asked for -- left to itself it picks
 between tables 4 and 11 by coding density, which is what `checkm_tt` already
 reports.
+
+**Standard GTDB QC** is completeness > 50%, contamination < 10%, and a quality
+score of `completeness - 5 * contamination` > 50. All three must hold: the score
+alone would keep a genome 96% complete and 9% contaminated, and the completeness
+alone would keep anything that had been sequenced. The thresholds are exclusive,
+so a genome exactly 50% complete does not pass. The verdict is given per table
+because a genome can pass under one and fail under the other -- which is the case
+worth looking at, the conflict having changed whether the release keeps the
+genome at all and not merely by how much. A genome CheckM2 returned nothing for
+is `na` rather than `False`: it was not looked at and found wanting.
 
 These runs are made once for the release, after every batch has succeeded, and
 grouped by table: the conflicts are a few hundred genomes of a million-odd, and

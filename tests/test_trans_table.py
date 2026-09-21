@@ -1148,9 +1148,14 @@ class ReadConflictsTests(TempDirCase):
         taken by name so the CheckM2 ones are simply not among them."""
         path = os.path.join(self.dir, G.CONFLICT_NAME)
         row = ('GCA_1.1', '25', '11', '4', 'False', '90.1', '64.2', 'd__Bacteria')
-        G.write_conflicts(
-            [list(row[:-1]) + ['94.3', '0.17', '51.0', '16.4'] + [row[-1]]],
-            path, header=G.CONFLICT_HEADER_CHECKM2)
+        # built by the annotator rather than by hand, so that a column added to
+        # CONFLICT_HEADER_CHECKM2 cannot quietly turn this into a row too short
+        # to be read back at all
+        annotated = G.annotate_conflicts([list(row)],
+                                         {25: {'GCA_1.1': ('94.3', '0.17')},
+                                          11: {'GCA_1.1': ('51.0', '16.4')}})
+        G.write_conflicts(annotated, path, header=G.CONFLICT_HEADER_CHECKM2)
+        self.assertEqual(len(annotated[0]), len(G.CONFLICT_HEADER_CHECKM2))
         self.assertEqual(G.read_conflicts(path), [list(row)])
 
     def test_a_file_that_is_not_a_conflict_file_is_refused(self):
@@ -1342,3 +1347,73 @@ class CheckM2RunTests(TempDirCase):
 
         for staged in seen['input']:
             self.assertFalse(staged.startswith(seen['out'] + os.sep))
+
+
+# ------------------------------------------------------------- standard GTDB QC
+
+class PassesQCTests(unittest.TestCase):
+    """All three conditions have to hold, and a genome with no estimate is not a
+    genome that failed."""
+
+    def test_a_good_genome_passes(self):
+        self.assertIs(G.passes_qc('94.3', '0.17'), True)
+
+    def test_a_genome_half_there_or_less_fails_however_clean(self):
+        """The threshold is exclusive: exactly 50% complete does not pass."""
+        self.assertIs(G.passes_qc('50.0', '0.0'), False)
+        self.assertIs(G.passes_qc('50.01', '0.0'), True)
+
+    def test_a_genome_at_ten_percent_contamination_fails_however_complete(self):
+        """Exclusive too, and it is the condition the score alone would miss: 100
+        complete against 10 contaminated scores 50 and is refused twice over."""
+        self.assertIs(G.passes_qc('100.0', '10.0'), False)
+        self.assertIs(G.passes_qc('100.0', '9.99'), True)
+
+    def test_the_score_refuses_a_genome_the_other_two_conditions_would_keep(self):
+        """60% complete at 2.5% contamination is more than half there and barely
+        contaminated, and scores 47.5. This is why the score is asked for."""
+        self.assertIs(G.passes_qc('60.0', '2.5'), False)
+        self.assertIs(G.passes_qc('60.0', '1.9'), True)
+
+    def test_contamination_is_charged_at_five_times_the_weight(self):
+        self.assertEqual(G.quality_score(94.3, 0.17), 94.3 - 5 * 0.17)
+
+    def test_a_genome_with_no_estimate_is_unknown_rather_than_failed(self):
+        """na is not False: a genome whose FASTA is missing was not looked at and
+        found wanting."""
+        self.assertIsNone(G.passes_qc(G.NCBI_NA, G.NCBI_NA))
+        self.assertIsNone(G.passes_qc('94.3', G.NCBI_NA))
+        self.assertIsNone(G.passes_qc('', ''))
+
+
+class QCColumnTests(unittest.TestCase):
+    """The verdict sits beside the numbers it was reached from."""
+
+    def row(self):
+        return ['GCA_1.1', '25', '11', '4', 'False', '90.1', '64.2', 'd__Bacteria']
+
+    def field(self, row, column):
+        return row[G.CONFLICT_HEADER_CHECKM2.index(column)]
+
+    def test_each_table_is_judged_on_its_own_estimate(self):
+        """A genome can pass under one table and fail under the other; that it
+        does is the whole reason for running both."""
+        row = G.annotate_conflicts([self.row()],
+                                   {25: {'GCA_1.1': ('94.3', '0.17')},
+                                    11: {'GCA_1.1': ('51.0', '16.4')}})[0]
+        self.assertEqual(self.field(row, 'pass_qc_gtranslate_tt'), 'True')
+        self.assertEqual(self.field(row, 'pass_qc_ncbi_tt'), 'False')
+
+    def test_a_verdict_follows_the_numbers_it_was_reached_from(self):
+        """Read by eye the row is two answers to one question, not four numbers
+        and two verdicts at the end."""
+        header = G.CONFLICT_HEADER_CHECKM2
+        self.assertEqual(header.index('pass_qc_gtranslate_tt'),
+                         header.index('cm2_contamination_gtranslate_tt') + 1)
+        self.assertEqual(header.index('pass_qc_ncbi_tt'),
+                         header.index('cm2_contamination_ncbi_tt') + 1)
+
+    def test_a_genome_checkm2_returned_nothing_for_is_not_reported_as_failing(self):
+        row = G.annotate_conflicts([self.row()], {})[0]
+        self.assertEqual(self.field(row, 'pass_qc_gtranslate_tt'), G.NCBI_NA)
+        self.assertEqual(self.field(row, 'pass_qc_ncbi_tt'), G.NCBI_NA)

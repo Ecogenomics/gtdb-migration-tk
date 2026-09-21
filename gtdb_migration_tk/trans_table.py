@@ -156,6 +156,16 @@ a genome at all. CheckM2's own choice is not asked for: left to itself it picks
 between tables 4 and 11 by coding density, which is the rule checkm_tt already
 reports and which cannot express 25.
 
+Beside each pair of numbers is whether they pass standard GTDB QC: more than 50%
+complete, less than 10% contaminated, and a quality score of completeness less
+five times contamination above 50. The verdict is the one the release is actually
+kept or dropped by, so a conflict that changes it is a different thing from one
+that moves the numbers a little, and the row says which it is without the reader
+doing the arithmetic. It is given per table because a genome can pass under one
+and fail under the other, which is exactly the case worth looking at. A genome
+CheckM2 returned nothing for is na and not False: it was not looked at and found
+wanting.
+
 The runs are made once for the RELEASE and grouped by table, not once per batch.
 The conflicts are a few hundred genomes of a million-odd -- two or three per batch
 -- and CheckM2 loads its models and searches the whole DIAMOND database once per
@@ -318,9 +328,26 @@ CHECKM2_CONTAMINATION = 'Contamination'
 # dispute, because completeness under a table is the evidence about that table:
 # genes called under the wrong code are truncated at every TGA, and the markers
 # CheckM2 counts go with them. One run under one table would say how good the
-# genome is; two say which table makes it look like a genome at all.
+# genome is; two say which table makes it look like a genome at all. Each side's
+# verdict sits beside the numbers it was reached from rather than at the end, so
+# that a row read by eye is two answers to one question and not four numbers.
 CHECKM2_COLUMNS = ('cm2_completeness_gtranslate_tt', 'cm2_contamination_gtranslate_tt',
-                   'cm2_completeness_ncbi_tt', 'cm2_contamination_ncbi_tt')
+                   'pass_qc_gtranslate_tt',
+                   'cm2_completeness_ncbi_tt', 'cm2_contamination_ncbi_tt',
+                   'pass_qc_ncbi_tt')
+
+# Standard GTDB QC: a genome is kept where it is more than half there, barely
+# contaminated, and still more than half there once its contamination is charged
+# against it at five times its weight. All three have to hold -- the quality
+# score alone would keep a 96% complete genome carrying 9% contamination, and the
+# completeness alone would keep anything that had been sequenced at all.
+#
+# The thresholds are exclusive as GTDB states them: a genome exactly 50%
+# complete, or at exactly 10% contamination, does not pass.
+QC_MIN_COMPLETENESS = 50.0
+QC_MAX_CONTAMINATION = 10.0
+QC_CONTAMINATION_WEIGHT = 5.0
+QC_MIN_QUALITY = 50.0
 
 # The release file carries the CheckM2 columns and a batch file does not: CheckM2
 # runs once for the release, over the few hundred genomes every batch together
@@ -1715,6 +1742,61 @@ def read_checkm2_report(path: str) -> Dict[str, Tuple[str, str]]:
     return quality
 
 
+def quality_score(completeness: float, contamination: float) -> float:
+    """The GTDB quality score of a genome.
+
+    Contamination is charged at five times the weight of completeness because the
+    two are not equally recoverable: a genome missing a marker is missing it, and
+    a genome carrying another organism's markers reports things about that
+    organism as though they were its own.
+
+    Parameters
+    ----------
+    completeness : float
+        CheckM2 completeness, as a percentage.
+    contamination : float
+        CheckM2 contamination, as a percentage.
+
+    @return: the score, which may be negative.
+    """
+
+    return completeness - QC_CONTAMINATION_WEIGHT * contamination
+
+
+def passes_qc(completeness: str, contamination: str) -> Optional[bool]:
+    """Whether a genome passes standard GTDB QC.
+
+    All three conditions have to hold. They are not the same condition said three
+    ways: the score alone would keep a genome 96% complete and 9% contaminated,
+    and the completeness alone would keep anything that had been sequenced.
+
+    A genome CheckM2 returned nothing for does not fail -- nothing is known about
+    it, and na is not False. Saying otherwise would put a genome whose FASTA is
+    missing among the genomes that were looked at and found wanting.
+
+    Parameters
+    ----------
+    completeness : str
+        CheckM2 completeness as the report gives it, or NCBI_NA.
+    contamination : str
+        CheckM2 contamination as the report gives it, or NCBI_NA.
+
+    @return: True where it passes, False where it fails, None where there is no
+             estimate to judge it by.
+    """
+
+    try:
+        estimated_completeness = float(completeness)
+        estimated_contamination = float(contamination)
+    except (TypeError, ValueError):
+        return None
+
+    return (estimated_completeness > QC_MIN_COMPLETENESS
+            and estimated_contamination < QC_MAX_CONTAMINATION
+            and quality_score(estimated_completeness,
+                              estimated_contamination) > QC_MIN_QUALITY)
+
+
 def annotate_conflicts(rows: Sequence[Sequence[str]],
                        quality: Dict[int, Dict[str, Tuple[str, str]]]
                        ) -> List[List[str]]:
@@ -1747,8 +1829,12 @@ def annotate_conflicts(rows: Sequence[Sequence[str]],
                 table = int(row[column])
             except (IndexError, TypeError, ValueError):
                 table = None
-            estimates.extend(quality.get(table, {}).get(row[0],
-                                                        (NCBI_NA, NCBI_NA)))
+
+            completeness, contamination = quality.get(table, {}).get(
+                row[0], (NCBI_NA, NCBI_NA))
+            verdict = passes_qc(completeness, contamination)
+            estimates.extend((completeness, contamination,
+                              NCBI_NA if verdict is None else str(verdict)))
 
         annotated.append(list(row[:-1]) + estimates + [row[-1]])
 
@@ -2028,8 +2114,8 @@ class GTranslate(object):
 
         compared, no_ncbi_table = batch_counts(batches)
 
-        line = ('Release: {:,} genome(s) have a translation table from NCBI, and '
-                'gTranslate disagrees with NCBI about {:,} of them ({:.2f}%).'.format(
+        line = ('Conflicts: {:,} genome(s) have a translation table from NCBI, and '
+                'gTranslate disagrees with NCBI for {:,} ({:.2f}%) genomes.'.format(
                     compared, conflicts, disagreement_rate(conflicts, compared)))
 
         if no_ncbi_table is not None:
@@ -2221,9 +2307,17 @@ class GTranslate(object):
         first = CONFLICT_HEADER_CHECKM2.index(CHECKM2_COLUMNS[0])
         estimated = sum(1 for row in annotated
                         if NCBI_NA not in row[first:first + len(CHECKM2_COLUMNS)])
+        passing = {column: sum(1 for row in annotated
+                               if row[CONFLICT_HEADER_CHECKM2.index(column)] == 'True')
+                   for column in ('pass_qc_gtranslate_tt', 'pass_qc_ncbi_tt')}
+
         self.logger.info(
-            'Wrote {} with {} for {:,} of {:,} conflicting genome(s).'.format(
-                conflict_file, ', '.join(CHECKM2_COLUMNS), estimated, len(rows)))
+            'Wrote {} with the completeness, the contamination and the GTDB QC '
+            'verdict under both tables for {:,} of {:,} conflicting genome(s); '
+            '{:,} pass QC under the table gTranslate predicted and {:,} under the '
+            'table NCBI declares.'.format(
+                conflict_file, estimated, len(rows),
+                passing['pass_qc_gtranslate_tt'], passing['pass_qc_ncbi_tt']))
 
     def run(self, gtdb_genome_path_file: str, taxonomy_file: str, out_dir: str) -> bool:
         """Predict the translation table of every genome of a release.
