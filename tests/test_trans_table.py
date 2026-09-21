@@ -177,21 +177,33 @@ class CheckBatchFastasTests(TempDirCase):
         os.makedirs(batch_dir)
         G.write_batchfile([(G.genomic_fasta(path), accession)
                            for accession, path in genomes],
-                          os.path.join(batch_dir, G.BATCHFILE_NAME))
+                          os.path.join(batch_dir, G.BATCHFILE_NAME), compress=True)
         return batch_dir
 
-    def test_a_whole_batch_is_handed_over_as_it_stands(self):
-        # nothing is written where nothing is wrong, and gTranslate reads the
-        # batchfile the plan cut
+    def test_gtranslate_is_handed_a_plain_copy_and_never_the_plan(self):
+        """gTranslate reads a batchfile with a plain open(), and the plan is
+        gzipped; handing it the plan would end every batch before it started."""
         batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')),
                                ('GCF_2.1', self.genome_dir('GCF_2.1_ASM2')))
 
         batchfile, present, missing = G.check_batch_fastas(batch_dir)
 
-        self.assertEqual(batchfile, os.path.join(batch_dir, G.BATCHFILE_NAME))
+        self.assertEqual(batchfile,
+                         os.path.join(batch_dir, G.PRESENT_BATCHFILE_NAME))
         self.assertEqual(len(present), 2)
         self.assertEqual(missing, [])
-        self.assertEqual(os.listdir(batch_dir), [G.BATCHFILE_NAME])
+        with open(batchfile, 'rb') as handle:
+            self.assertNotEqual(handle.read(2), b'\x1f\x8b')
+
+    def test_the_plan_itself_is_gzipped(self):
+        batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')))
+        with open(os.path.join(batch_dir, G.BATCHFILE_NAME), 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+
+    def test_nothing_is_recorded_as_missing_where_nothing_is(self):
+        batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')))
+        G.check_batch_fastas(batch_dir)
+        self.assertFalse(os.path.exists(os.path.join(batch_dir, G.MISSING_NAME)))
 
     def test_a_missing_genome_is_left_out_of_what_gtranslate_is_handed(self):
         batch_dir = self.batch(('GCF_1.1', self.genome_dir('GCF_1.1_ASM1')),
@@ -224,7 +236,7 @@ class CheckBatchFastasTests(TempDirCase):
         G.check_batch_fastas(batch_dir)
 
         self.assertEqual([accession for _, accession in G.read_batchfile(
-            os.path.join(batch_dir, G.BATCHFILE_NAME))], ['GCF_1.1', 'GCA_2.1'])
+            G.batchfile_path(batch_dir))], ['GCF_1.1', 'GCA_2.1'])
 
 
 class FastaSizeTests(TempDirCase):
@@ -1784,3 +1796,101 @@ class ComparisonAggregationTests(TempDirCase):
         self.assertEqual(G.concatenate(
             [os.path.join(batch, G.COMPARISON_NAME) for batch in self.batches],
             out, compress=True), 2)
+
+
+# ------------------------------------------------------- the batch plan is gzipped
+
+class BatchfilePathTests(TempDirCase):
+    """A directory an earlier version planned is still a planned directory."""
+
+    def batch(self, name, rows=(('/m/a.fna.gz', 'GCA_1.1'),)):
+        batch_dir = os.path.join(self.dir, 'batch_000001')
+        if not os.path.isdir(batch_dir):
+            os.makedirs(batch_dir)
+        G.write_batchfile(rows, os.path.join(batch_dir, name),
+                          compress=name.endswith(G.GZIP_EXT))
+        return batch_dir
+
+    def test_the_gzipped_plan_is_found(self):
+        batch_dir = self.batch(G.BATCHFILE_NAME)
+        self.assertEqual(G.batchfile_path(batch_dir),
+                         os.path.join(batch_dir, G.BATCHFILE_NAME))
+
+    def test_a_plan_an_earlier_version_wrote_is_found(self):
+        """r237 was planned before the plan was compressed, and the command is
+        run again over a finished output directory to pick up later work."""
+        batch_dir = self.batch(G.LEGACY_BATCHFILE_NAME)
+        self.assertEqual(G.batchfile_path(batch_dir),
+                         os.path.join(batch_dir, G.LEGACY_BATCHFILE_NAME))
+        self.assertEqual(G.read_batchfile(G.batchfile_path(batch_dir)),
+                         [('/m/a.fna.gz', 'GCA_1.1')])
+
+    def test_a_batch_planned_by_an_earlier_version_is_not_planned_again(self):
+        """Repartitioning a release whose batches are already done would move
+        genomes between batches that have finished."""
+        out_dir = os.path.join(self.dir, 'out')
+        batch_dir = os.path.join(out_dir, 'batch_000001')
+        os.makedirs(batch_dir)
+        G.write_batchfile([('/m/a.fna.gz', 'GCA_1.1')],
+                          os.path.join(batch_dir, G.LEGACY_BATCHFILE_NAME))
+        self.assertEqual(G.batch_dir_names(out_dir), [batch_dir])
+
+    def test_the_gzipped_plan_wins_where_a_directory_holds_both(self):
+        """A directory part-way through an upgrade reads the current one."""
+        batch_dir = self.batch(G.LEGACY_BATCHFILE_NAME,
+                               rows=(('/m/old.fna.gz', 'GCA_OLD.1'),))
+        self.batch(G.BATCHFILE_NAME, rows=(('/m/new.fna.gz', 'GCA_NEW.1'),))
+        self.assertEqual(G.read_batchfile(G.batchfile_path(batch_dir)),
+                         [('/m/new.fna.gz', 'GCA_NEW.1')])
+
+    def test_a_batch_with_no_plan_names_where_one_would_go(self):
+        """So that a caller's error names the file it was looking for."""
+        empty = os.path.join(self.dir, 'unplanned')
+        os.makedirs(empty)
+        self.assertEqual(G.batchfile_path(empty),
+                         os.path.join(empty, G.BATCHFILE_NAME))
+
+
+class BatchfileCleanupTests(TempDirCase):
+    """The uncompressed copy exists only while the batch is being worked on."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.batch_dir = os.path.join(self.dir, 'batch_000001')
+        os.makedirs(self.batch_dir)
+        path = self.genome_dir('GCF_1.1_ASM1')
+        G.write_batchfile([(G.genomic_fasta(path), 'GCF_1.1')],
+                          os.path.join(self.batch_dir, G.BATCHFILE_NAME),
+                          compress=True)
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def predict(self, returncode=0):
+        manager = G.GTranslate(prefix=None)
+        with open(os.path.join(self.batch_dir, G.summary_name()), 'w') as handle:
+            handle.write('user_genome\tbest_tln_table\nGCF_1.1\t11\n')
+        with mock.patch.object(G.subprocess, 'run',
+                               return_value=mock.Mock(returncode=returncode)):
+            manager.run_gtranslate(self.batch_dir)
+
+    def test_the_plain_copy_is_gone_once_gtranslate_has_read_it(self):
+        self.predict()
+        self.assertFalse(os.path.exists(
+            os.path.join(self.batch_dir, G.PRESENT_BATCHFILE_NAME)))
+
+    def test_the_compressed_plan_is_what_the_batch_keeps(self):
+        self.predict()
+        self.assertTrue(os.path.exists(
+            os.path.join(self.batch_dir, G.BATCHFILE_NAME)))
+        self.assertEqual([accession for _, accession in G.read_batchfile(
+            G.batchfile_path(self.batch_dir))], ['GCF_1.1'])
+
+    def test_a_batch_gtranslate_failed_on_keeps_the_copy_it_was_given(self):
+        """The batch is retried, and what it was handed is what the retry looks
+        at to see what went in."""
+        self.assertRaises(RuntimeError, self.predict, returncode=1)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.batch_dir, G.PRESENT_BATCHFILE_NAME)))

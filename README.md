@@ -290,7 +290,8 @@ it on a file server shared with other work.
 ```
 <out_dir>/
   batch_000001/
-    gtranslate_batchfile.tsv            the genomes of this batch
+    gtranslate_batchfile.tsv.gz         the genomes of this batch
+    gtranslate_batchfile_present.tsv    the copy gTranslate reads, while it runs
     RUNNING                             a machine is working on it (host, PID, time)
     PREDICTED                           gTranslate has run; its results are final
     SUCCESS                             it finished; its results are complete
@@ -330,6 +331,16 @@ claim of this host's whose process has gone is taken at once. `--reclaim` takes 
 claim before its lease is up, which is only ever right when the machine holding
 it is known to have stopped. The lease is measured against the file server's
 clock, so the machines sharing an `--out_dir` need not agree about the time.
+
+**The plan is kept compressed; gTranslate is handed a copy.** gTranslate opens a
+batchfile with a plain `open()`, so `gtranslate_batchfile_present.tsv` is written
+before it starts and removed once it has finished: a finished batch keeps
+`gtranslate_batchfile.tsv.gz` alone. A batch taken over mid-run writes that copy
+again from the plan, and a batch gTranslate failed on keeps it, being what a retry
+looks at to see what went in. A batch planned by an earlier version holds an
+uncompressed `gtranslate_batchfile.tsv`, which is read as it stands -- a release
+whose batches looked unplanned would be partitioned again with its batches already
+done.
 
 **Hours are not redone.** `PREDICTED` is written the moment gTranslate returns,
 so a batch taken over between the prediction and the comparison is compared

@@ -86,6 +86,18 @@ directory is given, so nothing depends on two machines agreeing about the time.
 --reclaim remains, for taking a claim before its lease is up.
 
 WHAT IS DONE IS NOT DONE AGAIN
+A batch's plan is kept gzipped, and gTranslate cannot read it: it opens a
+batchfile with a plain open(). So the file gTranslate is handed is written plain
+before it starts and removed once it has finished, and what a finished batch
+keeps is the compressed plan alone. A batch taken over before gTranslate finished
+writes that copy again from the plan, which is why removing it costs nothing, and
+a batch gTranslate failed on keeps it, being what a retry looks at to see what
+went in. The plan was not always compressed, so where a batch holds the older
+uncompressed one that is read instead: a finished output directory is still read,
+the command being run again over one to pick up the work since added to it, and a
+release whose batches look unplanned would be partitioned again with its batches
+already done.
+
 gTranslate is the hours of a batch; the comparison that follows is seconds. So
 the prediction step records PREDICTED the moment gTranslate returns 0, and a
 batch reclaimed after that compares what is already there rather than predicting
@@ -274,12 +286,22 @@ BATCH_DIR_FORMAT = BATCH_DIR_PREFIX + '{:06d}'
 # Written into the batch directory rather than a temporary one: it is the record
 # of which genomes the batch is, and it is what a later run and another machine
 # read to agree on that without partitioning the release again.
-BATCHFILE_NAME = 'gtranslate_batchfile.tsv'
+BATCHFILE_NAME = 'gtranslate_batchfile.tsv.gz'
+
+# What earlier versions called it, written uncompressed. A finished output
+# directory is still read -- the command is run again over one to pick up work
+# added since -- and batch_dir_names() finding no plan there would repartition a
+# release whose batches are already done.
+LEGACY_BATCHFILE_NAME = 'gtranslate_batchfile.tsv'
 
 # What gTranslate is handed when some genome of the batch has no FASTA to process,
 # and the accessions left out of it. Written only in that case, so the file being
 # there at all says a batch had something wrong with it. BATCHFILE_NAME stays the
 # record of which genomes the batch IS, which is what the comparison reads.
+# The batchfile actually handed to gTranslate, which reads it with a plain
+# open() and cannot take the gzipped one. It is written before gTranslate starts
+# and removed once it has finished, so the uncompressed copy exists only while
+# the batch is being worked on and the plan kept for good is the compressed one.
 PRESENT_BATCHFILE_NAME = 'gtranslate_batchfile_present.tsv'
 MISSING_NAME = 'missing_genomic_fasta.tsv'
 
@@ -571,7 +593,8 @@ def split_by_fasta(rows: Sequence[Tuple[str, str]],
     return present, missing
 
 
-def write_batchfile(rows: Sequence[Tuple[str, str]], batchfile: str) -> None:
+def write_batchfile(rows: Sequence[Tuple[str, str]], batchfile: str,
+                    compress: bool = False) -> None:
     """Write the two-column batchfile gTranslate reads.
 
     The genome ID given is the accession the genome_dirs file names, so every row
@@ -584,13 +607,41 @@ def write_batchfile(rows: Sequence[Tuple[str, str]], batchfile: str) -> None:
         (FASTA path, accession) for each genome to ask about.
     batchfile : str
         File to write.
+    compress : bool
+        Write it gzipped, which the batch's own plan is and the copy handed to
+        gTranslate is not: gTranslate reads a batchfile with a plain open().
 
     @return: None
     """
 
-    with open(batchfile, 'w') as handle:
+    with (gzip.open(batchfile, 'wt') if compress else open(batchfile, 'w')) as handle:
         for fasta, accession in rows:
             handle.write('{}\t{}\n'.format(fasta, accession))
+
+
+def batchfile_path(batch_dir: str) -> str:
+    """Where a batch's plan is, whichever version of this command wrote it.
+
+    The plan is gzipped now and was not before, and a finished output directory
+    is still read: the command is run again over one to pick up the work that has
+    since been added to it. Asked of a batch that has neither, the answer is
+    where the plan would be written, so that a caller's error names the file it
+    was looking for.
+
+    Parameters
+    ----------
+    batch_dir : str
+        Batch directory.
+
+    @return: path of the batchfile.
+    """
+
+    for name in (BATCHFILE_NAME, LEGACY_BATCHFILE_NAME):
+        path = os.path.join(batch_dir, name)
+        if os.path.exists(path):
+            return path
+
+    return os.path.join(batch_dir, BATCHFILE_NAME)
 
 
 def read_batchfile(batchfile: str) -> List[Tuple[str, str]]:
@@ -610,7 +661,7 @@ def read_batchfile(batchfile: str) -> List[Tuple[str, str]]:
     """
 
     rows = []
-    with open(batchfile) as handle:
+    with open_text(batchfile) as handle:
         for line in handle:
             line = line.rstrip('\n')
             if not line:
@@ -635,8 +686,10 @@ def check_batch_fastas(batch_dir: str,
     one batch. It also leaves the batch boundaries following from the genome_dirs
     file alone, rather than from what stat said on the day the plan was cut.
 
-    Nothing is written where every genome has its FASTA, which is the normal case
-    and the one where BATCHFILE_NAME is handed straight to gTranslate.
+    The file handed to gTranslate is always written, and is always the plain one:
+    gTranslate reads a batchfile with a plain open() and the batch's own plan is
+    gzipped. It is removed once gTranslate has finished with it, so what a
+    finished batch keeps is the compressed plan alone.
 
     Parameters
     ----------
@@ -649,18 +702,18 @@ def check_batch_fastas(batch_dir: str,
              rows it names, and the accessions left out of it.
     """
 
-    batchfile = os.path.join(batch_dir, BATCHFILE_NAME)
-    present, missing = split_by_fasta(read_batchfile(batchfile), threads)
+    present, missing = split_by_fasta(
+        read_batchfile(batchfile_path(batch_dir)), threads)
 
-    if not missing:
-        return batchfile, present, missing
+    handed_over = os.path.join(batch_dir, PRESENT_BATCHFILE_NAME)
+    write_batchfile(present, handed_over)
 
-    write_batchfile(present, os.path.join(batch_dir, PRESENT_BATCHFILE_NAME))
-    with open(os.path.join(batch_dir, MISSING_NAME), 'w') as handle:
-        for accession in missing:
-            handle.write('{}\n'.format(accession))
+    if missing:
+        with open(os.path.join(batch_dir, MISSING_NAME), 'w') as handle:
+            for accession in missing:
+                handle.write('{}\n'.format(accession))
 
-    return os.path.join(batch_dir, PRESENT_BATCHFILE_NAME), present, missing
+    return handed_over, present, missing
 
 
 def summary_name(prefix: Optional[str] = None) -> str:
@@ -709,7 +762,7 @@ def batch_dir_names(out_dir: str) -> List[str]:
     for name in sorted(os.listdir(out_dir)):
         path = os.path.join(out_dir, name)
         if name.startswith(BATCH_DIR_PREFIX) and os.path.isdir(path):
-            if os.path.exists(os.path.join(path, BATCHFILE_NAME)):
+            if os.path.exists(batchfile_path(path)):
                 found.append(path)
 
     return found
@@ -742,7 +795,7 @@ def create_batches(rows: Sequence[Tuple[str, str]],
         batch_dir = os.path.join(out_dir, BATCH_DIR_FORMAT.format(index))
         os.makedirs(batch_dir, exist_ok=True)
         write_batchfile(rows[start:start + batch_size],
-                        os.path.join(batch_dir, BATCHFILE_NAME))
+                        os.path.join(batch_dir, BATCHFILE_NAME), compress=True)
         created.append(batch_dir)
 
     return created
@@ -1739,7 +1792,7 @@ def release_fastas(batches: Sequence[str],
 
     fastas = {}
     for batch_dir in batches:
-        batchfile = os.path.join(batch_dir, BATCHFILE_NAME)
+        batchfile = batchfile_path(batch_dir)
         if not os.path.exists(batchfile):
             continue
         for fasta, accession in read_batchfile(batchfile):
@@ -2197,6 +2250,15 @@ class GTranslate(object):
         # machine that takes this batch after here compares rather than predicts
         mark_predicted(batch_dir, genomes=len(present))
 
+        # gTranslate has read it and will not be run over this batch again, so
+        # the uncompressed copy goes and the batch keeps the compressed plan
+        # alone. A batch taken over before this point writes it again from that
+        # plan, which is why removing it here costs nothing.
+        try:
+            os.unlink(os.path.join(batch_dir, PRESENT_BATCHFILE_NAME))
+        except OSError:
+            pass
+
         # --force has gTranslate drop a genome it cannot process rather than end
         # the batch, and a genome dropped that way is simply absent from the
         # summary; it is named here rather than found by prodigal later
@@ -2232,7 +2294,7 @@ class GTranslate(object):
         """
 
         genome_dirs = {accession: os.path.dirname(fasta) for fasta, accession
-                       in read_batchfile(os.path.join(batch_dir, BATCHFILE_NAME))}
+                       in read_batchfile(batchfile_path(batch_dir))}
 
         predictions = read_translation_table_summary(
             os.path.join(batch_dir, summary_name(self.prefix)))
