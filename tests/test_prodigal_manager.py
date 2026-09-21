@@ -55,6 +55,11 @@ class StubProdigal:
         return summary_stats
 
     @classmethod
+    def genomes_called(cls):
+        """The genomes the wrapper was handed, in the order it was given them."""
+        return [task.genome_id for task in cls.last_tasks or []]
+
+    @classmethod
     def table_for(cls, accession):
         """The table the wrapper was handed for one genome."""
         for task in cls.last_tasks or []:
@@ -182,21 +187,59 @@ class ReadTranslationTablesTests(TempDirCase):
 # ------------------------------------------------------ a release not covered
 
 class MissingTableTests(TempDirCase):
-    """Finding the gap after hours of gene calling is the expensive way."""
+    """A genome with nothing to call its genes under is left, not guessed at."""
 
-    def test_a_genome_without_a_table_stops_the_run(self):
+    def test_a_genome_without_a_table_is_not_called(self):
+        """Prodigal choosing a table by coding density is the very thing handing
+        it the summary is there to prevent."""
         one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
+        P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+        self.assertNotIn('GCF_000000002.1', StubProdigal.genomes_called())
+
+    def test_the_genomes_that_do_have_a_table_are_still_called(self):
+        """Eight genomes of r237 have no prediction; the other 1.35M should not
+        wait on them."""
+        one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
+        P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+        self.assertEqual(StubProdigal.genomes_called(), ['GCF_000000001.1'])
+        self.assertEqual(StubProdigal.table_for('GCF_000000001.1'), 11)
+
+    def test_a_summary_covering_no_genome_of_the_release_stops_the_run(self):
+        """That is the wrong file, not a release with a few unpredictable
+        genomes, and carrying on would call nothing and report that it had
+        finished."""
+        one = self.genome('GCF_000000001.1')
         with self.assertRaises(RuntimeError) as raised:
             P.ProdigalManager(self.tmp_dir).run(
-                self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
-        self.assertIn('GCF_000000002.1', str(raised.exception))
-
-    def test_nothing_is_called_when_a_table_is_missing(self):
-        one = self.genome('GCF_000000001.1')
-        with self.assertRaises(RuntimeError):
-            P.ProdigalManager(self.tmp_dir).run(
                 self.genome_dirs(one), self.summary(('GCF_000000009.1', '11')))
+        self.assertIn('another release', str(raised.exception))
         self.assertIsNone(StubProdigal.last_tasks)
+
+    def test_the_run_reports_that_it_finished(self):
+        """The genomes with no table are a known handful, not a failure of the
+        run, and the 1.35M that were called are called."""
+        one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
+        self.assertTrue(P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11'))))
+
+    def test_the_genomes_left_uncalled_are_named_in_the_log(self):
+        """Silently calling fewer genomes than the release holds is how a gap
+        reaches the next command."""
+        one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
+        with self.assertLogs('timestamp', level='WARNING') as caught:
+            P.ProdigalManager(self.tmp_dir).run(
+                self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+        warning = '\n'.join(caught.output)
+        self.assertIn('GCF_000000002.1', warning)
+        self.assertIn('gtranslate_no_prediction.tsv', warning)
+
+    def test_a_genome_left_uncalled_has_no_results_written_for_it(self):
+        one, two = self.genome('GCF_000000001.1'), self.genome('GCF_000000002.1')
+        P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs(one, two), self.summary(('GCF_000000001.1', '11')))
+        self.assertFalse(os.path.exists(os.path.join(two[1], 'prodigal')))
 
     def test_an_override_can_fill_the_gap(self):
         one = self.genome('GCF_000000001.1')

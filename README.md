@@ -480,11 +480,24 @@ the release the comparison, which is written and counted before CheckM2 starts.
 `prodigal` takes the summary `trans_table` writes as `--trans_table` and calls each
 genome's genes under the table named there, so Prodigal no longer chooses one by
 coding density. `--tt_override` corrects it: a TSV of `genome_id` and
-`translation_table` whose rows replace the prediction. Every genome of the release
-must have a table, from one file or the other, before any genes are called — a run
-that found the gap genome by genome would find it hours in. Each genome's
-`prodigal/prodigal_translation_table.tsv` records the table used and where it came
-from, `predicted by gTranslate` or `specified by --tt_override`.
+`translation_table` whose rows replace the prediction.
+
+**A genome with no table is not called.** gTranslate returns no prediction for a
+handful of genomes of a release — eight of r237's 1.35M, two of which have no
+genomic FASTA to predict from at all — and there is nothing to call their genes
+under; letting Prodigal pick a table by coding density is the very thing handing it
+the summary prevents. They are named in the log and left, and `--tt_override` is
+how one is given a table and called after all. `trans_table` lists them in full in
+`gtranslate_no_prediction.tsv`.
+
+Which genomes those are is settled before any genes are called rather than
+discovered one at a time, because a run that meets the gap genome by genome meets
+it hours in. A summary covering **no** genome of the release still stops the run:
+that is the wrong file rather than a few unpredictable genomes, and carrying on
+would call nothing and report that the run had finished.
+
+Each genome's `prodigal/prodigal_translation_table.tsv` records the table used and
+where it came from, `predicted by gTranslate` or `specified by --tt_override`.
 
 ### Genome quality
 

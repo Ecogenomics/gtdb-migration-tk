@@ -27,7 +27,9 @@ OVERRIDE_TABLE = 'translation_table'
 SOURCE_PREDICTED = 'predicted by gTranslate'
 SOURCE_OVERRIDE = 'specified by --tt_override'
 
-# How many genomes without a translation table are named before the run gives up.
+# How many genomes without a translation table are named in the warning. The
+# whole list is trans_table's gtranslate_no_prediction.tsv, which is where to
+# read it; this is enough to recognise the kind of thing being left out.
 MISSING_TABLES_LOGGED = 5
 
 
@@ -123,10 +125,21 @@ class ProdigalManager(object):
         of calling them under tables 4 and 11 and keeping whichever coded more of the
         genome, which is a rule that cannot express table 25 at all.
 
-        Every genome of the release must have a table before any genes are called. A
-        release the predictions do not cover is a mistake made upstream, and a run
-        that discovers it genome by genome discovers it hours in, having already
-        called the genes of everything ahead of the gap.
+        A genome with no table is not called. gTranslate returns no prediction for a
+        few genomes of a release -- eight of r237's 1.35M, some of which have no
+        genomic FASTA to predict from at all -- and there is nothing to call their
+        genes under: Prodigal choosing a table by coding density is the very thing
+        the summary is handed over to prevent. They are warned about and left, and
+        --tt_override is how one is given a table and called after all.
+
+        Which genomes those are is settled before any genes are called rather than
+        discovered one at a time, because a run that meets the gap genome by genome
+        meets it hours in, having already called everything ahead of it.
+
+        A summary covering NO genome of the release is a different thing and still
+        stops the run. That is the wrong file rather than a few unpredictable
+        genomes, and carrying on would call nothing at all and report that the run
+        had finished.
 
         Two passes then, because deciding is cheap and calling is not. The first
         spreads prodigal_parser() over the pool to sort the release into genomes
@@ -168,15 +181,29 @@ class ProdigalManager(object):
                 gpath = tokens[1]
                 list_genome_tuples.append((gid, gpath, all_genomes))
 
-        missing = [gid for gid, _, _ in list_genome_tuples if gid not in tables]
-        if missing:
+        total = len(list_genome_tuples)
+        uncalled = sorted(gid for gid, _, _ in list_genome_tuples if gid not in tables)
+
+        # no genome of the release having a table is the wrong file, not a release
+        # with a few genomes nothing could be predicted for; carrying on would call
+        # nothing and report that the run had finished
+        if uncalled and len(uncalled) == total:
             raise RuntimeError(
-                '{:,} of {:,} genomes have no translation table in {}: {}{}. Every '
-                'genome needs one before any genes are called; correct them with '
-                '--tt_override or rerun trans_table over this release.'.format(
-                    len(missing), len(list_genome_tuples), trans_table_file,
-                    ', '.join(missing[:MISSING_TABLES_LOGGED]),
-                    ' ...' if len(missing) > MISSING_TABLES_LOGGED else ''))
+                'None of the {:,} genomes of this release has a translation table '
+                'in {}. That file is for another release, or trans_table has not '
+                'been run over this one.'.format(total, trans_table_file))
+
+        if uncalled:
+            list_genome_tuples = [row for row in list_genome_tuples if row[0] in tables]
+            self.logger.warning(
+                'warning: {:,} of {:,} genome(s) have no translation table in {} and '
+                'their genes are NOT being called: {}{}. They are the genomes '
+                'trans_table could not predict, which it names in full in '
+                'gtranslate_no_prediction.tsv; give one a table with --tt_override '
+                'to have it called.'.format(
+                    len(uncalled), total, trans_table_file,
+                    ', '.join(uncalled[:MISSING_TABLES_LOGGED]),
+                    ' ...' if len(uncalled) > MISSING_TABLES_LOGGED else ''))
 
         # determine which genomes need to be processed by Prodigal
         self.logger.info('Running prodigal on genomes.')
