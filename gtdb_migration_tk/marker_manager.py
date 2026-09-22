@@ -134,13 +134,14 @@ class MarkerManager(object):
                 gid,gpath,*_ = line.strip().split('\t')
                 list_genomes_tuples.append((gid,gpath,marker_dir,full_extension,genomes_to_consider,name))
 
-            # get top 10 genomes
             with mp.Pool(processes=self.cpus) as pool:
                 genome_paths = list(tqdm(pool.imap_unordered(self.marker_parser, list_genomes_tuples),
                                          total=len(list_genomes_tuples), unit='genome'))
 
-            # run Prodigal
-            genome_files = [x for x in genome_paths if x != 'null']
+            # a skipped genome is None, and every None has to go: the queue below ends
+            # with one per worker as the signal to stop, and a worker cannot tell a
+            # genome that was skipped from the end of the work
+            genome_files = [x for x in genome_paths if x is not None]
 
 
 
@@ -187,8 +188,10 @@ class MarkerManager(object):
         job : MarkerJob
             One genome, as run_hmmsearch() packed it.
 
-        @return: the protein file to search, 'null' where the genome is already
-                 annotated, or None where it has no protein file to search.
+        @return: the protein file to search, or None to skip the genome -- it is
+                 already annotated, or it has no protein file to search. One value
+                 for both, because run_hmmsearch() does the same thing with them
+                 and a second one has only ever been a way of missing one of them.
         """
 
         gid, gpath,marker_dir,full_extension,genomes_to_consider,name = job
@@ -206,7 +209,7 @@ class MarkerManager(object):
                         self.logger.warning(
                             f'Genome {gid} is marked as new or modified, but already has {name} annotations.')
                         self.logger.warning('Genome is being skipped!')
-                    return 'null'
+                    return None
 
             self.logger.warning(
                 f'Genome {gid} has {name} annotations, but an invalid checksum and was not marked for reannotation.')
