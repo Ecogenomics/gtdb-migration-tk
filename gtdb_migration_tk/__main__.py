@@ -863,11 +863,16 @@ def get_main_parser():
             __gbk_arc_assembly_file(grp, required=True)
             __rfq_arc_assembly_file(grp, required=True)
             __rfq_bac_assembly_file(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __cpus(grp)
-            __silent(grp)
+            __tmp_dir(grp)
+            __batch_size(grp)
+            __reclaim(grp)
+            __lease(grp)
             __all_genomes(grp)
+            __silent(grp)
 
     with subparser(sub_parsers, 'join_checkm',
                    'Join checkm output file for different versions of GTDB.') as parser:

@@ -387,9 +387,20 @@ class OptionsParser():
               options.output_file)
 
     def generate_trnascan_data(self, options):
+        for assembly_summary in (options.ga, options.gb, options.ra, options.rb):
+            check_file_exists(assembly_summary)
+        check_file_exists(options.gtdb_genome_path_file)
+        make_sure_path_exists(options.output_dir)
         p = tRNAScan(options.ga, options.gb,
-                     options.ra, options.rb, options.cpus)
-        p.run(options.gtdb_genome_path_file,options.all_genomes)
+                     options.ra, options.rb,
+                     options.cpus,
+                     options.tmp_dir,
+                     options.batch_size,
+                     options.reclaim,
+                     options.lease * 60 * 60)
+        p.run(options.gtdb_genome_path_file,
+              options.output_dir,
+              options.all_genomes)
 
     def parse_ncbi_dir(self, options):
         p = NCBIMetaDir(options.cpus)
