@@ -54,11 +54,13 @@ def canonical_gid(gid):
 
 def get_num_lines(file_path):
     """ Calculate the number of lines in a file."""
-    fp = open(file_path, "r+")
-    buf = mmap.mmap(fp.fileno(), 0)
-    lines = 0
-    while buf.readline():
-        lines += 1
+    # the file and the mapping are both closed here: neither was, and a caller
+    # that counts the lines of a file per genome leaked a descriptor each time
+    with open(file_path, "r+") as fp:
+        with mmap.mmap(fp.fileno(), 0) as buf:
+            lines = 0
+            while buf.readline():
+                lines += 1
     return lines
 
 
