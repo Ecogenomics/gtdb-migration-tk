@@ -65,8 +65,11 @@ class TempDirCase(unittest.TestCase):
             twenty-odd bytes of header.
         annotated : bool
             Whether a marker table is already there.
-        checksum : bool
-            Whether that table's .sha256 is there and correct.
+        checksum : bool or str
+            True writes the table's .sha256 correctly, False writes none at all,
+            and a string is written as the digest -- a table that disagrees with
+            its checksum rather than one with none, which are different states on
+            disk and the same answer.
 
         @return: the genome directory.
         """
@@ -87,12 +90,15 @@ class TempDirCase(unittest.TestCase):
             table = os.path.join(table_dir, gid + marker_ext)
             with gzip.open(table + '.gz', 'wb') as handle:
                 handle.write(b'# hits\n')
-            if checksum:
+            if checksum is True:
                 # of the UNCOMPRESSED bytes, as marker_parser() reads it back
                 with open(table + '.gz', 'rb') as raw:
                     digest = M.sha256_rb(gzip.GzipFile(fileobj=raw))
                 with open(table + '.sha256', 'w') as handle:
                     handle.write(digest + '\n')
+            elif checksum:
+                with open(table + '.sha256', 'w') as handle:
+                    handle.write(checksum + '\n')
 
         return path
 
@@ -399,11 +405,14 @@ class WhichGenomesMarkerParserSkips(TempDirCase):
     def test_an_annotated_genome_with_a_matching_checksum_is_skipped(self):
         self.assertIsNone(self.parse('GCF_000000001.1', annotated=True))
 
-    def test_an_annotated_genome_whose_checksum_does_not_match_is_annotated_again(self):
-        # a table that does not match its own checksum is not results anyone can use
-        result = self.parse('GCF_000000001.1', annotated=True, checksum=False)
+    def test_an_annotated_genome_with_no_checksum_is_annotated_again(self):
+        # nothing accounts for the table, so it is not results anyone can use
+        self.assertIsNotNone(self.parse('GCF_000000001.1', annotated=True,
+                                        checksum=False))
 
-        self.assertIsNotNone(result)
+    def test_an_annotated_genome_whose_checksum_does_not_match_is_annotated_again(self):
+        self.assertIsNotNone(self.parse('GCF_000000001.1', annotated=True,
+                                        checksum='0' * 64))
 
     def test_a_genome_the_report_does_not_name_is_still_annotated(self):
         # the marker table decides the work; the report only says whether the two
@@ -420,6 +429,79 @@ class WhichGenomesMarkerParserSkips(TempDirCase):
         self.assertIsNone(self.parse('GCF_000000001.1', annotated=True))
         self.assertIsNone(self.parse('GCF_000000002.1', annotated=True,
                                      consider=False))
+
+
+class WhatTheReportIsCrossCheckedAgainst(TempDirCase):
+    """The report does not decide the work; it says whether disk agrees with it.
+
+    A genome is in the report's genomes_to_regenerate() when the release did NOT
+    carry its derived data across, so the report's claim is that it has no marker
+    table yet. The marker table decides whether it is searched either way; where
+    the two disagree the log says so, and it says which way round the
+    disagreement is rather than asserting one of them.
+    """
+
+    def warnings(self, gid, consider, **kwargs):
+        path = self.genome(gid, **kwargs)
+        job = (gid, M.protein_fasta(gid, path), MARKER_DIR, MARKER_EXT,
+               {gid} if consider else set(), 'Pfam', False)
+        manager = self.manager()
+        with self.assertLogs('timestamp', level='WARNING') as caught:
+            manager.marker_parser(job)
+            # assertLogs fails an empty block, so every case logs at least this
+            manager.logger.warning('end of case')
+        return ' '.join(caught.output)
+
+    def test_an_annotated_genome_the_release_calls_new_is_flagged(self):
+        # top left: the release says it carried nothing across, and the table is
+        # there anyway. Expected of a batch being resumed, so it is said and the
+        # genome is still skipped
+        said = self.warnings('GCF_000000001.1', consider=True, annotated=True)
+
+        self.assertIn('marked as new or modified, but already has Pfam annotations', said)
+        self.assertIn('being skipped', said)
+
+    def test_an_annotated_genome_the_release_expects_is_not_flagged(self):
+        said = self.warnings('GCF_000000001.1', consider=False, annotated=True)
+
+        self.assertEqual(said.count('WARNING'), 1)      # the marker of the block
+
+    def test_an_unannotated_genome_the_release_expects_annotated_is_flagged(self):
+        # bottom right: the release says this genome kept its derived data, and
+        # the marker table is not there. The one cell worth a warning every time
+        said = self.warnings('GCF_000000001.1', consider=False)
+
+        self.assertIn('has no Pfam annotations, but is also not marked for processing', said)
+
+    def test_an_unannotated_genome_the_release_calls_new_is_not_flagged(self):
+        said = self.warnings('GCF_000000001.1', consider=True)
+
+        self.assertEqual(said.count('WARNING'), 1)
+
+    def test_an_unvouched_table_the_release_calls_new_says_so(self):
+        # this used to say the genome "was not marked for reannotation" without
+        # looking, which is false for exactly the genome it most often describes:
+        # one whose annotation run was interrupted partway through writing it
+        said = self.warnings('GCF_000000001.1', consider=True,
+                             annotated=True, checksum=False)
+
+        self.assertIn('no valid checksum, and is marked as new or modified', said)
+        self.assertNotIn('not marked for reannotation', said)
+
+    def test_an_unvouched_table_the_release_does_not_call_new_says_so(self):
+        said = self.warnings('GCF_000000001.1', consider=False,
+                             annotated=True, checksum=False)
+
+        self.assertIn('no valid checksum, though it is not marked for reannotation', said)
+
+    def test_a_table_that_disagrees_with_its_checksum_reads_the_same_way(self):
+        # an absent .sha256 and one that disagrees are different states on disk
+        # and the same answer: neither shows the annotations to be right
+        said = self.warnings('GCF_000000001.1', consider=True,
+                             annotated=True, checksum='0' * 64)
+
+        self.assertIn('no valid checksum, and is marked as new or modified', said)
+        self.assertIn('will be reannotated', said)
 
 
 class TheGenomesThatGotNoMarkers(TempDirCase):

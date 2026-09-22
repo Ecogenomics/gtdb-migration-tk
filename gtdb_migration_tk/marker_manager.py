@@ -570,8 +570,18 @@ class MarkerManager(object):
                         self.logger.warning('Genome is being skipped!')
                     return None
 
-            self.logger.warning(
-                f'Genome {gid} has {name} annotations, but an invalid checksum and was not marked for reannotation.')
+            # reached when the .sha256 is absent as well as when it disagrees:
+            # neither says the annotations are wrong, but neither shows them to be
+            # right. Whether the release expected them is said truthfully rather
+            # than assumed -- a table that cannot be vouched for usually belongs
+            # to a genome the release DOES call new, its run having been
+            # interrupted partway through writing it
+            if gid in genomes_to_consider:
+                self.logger.warning(
+                    f'Genome {gid} has {name} annotations with no valid checksum, and is marked as new or modified.')
+            else:
+                self.logger.warning(
+                    f'Genome {gid} has {name} annotations with no valid checksum, though it is not marked for reannotation.')
             self.logger.warning(f'Genome will be reannotated.')
 
         elif gid not in genomes_to_consider:
