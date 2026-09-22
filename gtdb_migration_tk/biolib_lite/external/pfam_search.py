@@ -14,32 +14,44 @@
 #    along with this program. If not, see <http://www.gnu.org/licenses/>.     #
 #                                                                             #
 ###############################################################################
-import os
-import logging
-import multiprocessing as mp
 
 from gtdb_migration_tk.biolib_lite.external.pypfam.Scan.PfamScan import PfamScan
 
 
 class PfamSearch(object):
-    """Runs pfam_search.pl over a set of genomes.
-    Copied from GTDB-Tk 2.1.1 but modified a lot!!"""
+    """Runs PFAM search (Python equivalent of pfam_search.pl) over a set of genomes."""
 
-    def __init__(self,
-                 pfam_hmm_dir):
-        """Initialization."""
+    def __init__(self, pfam_hmm_dir: str) -> None:
+        """Initialization.
 
-        self.cpus_per_genome = 1
-        self.pfam_hmm_dir = pfam_hmm_dir
+        Parameters
+        ----------
+        pfam_hmm_dir : str
+            Directory holding the Pfam HMMs to search against.
+        """
 
-    def run(self, gene_file,output_hit_file):
-        """Process each data item in parallel."""
-        try:
-            pfam_scan = PfamScan(cpu=self.cpus_per_genome, fasta=gene_file, dir=self.pfam_hmm_dir)
-            pfam_scan.search()
-            pfam_scan.write_results(output_hit_file, None, None, None, None)
-        except Exception as error:
-            raise error
+        self.cpus_per_genome: int = 1
+        self.pfam_hmm_dir: str = pfam_hmm_dir
+
+    def run(self, gene_file: str, output_hit_file: str) -> None:
+        """Search one genome's proteins against the Pfam HMMs.
+
+        One genome per call, on one CPU: the caller runs a pool of these rather
+        than giving any one search more than a core.
+
+        Parameters
+        ----------
+        gene_file : str
+            Amino acid FASTA of the genome's called genes, uncompressed.
+        output_hit_file : str
+            Where the hit table is written.
+
+        @return: nothing; the hits are written to output_hit_file.
+        """
+
+        pfam_scan = PfamScan(cpu=self.cpus_per_genome, fasta=gene_file, dir=self.pfam_hmm_dir)
+        pfam_scan.search()
+        pfam_scan.write_results(output_hit_file, None, None, None, None)
 
 
 

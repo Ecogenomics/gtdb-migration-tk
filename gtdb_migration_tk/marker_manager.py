@@ -22,6 +22,8 @@ import multiprocessing as mp
 import shutil
 import tempfile
 from collections import defaultdict
+from multiprocessing.queues import Queue
+from typing import Dict, Optional, Set, Tuple
 
 from tqdm import tqdm
 
@@ -33,28 +35,71 @@ from gtdb_migration_tk.update_genomes import genomes_to_regenerate
 from gtdb_migration_tk.utils.tools import symlink, openfile
 
 
+# One genome as marker_parser() receives it, the tuple being what mp.Pool.imap_unordered
+# can carry: accession, its genome directory, the marker directory within prodigal/, the
+# extension the marker table carries, the genomes the release says need annotating, and
+# the database's name for the log.
+MarkerJob = Tuple[str, str, str, str, Set[str], str]
+
+# Gene ID to the hits kept for it: HMM ID to (e-value, bitscore) for Pfam, where a gene
+# keeps its best hit per family, and a single (HMM ID, e-value, bitscore) for TIGRFAM,
+# where it keeps one hit overall.
+PfamTopHits = Dict[str, Dict[str, Tuple[float, float]]]
+TigrTopHits = Dict[str, Tuple[str, float, float]]
+
+
 class MarkerManager(object):
     """Identify marker genes using Pfam and tigrfam HMMs."""
 
-    def __init__(self, tmp_dir='/tmp/', cpus=1):
-        """Initialization."""
+    def __init__(self, tmp_dir: str = '/tmp/', cpus: int = 1) -> None:
+        """Initialization.
 
-        self.tmp_dir = tmp_dir
-        self.cpus = cpus
+        Parameters
+        ----------
+        tmp_dir : str
+            Directory for scratch files; no results are written here.
+        cpus : int
+            How many genomes are annotated at once.
+        """
+
+        self.tmp_dir: str = tmp_dir
+        self.cpus: int = cpus
 
         check_dependencies(['prodigal', 'hmmsearch'])
 
         # identify TIGRfam and Pfam marker genes comprising the bac120, ar122, ar53, or
-        # rp2 marker sets using a carefully selected subset of HMMs
-        self.tigrfam_hmms = ''
-        self.pfam_hmm_dir = ''
+        # rp2 marker sets using a carefully selected subset of HMMs. Which of the two is
+        # searched is decided per run, so only one of these is ever set.
+        self.tigrfam_hmms: str = ''
+        self.pfam_hmm_dir: str = ''
 
-        self.protein_file_ext = '_protein.faa.gz'
+        self.protein_file_ext: str = '_protein.faa.gz'
 
-        self.logger = logging.getLogger('timestamp')
+        self.logger: logging.Logger = logging.getLogger('timestamp')
 
-    def run_hmmsearch(self, gtdb_genome_path_file, report, db, dir_suffix, hmm_db_path):
-        """Identify marker genes using Pfam and TIGRfam HMMs."""
+    def run_hmmsearch(self,
+                      gtdb_genome_path_file: str,
+                      report: str,
+                      db: str,
+                      dir_suffix: str,
+                      hmm_db_path: str) -> None:
+        """Identify marker genes using Pfam and TIGRfam HMMs.
+
+        Parameters
+        ----------
+        gtdb_genome_path_file : str
+            genome_dirs file of the release: accession, path, canonical accession.
+        report : str
+            report.log of the release, read for the genomes needing annotation.
+        db : str
+            'pfam' or 'tigrfam'.
+        dir_suffix : str
+            Suffix of the marker directory and files, e.g. 33.1_lite.
+        hmm_db_path : str
+            The HMMs to search against.
+
+        @return: nothing; results are written into each genome's prodigal/ directory.
+        """
 
         name = ""
         worker = None
@@ -134,7 +179,18 @@ class MarkerManager(object):
 
             writeProc.terminate
 
-    def marker_parser(self, job):
+    def marker_parser(self, job: MarkerJob) -> Optional[str]:
+        """Decide whether one genome's markers still have to be searched for.
+
+        Parameters
+        ----------
+        job : MarkerJob
+            One genome, as run_hmmsearch() packed it.
+
+        @return: the protein file to search, 'null' where the genome is already
+                 annotated, or None where it has no protein file to search.
+        """
+
         gid, gpath,marker_dir,full_extension,genomes_to_consider,name = job
         prodigal_dir = os.path.join(gpath, 'prodigal')
         marker_file = os.path.join(prodigal_dir, marker_dir, gid + full_extension)
@@ -170,7 +226,20 @@ class MarkerManager(object):
             else:
                 return gene_file
 
-    def run_tophit(self, gtdb_genome_path_file, db, folder_name):
+    def run_tophit(self, gtdb_genome_path_file: str, db: str, folder_name: str) -> None:
+        """Reduce each genome's marker table to its top hits.
+
+        Parameters
+        ----------
+        gtdb_genome_path_file : str
+            genome_dirs file of the release: accession, path, canonical accession.
+        db : str
+            'pfam' or 'tigrfam'.
+        folder_name : str
+            Suffix of the marker directory and files, e.g. 33.1_lite.
+
+        @return: nothing; a tophit file is written beside each marker table.
+        """
 
         extension = ""
         if db == 'pfam':
@@ -223,7 +292,7 @@ class MarkerManager(object):
                         f_out.writelines(f_in)
                     os.remove(tophit_file)
 
-    def __progress(self, num_items, queue_out):
+    def __progress(self, num_items: int, queue_out: Queue) -> None:
         """Store or write results of worker threads in a single thread."""
         processed_items = 0
         while True:
@@ -239,7 +308,7 @@ class MarkerManager(object):
 
         sys.stdout.write('\n')
 
-    def __pfam_worker(self, queue_in, queue_out, folder_name):
+    def __pfam_worker(self, queue_in: Queue, queue_out: Queue, folder_name: str) -> None:
         """Process each data item in parallel."""
 
         prefix = "pfam"
@@ -382,10 +451,20 @@ class MarkerManager(object):
     #     fout.write(checksum)
     #     fout.close()
 
-    def _pfam_top_hit(self, pfam_file, pfam_tophit_file):
-        """Identify top Pfam hits."""
+    def _pfam_top_hit(self, pfam_file: str, pfam_tophit_file: str) -> None:
+        """Identify top Pfam hits.
 
-        tophits = defaultdict(dict)
+        Parameters
+        ----------
+        pfam_file : str
+            Marker table written by the Pfam search.
+        pfam_tophit_file : str
+            Where the top hits are written, with a .sha256 beside them.
+
+        @return: nothing; a gene keeps its best hit for each family it matched.
+        """
+
+        tophits: PfamTopHits = defaultdict(dict)
         for line in openfile(pfam_file):
             if line[0] == '#' or not line.strip():
                 continue
@@ -419,10 +498,20 @@ class MarkerManager(object):
         fout.write(checksum)
         fout.close()
 
-    def _tigr_top_hit(self, tigrfam_file, tigrfam_tophit_file):
-        """Identify top TIGRfam hits."""
+    def _tigr_top_hit(self, tigrfam_file: str, tigrfam_tophit_file: str) -> None:
+        """Identify top TIGRfam hits.
 
-        tophits = defaultdict(dict)
+        Parameters
+        ----------
+        tigrfam_file : str
+            Marker table written by the TIGRFAM search.
+        tigrfam_tophit_file : str
+            Where the top hits are written, with a .sha256 beside them.
+
+        @return: nothing; a gene keeps one hit, the highest scoring of any family.
+        """
+
+        tophits: TigrTopHits = {}
         for line in openfile(tigrfam_file):
             if line[0] == '#' or line[0] == '[':
                 continue
@@ -451,7 +540,7 @@ class MarkerManager(object):
         fout.write(checksum)
         fout.close()
 
-    def __tigrfam_worker(self, queue_in, queue_out,folder_name):
+    def __tigrfam_worker(self, queue_in: Queue, queue_out: Queue, folder_name: str) -> None:
         """Process each data item in parallel."""
 
         prefix = "tigrfam"
