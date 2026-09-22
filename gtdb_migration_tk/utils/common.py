@@ -1,4 +1,5 @@
 import csv
+import os
 import gzip
 from collections import namedtuple
 from typing import Dict, Optional
@@ -33,6 +34,37 @@ CHECKM_DENSITY_FLOOR = 70.0
 # have to have kept track of which -- nor be caught out by a release summary
 # somebody gunzipped, or one renamed on the way to another machine.
 GZIP_MAGIC = b'\x1f\x8b'
+
+# Where prodigal leaves a genome's called proteins, and what it calls them. The
+# directory and the extension are one fact about a genome directory, written by
+# prodigal and read by everything downstream of it -- hmmsearch, top_hit, checkm,
+# the metadata -- so protein_fasta() is what names the file rather than each of
+# them joining the same three pieces.
+PRODIGAL_DIR = 'prodigal'
+PROTEIN_FASTA_EXT = '_protein.faa.gz'
+
+
+def protein_fasta(accession: str, genome_dir: str) -> str:
+    """The called proteins of a genome, as prodigal filed them.
+
+    Named for the ACCESSION rather than for the assembly, which is what the
+    genomic FASTA is named for: prodigal writes its results under the genome's
+    accession, so the two files of one genome do not share a stem. That is also
+    why the accession comes first, against the reading of it: this is one of the
+    functions batching.plan_batches() takes to name the file a batch is planned
+    around, and they are all (accession, genome directory).
+
+    Parameters
+    ----------
+    accession : str
+        Accession of the genome, which names the file.
+    genome_dir : str
+        Genome directory of the release.
+
+    @return: path of the protein FASTA, which may not exist.
+    """
+
+    return os.path.join(genome_dir, PRODIGAL_DIR, accession + PROTEIN_FASTA_EXT)
 
 
 def open_text(path: str):

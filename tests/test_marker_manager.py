@@ -5,103 +5,63 @@ Run with the interpreter that has tqdm:
 
     /opt/centos7/sw/miniconda3/envs/python3/bin/python -m unittest -v tests.test_marker_manager
 
-What is tested here is what run_hmmsearch() decides before any HMM is searched:
-which genomes of a release still need their markers found, and what reaches the
-queue the workers draw from. The multiprocessing is replaced by stubs that run
-the real marker_parser() serially and record what was queued, because the bug
-this file exists for is not in either worker -- it is in what the work list is
-allowed to contain.
+What is tested here is everything hmmsearch decides before an HMM is searched:
+how the release is cut into batches and shared between machines, which genomes of
+a batch still need their markers found, and what is handed to the workers.
+search_markers() is replaced by a recorder, so the real run_hmmsearch() runs over
+real batch directories and what it would have searched can be read back.
+
+The batching machinery itself is tested in tests/test_batching.py. What is tested
+here is this command's use of it: that a Pfam run and a TIGRFAM run of one output
+directory do not read each other's canaries, and that the work list can hold
+nothing a worker would mistake for the end of the work.
 """
 
 import gzip
 import os
 import shutil
 import tempfile
-import types
 import unittest
 from unittest import mock
 
+from gtdb_migration_tk import batching as B
 from gtdb_migration_tk import marker_manager as M
 
 
 SUFFIX = '33.1_lite'
 MARKER_DIR = 'pfam_' + SUFFIX
 MARKER_EXT = '_pfam_{}.tsv'.format(SUFFIX)
-
-
-class RecordingQueue:
-    """Records what was put on it, in order, rather than crossing a process."""
-
-    def __init__(self):
-        self.items = []
-
-    def put(self, item):
-        self.items.append(item)
-
-    def get(self, block=True, timeout=None):
-        return self.items.pop(0)
-
-
-class SerialPool:
-    """Runs marker_parser() in this process, so the decisions under test are real."""
-
-    def __init__(self, processes=1):
-        self.processes = processes
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def imap_unordered(self, func, iterable):
-        return [func(item) for item in iterable]
-
-
-class NoopProcess:
-    """A worker that is never started: the queue it would drain is the evidence."""
-
-    started = []
-
-    def __init__(self, target=None, args=()):
-        self.target = target
-        self.args = args
-
-    def start(self):
-        NoopProcess.started.append(self)
-
-    def join(self):
-        pass
-
-    def terminate(self):
-        pass
+TIGR_SUFFIX = '15.0_lite'
 
 
 class TempDirCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='marker_manager_test.')
-        self.queues = []
-        NoopProcess.started = []
+        self.out_dir = os.path.join(self.dir, 'out')
+        os.makedirs(self.out_dir)
+        self.searched = []
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def manager(self, cpus=1):
+    def manager(self, cpus=1, batch_size=10000, **kwargs):
         # the real one checks for prodigal and hmmsearch on PATH and exits without them
         with mock.patch.object(M, 'check_dependencies'):
-            return M.MarkerManager(tmp_dir=self.dir, cpus=cpus)
+            return M.MarkerManager(tmp_dir=self.dir, cpus=cpus,
+                                   batch_size=batch_size, **kwargs)
 
-    def genome(self, gid, protein=b'>gene\nMA\n', annotated=False, checksum=True):
-        """A genome directory, optionally already carrying its Pfam results.
+    def genome(self, gid, proteins=b'>gene\nMA\n', annotated=False, checksum=True,
+               marker_dir=MARKER_DIR, marker_ext=MARKER_EXT):
+        """A genome directory, optionally already carrying its marker table.
 
         Parameters
         ----------
         gid : str
             Accession, which names the files within.
-        protein : bytes or None
+        proteins : bytes or None
             Contents of the protein FASTA, gzipped; None writes no protein file
-            at all, and b'' writes a zero byte one, which is what the code means
-            by empty -- it stats the file on disk, and a gzip of nothing is still
+            at all, and b'' writes a zero byte one, which is what split_by_fasta()
+            means by missing -- it stats the file, and a gzip of nothing is still
             twenty-odd bytes of header.
         annotated : bool
             Whether a marker table is already there.
@@ -111,20 +71,20 @@ class TempDirCase(unittest.TestCase):
         @return: the genome directory.
         """
 
-        path = os.path.join(self.dir, gid)
+        path = os.path.join(self.dir, 'release', gid)
         prodigal_dir = os.path.join(path, 'prodigal')
         os.makedirs(prodigal_dir)
 
-        if protein == b'':
+        if proteins == b'':
             open(os.path.join(prodigal_dir, gid + '_protein.faa.gz'), 'wb').close()
-        elif protein is not None:
+        elif proteins is not None:
             with gzip.open(os.path.join(prodigal_dir, gid + '_protein.faa.gz'), 'wb') as handle:
-                handle.write(protein)
+                handle.write(proteins)
 
         if annotated:
-            marker_dir = os.path.join(prodigal_dir, MARKER_DIR)
-            os.makedirs(marker_dir)
-            table = os.path.join(marker_dir, gid + MARKER_EXT)
+            table_dir = os.path.join(prodigal_dir, marker_dir)
+            os.makedirs(table_dir)
+            table = os.path.join(table_dir, gid + marker_ext)
             with gzip.open(table + '.gz', 'wb') as handle:
                 handle.write(b'# hits\n')
             if checksum:
@@ -138,13 +98,6 @@ class TempDirCase(unittest.TestCase):
 
     def inputs(self, genomes, outcomes=None):
         """The two files run_hmmsearch() reads.
-
-        Parameters
-        ----------
-        genomes : dict
-            Accession to genome directory.
-        outcomes : dict
-            Accession to its report outcome; the default is 'new' for every one.
 
         @return: (genome_dirs file, report file).
         """
@@ -162,118 +115,279 @@ class TempDirCase(unittest.TestCase):
 
         return dirs_file, report
 
-    def run_hmmsearch(self, genomes, outcomes=None, cpus=1):
-        """Run the real run_hmmsearch() with the multiprocessing stubbed out.
+    def run_hmmsearch(self, genomes, outcomes=None, db='pfam', suffix=SUFFIX,
+                      manager=None, searcher=None, **kwargs):
+        """Run the real run_hmmsearch() with the searching replaced by a recorder.
 
-        @return: (what was put on the work queue, what the progress bar was told).
+        @return: what run_hmmsearch() returned.
         """
 
         dirs_file, report = self.inputs(genomes, outcomes)
+        manager = manager or self.manager()
 
-        def make_queue():
-            self.queues.append(RecordingQueue())
-            return self.queues[-1]
+        def record(manager, genome_files, worker, dir_suffix):
+            self.searched.append(list(genome_files))
 
-        stub = types.SimpleNamespace(Queue=make_queue, Pool=SerialPool, Process=NoopProcess)
-        with mock.patch.object(M, 'mp', stub):
-            self.manager(cpus=cpus).run_hmmsearch(
-                dirs_file, report, 'pfam', SUFFIX, '/nonexistent/hmms')
+        with mock.patch.object(M.MarkerManager, 'search_markers',
+                               searcher or record):
+            return manager.run_hmmsearch(dirs_file, report, db, suffix,
+                                         '/nonexistent/hmms', self.out_dir, **kwargs)
 
-        worker_queue = self.queues[0]
-        progress = [p for p in NoopProcess.started if p.target.__name__.endswith('__progress')]
-        return worker_queue.items, progress[0].args[0]
+    def state_dir(self, marker_dir=MARKER_DIR):
+        return os.path.join(self.out_dir, marker_dir)
+
+    def batches(self, marker_dir=MARKER_DIR):
+        return B.batch_dir_names(self.state_dir(marker_dir), M.LAYOUT)
+
+    def queued(self):
+        """Every genome handed to the searching, across all batches."""
+        return sorted(path for batch in self.searched for path in batch)
+
+
+class TheBatchesOfARun(TempDirCase):
+    """Where a run's batches live, and what their batchfiles name."""
+
+    def test_the_batches_are_under_the_marker_directory_of_the_output_directory(self):
+        # so that --out_dir is one directory for a release rather than one per
+        # database, which five servers would each have to be told the right one of
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+
+        self.run_hmmsearch(genomes)
+
+        self.assertTrue(os.path.isdir(self.state_dir()), os.listdir(self.out_dir))
+        self.assertEqual([os.path.basename(b) for b in self.batches()],
+                         ['batch_000001'])
+
+    def test_a_batchfile_names_each_genomes_proteins_not_its_genomic_fasta(self):
+        # this command reads the proteins prodigal called; the genomic FASTA is
+        # what trans_table and prodigal read
+        path = self.genome('GCF_000000001.1')
+
+        self.run_hmmsearch({'GCF_000000001.1': path})
+
+        rows = B.read_batchfile(B.batchfile_path(self.batches()[0], M.LAYOUT))
+        self.assertEqual(rows, [(os.path.join(
+            path, 'prodigal', 'GCF_000000001.1_protein.faa.gz'), 'GCF_000000001.1')])
+
+    def test_the_release_is_cut_into_batches_of_the_size_asked_for(self):
+        genomes = {'GCF_00000000{}.1'.format(n): self.genome('GCF_00000000{}.1'.format(n))
+                   for n in range(1, 6)}
+
+        self.run_hmmsearch(genomes, manager=self.manager(batch_size=2))
+
+        self.assertEqual(len(self.batches()), 3)
+
+    def test_a_plan_already_there_is_used_rather_than_made_again(self):
+        # another machine is working from it, and repartitioning a release that
+        # has since gained a genome would move genomes between finished batches
+        genomes = {'GCF_00000000{}.1'.format(n): self.genome('GCF_00000000{}.1'.format(n))
+                   for n in range(1, 6)}
+        self.run_hmmsearch(genomes, manager=self.manager(batch_size=2))
+
+        self.run_hmmsearch(genomes, manager=self.manager(batch_size=5))
+
+        self.assertEqual(len(self.batches()), 3)
+
+
+class TwoDatabasesOneOutputDirectory(TempDirCase):
+    """A Pfam run and a TIGRFAM run of one --out_dir are different work.
+
+    They cover the same genomes and finish at different times, so a batch that is
+    done for one is not done for the other. Sharing batch directories would have
+    the SUCCESS canary of a Pfam batch tell a TIGRFAM run it had nothing to do.
+    """
+
+    def test_each_database_gets_its_own_batches(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+
+        self.run_hmmsearch(genomes, db='pfam', suffix=SUFFIX)
+        self.run_hmmsearch(genomes, db='tigrfam', suffix=TIGR_SUFFIX)
+
+        self.assertEqual(sorted(os.listdir(self.out_dir)),
+                         ['pfam_' + SUFFIX, 'tigrfam_' + TIGR_SUFFIX])
+
+    def test_a_finished_pfam_batch_does_not_finish_the_tigrfam_one(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+        self.run_hmmsearch(genomes, db='pfam', suffix=SUFFIX)
+        self.assertEqual(len(self.queued()), 1)
+
+        self.searched = []
+        self.run_hmmsearch(genomes, db='tigrfam', suffix=TIGR_SUFFIX)
+
+        self.assertEqual(len(self.queued()), 1)
+
+    def test_one_version_of_a_database_does_not_finish_another(self):
+        # annotating against a new Pfam release is new work over the same genomes
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+        self.run_hmmsearch(genomes, db='pfam', suffix=SUFFIX)
+
+        self.searched = []
+        self.run_hmmsearch(genomes, db='pfam', suffix='37.0_lite')
+
+        self.assertEqual(len(self.queued()), 1)
+        self.assertIn('pfam_37.0_lite', os.listdir(self.out_dir))
+
+
+class SharingTheReleaseBetweenMachines(TempDirCase):
+    """What a second run over the same output directory does."""
+
+    def held_batch(self, genomes, batch_size=1):
+        """Plan the batches and let another machine hold the first.
+
+        @return: (genome_dirs file, report file).
+        """
+
+        dirs_file, report = self.inputs(genomes)
+        B.plan_batches(dirs_file, self.state_dir(), batch_size, M.LAYOUT,
+                       self.manager().logger, genome_file=M.protein_fasta)
+        with open(os.path.join(self.batches()[0], B.RUNNING_CANARY), 'w') as handle:
+            handle.write('host\tsome-other-machine\npid\t1\ntime\tnow\n')
+        return dirs_file, report
+
+    def test_a_finished_batch_is_not_done_again(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+        self.run_hmmsearch(genomes)
+        self.assertEqual(B.batch_state(self.batches()[0]), B.STATE_SUCCESS)
+
+        self.searched = []
+        self.run_hmmsearch(genomes)
+
+        self.assertEqual(self.searched, [])
+
+    def test_a_batch_another_machine_holds_is_left_to_it(self):
+        genomes = {'GCF_00000000{}.1'.format(n): self.genome('GCF_00000000{}.1'.format(n))
+                   for n in range(1, 3)}
+        self.held_batch(genomes)
+
+        self.run_hmmsearch(genomes, manager=self.manager(batch_size=1))
+
+        # the held batch was skipped and the other was done
+        self.assertEqual(len(self.searched), 1)
+        self.assertEqual(B.batch_state(self.batches()[0]), B.STATE_RUNNING)
+        self.assertEqual(B.batch_state(self.batches()[1]), B.STATE_SUCCESS)
+
+    def test_a_batch_whose_search_died_is_failed_and_not_called_a_success(self):
+        # the searching used to swallow every exception, which would have a batch
+        # that searched nothing be written a SUCCESS no machine looks behind
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+
+        def explode(manager, genome_files, worker, dir_suffix):
+            raise RuntimeError('hmmsearch died')
+
+        finished = self.run_hmmsearch(genomes, searcher=explode)
+
+        self.assertFalse(finished)
+        self.assertEqual(B.batch_state(self.batches()[0]), B.STATE_FAILED)
+
+    def test_a_failed_batch_is_retried_by_the_next_run(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+
+        def explode(manager, genome_files, worker, dir_suffix):
+            raise RuntimeError('hmmsearch died')
+
+        self.run_hmmsearch(genomes, searcher=explode)
+        self.assertTrue(self.run_hmmsearch(genomes))
+
+        self.assertEqual(B.batch_state(self.batches()[0]), B.STATE_SUCCESS)
+        self.assertEqual(len(self.queued()), 1)
+
+    def test_a_run_that_finished_every_batch_says_so(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+
+        self.assertTrue(self.run_hmmsearch(genomes))
 
 
 class WhatReachesTheWorkers(TempDirCase):
-    """The work queue ends with one None per worker, and holds none anywhere else.
+    """The work list holds no genome a worker would mistake for the end of it.
 
-    Every worker breaks on the first None it draws, so a None among the genomes is
-    a second stop signal: the worker that takes it exits with the rest of the
-    release still queued, and does so silently. marker_parser() returns None for
-    every genome it skips, which is why nothing it returns can be queued untested.
+    search_markers() ends its queue with one None per worker, and every worker
+    breaks on the first None it draws. A None among the genomes is a second stop
+    signal: the worker that takes it exits with the rest of the batch still
+    queued, and does so silently.
     """
 
-    def test_a_genome_needing_markers_is_queued(self):
-        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+    def test_a_genome_needing_markers_is_searched(self):
+        path = self.genome('GCF_000000001.1')
 
-        queued, _ = self.run_hmmsearch(genomes)
+        self.run_hmmsearch({'GCF_000000001.1': path})
 
-        self.assertEqual(queued[:-1], [os.path.join(
-            genomes['GCF_000000001.1'], 'prodigal', 'GCF_000000001.1_protein.faa.gz')])
+        self.assertEqual(self.queued(), [os.path.join(
+            path, 'prodigal', 'GCF_000000001.1_protein.faa.gz')])
 
-    def test_the_only_none_is_the_one_that_stops_each_worker(self):
-        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
-
-        queued, _ = self.run_hmmsearch(genomes, cpus=3)
-
-        self.assertEqual(queued[-3:], [None, None, None])
-        self.assertNotIn(None, queued[:-3])
-
-    def test_a_genome_with_no_protein_file_does_not_stop_a_worker(self):
-        # it cannot be searched, so it is skipped -- but skipped by being left out
-        # of the queue, not by being put on it as the value that ends the queue
-        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1'),
-                   'GCF_000000002.1': self.genome('GCF_000000002.1', protein=None)}
-
-        queued, _ = self.run_hmmsearch(genomes)
-
-        self.assertEqual(len(queued), 2)              # one genome, one sentinel
-        self.assertIsNone(queued[-1])
-        self.assertNotIn(None, queued[:-1])
-
-    def test_a_genome_with_an_empty_protein_file_does_not_stop_a_worker(self):
-        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1'),
-                   'GCF_000000002.1': self.genome('GCF_000000002.1', protein=b'')}
-
-        queued, _ = self.run_hmmsearch(genomes)
-
-        self.assertEqual(len(queued), 2)
-        self.assertNotIn(None, queued[:-1])
-
-    def test_a_genome_already_annotated_does_not_stop_a_worker_either(self):
-        # the other reason marker_parser() skips a genome; it used to be told apart
-        # from the two above, which is how those two came to be queued
+    def test_a_genome_already_annotated_is_left_out_of_the_work_list(self):
         genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1'),
                    'GCF_000000002.1': self.genome('GCF_000000002.1', annotated=True)}
 
-        queued, _ = self.run_hmmsearch(genomes)
+        self.run_hmmsearch(genomes)
 
-        self.assertEqual(len(queued), 2)
-        self.assertNotIn(None, queued[:-1])
+        self.assertEqual(len(self.queued()), 1)
+        self.assertNotIn(None, self.queued())
 
-    def test_every_genome_skipped_leaves_only_the_sentinels(self):
-        # nothing to search is a run that ends, not a run that hangs or crashes
-        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1', protein=None),
-                   'GCF_000000002.1': self.genome('GCF_000000002.1', annotated=True)}
-
-        queued, _ = self.run_hmmsearch(genomes, cpus=2)
-
-        self.assertEqual(queued, [None, None])
-
-    def test_the_progress_bar_counts_the_genomes_that_will_be_searched(self):
-        # the denominator used to include the skipped genomes, so a run that did
-        # everything asked of it still reported less than 100%
+    def test_a_genome_with_no_proteins_is_left_out_of_the_work_list(self):
         genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1'),
-                   'GCF_000000002.1': self.genome('GCF_000000002.1', protein=None),
-                   'GCF_000000003.1': self.genome('GCF_000000003.1', annotated=True)}
+                   'GCF_000000002.1': self.genome('GCF_000000002.1', proteins=None)}
 
-        queued, denominator = self.run_hmmsearch(genomes)
+        self.run_hmmsearch(genomes)
 
-        self.assertEqual(denominator, 1)
-        self.assertEqual(denominator, len(queued) - 1)
+        self.assertEqual(len(self.queued()), 1)
+        self.assertNotIn(None, self.queued())
+
+    def test_a_genome_with_empty_proteins_is_left_out_of_the_work_list(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1'),
+                   'GCF_000000002.1': self.genome('GCF_000000002.1', proteins=b'')}
+
+        self.run_hmmsearch(genomes)
+
+        self.assertEqual(len(self.queued()), 1)
+        self.assertNotIn(None, self.queued())
+
+    def test_a_batch_with_nothing_to_do_hands_over_an_empty_work_list(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1', annotated=True),
+                   'GCF_000000002.1': self.genome('GCF_000000002.1', proteins=None)}
+
+        self.run_hmmsearch(genomes)
+
+        self.assertEqual(self.searched, [[]])
+
+    def test_all_genomes_searches_what_is_already_annotated(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1', annotated=True)}
+
+        self.run_hmmsearch(genomes, all_genomes=True)
+
+        self.assertEqual(len(self.queued()), 1)
+
+    def test_all_genomes_does_not_search_a_genome_with_no_proteins(self):
+        # there is nothing to search whatever the run was told; --all discards
+        # results, it does not conjure proteins
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1', proteins=None)}
+
+        self.run_hmmsearch(genomes, all_genomes=True)
+
+        self.assertEqual(self.queued(), [])
+
+    def test_all_genomes_does_a_batch_that_already_finished(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+        self.run_hmmsearch(genomes)
+
+        self.searched = []
+        self.run_hmmsearch(genomes, all_genomes=True)
+
+        self.assertEqual(len(self.queued()), 1)
 
 
 class WhichGenomesMarkerParserSkips(TempDirCase):
     """marker_parser() decides one genome, and says so with one value.
 
-    'null' used to mean 'already annotated' while a genome with no protein file
-    fell off the end of the function as None. run_hmmsearch() dropped the first
-    and queued the second.
+    Skipping used to be said two ways -- the string 'null' for a genome already
+    annotated, and falling off the end as None for one with no protein file --
+    and only the first was filtered out of the work list.
     """
 
-    def parse(self, gid, consider=True, **kwargs):
+    def parse(self, gid, consider=True, all_genomes=False, **kwargs):
         path = self.genome(gid, **kwargs)
-        job = (gid, path, MARKER_DIR, MARKER_EXT, {gid} if consider else set(), 'Pfam')
+        proteins = M.protein_fasta(gid, path)
+        job = (gid, proteins, MARKER_DIR, MARKER_EXT,
+               {gid} if consider else set(), 'Pfam', all_genomes)
         return self.manager().marker_parser(job)
 
     def test_a_genome_to_annotate_gives_its_protein_file(self):
@@ -285,28 +399,103 @@ class WhichGenomesMarkerParserSkips(TempDirCase):
     def test_an_annotated_genome_with_a_matching_checksum_is_skipped(self):
         self.assertIsNone(self.parse('GCF_000000001.1', annotated=True))
 
-    def test_a_genome_with_no_protein_file_is_skipped(self):
-        self.assertIsNone(self.parse('GCF_000000001.1', protein=None))
-
-    def test_a_genome_with_an_empty_protein_file_is_skipped(self):
-        self.assertIsNone(self.parse('GCF_000000001.1', protein=b''))
-
     def test_an_annotated_genome_whose_checksum_does_not_match_is_annotated_again(self):
         # a table that does not match its own checksum is not results anyone can use
         result = self.parse('GCF_000000001.1', annotated=True, checksum=False)
 
         self.assertIsNotNone(result)
-        self.assertTrue(result.endswith('_protein.faa.gz'), result)
+
+    def test_a_genome_the_report_does_not_name_is_still_annotated(self):
+        # the marker table decides the work; the report only says whether the two
+        # agree, and a genome with no table is searched either way
+        self.assertIsNotNone(self.parse('GCF_000000001.1', consider=False))
+
+    def test_all_genomes_ignores_a_table_that_is_already_there(self):
+        self.assertIsNotNone(self.parse('GCF_000000001.1', annotated=True,
+                                        all_genomes=True))
 
     def test_skipping_is_one_value_so_nothing_can_be_dropped_by_halves(self):
-        # the contract run_hmmsearch()'s filter rests on: there is no second skip
+        # the contract search_batch()'s filter rests on: there is no second skip
         # value for it to miss
-        skipped = [self.parse('GCF_00000000%d.1' % n, **case)
-                   for n, case in enumerate((dict(annotated=True),
-                                             dict(protein=None),
-                                             dict(protein=b'')), start=1)]
+        self.assertIsNone(self.parse('GCF_000000001.1', annotated=True))
+        self.assertIsNone(self.parse('GCF_000000002.1', annotated=True,
+                                     consider=False))
 
-        self.assertEqual(skipped, [None, None, None])
+
+class TheGenomesThatGotNoMarkers(TempDirCase):
+    """not_searched.tsv, per batch and gathered for the release."""
+
+    def test_a_genome_with_no_proteins_is_named_in_the_batch(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1'),
+                   'GCF_000000002.1': self.genome('GCF_000000002.1', proteins=None)}
+
+        self.run_hmmsearch(genomes)
+
+        with open(os.path.join(self.batches()[0], M.NOT_SEARCHED_NAME)) as handle:
+            rows = [line.rstrip('\n').split('\t') for line in handle]
+        self.assertEqual(rows, [list(M.NOT_SEARCHED_HEADER),
+                                ['GCF_000000002.1', M.REASON_NO_PROTEINS]])
+
+    def test_the_release_file_is_written_once_every_batch_is_done(self):
+        genomes = {'GCF_00000000{}.1'.format(n): self.genome(
+            'GCF_00000000{}.1'.format(n), proteins=None if n == 2 else b'>g\nMA\n')
+            for n in range(1, 4)}
+
+        self.run_hmmsearch(genomes, manager=self.manager(batch_size=1))
+
+        path = os.path.join(self.state_dir(), M.NOT_SEARCHED_RELEASE_NAME)
+        with open(path) as handle:
+            rows = [line.rstrip('\n').split('\t') for line in handle]
+        self.assertEqual(rows, [list(M.NOT_SEARCHED_HEADER),
+                                ['GCF_000000002.1', M.REASON_NO_PROTEINS]])
+
+    def test_the_release_file_is_absent_while_a_batch_is_unfinished(self):
+        # either the whole release or nothing: a part of it reads like the whole
+        genomes = {'GCF_00000000{}.1'.format(n): self.genome('GCF_00000000{}.1'.format(n))
+                   for n in range(1, 3)}
+        dirs_file, report = self.inputs(genomes)
+        B.plan_batches(dirs_file, self.state_dir(), 1, M.LAYOUT,
+                       self.manager().logger, genome_file=M.protein_fasta)
+        with open(os.path.join(self.batches()[0], B.RUNNING_CANARY), 'w') as handle:
+            handle.write('host\tsome-other-machine\npid\t1\ntime\tnow\n')
+
+        self.run_hmmsearch(genomes, manager=self.manager(batch_size=1))
+
+        self.assertFalse(os.path.exists(
+            os.path.join(self.state_dir(), M.NOT_SEARCHED_RELEASE_NAME)))
+
+
+class WhatABatchRecordsOfItself(TempDirCase):
+    """The counts in the SUCCESS canary, which the release totals are added from."""
+
+    def test_a_finished_batch_records_what_it_came_to(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1'),
+                   'GCF_000000002.1': self.genome('GCF_000000002.1', annotated=True),
+                   'GCF_000000003.1': self.genome('GCF_000000003.1', proteins=None)}
+
+        self.run_hmmsearch(genomes)
+
+        canary = B.read_canary(os.path.join(self.batches()[0], B.SUCCESS_CANARY))
+        self.assertEqual(canary['searched'], '1')
+        self.assertEqual(canary['already_searched'], '1')
+        self.assertEqual(canary['not_searched'], '1')
+
+
+class ChoosingTheMarkerDatabase(TempDirCase):
+    def test_pfam_and_tigrfam_name_their_own_directories_and_files(self):
+        pfam = self.manager().marker_setup('pfam', SUFFIX, '/hmms')
+        tigr = self.manager().marker_setup('tigrfam', TIGR_SUFFIX, '/hmms')
+
+        self.assertEqual((pfam.marker_dir, pfam.extension, pfam.name),
+                         ('pfam_33.1_lite', '_pfam_33.1_lite.tsv', 'Pfam'))
+        self.assertEqual((tigr.marker_dir, tigr.extension, tigr.name),
+                         ('tigrfam_15.0_lite', '_tigrfam_15.0_lite.tsv', 'Tigrfam'))
+
+    def test_an_unknown_database_is_refused_rather_than_failing_later(self):
+        # it used to leave the marker directory unbound and fail further in with
+        # a NameError naming nothing
+        with self.assertRaises(ValueError):
+            self.manager().marker_setup('panther', SUFFIX, '/hmms')
 
 
 if __name__ == '__main__':

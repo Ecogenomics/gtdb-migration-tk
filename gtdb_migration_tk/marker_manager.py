@@ -23,23 +23,64 @@ import shutil
 import tempfile
 from collections import defaultdict
 from multiprocessing.queues import Queue
-from typing import Dict, Optional, Set, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from tqdm import tqdm
 
+from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
+                                        DEFAULT_BATCH_SIZE, HEARTBEAT_SECONDS,
+                                        RUNNING_CANARY, STATE_SUCCESS,
+                                        SUCCESS_CANARY, STAT_THREADS,
+                                        BatchLayout, Heartbeat, age_phrase,
+                                        batch_log, batch_state, batchfile_path,
+                                        claim_age, claim_batch, concatenate,
+                                        fail_batch, finish_batch, plan_batches,
+                                        read_batchfile, read_canary,
+                                        release_claim, split_by_fasta,
+                                        tally_reasons, write_table)
 from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.pfam_search import PfamSearch
 from gtdb_migration_tk.update_genomes import genomes_to_regenerate
+from gtdb_migration_tk.utils.common import PROTEIN_FASTA_EXT, protein_fasta
 from gtdb_migration_tk.utils.tools import symlink, openfile
 
 
+# What this command calls the files of its own batches. The batchfile is the
+# record of which genomes a batch is, and its first column is each genome's
+# protein FASTA -- the file this command reads, where trans_table and prodigal
+# read the genomic FASTA. --out_dir holds nothing else of the run's results: the
+# marker tables go into the genome directories as they always have, which is why
+# two machines on different batches never write to the same place. There is no
+# older name to look for: this command has never had batches before.
+BATCHFILE_NAME = 'hmmsearch_batchfile.tsv.gz'
+BATCH_LOG_NAME = 'hmmsearch.log'
+LAYOUT = BatchLayout(batchfiles=(BATCHFILE_NAME,), log=BATCH_LOG_NAME)
+
+# The batches of a run live under <out_dir>/<marker directory>/, e.g.
+# <out_dir>/pfam_33.1_lite/batch_000001/. One run of this command searches ONE
+# database at ONE version, and its batches are finished when that database has
+# been searched; a run of the other database over the same release has different
+# work to do for the same genomes. Sharing a directory would have the SUCCESS of
+# a Pfam batch tell a TIGRFAM run that batch was done. The suffix is in the name
+# for the same reason: annotating against a new Pfam release is new work.
+
+# Genomes of a batch that came out of it with no marker table, and the same
+# gathered for the release. A genome with no called proteins cannot be searched,
+# and the step after this one should not have to look in 135 batch directories to
+# find out which genomes those were.
+NOT_SEARCHED_NAME = 'not_searched.tsv'
+NOT_SEARCHED_RELEASE_NAME = 'hmmsearch_not_searched.tsv'
+NOT_SEARCHED_HEADER = ('genome_id', 'reason')
+REASON_NO_PROTEINS = 'no_protein_file'
+
 # One genome as marker_parser() receives it, the tuple being what mp.Pool.imap_unordered
-# can carry: accession, its genome directory, the marker directory within prodigal/, the
-# extension the marker table carries, the genomes the release says need annotating, and
-# the database's name for the log.
-MarkerJob = Tuple[str, str, str, str, Set[str], str]
+# can carry: accession, its protein FASTA as the batchfile names it, the marker
+# directory within prodigal/, the extension the marker table carries, the genomes the
+# release says need annotating, the database's name for the log, and whether the run was
+# told to search every genome again.
+MarkerJob = Tuple[str, str, str, str, Set[str], str, bool]
 
 # Gene ID to the hits kept for it: HMM ID to (e-value, bitscore) for Pfam, where a gene
 # keeps its best hit per family, and a single (HMM ID, e-value, bitscore) for TIGRFAM,
@@ -48,10 +89,43 @@ PfamTopHits = Dict[str, Dict[str, Tuple[float, float]]]
 TigrTopHits = Dict[str, Tuple[str, float, float]]
 
 
+class BatchCounts(NamedTuple):
+    """What searching the markers of one batch came to.
+
+    Recorded in the batch's SUCCESS canary, because the release totals are added
+    up from the batches and a machine that ran the last batch has searched the
+    markers of none of the others.
+    """
+
+    searched: int
+    already_searched: int
+    not_searched: int
+
+
+class MarkerSetup(NamedTuple):
+    """What searching one marker database needs, settled once for the whole run.
+
+    Which database is searched decides four things at once -- where the results
+    go, what they are called, which worker runs and what the log calls it -- and
+    they are settled together rather than at each place one of them is wanted.
+    """
+
+    marker_dir: str
+    extension: str
+    name: str
+    worker: Callable
+
+
 class MarkerManager(object):
     """Identify marker genes using Pfam and tigrfam HMMs."""
 
-    def __init__(self, tmp_dir: str = '/tmp/', cpus: int = 1) -> None:
+    def __init__(self,
+                 tmp_dir: str = '/tmp/',
+                 cpus: int = 1,
+                 batch_size: int = DEFAULT_BATCH_SIZE,
+                 reclaim: bool = False,
+                 lease: float = CLAIM_LEASE_SECONDS,
+                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
         """Initialization.
 
         Parameters
@@ -60,10 +134,24 @@ class MarkerManager(object):
             Directory for scratch files; no results are written here.
         cpus : int
             How many genomes are annotated at once.
+        batch_size : int
+            Genomes per batch.
+        reclaim : bool
+            Take over a batch another machine holds before its claim has expired.
+        lease : float
+            Seconds a claim survives without the machine holding it saying so.
+        heartbeat : float
+            Seconds between this machine saying so about a batch of its own.
+
+        @return: None
         """
 
         self.tmp_dir: str = tmp_dir
         self.cpus: int = cpus
+        self.batch_size: int = batch_size
+        self.reclaim: bool = reclaim
+        self.lease: float = lease
+        self.heartbeat: float = heartbeat
 
         check_dependencies(['prodigal', 'hmmsearch'])
 
@@ -73,22 +161,85 @@ class MarkerManager(object):
         self.tigrfam_hmms: str = ''
         self.pfam_hmm_dir: str = ''
 
-        self.protein_file_ext: str = '_protein.faa.gz'
+        self.protein_file_ext: str = PROTEIN_FASTA_EXT
 
         self.logger: logging.Logger = logging.getLogger('timestamp')
+
+    def marker_setup(self, db: str, dir_suffix: str, hmm_db_path: str) -> MarkerSetup:
+        """Settle everything that follows from which marker database is searched.
+
+        The HMMs are put on the instance rather than passed down, because the
+        workers are processes forked from it and read them from there.
+
+        Parameters
+        ----------
+        db : str
+            'pfam' or 'tigrfam'.
+        dir_suffix : str
+            Suffix of the marker directory and files, e.g. 33.1_lite.
+        hmm_db_path : str
+            The HMMs to search against.
+
+        @return: where the results go, what they are called, what the log calls
+                 the database, and the worker that searches it.
+        """
+
+        if db == 'pfam':
+            self.pfam_hmm_dir = hmm_db_path
+            return MarkerSetup(marker_dir='pfam_{}'.format(dir_suffix),
+                               extension='_pfam_{}.tsv'.format(dir_suffix),
+                               name='Pfam',
+                               worker=self.__pfam_worker)
+
+        if db == 'tigrfam':
+            self.tigrfam_hmms = hmm_db_path
+            return MarkerSetup(marker_dir='tigrfam_{}'.format(dir_suffix),
+                               extension='_tigrfam_{}.tsv'.format(dir_suffix),
+                               name='Tigrfam',
+                               worker=self.__tigrfam_worker)
+
+        # argparse limits --db to the two, so this is a caller that went around it
+        # rather than a user; it used to leave marker_dir unbound and fail later
+        # with a NameError naming nothing
+        raise ValueError("--db is 'pfam' or 'tigrfam', not {!r}.".format(db))
 
     def run_hmmsearch(self,
                       gtdb_genome_path_file: str,
                       report: str,
                       db: str,
                       dir_suffix: str,
-                      hmm_db_path: str) -> None:
+                      hmm_db_path: str,
+                      out_dir: str,
+                      all_genomes: bool = False) -> bool:
         """Identify marker genes using Pfam and TIGRfam HMMs.
+
+        The release is cut into batches under --out_dir and a batch is claimed
+        before it is worked on, so several machines can be pointed at one
+        --out_dir and will divide the release between them. The batching is the
+        same machinery trans_table and prodigal use, in batching.py. What
+        --out_dir holds is the state of the run and nothing else: the marker
+        tables go into each genome's own prodigal/ directory, as they always
+        have, which is why two machines on different batches never write to the
+        same place.
+
+        The batches of a run are held under <out_dir>/<marker directory>/, so one
+        --out_dir carries a Pfam run and a TIGRFAM run of the same release
+        without either reading the other's canaries. They are different work over
+        the same genomes, and a batch finished for one is not finished for the
+        other.
+
+        Whether a genome is searched is decided by the marker table it already
+        has, not by the report: a genome is skipped where its table is there AND
+        its checksum agrees. The report says which genomes the release did not
+        carry derived data for, and a genome that disagrees with it -- annotated
+        already though the release calls it new, or unannotated though it does
+        not -- is searched and said so in the log, since the disagreement is
+        worth seeing and neither answer is worth withholding the work over.
 
         Parameters
         ----------
         gtdb_genome_path_file : str
-            genome_dirs file of the release: accession, path, canonical accession.
+            genome_dirs file of the release, accession and genome directory per line.
         report : str
             report.log of the release, read for the genomes needing annotation.
         db : str
@@ -97,60 +248,201 @@ class MarkerManager(object):
             Suffix of the marker directory and files, e.g. 33.1_lite.
         hmm_db_path : str
             The HMMs to search against.
+        out_dir : str
+            Directory the batches and the state of the run are written to.
+        all_genomes : bool
+            Search every genome again, discarding the marker tables that are there.
 
-        @return: nothing; results are written into each genome's prodigal/ directory.
+        @return: True where every batch this machine took finished, False where
+                 one failed and is left to a later run.
         """
 
-        name = ""
-        worker = None
-        if db == 'pfam':
-            marker_dir = 'pfam_{}'.format(dir_suffix)
-            full_extension = '_pfam_{}.tsv'.format(dir_suffix)
-            name = 'Pfam'
-            self.pfam_hmm_dir = hmm_db_path
-            worker = self.__pfam_worker
-        elif db == 'tigrfam':
-            marker_dir = 'tigrfam_{}'.format(dir_suffix)
-            full_extension = '_tigrfam_{}.tsv'.format(dir_suffix)
-            name = 'Tigrfam'
-            self.tigrfam_hmms = hmm_db_path
-            worker = self.__tigrfam_worker
-        full_gz_extension = full_extension + '.gz'
+        setup = self.marker_setup(db, dir_suffix, hmm_db_path)
 
-        # limit marker gene finding to the genomes the release did not bring
-        # their derived data with; update_genomes owns what its report means
         genomes_to_consider = genomes_to_regenerate(report)
+        self.logger.info(
+            '{:,} genome(s) of the release did not carry their derived data '
+            'across.'.format(len(genomes_to_consider)))
+
+        # the batches of THIS database at THIS version; another database's run
+        # over the same release has its own, beside these
+        state_dir = os.path.join(out_dir, setup.marker_dir)
+        batches = plan_batches(gtdb_genome_path_file, state_dir, self.batch_size,
+                               LAYOUT, self.logger, genome_file=protein_fasta)
+
+        if all_genomes:
+            self.logger.warning(
+                'warning: --all discards the marker table of every genome and '
+                'searches it again, so batches already finished are done again '
+                'too. Without it a finished batch is skipped.')
+
+        done, held, failed = 0, 0, 0
+        for index, batch_dir in enumerate(batches, start=1):
+            label = 'Batch {:,} of {:,} ({})'.format(
+                index, len(batches), os.path.basename(batch_dir))
+
+            if not all_genomes and batch_state(batch_dir) == STATE_SUCCESS:
+                self.logger.info('{}: already finished, skipping.'.format(label))
+                continue
+
+            if not claim_batch(batch_dir, self.reclaim, self.lease):
+                owner = read_canary(os.path.join(batch_dir, RUNNING_CANARY))
+                held += 1
+                self.logger.info('{}: held by {} since {}, last heard from {}, '
+                                 'skipping.'.format(
+                                     label, owner.get('host', 'another machine'),
+                                     owner.get('time', 'an unknown time'),
+                                     age_phrase(claim_age(
+                                         os.path.join(batch_dir, RUNNING_CANARY)))))
+                continue
+
+            # the batch has its own log from here, since this is where anything
+            # happens to it and every machine of a run writes its own --log
+            with batch_log(batch_dir, self.logger, LAYOUT):
+                self.logger.info('{}: starting.'.format(label))
+                try:
+                    with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY),
+                                   self.heartbeat):
+                        counts = self.search_batch(batch_dir, setup, dir_suffix,
+                                                   genomes_to_consider, all_genomes)
+                except KeyboardInterrupt:
+                    # the machine holding it is stopping, so the batch is handed
+                    # back rather than left to sit out its lease
+                    release_claim(batch_dir)
+                    self.logger.error('{}: interrupted; the claim is given up and '
+                                      'the batch carries on where it stopped.'.format(label))
+                    raise
+                except Exception as exc:
+                    failed += 1
+                    fail_batch(batch_dir, str(exc))
+                    self.logger.error('{}: failed and will be retried by a later '
+                                      'run: {}'.format(label, exc))
+                    continue
+
+                finish_batch(batch_dir,
+                             searched=counts.searched,
+                             already_searched=counts.already_searched,
+                             not_searched=counts.not_searched)
+                done += 1
+                self.logger.info('{}: done.'.format(label))
 
         self.logger.info(
-            f'Identified {len(genomes_to_consider)} genomes whose markers must be searched again.')
+            '{:,} batch(es) finished here, {:,} held by another machine, '
+            '{:,} failed.'.format(done, held, failed))
 
-        # get path to all unprocessed genome gene files
-        self.logger.info('Checking genomes.')
-        genome_files = []
+        self.aggregate(batches, state_dir, setup.name)
 
-        list_genomes_tuples = []
-        with open(gtdb_genome_path_file,'r') as  ggpf:
-            for idx,line in enumerate(tqdm(ggpf)):
-                gid,gpath,*_ = line.strip().split('\t')
-                list_genomes_tuples.append((gid,gpath,marker_dir,full_extension,genomes_to_consider,name))
+        # a batch that failed has already said why, in its own log and in its
+        # FAILED file, and a run of several machines over days should not end by
+        # printing a traceback out of the argparse frames
+        if failed:
+            self.logger.error(
+                '{:,} batch(es) failed; they are the directories holding a FAILED '
+                'file and are retried by running the command again.'.format(failed))
+            return False
 
-            with mp.Pool(processes=self.cpus) as pool:
-                genome_paths = list(tqdm(pool.imap_unordered(self.marker_parser, list_genomes_tuples),
-                                         total=len(list_genomes_tuples), unit='genome'))
+        return True
 
-            # a skipped genome is None, and every None has to go: the queue below ends
-            # with one per worker as the signal to stop, and a worker cannot tell a
-            # genome that was skipped from the end of the work
-            genome_files = [x for x in genome_paths if x is not None]
+    def search_batch(self,
+                     batch_dir: str,
+                     setup: MarkerSetup,
+                     dir_suffix: str,
+                     genomes_to_consider: Set[str],
+                     all_genomes: bool = False) -> BatchCounts:
+        """Search the markers of one batch, and record the genomes that got none.
 
+        The genomes are taken from the batch's own batchfile, so the work asks
+        about the genomes the batch was cut from rather than about whatever a
+        genome_dirs file says now.
 
+        Two passes, because deciding is cheap and searching is not: the first
+        sorts the batch into genomes whose marker tables are already there and
+        vouched for and genomes that are not, the second searches what is left.
+        Doing it per batch rather than over the release means a rerun re-reads the
+        marker tables of one batch at a time instead of all 1.35M before it starts.
 
-        self.logger.info(f'Number of unprocessed genomes: {len(genome_files)}')
+        Parameters
+        ----------
+        batch_dir : str
+            Batch directory.
+        setup : MarkerSetup
+            Which database is searched and where its results go.
+        dir_suffix : str
+            Suffix of the marker directory and files, which the workers rebuild
+            their own filenames from.
+        genomes_to_consider : set
+            Genomes the release did not carry derived data for.
+        all_genomes : bool
+            Discard the marker table of every genome of the batch and search again.
 
-        # identify marker genes in parallel using HMMs and the HMMER package
+        @return: what the batch came to, which run_hmmsearch() records in its canary.
+        """
+
+        rows = read_batchfile(batchfile_path(batch_dir, LAYOUT))
+
+        # a genome whose proteins are not there has nothing to search; it is named
+        # and left rather than stopping the other ten thousand of the batch
+        present, missing = split_by_fasta(rows, STAT_THREADS)
+        not_searched = [(accession, REASON_NO_PROTEINS) for accession in missing]
+
+        jobs = [(accession, proteins, setup.marker_dir, setup.extension,
+                 genomes_to_consider, setup.name, all_genomes)
+                for proteins, accession in present]
+        with mp.Pool(processes=self.cpus) as pool:
+            decided = list(tqdm(pool.imap_unordered(self.marker_parser, jobs),
+                                total=len(jobs), unit='genome', ncols=100,
+                                leave=False, desc='Checking marker tables'))
+
+        # every skipped genome is None and every None has to go: the queue the
+        # workers draw from ends with one per worker as the signal to stop, and a
+        # worker cannot tell a genome that was skipped from the end of the work
+        genome_files = [proteins for proteins in decided if proteins is not None]
+        already_searched = len(jobs) - len(genome_files)
+        self.logger.info(
+            '{:,} genome(s) require {} annotation; {:,} already have valid '
+            'results.'.format(len(genome_files), setup.name, already_searched))
+
+        self.search_markers(genome_files, setup.worker, dir_suffix)
+
+        not_searched.sort()
+        write_table(not_searched, os.path.join(batch_dir, NOT_SEARCHED_NAME),
+                    header=NOT_SEARCHED_HEADER)
+
+        if not_searched:
+            self.logger.warning(
+                'warning: {:,} genome(s) of this batch have no marker table: '
+                '{}.'.format(len(not_searched),
+                             '; '.join('{:,} {}'.format(count, reason)
+                                       for reason, count
+                                       in sorted(tally_reasons(not_searched).items()))))
+
+        return BatchCounts(searched=len(genome_files),
+                           already_searched=already_searched,
+                           not_searched=len(not_searched))
+
+    def search_markers(self,
+                       genome_files: Sequence[str],
+                       worker: Callable,
+                       dir_suffix: str) -> None:
+        """Run the HMMs over the genomes that need them, on self.cpus processes.
+
+        The queue ends with one None per worker, which is how each is told there
+        is no more work; nothing else in it may be None.
+
+        Parameters
+        ----------
+        genome_files : sequence of str
+            Protein FASTA of each genome to search.
+        worker : callable
+            __pfam_worker or __tigrfam_worker.
+        dir_suffix : str
+            Suffix the worker rebuilds its own filenames from.
+
+        @return: None
+        """
+
         workerQueue = mp.Queue()
         writerQueue = mp.Queue()
-
 
         for f in genome_files:
             workerQueue.put(f)
@@ -158,12 +450,12 @@ class MarkerManager(object):
         for _ in range(self.cpus):
             workerQueue.put(None)
 
-        try:
-            workerProc = [mp.Process(target=worker, args=(
-                workerQueue, writerQueue, dir_suffix)) for _ in range(self.cpus)]
-            writeProc = mp.Process(target=self.__progress, args=(
-                len(genome_files), writerQueue))
+        workerProc = [mp.Process(target=worker, args=(
+            workerQueue, writerQueue, dir_suffix)) for _ in range(self.cpus)]
+        writeProc = mp.Process(target=self.__progress, args=(
+            len(genome_files), writerQueue))
 
+        try:
             writeProc.start()
 
             for p in workerProc:
@@ -174,11 +466,72 @@ class MarkerManager(object):
 
             writerQueue.put(None)
             writeProc.join()
-        except:
+        except BaseException:
+            # raised on, rather than swallowed: a batch whose search died has not
+            # searched its genomes, and returning quietly here would have
+            # run_hmmsearch() write it a SUCCESS canary that no other machine
+            # would ever look behind
             for p in workerProc:
                 p.terminate()
+            writeProc.terminate()
+            raise
 
-            writeProc.terminate
+    def aggregate(self, batches: Sequence[str], state_dir: str, name: str) -> None:
+        """Report the release, once every batch of this database has succeeded.
+
+        Written only when they all have, so that the file at the top of the
+        directory is either the whole release or absent, and never a part of it
+        that reads like the whole.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run, in batch order.
+        state_dir : str
+            Where this database's batches are held, under --out_dir.
+        name : str
+            What the log calls the database.
+
+        @return: None
+        """
+
+        unfinished = [batch for batch in batches
+                      if batch_state(batch) != STATE_SUCCESS]
+        if unfinished:
+            self.logger.info(
+                '{:,} of {:,} batch(es) are done; the release files are '
+                'written once they all are.'.format(
+                    len(batches) - len(unfinished), len(batches)))
+            return
+
+        path = os.path.join(state_dir, NOT_SEARCHED_RELEASE_NAME)
+        written = concatenate(
+            [os.path.join(batch, NOT_SEARCHED_NAME) for batch in batches], path)
+
+        totals = {'searched': 0, 'already_searched': 0}
+        for batch_dir in batches:
+            canary = read_canary(os.path.join(batch_dir, SUCCESS_CANARY))
+            for field in totals:
+                try:
+                    totals[field] += int(canary[field])
+                except (KeyError, ValueError):
+                    pass
+
+        # of the release and not of this machine: the counts are added up from
+        # every batch's canary, and the batches were shared out
+        self.logger.info(
+            'Release: {:,} genome(s) were searched against {}, {:,} already had '
+            'valid results.'.format(totals['searched'], name,
+                                    totals['already_searched']))
+
+        if written:
+            self.logger.warning(
+                'warning: {:,} genome(s) of the release have no marker table and '
+                'are named in {}.'.format(written, path))
+        else:
+            self.logger.info(
+                'Every genome of the release has a marker table; wrote {} with no '
+                'rows.'.format(path))
 
     def marker_parser(self, job: MarkerJob) -> Optional[str]:
         """Decide whether one genome's markers still have to be searched for.
@@ -186,24 +539,30 @@ class MarkerManager(object):
         Parameters
         ----------
         job : MarkerJob
-            One genome, as run_hmmsearch() packed it.
+            One genome, as search_batch() packed it.
 
-        @return: the protein file to search, or None to skip the genome -- it is
-                 already annotated, or it has no protein file to search. One value
-                 for both, because run_hmmsearch() does the same thing with them
+        @return: the protein file to search, or None to skip the genome, it
+                 being annotated already. One value for skipping, because
+                 search_batch() does the same thing with every genome it skips
                  and a second one has only ever been a way of missing one of them.
         """
 
-        gid, gpath,marker_dir,full_extension,genomes_to_consider,name = job
-        prodigal_dir = os.path.join(gpath, 'prodigal')
+        gid, gene_file, marker_dir, full_extension, genomes_to_consider, name, all_genomes = job
+
+        if all_genomes:
+            return gene_file
+
+        prodigal_dir = os.path.dirname(gene_file)
         marker_file = os.path.join(prodigal_dir, marker_dir, gid + full_extension)
         marker_zipped_file = marker_file + '.gz'
         if os.path.exists(marker_zipped_file):
             # verify checksum
             checksum_file = marker_file + '.sha256'
             if os.path.exists(checksum_file):
-                checksum = sha256_rb(gzip.GzipFile(fileobj=open(marker_zipped_file, 'rb')))
-                cur_checksum = open(checksum_file).readline().strip()
+                with open(marker_zipped_file, 'rb') as raw:
+                    checksum = sha256_rb(gzip.GzipFile(fileobj=raw))
+                with open(checksum_file) as handle:
+                    cur_checksum = handle.readline().strip()
                 if checksum == cur_checksum:
                     if gid in genomes_to_consider:
                         self.logger.warning(
@@ -216,18 +575,11 @@ class MarkerManager(object):
             self.logger.warning(f'Genome will be reannotated.')
 
         elif gid not in genomes_to_consider:
-            print('Already processed', marker_zipped_file)
             self.logger.warning(
                 f'Genome {gid} has no {name} annotations, but is also not marked for processing?')
             self.logger.warning(f'Genome will be reannotated!')
 
-        gene_file = os.path.join(
-            prodigal_dir, gid + self.protein_file_ext)
-        if os.path.exists(gene_file):
-            if os.stat(gene_file).st_size == 0:
-                self.logger.warning(f' Protein file appears to be empty: {gene_file}')
-            else:
-                return gene_file
+        return gene_file
 
     def run_tophit(self, gtdb_genome_path_file: str, db: str, folder_name: str) -> None:
         """Reduce each genome's marker table to its top hits.
@@ -399,60 +751,6 @@ class MarkerManager(object):
 
             # allow results to be processed or written to file
             queue_out.put(gene_file)
-
-    # def _parse_top_hit(self,input_file,tophit_file,hmmdb):
-    #     """Identify top Pfam and TIGRfam hits."""
-    #
-    #     tophits = defaultdict(dict)
-    #
-    #
-    #     for line in openfile(input_file):
-    #         gene_id = None
-    #         if hmmdb == 'tigrfam':
-    #             if line[0] == '#' or line[0] == '[':
-    #                 continue
-    #             line_split = line.split()
-    #             gene_id = line_split[0]
-    #             hmm_id = line_split[3]
-    #             evalue = float(line_split[4])
-    #             bitscore = float(line_split[5])
-    #
-    #         elif hmmdb == 'pfam':
-    #             if line[0] == '#' or not line.strip():
-    #                 continue
-    #             line_split = line.split()
-    #             gene_id = line_split[0]
-    #             hmm_id = line_split[5]
-    #             evalue = float(line_split[12])
-    #             bitscore = float(line_split[11])
-    #
-    #
-    #         if gene_id is None:
-    #             self.logger.warning(
-    #                 f' No gene id found in {input_file} for hmmdb {hmmdb}')
-    #         elif gene_id in tophits:
-    #             if hmm_id in tophits[gene_id]:
-    #                 if bitscore > tophits[gene_id][hmm_id][1]:
-    #                     tophits[gene_id][hmm_id] = (evalue, bitscore)
-    #             else:
-    #                 tophits[gene_id][hmm_id] = (evalue, bitscore)
-    #         else:
-    #             tophits[gene_id][hmm_id] = (evalue, bitscore)
-    #
-    #     fout = open(tophit_file, 'w')
-    #     fout.write('Gene Id\tTop hits (Family id,e-value,bitscore)\n')
-    #     for gene_id, hits in tophits.items():
-    #         hit_str = []
-    #         for hmm_id, stats in hits.items():
-    #             hit_str.append(hmm_id + ',' + ','.join(map(str, stats)))
-    #         fout.write('%s\t%s\n' % (gene_id, ';'.join(hit_str)))
-    #     fout.close()
-    #
-    #     # calculate checksum
-    #     checksum = sha256(tophit_file)
-    #     fout = open(tophit_file + '.sha256', 'w')
-    #     fout.write(checksum)
-    #     fout.close()
 
     def _pfam_top_hit(self, pfam_file: str, pfam_tophit_file: str) -> None:
         """Identify top Pfam hits.

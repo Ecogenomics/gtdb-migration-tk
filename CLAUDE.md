@@ -85,9 +85,9 @@ meaningful code (see README for the table); every other command returns 0.
 
 ### `batching.py` is the coordination both long commands share
 
-A release is a million-odd genomes and the work over it takes days, so `trans_table`
-and `prodigal` both cut it into batches and let several machines divide them by
-claiming batch directories under one `--out_dir`. That machinery -- the batchfiles,
+A release is a million-odd genomes and the work over it takes days, so `trans_table`,
+`prodigal` and `hmmsearch` all cut it into batches and let several machines divide
+them by claiming batch directories under one `--out_dir`. That machinery -- the batchfiles,
 the RUNNING/SUCCESS/FAILED canaries, claims as leases with a heartbeat, the
 per-batch log, `plan_batches()`, and `write_table()`/`concatenate()` -- lives in
 `batching.py` and knows nothing about gTranslate or Prodigal. What differs between
@@ -97,10 +97,24 @@ than to either command when both would want it.
 
 What stays with a command is what a batch is FOR: `trans_table` owns `PREDICTED`
 (the hours are over, only the comparison is left) and the files it hands gTranslate;
-`prodigal` owns the decision that a genome's proteins are already vouched for.
-`prodigal`'s `--out_dir` holds only the state of the run -- the called genes go into
-the genome directories, which is why two machines on different batches never write
-to the same place.
+`prodigal` owns the decision that a genome's proteins are already vouched for;
+`hmmsearch` owns the decision that a genome's marker table is. The `--out_dir` of
+`prodigal` and of `hmmsearch` holds only the state of the run -- the called genes
+and the marker tables go into the genome directories, which is why two machines on
+different batches never write to the same place.
+
+Which file a batch is planned around differs, so `plan_batches()` takes it:
+`genome_file(accession, genome_dir)` names what the work reads, defaulting to
+`batching.genome_fasta_of()` (the genomic FASTA, for `trans_table` and `prodigal`)
+and given `utils.common.protein_fasta` by `hmmsearch`, which reads the proteins
+`prodigal` called. It is the batchfile's first column and what `split_by_fasta()`
+stats, so a batch never names files its command will not open.
+
+`hmmsearch` searches ONE database at ONE version per run, so its batches live under
+`<out_dir>/<marker dir>/` (`<out_dir>/pfam_33.1_lite/batch_000001/`). A Pfam batch
+and a TIGRFAM batch cover the same genomes and are different work; sharing a
+directory would have one's `SUCCESS` tell the other it had nothing to do. The
+suffix is in the path for the same reason.
 
 ### `ncbi_genome_sync.py` is deliberately self-contained
 
