@@ -295,7 +295,7 @@ it on a file server shared with other work.
 | `rna_ltp` | Identify and classify 16S rRNA genes against LTP |
 | `update_silva` | Update taxonomy files and BLAST database from the latest SILVA release |
 | `generate_ltp_db` | Generate BLAST database from the LTP website |
-| `trnascan` | Identify tRNAs in genomes |
+| `trnascan` | Identify tRNAs in genomes, in batches under `--out_dir` |
 
 `trans_table` runs gTranslate over the genomes of a release in batches of
 `--batch_size` (default 10,000), each batch a directory of its own under
@@ -633,6 +633,68 @@ sequences yields neither file and is left untouched.
 
 `--cpus` is a count of genomes in flight, not of threads: each is a worker process
 handling whole genomes one after another, and nothing within a genome is parallel.
+
+`trnascan` identifies the tRNAs of each genome with tRNAscan-SE, writing them into
+the genome's own `trna/` directory as `<gid>_trna.tsv`, `<gid>_trna_stats.tsv` (the
+file `create_tables` reads) and `<gid>_trna.log`, with a `.sha256` beside the
+table. It is batched under `--out_dir` exactly as `prodigal` and `hmmsearch` are,
+with the same `--batch_size`, `--reclaim`, `--lease` and `--all`:
+
+```
+<out_dir>/
+  batch_000001/
+    trnascan_batchfile.tsv.gz       the genomes of this batch
+    RUNNING / SUCCESS / FAILED      as in trans_table
+    trnascan.log                    what this command did to this batch
+    not_scanned.tsv                 genomes of this batch that got no tRNAs
+  trnascan_not_scanned.tsv          the whole release, once every batch has SUCCESS
+```
+
+**What decides the work is the checksum, not a report.** A genome is skipped where
+`trna/<gid>_trna.tsv` is there and its `.sha256` agrees, which is why the command
+takes no `--report`: `trna` is in `GTDB_DERIVED_DIRS_TO_COPY`, so a genome whose
+sequences did not change carries its tRNAs and its checksum across from the
+previous release and is skipped without anything having to look up what became of
+it. A table whose checksum disagrees was written by a run interrupted partway
+through it, and is scanned again.
+
+**The domain decides the model.** tRNAscan-SE searches with a bacterial or an
+archaeal model and the two give different answers, so each genome's domain comes
+from the same two files `rna_silva` and `rna_ltp` use:
+
+| Argument | |
+| --- | --- |
+| `-d`, `--gtdb_domain_file` | GTDB's own `Predicted domain`, from the genome's marker genes |
+| `-t`, `--taxonomy_file` | the standardised NCBI taxonomy, for the genomes GTDB has no prediction for |
+
+GTDB's call is preferred because it is made from the genome rather than from where
+NCBI filed it, and it is the one that catches a genome under the wrong domain at
+NCBI; `None` in that column means the markers gave no answer, and the NCBI lineage
+answers for those. The taxonomy is matched on the accession and then on its
+canonical form, so a GenBank genome finds the lineage recorded against its RefSeq
+counterpart. A genome neither file answers for is scanned as a bacterium, and the
+run says how many of those there were.
+
+Until 0.1.29 the domain came from which of four NCBI assembly summary files an
+accession appeared in. Nothing in those files says "bacteria" -- NCBI tells them
+apart by directory -- so the answer was asserted by which argument each file was
+passed as, and swapping two of them on the command line would have scanned every
+archaeon as a bacterium in silence.
+
+**A genome that got no tRNAs is named once, for the release**, in
+`trnascan_not_scanned.tsv`:
+
+| `reason` | |
+| --- | --- |
+| `no_genomic_fasta` | the genome's sequences are not where the release says they are |
+| `trnascan_failed` | tRNAscan-SE was given the genome and returned an error |
+
+Neither costs the other ten thousand genomes of the batch, and neither is retried
+for ever by a batch that fails identically every time. A batch in which several
+genomes were to be scanned and every one of them failed is failed rather than
+recorded as a success: that is not a batch of difficult genomes, it is tRNAscan-SE
+not working on this machine. One genome failing on its own is not, for the reason
+the naming exists.
 
 ### Genome quality
 

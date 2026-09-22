@@ -4,6 +4,10 @@ import gzip
 from collections import namedtuple
 from typing import Dict, Optional
 
+from tqdm import tqdm
+
+from gtdb_migration_tk.biolib_lite.common import canonical_gid
+
 
 # Columns of the translation table summary gTranslate writes, which trans_table
 # produces and prodigal consumes. The file is read by COLUMN NAME: gTranslate has
@@ -218,3 +222,42 @@ def count_lines(file_path: str) -> int:
     with opener(file_path, 'rb') as check_file:
         return sum(block.count(b'\n')
                    for block in iter(lambda: check_file.read(1024 * 1024), b''))
+
+
+def read_taxonomy(taxonomy_file: str) -> Dict[str, str]:
+    """Read the standardised NCBI taxonomy of the genomes.
+
+    The file is the two-column accession / semicolon-separated lineage TSV
+    ncbi_metadata_sync writes. Each genome is recorded under the accession as
+    given AND under its canonical form, so that a GenBank genome of a release
+    finds the lineage the taxonomy holds against its RefSeq counterpart; an
+    accession given exactly is preferred to a canonical match.
+
+    Here rather than in either command that reads it: trans_table reads the
+    lineage to decide which genomes a translation table may be doubted for, and
+    trnascan reads the domain out of it to choose tRNAscan-SE's model. The
+    command modules do not import one another.
+
+    Parameters
+    ----------
+    taxonomy_file : str
+        Standardised NCBI taxonomy file.
+
+    @return: accession, and canonical accession, to lineage.
+    """
+
+    exact, canonical = {}, {}
+    with open(taxonomy_file) as handle:
+        for line in tqdm(handle, ncols=100, leave=False, desc='Reading taxonomy'):
+            line = line.rstrip('\n')
+            if not line:
+                continue
+            accession, _, lineage = line.partition('\t')
+            if not lineage:
+                continue
+            exact[accession] = lineage
+            canonical.setdefault(canonical_gid(accession), lineage)
+
+    canonical.update(exact)
+
+    return canonical

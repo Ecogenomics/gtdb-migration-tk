@@ -15,312 +15,674 @@
 #                                                                             #
 ###############################################################################
 
+"""Identify the tRNAs of every genome of a release with tRNAscan-SE.
 
-import os
-import sys
+WHY THE RELEASE IS CUT INTO BATCHES
+
+tRNAscan-SE is seconds per genome and a release is a million-odd genomes, so the
+run is days and belongs on several machines. The batching is the machinery
+trans_table, prodigal and hmmsearch share, in batching.py: the release is
+partitioned once under --out_dir, and a machine claims a batch directory before
+working on it, so several machines given the same --out_dir divide the release
+between them without being told which genomes to take. What --out_dir holds is
+the state of the run and nothing else -- the tRNAs go into each genome's own
+trna/ directory, as they always have, which is why two machines on different
+batches never write to the same place.
+
+WHAT DECIDES THE WORK
+
+The checksum beside a genome's own results, and not a report. Each scan writes
+<gid>_trna.tsv and a <gid>_trna.tsv.sha256 next to it, and a genome is skipped
+where both are there and agree. This is the same rule hmmsearch follows and it is
+the right one here for a reason worth writing down: trna is in
+config.GTDB_DERIVED_DIRS_TO_COPY, so a genome whose sequences did not change
+carries its tRNAs across from the previous release along with its checksum, and
+is skipped without anything having to look up what became of it. The command
+therefore takes no --report, and the commented-out report parse that sat in this
+module until 0.1.29 was never needed.
+
+WHY A DOMAIN IS LOOKED UP AT ALL, AND WHERE IT COMES FROM
+
+tRNAscan-SE searches with a bacterial or an archaeal model and the two give
+different answers, so every genome must be told which it is, and a genome told
+wrong does not fail -- it gets a worse answer, which goes on into the tRNA counts
+of the metadata tables. The domain therefore comes from the same two files the
+other per-genome-domain commands use, rna_silva and rna_ltp:
+
+  --gtdb_domain_file    GTDB's own Predicted domain, from its marker genes
+  --taxonomy_file       the standardised NCBI taxonomy, as a fallback
+
+GTDB's call is preferred because it is made from the genome rather than from
+where NCBI filed it, and it is the one that catches a genome under the wrong
+domain at NCBI; the NCBI lineage answers for the genomes GTDB has no prediction
+for, which is what 'None' in that column means. The taxonomy is matched on the
+accession and then on its canonical form, so a GenBank genome finds the lineage
+recorded against its RefSeq counterpart.
+
+Until 0.1.29 the domain came from which of four NCBI assembly summary files an
+accession appeared in -- nothing in those files says 'bacteria', so the answer
+was asserted by which argument each file was passed as, and swapping two of them
+on the command line would have scanned every archaeon as a bacterium in silence.
+A genome neither file answers for is still scanned as a bacterium, which is what
+this command has always done, but the run says how many of those there were.
+
+ONE BAD GENOME DOES NOT COST A BATCH
+
+A genome whose genomic FASTA is missing or empty is named in the batch's
+not_scanned.tsv and left, and so is one tRNAscan-SE itself fails on; neither
+takes the other ten thousand genomes of the batch down with it, and neither is
+retried for ever by a batch that fails identically every time. A batch in which
+every genome was to be scanned and none could be is failed rather than recorded
+as a success, because that is not a release of difficult genomes -- it is
+tRNAscan-SE not working on this machine.
+"""
+
 import gzip
 import logging
 import multiprocessing as mp
+import os
 import shutil
 import subprocess
 import tempfile
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from tqdm import tqdm
 
-from gtdb_migration_tk.ncbi_utils import assembly_accession
+from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
+                                        DEFAULT_BATCH_SIZE, HEARTBEAT_SECONDS,
+                                        RUNNING_CANARY, STATE_SUCCESS,
+                                        SUCCESS_CANARY, STAT_THREADS,
+                                        BatchLayout, Heartbeat, age_phrase,
+                                        batch_log, batch_state, batchfile_path,
+                                        claim_age, claim_batch, concatenate,
+                                        fail_batch, finish_batch, plan_batches,
+                                        read_batchfile, read_canary,
+                                        release_claim, split_by_fasta,
+                                        tally_reasons, write_table)
 from gtdb_migration_tk.biolib_lite.checksum import sha256
+from gtdb_migration_tk.biolib_lite.common import canonical_gid, make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
+from gtdb_migration_tk.utils.common import read_taxonomy
+
+
+# What this command calls the files of its own batches. The batchfile's first
+# column is each genome's genomic FASTA, which is what tRNAscan-SE reads. There
+# is no older name to look for: this command has never had batches before.
+BATCHFILE_NAME = 'trnascan_batchfile.tsv.gz'
+BATCH_LOG_NAME = 'trnascan.log'
+LAYOUT = BatchLayout(batchfiles=(BATCHFILE_NAME,), log=BATCH_LOG_NAME)
+
+# Genomes of a batch that came out of it with no tRNAs, and the same gathered for
+# the release. The step after this one should not have to look in 135 batch
+# directories to find out which genomes those were.
+NOT_SCANNED_NAME = 'not_scanned.tsv'
+NOT_SCANNED_RELEASE_NAME = 'trnascan_not_scanned.tsv'
+NOT_SCANNED_HEADER = ('genome_id', 'reason')
+REASON_NO_GENOMIC_FASTA = 'no_genomic_fasta'
+REASON_TRNASCAN_FAILED = 'trnascan_failed'
+
+# Where a genome's tRNAs are written, within its own directory, and what they are
+# called. metadata_manager reads <gid>_trna_stats.tsv from here by the accession
+# the genome_dirs file gives, so these names are the agreement between the two
+# commands.
+TRNA_DIR = 'trna'
+TRNA_EXT = '_trna.tsv'
+TRNA_LOG_EXT = '_trna.log'
+TRNA_STATS_EXT = '_trna_stats.tsv'
+CHECKSUM_EXT = '.sha256'
+
+# The two models tRNAscan-SE searches with. A genome of neither domain is scanned
+# with the bacterial one, which is what this command has always done.
+DOMAIN_ARCHAEA = 'Archaea'
+DOMAIN_BACTERIA = 'Bacteria'
+ARCHAEAL_FLAG = '-A'
+BACTERIAL_FLAG = '-B'
+
+# How the two files spell a domain. Both use the GTDB rank prefix -- the domain
+# file in its Predicted domain column, the taxonomy in the first rank of each
+# lineage -- so one table reads both.
+DOMAIN_OF_TAXON = {'d__Archaea': DOMAIN_ARCHAEA, 'd__Bacteria': DOMAIN_BACTERIA}
+
+# Columns of the GTDB domain file, read by name. The prediction is made from the
+# genome's marker genes, and is the string below for a genome it could not be
+# made for -- those fall through to the NCBI taxonomy.
+DOMAIN_FILE_GENOME = 'Genome Id'
+DOMAIN_FILE_DOMAIN = 'Predicted domain'
+NO_PREDICTION = 'None'
+
+# GTDB names a genome for the database it came from, e.g. GB_GCA_000009065.1,
+# where a genome_dirs file names it GCA_000009065.1.
+GTDB_ID_PREFIXES = ('GB_', 'RS_')
+
+
+class TrnaJob(NamedTuple):
+    """One genome as the workers receive it.
+
+    The domain flag is settled in the parent, where the table naming it is, so
+    that a worker carries what it needs rather than a copy of the release's
+    domains.
+    """
+
+    accession: str
+    genome_file: str
+    domain_flag: str
+
+
+class BatchCounts(NamedTuple):
+    """What scanning one batch came to.
+
+    Recorded in the batch's SUCCESS canary, because the release totals are added
+    up from the batches and a machine that ran the last batch has scanned none of
+    the others.
+    """
+
+    scanned: int
+    already_scanned: int
+    not_scanned: int
 
 
 class tRNAScan(object):
-    """Runs Run_tRNAScan-SE over a set of genomes."""
+    """Runs tRNAscan-SE over the genomes of a release."""
 
-    def __init__(self, gbk_arc_assembly_file, gbk_bac_assembly_file, rfq_arc_assembly_file, rfq_bac_assembly_file,cpus):
+    def __init__(self,
+                 gtdb_domain_file: str,
+                 taxonomy_file: str,
+                 cpus: int = 1,
+                 tmp_dir: str = '/tmp/',
+                 batch_size: int = DEFAULT_BATCH_SIZE,
+                 reclaim: bool = False,
+                 lease: float = CLAIM_LEASE_SECONDS,
+                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
+        """Initialization.
+
+        Parameters
+        ----------
+        gtdb_domain_file : str
+            GTDB domain report, read for the domain predicted from each genome's
+            marker genes.
+        taxonomy_file : str
+            Standardised NCBI taxonomy, read for the domain of the genomes GTDB
+            has no prediction for.
+        cpus : int
+            How many genomes are scanned at once.
+        tmp_dir : str
+            Directory each genome is decompressed into before it is scanned, one
+            directory per genome in flight and removed after. No results are
+            written here.
+        batch_size : int
+            Genomes per batch.
+        reclaim : bool
+            Take over a batch another machine holds before its claim has expired.
+        lease : float
+            Seconds a claim survives without the machine holding it saying so.
+        heartbeat : float
+            Seconds between this machine saying so about a batch of its own.
+
+        @return: None
+        """
+
         check_dependencies(['tRNAscan-SE'])
 
-        self.genome_file_ext = '_genomic.fna.gz'
+        self.cpus: int = cpus
+        self.tmp_dir: str = tmp_dir
+        self.batch_size: int = batch_size
+        self.reclaim: bool = reclaim
+        self.lease: float = lease
+        self.heartbeat: float = heartbeat
 
-        self.logger = logging.getLogger('timestamp')
+        self.logger: logging.Logger = logging.getLogger('timestamp')
 
+        # made here rather than by the first worker that wants it: a --tmp_dir
+        # that cannot be made would otherwise be met once per genome, inside a
+        # batch already claimed, and would fail every batch this machine took
+        make_sure_path_exists(self.tmp_dir)
 
-        self.cpus = cpus
+        self.domains: Dict[str, str] = self.read_domains(gtdb_domain_file,
+                                                         taxonomy_file)
 
-        self.domain_dict = self.parse_assembly_summary(
-            gbk_arc_assembly_file, gbk_bac_assembly_file, rfq_arc_assembly_file, rfq_bac_assembly_file)
+    def read_domains(self, gtdb_domain_file: str, taxonomy_file: str) -> Dict[str, str]:
+        """Read the domain of each genome from GTDB's prediction and NCBI's taxonomy.
 
-    def parse_assembly_summary(self, gbk_arc_assembly_file, gbk_bac_assembly_file, rfq_arc_assembly_file, rfq_bac_assembly_file):
-        results = {}
-        for arcfile in (gbk_arc_assembly_file, rfq_arc_assembly_file):
-            with open(arcfile) as arcf:
-                arcf.readline()
-                for line in arcf:
-                    gid = line.split('\t')[0]
-                    results[gid] = 'Archaea'
-        for bacfile in (gbk_bac_assembly_file, rfq_bac_assembly_file):
-            with open(bacfile) as bacf:
-                bacf.readline()
-                for line in bacf:
-                    gid = line.split('\t')[0]
-                    results[gid] = 'Bacteria'
-        return results
+        The NCBI lineages are read first and GTDB's predictions written over
+        them, so a genome GTDB has a prediction for is scanned on that and one it
+        has none for falls through to where NCBI filed it. Both are held under
+        the accession as given and under its canonical form, so a GenBank genome
+        finds what is recorded against its RefSeq counterpart.
 
-    def __workerThread(self, queueIn, queueOut):
-        """Process each data item in parallel."""
-        while True:
-            genome_file = queueIn.get(block=True, timeout=None)
-            if genome_file == None:
-                break
+        Parameters
+        ----------
+        gtdb_domain_file : str
+            GTDB domain report: Genome Id and Predicted domain, by column name.
+        taxonomy_file : str
+            Standardised NCBI taxonomy, accession and lineage per line.
 
-            assembly_dir, filename = os.path.split(genome_file)
-            trna_dir = os.path.join(assembly_dir, 'trna')
-            genome_id = assembly_accession(filename)
+        @return: accession, and canonical accession, to domain.
+        """
 
-            if not os.path.exists(trna_dir):
-                os.makedirs(trna_dir)
+        # counted by canonical accession rather than by entry: each genome is
+        # held under the accession as given and under its canonical form, so
+        # counting the table would report every genome twice
+        domains: Dict[str, str] = {}
+        from_ncbi = set()
+        for key, lineage in read_taxonomy(taxonomy_file).items():
+            domain = DOMAIN_OF_TAXON.get(lineage.split(';')[0])
+            if domain:
+                domains[key] = domain
+                from_ncbi.add(canonical_gid(key))
 
-            output_file = os.path.join(trna_dir, genome_id + '_trna.tsv')
-            log_file = os.path.join(trna_dir, genome_id + '_trna.log')
-            stats_file = os.path.join(trna_dir, genome_id + '_trna_stats.tsv')
+        predicted = set()
+        with open(gtdb_domain_file) as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+            genome_idx = header.index(DOMAIN_FILE_GENOME)
+            domain_idx = header.index(DOMAIN_FILE_DOMAIN)
 
+            for line in handle:
+                fields = line.rstrip('\n').split('\t')
+                if len(fields) <= max(genome_idx, domain_idx):
+                    continue
 
-            #because the genome_file file is a zipped file, we need to unzip it in a temporary directory
-            temp_dir = tempfile.mkdtemp()
+                gid = fields[genome_idx]
+                for prefix in GTDB_ID_PREFIXES:
+                    if gid.startswith(prefix):
+                        gid = gid[len(prefix):]
+                        break
 
-            try:
-                temp_gene_file = os.path.join(temp_dir, filename[0:-3])
-                with gzip.open(genome_file, 'rb') as f_in:
-                    with open(temp_gene_file, 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
+                # 'None' is what the column holds for a genome the prediction
+                # could not be made for; NCBI's taxonomy answers for those
+                domain = DOMAIN_OF_TAXON.get(fields[domain_idx])
+                if not domain:
+                    continue
 
-                domain_flag = '-B'
-                if self.domain_dict.get(genome_id) == 'Archaea':
-                    domain_flag = '-A'
+                domains[gid] = domain
+                domains[canonical_gid(gid)] = domain
+                predicted.add(canonical_gid(gid))
 
-                #cmd = 'tRNAscan-SE %s -q -Q -o %s -m %s -l %s %s' % (domain_flag, output_file, stats_file, log_file, genome_file)
-                # os.system(cmd)
+        self.logger.info(
+            'Read the domain of {:,} genome(s): {:,} predicted by GTDB and {:,} '
+            'taken from the NCBI taxonomy.'.format(
+                len(predicted | from_ncbi), len(predicted),
+                len(from_ncbi - predicted)))
 
-                cmd_to_run = ['tRNAscan-SE', domain_flag, '-q', '-Q', '-o',
-                              output_file, '-m', stats_file, '-l', log_file, temp_gene_file]
-                proc = subprocess.Popen(
-                    cmd_to_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdout, stderr = proc.communicate()
-                # print proc.returncode
-                if proc.returncode != 0:
-                    raise RuntimeError("%r failed, status code %s stdout %r stderr %r" % (
-                        cmd_to_run, proc.returncode, stdout, stderr))
-                checksum_file = open(output_file + '.sha256', 'w')
-                checksum_file.write('{}\n'.format(sha256(output_file)))
-                checksum_file.close()
-            # we can now delete the temporary directory
-            finally:
-                shutil.rmtree(temp_dir)
+        return domains
 
-            queueOut.put(genome_file)
+    def domain_flag(self, accession: str) -> str:
+        """Which model tRNAscan-SE searches this genome with.
 
-    def __writerThread(self, numDataItems, writerQueue):
-        """Store or write results of worker threads in a single thread."""
+        Parameters
+        ----------
+        accession : str
+            Genome accession, as the genome_dirs file names it.
 
-        processedItems = 0
-        while True:
-            a = writerQueue.get(block=True, timeout=None)
-            if a == None:
-                break
+        @return: the tRNAscan-SE flag, bacterial for a genome of no known domain.
+        """
 
-            processedItems += 1
-            statusStr = 'Finished processing %d of %d (%.2f%%) items.' % (processedItems,
-                                                                          numDataItems,
-                                                                          float(processedItems) * 100 / numDataItems)
-            sys.stdout.write('%s\r' % statusStr)
-            sys.stdout.flush()
+        domain = self.domains.get(accession)
+        if domain is None:
+            domain = self.domains.get(canonical_gid(accession))
 
-        sys.stdout.write('\n')
+        return ARCHAEAL_FLAG if domain == DOMAIN_ARCHAEA else BACTERIAL_FLAG
 
-    def run(self, gtdb_genome_path_file,all_genomes=False):
+    def run(self,
+            gtdb_genome_path_file: str,
+            out_dir: str,
+            all_genomes: bool = False) -> bool:
+        """Identify the tRNAs of every genome of a release.
 
-        genomes_to_consider = None
+        The release is cut into batches under --out_dir and a batch is claimed
+        before it is worked on, so several machines can be pointed at one
+        --out_dir and will divide the release between them.
 
-        # get path to all genome files
-        self.logger.info('Reading genomes.')
-        genome_files = []
-        list_genomes_to_parse = []
-        for line in open(gtdb_genome_path_file):
-            line_split = line.strip().split('\t')
+        Parameters
+        ----------
+        gtdb_genome_path_file : str
+            genome_dirs file of the release, accession and genome directory per line.
+        out_dir : str
+            Directory the batches and the state of the run are written to.
+        all_genomes : bool
+            Scan every genome again, discarding the tRNAs that are there.
 
-            list_genomes_to_parse.append((line_split,all_genomes))
+        @return: True where every batch this machine took finished, False where
+                 one failed and is left to a later run.
+        """
 
-        print(f"number of cpus used:{self.cpus}")
+        batches = plan_batches(gtdb_genome_path_file, out_dir, self.batch_size,
+                               LAYOUT, self.logger)
 
-        #populate worker queue with data to process
-        workerQueue = mp.Queue()
-        writerQueue = mp.Queue()
-        manager = mp.Manager()
-        return_list = manager.list()
+        if all_genomes:
+            self.logger.warning(
+                'warning: --all discards the tRNAs of every genome and scans it '
+                'again, so batches already finished are done again too. Without '
+                'it a finished batch is skipped.')
 
+        done, held, failed = 0, 0, 0
+        for index, batch_dir in enumerate(batches, start=1):
+            label = 'Batch {:,} of {:,} ({})'.format(
+                index, len(batches), os.path.basename(batch_dir))
 
-        for f in list_genomes_to_parse:
-            workerQueue.put(f)
+            if not all_genomes and batch_state(batch_dir) == STATE_SUCCESS:
+                self.logger.info('{}: already finished, skipping.'.format(label))
+                continue
 
-        for _ in range(self.cpus):
-            workerQueue.put(None)
+            if not claim_batch(batch_dir, self.reclaim, self.lease):
+                owner = read_canary(os.path.join(batch_dir, RUNNING_CANARY))
+                held += 1
+                self.logger.info('{}: held by {} since {}, last heard from {}, '
+                                 'skipping.'.format(
+                                     label, owner.get('host', 'another machine'),
+                                     owner.get('time', 'an unknown time'),
+                                     age_phrase(claim_age(
+                                         os.path.join(batch_dir, RUNNING_CANARY)))))
+                continue
 
-        try:
-            workerProc = [mp.Process(target=self.trnascan_parser,
-                                     args=(workerQueue, writerQueue,return_list))
-                          for _ in range(self.cpus)]
-            writeProc = mp.Process(target=self.__writerThread,
-                                   args=(len(list_genomes_to_parse), writerQueue))
+            # the batch has its own log from here, since this is where anything
+            # happens to it and every machine of a run writes its own --log
+            with batch_log(batch_dir, self.logger, LAYOUT):
+                self.logger.info('{}: starting.'.format(label))
+                try:
+                    with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY),
+                                   self.heartbeat):
+                        counts = self.scan_batch(batch_dir, all_genomes)
+                except KeyboardInterrupt:
+                    # the machine holding it is stopping, so the batch is handed
+                    # back rather than left to sit out its lease
+                    release_claim(batch_dir)
+                    self.logger.error('{}: interrupted; the claim is given up and '
+                                      'the batch carries on where it stopped.'.format(label))
+                    raise
+                except Exception as exc:
+                    failed += 1
+                    fail_batch(batch_dir, str(exc))
+                    self.logger.error('{}: failed and will be retried by a later '
+                                      'run: {}'.format(label, exc))
+                    continue
 
-            writeProc.start()
+                finish_batch(batch_dir,
+                             scanned=counts.scanned,
+                             already_scanned=counts.already_scanned,
+                             not_scanned=counts.not_scanned)
+                done += 1
+                self.logger.info('{}: done.'.format(label))
 
-            for p in workerProc:
-                p.start()
+        self.logger.info(
+            '{:,} batch(es) finished here, {:,} held by another machine, '
+            '{:,} failed.'.format(done, held, failed))
 
-            for p in workerProc:
-                p.join()
+        self.aggregate(batches, out_dir)
 
-            writerQueue.put(None)
-            writeProc.join()
+        # a batch that failed has already said why, in its own log and in its
+        # FAILED file, and a run of several machines over days should not end by
+        # printing a traceback out of the argparse frames
+        if failed:
+            self.logger.error(
+                '{:,} batch(es) failed; they are the directories holding a FAILED '
+                'file and are retried by running the command again.'.format(failed))
+            return False
 
-        except:
-            for p in workerProc:
-                p.terminate()
+        return True
 
-            writeProc.terminate()
+    def scan_batch(self, batch_dir: str, all_genomes: bool = False) -> BatchCounts:
+        """Identify the tRNAs of one batch, and record the genomes that got none.
 
+        The genomes are taken from the batch's own batchfile, so the work asks
+        about the genomes the batch was cut from rather than about whatever a
+        genome_dirs file says now.
 
-        genome_files =[x for x in return_list if x != 'null']
+        Two passes, because deciding is cheap and scanning is not: the first
+        sorts the batch into genomes whose tRNAs are already there and vouched
+        for and genomes that are not, the second scans what is left.
 
-        #genome_files = [x for x in writerQueue if x != 'null' and x is not None]
+        Parameters
+        ----------
+        batch_dir : str
+            Batch directory.
+        all_genomes : bool
+            Discard the tRNAs of every genome of the batch and scan again.
 
-        self.logger.info(f' Number of unprocessed genomes: {len(genome_files)}')
+        @return: what the batch came to, which run() records in its canary.
+        """
 
+        rows = read_batchfile(batchfile_path(batch_dir, LAYOUT))
+
+        # a genome whose sequences are not there has nothing to scan; it is named
+        # and left rather than stopping the other ten thousand of the batch
+        present, missing = split_by_fasta(rows, STAT_THREADS)
+        not_scanned = [(accession, REASON_NO_GENOMIC_FASTA) for accession in missing]
+
+        jobs = [TrnaJob(accession, genome_file, self.domain_flag(accession))
+                for genome_file, accession in present]
+
+        unknown = [job.accession for job in jobs
+                   if job.accession not in self.domains
+                   and canonical_gid(job.accession) not in self.domains]
+        if unknown:
+            self.logger.warning(
+                'warning: {:,} genome(s) of this batch have no domain in either '
+                'the GTDB domain file or the NCBI taxonomy and are scanned as '
+                'bacteria, e.g. {}.'.format(
+                    len(unknown), ', '.join(sorted(unknown)[:3])))
+
+        if all_genomes:
+            to_scan, already_scanned = jobs, 0
+        else:
+            with mp.Pool(processes=self.cpus) as pool:
+                decided = list(tqdm(pool.imap_unordered(self.trnascan_parser, jobs),
+                                    total=len(jobs), unit='genome', ncols=100,
+                                    leave=False, desc='Checking tRNAs'))
+            to_scan = [job for job in decided if job is not None]
+            already_scanned = len(jobs) - len(to_scan)
+
+        self.logger.info(
+            '{:,} genome(s) require tRNA identification; {:,} already have valid '
+            'results.'.format(len(to_scan), already_scanned))
+
+        not_scanned.extend(self.scan_genomes(to_scan))
+
+        not_scanned.sort()
+        write_table(not_scanned, os.path.join(batch_dir, NOT_SCANNED_NAME),
+                    header=NOT_SCANNED_HEADER)
+
+        if not_scanned:
+            self.logger.warning(
+                'warning: {:,} genome(s) of this batch have no tRNAs: {}.'.format(
+                    len(not_scanned),
+                    '; '.join('{:,} {}'.format(count, reason)
+                              for reason, count
+                              in sorted(tally_reasons(not_scanned).items()))))
+
+        scanned = len(to_scan) - sum(1 for _, reason in not_scanned
+                                     if reason == REASON_TRNASCAN_FAILED)
+
+        return BatchCounts(scanned=scanned,
+                           already_scanned=already_scanned,
+                           not_scanned=len(not_scanned))
+
+    def scan_genomes(self, jobs: Sequence[TrnaJob]) -> List[Tuple[str, str]]:
+        """Run tRNAscan-SE over the genomes of a batch that need it.
+
+        Parameters
+        ----------
+        jobs : sequence of TrnaJob
+            The genomes to scan.
+
+        @return: (accession, reason) for each genome tRNAscan-SE failed on.
+
+        Raises
+        ------
+        RuntimeError
+            Every one of several genomes failed, which is tRNAscan-SE not working
+            on this machine rather than a batch of difficult genomes, and is a
+            reason to fail the batch instead of recording it as a success with
+            nothing in it. One genome failing on its own is not: a batch whose
+            last unscanned genome is one tRNAscan-SE refuses would otherwise fail
+            identically on every retry, which is what naming the genome and
+            carrying on exists to avoid.
+        """
+
+        if not jobs:
+            return []
 
         with mp.Pool(processes=self.cpus) as pool:
-            genome_paths = list(tqdm(pool.imap_unordered(self.trnascan_worker, genome_files),
-                                     total=len(genome_files), unit='genome',ncols=100,smoothing=50/len(genome_files)))
+            results = list(tqdm(pool.imap_unordered(self.trnascan_worker, jobs),
+                                total=len(jobs), unit='genome', ncols=100,
+                                desc='Identifying tRNAs'))
 
+        failures = [(accession, REASON_TRNASCAN_FAILED)
+                    for accession in results if accession is not None]
 
-            # workerProc = [mp.Process(target=self.__workerThread,
-            #                          args=(workerQueue, writerQueue))
-            #               for _ in range(self.cpus)]
-            # writeProc = mp.Process(target=self.__writerThread,
-            #                        args=(len(genome_files), writerQueue))
-            #
-            # writeProc.start()
-            #
-            # for p in workerProc:
-            #     p.start()
-            #
-            # for p in workerProc:
-            #     p.join()
+        if len(jobs) > 1 and len(failures) == len(jobs):
+            raise RuntimeError(
+                'tRNAscan-SE failed on every one of the {:,} genome(s) it was '
+                'given.'.format(len(jobs)))
 
-        #     writerQueue.put(None)
-        #     writeProc.join()
-        # except:
-        #     for p in workerProc:
-        #         p.terminate()
-        #
-        #     writeProc.terminate()
+        return failures
 
+    def trnascan_parser(self, job: TrnaJob) -> Optional[TrnaJob]:
+        """Decide whether a genome's tRNAs still need identifying.
 
-    def trnascan_parser(self,queueIn, queueOut,return_list):
-        while True:
-            tuple_infos = queueIn.get(block=True, timeout=None)
+        A genome is skipped where its tRNA table is there AND its checksum
+        agrees. A table whose checksum does not agree was written by a run that
+        was interrupted partway through it, and is scanned again.
 
-            if tuple_infos == None:
-                break
-            value = None
-            line_split, all_genomes = tuple_infos
+        Parameters
+        ----------
+        job : TrnaJob
+            The genome to consider.
 
-            gid = line_split[0]
-            gpath = line_split[1]
-            assembly_id = os.path.basename(os.path.normpath(gpath))
+        @return: the job where the genome is to be scanned, None where its tRNAs
+                 are already there and vouched for.
+        """
 
-            trna_dir = os.path.join(gpath, 'trna')
+        trna_file = os.path.join(os.path.dirname(job.genome_file), TRNA_DIR,
+                                 job.accession + TRNA_EXT)
+        checksum_file = trna_file + CHECKSUM_EXT
 
-            trna_file = os.path.join(trna_dir, gid + '_trna.tsv')
-            if all_genomes:
-                genome_file = os.path.join(
-                    gpath, assembly_id + self.genome_file_ext)
-                value=genome_file
+        if not (os.path.exists(trna_file) and os.path.exists(checksum_file)):
+            return job
 
-            if  value is None and os.path.exists(trna_file):
-                # verify checksum
-                checksum_file = trna_file + '.sha256'
-                if os.path.exists(checksum_file):
-                    checksum = sha256(trna_file)
-                    cur_checksum = open(checksum_file).readline().strip()
-                    if str(checksum) == str(cur_checksum):
-                        # if genomes_to_consider and gid in genomes_to_consider:
-                        #     self.logger.warning(f'Genome {gid} is marked as new or modified, but already has tRNAs called.')
-                        #     self.logger.warning('Genome is being skipped!')
-                        value='null'
+        checksum = str(sha256(trna_file))
+        with open(checksum_file) as handle:
+            recorded = handle.readline().strip()
 
-                    if value is None:
-                        self.logger.warning(
-                                f'Genome {gid} has tRNAs called, but an invalid checksum ({checksum} for {trna_file} and {cur_checksum} in {checksum_file} and was not flagged.Genome will be reannotated.')
+        if checksum == recorded:
+            return None
 
-                    # elif genomes_to_consider and (gid not in genomes_to_consider):
-                    #     self.logger.warning(f'Genome {gid} has no Pfam annotations, but is also not marked for processing?')
-                    #     self.logger.warning('Genome will be reannotated!')
+        self.logger.warning(
+            'warning: {} has tRNAs called with an invalid checksum ({} against '
+            '{} in {}); the genome is scanned again.'.format(
+                job.accession, checksum, recorded, checksum_file))
 
-            genome_file = os.path.join(gpath, assembly_id + self.genome_file_ext)
-            if os.path.exists(genome_file) and value != 'null':
-                if os.stat(genome_file).st_size == 0:
-                    self.logger.warning(f'Genome file appears to be empty: {gid}')
-                else:
-                    value=genome_file
-            if value is not None:
-                queueOut.put(value)
-                return_list.append(value)
-            else:
-                queueOut.put(value)
+        return job
 
-    def trnascan_worker(self, job):
-        """Process each data item in parallel."""
+    def trnascan_worker(self, job: TrnaJob) -> Optional[str]:
+        """Identify the tRNAs of one genome.
 
-        genome_file = job
+        The genome is decompressed into --tmp_dir first, tRNAscan-SE reading a
+        plain FASTA, and the copy is removed however the scan ends. The results
+        go into the genome's own directory, which is why two machines on
+        different batches never write to the same place.
 
-        assembly_dir, filename = os.path.split(genome_file)
-        trna_dir = os.path.join(assembly_dir, 'trna')
-        genome_id = assembly_accession(filename)
+        Parameters
+        ----------
+        job : TrnaJob
+            The genome to scan, and the model to scan it with.
 
-        if not os.path.exists(trna_dir):
-            os.makedirs(trna_dir)
+        @return: None where the genome was scanned, its accession where
+                 tRNAscan-SE failed on it -- which is reported and left rather
+                 than taking the rest of the batch down.
+        """
 
-        output_file = os.path.join(trna_dir, genome_id + '_trna.tsv')
-        log_file = os.path.join(trna_dir, genome_id + '_trna.log')
-        stats_file = os.path.join(trna_dir, genome_id + '_trna_stats.tsv')
+        trna_dir = os.path.join(os.path.dirname(job.genome_file), TRNA_DIR)
+        make_sure_path_exists(trna_dir)
 
+        output_file = os.path.join(trna_dir, job.accession + TRNA_EXT)
+        log_file = os.path.join(trna_dir, job.accession + TRNA_LOG_EXT)
+        stats_file = os.path.join(trna_dir, job.accession + TRNA_STATS_EXT)
 
-        #because the genome_file file is a zipped file, we need to unzip it in a temporary directory
-        temp_dir = tempfile.mkdtemp()
-
+        # tRNAscan-SE reads a plain FASTA, and the genomes are held gzipped
+        temp_dir = tempfile.mkdtemp(dir=self.tmp_dir)
         try:
-            temp_gene_file = os.path.join(temp_dir, filename[0:-3])
-            with gzip.open(genome_file, 'rb') as f_in:
-                with open(temp_gene_file, 'wb') as f_out:
+            genome_copy = os.path.join(
+                temp_dir, os.path.basename(job.genome_file)[:-len('.gz')])
+            with gzip.open(job.genome_file, 'rb') as f_in:
+                with open(genome_copy, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
 
-            domain_flag = '-B'
-            if self.domain_dict.get(genome_id) == 'Archaea':
-                domain_flag = '-A'
-
-            #cmd = 'tRNAscan-SE %s -q -Q -o %s -m %s -l %s %s' % (domain_flag, output_file, stats_file, log_file, genome_file)
-            # os.system(cmd)
-
-            cmd_to_run = ['tRNAscan-SE', domain_flag, '-q', '-Q', '-o',
-                          output_file, '-m', stats_file, '-l', log_file, temp_gene_file]
-            proc = subprocess.Popen(
-                cmd_to_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # -o the tRNAs, -m the statistics metadata reads, -l the log
+            command = ['tRNAscan-SE', job.domain_flag, '-q', '-Q',
+                       '-o', output_file, '-m', stats_file, '-l', log_file,
+                       genome_copy]
+            proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
             stdout, stderr = proc.communicate()
-            # print proc.returncode
             if proc.returncode != 0:
-                raise RuntimeError("%r failed, status code %s stdout %r stderr %r" % (
-                    cmd_to_run, proc.returncode, stdout, stderr))
-            checksum_file = open(output_file + '.sha256', 'w')
-            checksum_file.write('{}\n'.format(sha256(output_file)))
-            checksum_file.close()
-        # we can now delete the temporary directory
+                self.logger.warning(
+                    'warning: tRNAscan-SE failed on {} with status {}: {}'.format(
+                        job.accession, proc.returncode,
+                        (stderr or stdout).decode('utf-8', 'replace').strip()[:200]))
+                return job.accession
+
+            # written last, so a table without one is a scan that was interrupted
+            with open(output_file + CHECKSUM_EXT, 'w') as handle:
+                handle.write('{}\n'.format(sha256(output_file)))
+        except Exception as error:
+            self.logger.warning(
+                'warning: {} could not be scanned: {}'.format(job.accession, error))
+            return job.accession
         finally:
-            shutil.rmtree(temp_dir)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return None
+
+    def aggregate(self, batches: Sequence[str], out_dir: str) -> None:
+        """Report the release, once every batch has succeeded.
+
+        Written only when they all have, so that the file at the top of the
+        directory is either the whole release or absent, and never a part of it
+        that reads like the whole.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run, in batch order.
+        out_dir : str
+            Directory the batches are held under.
+
+        @return: None
+        """
+
+        unfinished = [batch for batch in batches
+                      if batch_state(batch) != STATE_SUCCESS]
+        if unfinished:
+            self.logger.info(
+                '{:,} of {:,} batch(es) are done; the release files are written '
+                'once they all are.'.format(
+                    len(batches) - len(unfinished), len(batches)))
+            return
+
+        path = os.path.join(out_dir, NOT_SCANNED_RELEASE_NAME)
+        written = concatenate(
+            [os.path.join(batch, NOT_SCANNED_NAME) for batch in batches], path)
+
+        totals = {'scanned': 0, 'already_scanned': 0}
+        for batch_dir in batches:
+            canary = read_canary(os.path.join(batch_dir, SUCCESS_CANARY))
+            for field in totals:
+                try:
+                    totals[field] += int(canary[field])
+                except (KeyError, ValueError):
+                    pass
+
+        # of the release and not of this machine: the counts are added up from
+        # every batch's canary, and the batches were shared out
+        self.logger.info(
+            'Release: {:,} genome(s) had their tRNAs identified, {:,} already had '
+            'valid results.'.format(totals['scanned'], totals['already_scanned']))
+
+        if written:
+            self.logger.warning(
+                'warning: {:,} genome(s) of the release have no tRNAs and are '
+                'named in {}.'.format(written, path))
+        else:
+            self.logger.info(
+                'Every genome of the release has tRNAs; wrote {} with no '
+                'rows.'.format(path))

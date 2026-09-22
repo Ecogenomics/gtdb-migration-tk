@@ -300,6 +300,7 @@ from gtdb_migration_tk.utils.common import (TT_SUMMARY_DENSITY_4,
                                             TT_SUMMARY_TABLE,
                                             checkm_translation_table,
                                             open_text,
+                                            read_taxonomy,
                                             read_translation_table_summary)
 
 
@@ -726,40 +727,6 @@ def detect_table_command(batchfile: str,
         cmd += ['--keep_called_genes']
 
     return cmd
-
-
-def read_taxonomy(taxonomy_file: str) -> Dict[str, str]:
-    """Read the standardised NCBI taxonomy of the genomes.
-
-    The file is the two-column accession / semicolon-separated lineage TSV
-    ncbi_metadata_sync writes. Each genome is recorded under the accession as
-    given AND under its canonical form, so that a GenBank genome of a release
-    finds the lineage the taxonomy holds against its RefSeq counterpart; an
-    accession given exactly is preferred to a canonical match.
-
-    Parameters
-    ----------
-    taxonomy_file : str
-        Standardised NCBI taxonomy file.
-
-    @return: accession, and canonical accession, to lineage.
-    """
-
-    exact, canonical = {}, {}
-    with open(taxonomy_file) as handle:
-        for line in tqdm(handle, ncols=100, leave=False, desc='Reading taxonomy'):
-            line = line.rstrip('\n')
-            if not line:
-                continue
-            accession, _, lineage = line.partition('\t')
-            if not lineage:
-                continue
-            exact[accession] = lineage
-            canonical.setdefault(canonical_gid(accession), lineage)
-
-    canonical.update(exact)
-
-    return canonical
 
 
 def lineage_of(accession: str, taxonomy: Dict[str, str]) -> str:
