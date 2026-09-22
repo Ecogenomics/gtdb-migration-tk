@@ -545,6 +545,52 @@ would call nothing and report that the run had finished.
 Each genome's `prodigal/prodigal_translation_table.tsv` records the table used and
 where it came from, `predicted by gTranslate` or `specified by --tt_override`.
 
+`hmmsearch` takes an `--out_dir` and is batched the same way, so the marker search
+can be spread over several machines as the gene calling is. `--batch_size`,
+`--reclaim`, `--lease` and `--all` behave as they do for `prodigal`, and a batch
+is skipped once it has `SUCCESS`.
+
+**The batches of one database live under `<out_dir>/<marker directory>/.`** One
+run searches one database at one version, and a run of the other database over the
+same release is different work for the same genomes: sharing batch directories
+would have the `SUCCESS` of a Pfam batch tell a TIGRFAM run that batch was done.
+So one `--out_dir` carries both, and a new Pfam release gets its own directory
+beside them for the same reason.
+
+```
+<out_dir>/
+  pfam_33.1_lite/
+    batch_000001/
+      hmmsearch_batchfile.tsv.gz      the genomes of this batch
+      RUNNING / SUCCESS / FAILED      as in trans_table
+      hmmsearch.log                   what this command did to this batch
+      not_searched.tsv                genomes of this batch that got no marker table
+    hmmsearch_not_searched.tsv        the whole release, once every batch has SUCCESS
+  tigrfam_15.0_lite/
+    batch_000001/
+    ...
+```
+
+The batchfile names each genome's **protein** FASTA, `prodigal/<gid>_protein.faa.gz`,
+where `trans_table` and `prodigal` name the genomic FASTA: it is the file this
+command reads. A genome whose proteins are not there, or are an empty file, is
+named in `not_searched.tsv` under `no_protein_file` and left; it does not cost the
+other ten thousand genomes of the batch. Those are the genomes `prodigal` listed
+in `prodigal_not_called.tsv`, seen from the other side.
+
+**What decides the work is the marker table, not the report.** A genome is skipped
+where `prodigal/<marker dir>/<gid>_<marker>.tsv.gz` is there and its `.sha256`
+agrees. `--report` is the release's own account of which genomes did not carry
+their derived data across, and it is used to flag disagreement: a genome annotated
+already though the report calls it new, or unannotated though the report does not,
+is searched and said so in the log. Neither answer withholds the work. `--all`
+discards what is there and searches every genome again, finished batches included.
+
+Both `--db` runs write into `prodigal/` in each genome directory, so `top_hit` and
+everything downstream read them exactly where they always have. `--out_dir` holds
+the state of the run and nothing else, which is why two machines on different
+batches never write to the same place.
+
 ### Genome quality
 
 | Command | Description |

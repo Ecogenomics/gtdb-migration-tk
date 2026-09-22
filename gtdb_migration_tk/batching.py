@@ -76,8 +76,8 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import (Dict, Iterator, List, NamedTuple, Optional, Sequence,
-                    Tuple)
+from typing import (Callable, Dict, Iterator, List, NamedTuple, Optional,
+                    Sequence, Tuple)
 
 from tqdm import tqdm
 
@@ -868,11 +868,35 @@ def fail_batch(batch_dir: str, reason: str) -> None:
         pass
 
 
+def genome_fasta_of(accession: str, genome_dir: str) -> str:
+    """The file a batch is planned around by default: the genomic FASTA.
+
+    What a batch is planned around is the file the work reads, which differs by
+    command: trans_table and prodigal read the genomic FASTA NCBI served, while
+    hmmsearch reads the proteins prodigal called. It is the first column of the
+    batchfile and it is what split_by_fasta() stats, so a command that works from
+    another file says so with its own function rather than being given a
+    batchfile naming files it will not open.
+
+    Parameters
+    ----------
+    accession : str
+        Accession of the genome, unused here and taken for the signature.
+    genome_dir : str
+        Genome directory of the release.
+
+    @return: path of the genomic FASTA in that directory.
+    """
+
+    return genomic_fasta(genome_dir)
+
+
 def plan_batches(gtdb_genome_path_file: str,
              out_dir: str,
              batch_size: int,
              layout: BatchLayout,
-             logger: logging.Logger) -> List[str]:
+             logger: logging.Logger,
+             genome_file: Callable[[str, str], str] = genome_fasta_of) -> List[str]:
     """Settle which genomes are in which batch, once for every machine.
 
     A plan already under the output directory is used as it stands. It is what
@@ -886,6 +910,15 @@ def plan_batches(gtdb_genome_path_file: str,
         genome_dirs file of the release.
     out_dir : str
         Output directory of the run.
+    batch_size : int
+        Genomes per batch.
+    layout : BatchLayout
+        What the command calls the files of its own batches.
+    logger : logging.Logger
+        Where the plan is reported.
+    genome_file : callable
+        (accession, genome directory) to the file the work reads, which becomes
+        the first column of the batchfile. The default is the genomic FASTA.
 
     @return: paths of the batch directories, in batch order.
     """
@@ -912,7 +945,7 @@ def plan_batches(gtdb_genome_path_file: str,
     # r237 it is hours over NFS before a single batch directory exists and a
     # run stopped in it has no plan to resume from. It also leaves which
     # genomes share a batch following from the genome_dirs file alone.
-    rows = [(genomic_fasta(genome_dir), accession)
+    rows = [(genome_file(accession, genome_dir), accession)
             for accession, genome_dir in genomes]
     if not rows:
         raise RuntimeError(

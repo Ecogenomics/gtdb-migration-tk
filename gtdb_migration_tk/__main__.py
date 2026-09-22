@@ -997,11 +997,16 @@ def get_main_parser():
             __marker_db(grp, required=True)
             __report_file(grp, required=True)
             __hmm_db_path(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __dir_suffix(grp)
             __cpus(grp)
             __tmp_dir(grp)
+            __batch_size(grp)
+            __reclaim(grp)
+            __lease(grp)
+            __all_genomes(grp)
             __silent(grp)
 
     # Create metadata tables

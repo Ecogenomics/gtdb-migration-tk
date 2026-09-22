@@ -225,10 +225,19 @@ class OptionsParser():
         return dir_suffix
 
     def run_hmmsearch(self, options):
-        p = MarkerManager(options.tmp_dir, options.cpus)
+        p = MarkerManager(options.tmp_dir,
+                          options.cpus,
+                          options.batch_size,
+                          options.reclaim,
+                          options.lease * 60 * 60)
+        check_file_exists(options.gtdb_genome_path_file)
+        check_file_exists(options.report)
+        make_sure_path_exists(options.output_dir)
         p.run_hmmsearch(options.gtdb_genome_path_file,
                         options.report, options.db, self.marker_dir_suffix(options),
-                        options.hmm_db_path)
+                        options.hmm_db_path,
+                        options.output_dir,
+                        options.all_genomes)
         self.logger.info('Done.')
 
     def run_tophit(self, options):
