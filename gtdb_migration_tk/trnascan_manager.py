@@ -41,17 +41,30 @@ is skipped without anything having to look up what became of it. The command
 therefore takes no --report, and the commented-out report parse that sat in this
 module until 0.1.29 was never needed.
 
-WHY A DOMAIN IS LOOKED UP AT ALL
+WHY A DOMAIN IS LOOKED UP AT ALL, AND WHERE IT COMES FROM
 
 tRNAscan-SE searches with a bacterial or an archaeal model and the two give
-different answers, so every genome must be told which it is. The domain is read
-from the four NCBI assembly summary files a release is selected from, through
-ncbi_utils, which finds the accession column by name and takes the files gzipped
-or not -- the form a release actually holds them in is gzipped, and the reader
-this module had of its own could not open one at all. A genome in none of the
-four is scanned as bacterial, as it always has been, but the run now says how
-many of those there were rather than leaving an archaeon quietly scanned with the
-wrong model.
+different answers, so every genome must be told which it is, and a genome told
+wrong does not fail -- it gets a worse answer, which goes on into the tRNA counts
+of the metadata tables. The domain therefore comes from the same two files the
+other per-genome-domain commands use, rna_silva and rna_ltp:
+
+  --gtdb_domain_file    GTDB's own Predicted domain, from its marker genes
+  --taxonomy_file       the standardised NCBI taxonomy, as a fallback
+
+GTDB's call is preferred because it is made from the genome rather than from
+where NCBI filed it, and it is the one that catches a genome under the wrong
+domain at NCBI; the NCBI lineage answers for the genomes GTDB has no prediction
+for, which is what 'None' in that column means. The taxonomy is matched on the
+accession and then on its canonical form, so a GenBank genome finds the lineage
+recorded against its RefSeq counterpart.
+
+Until 0.1.29 the domain came from which of four NCBI assembly summary files an
+accession appeared in -- nothing in those files says 'bacteria', so the answer
+was asserted by which argument each file was passed as, and swapping two of them
+on the command line would have scanned every archaeon as a bacterium in silence.
+A genome neither file answers for is still scanned as a bacterium, which is what
+this command has always done, but the run says how many of those there were.
 
 ONE BAD GENOME DOES NOT COST A BATCH
 
@@ -87,9 +100,9 @@ from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
                                         release_claim, split_by_fasta,
                                         tally_reasons, write_table)
 from gtdb_migration_tk.biolib_lite.checksum import sha256
-from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.common import canonical_gid, make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
-from gtdb_migration_tk.ncbi_utils import read_assembly_summary
+from gtdb_migration_tk.utils.common import read_taxonomy
 
 
 # What this command calls the files of its own batches. The batchfile's first
@@ -125,6 +138,22 @@ DOMAIN_BACTERIA = 'Bacteria'
 ARCHAEAL_FLAG = '-A'
 BACTERIAL_FLAG = '-B'
 
+# How the two files spell a domain. Both use the GTDB rank prefix -- the domain
+# file in its Predicted domain column, the taxonomy in the first rank of each
+# lineage -- so one table reads both.
+DOMAIN_OF_TAXON = {'d__Archaea': DOMAIN_ARCHAEA, 'd__Bacteria': DOMAIN_BACTERIA}
+
+# Columns of the GTDB domain file, read by name. The prediction is made from the
+# genome's marker genes, and is the string below for a genome it could not be
+# made for -- those fall through to the NCBI taxonomy.
+DOMAIN_FILE_GENOME = 'Genome Id'
+DOMAIN_FILE_DOMAIN = 'Predicted domain'
+NO_PREDICTION = 'None'
+
+# GTDB names a genome for the database it came from, e.g. GB_GCA_000009065.1,
+# where a genome_dirs file names it GCA_000009065.1.
+GTDB_ID_PREFIXES = ('GB_', 'RS_')
+
 
 class TrnaJob(NamedTuple):
     """One genome as the workers receive it.
@@ -156,10 +185,8 @@ class tRNAScan(object):
     """Runs tRNAscan-SE over the genomes of a release."""
 
     def __init__(self,
-                 gbk_arc_assembly_file: str,
-                 gbk_bac_assembly_file: str,
-                 rfq_arc_assembly_file: str,
-                 rfq_bac_assembly_file: str,
+                 gtdb_domain_file: str,
+                 taxonomy_file: str,
                  cpus: int = 1,
                  tmp_dir: str = '/tmp/',
                  batch_size: int = DEFAULT_BATCH_SIZE,
@@ -170,10 +197,12 @@ class tRNAScan(object):
 
         Parameters
         ----------
-        gbk_arc_assembly_file, gbk_bac_assembly_file : str
-            GenBank assembly summary files for archaea and for bacteria.
-        rfq_arc_assembly_file, rfq_bac_assembly_file : str
-            RefSeq assembly summary files for archaea and for bacteria.
+        gtdb_domain_file : str
+            GTDB domain report, read for the domain predicted from each genome's
+            marker genes.
+        taxonomy_file : str
+            Standardised NCBI taxonomy, read for the domain of the genomes GTDB
+            has no prediction for.
         cpus : int
             How many genomes are scanned at once.
         tmp_dir : str
@@ -208,43 +237,71 @@ class tRNAScan(object):
         # batch already claimed, and would fail every batch this machine took
         make_sure_path_exists(self.tmp_dir)
 
-        self.domains: Dict[str, str] = self.parse_assembly_summary(
-            gbk_arc_assembly_file, gbk_bac_assembly_file,
-            rfq_arc_assembly_file, rfq_bac_assembly_file)
-        self.logger.info('Read the domain of {:,} genome(s) from the NCBI '
-                         'assembly summary files.'.format(len(self.domains)))
+        self.domains: Dict[str, str] = self.read_domains(gtdb_domain_file,
+                                                         taxonomy_file)
 
-    def parse_assembly_summary(self,
-                               gbk_arc_assembly_file: str,
-                               gbk_bac_assembly_file: str,
-                               rfq_arc_assembly_file: str,
-                               rfq_bac_assembly_file: str) -> Dict[str, str]:
-        """Read which domain each genome NCBI publishes belongs to.
+    def read_domains(self, gtdb_domain_file: str, taxonomy_file: str) -> Dict[str, str]:
+        """Read the domain of each genome from GTDB's prediction and NCBI's taxonomy.
 
-        Through ncbi_utils, which is the one reader of these files: it finds the
-        accession column by name rather than by position, and opens the file
-        gzipped or not. A release holds them gzipped, which the reader this
-        module had of its own could not open at all, and which it would have
-        failed on before a single genome was scanned.
+        The NCBI lineages are read first and GTDB's predictions written over
+        them, so a genome GTDB has a prediction for is scanned on that and one it
+        has none for falls through to where NCBI filed it. Both are held under
+        the accession as given and under its canonical form, so a GenBank genome
+        finds what is recorded against its RefSeq counterpart.
 
         Parameters
         ----------
-        gbk_arc_assembly_file, gbk_bac_assembly_file : str
-            GenBank assembly summary files for archaea and for bacteria.
-        rfq_arc_assembly_file, rfq_bac_assembly_file : str
-            RefSeq assembly summary files for archaea and for bacteria.
+        gtdb_domain_file : str
+            GTDB domain report: Genome Id and Predicted domain, by column name.
+        taxonomy_file : str
+            Standardised NCBI taxonomy, accession and lineage per line.
 
-        @return: accession to domain, for every genome the four files name.
+        @return: accession, and canonical accession, to domain.
         """
 
+        # counted by canonical accession rather than by entry: each genome is
+        # held under the accession as given and under its canonical form, so
+        # counting the table would report every genome twice
         domains: Dict[str, str] = {}
-        for domain, summaries in (
-                (DOMAIN_ARCHAEA, (gbk_arc_assembly_file, rfq_arc_assembly_file)),
-                (DOMAIN_BACTERIA, (gbk_bac_assembly_file, rfq_bac_assembly_file))):
-            for summary in summaries:
-                for (accession,) in read_assembly_summary(
-                        summary, 'assembly_accession'):
-                    domains[accession] = domain
+        from_ncbi = set()
+        for key, lineage in read_taxonomy(taxonomy_file).items():
+            domain = DOMAIN_OF_TAXON.get(lineage.split(';')[0])
+            if domain:
+                domains[key] = domain
+                from_ncbi.add(canonical_gid(key))
+
+        predicted = set()
+        with open(gtdb_domain_file) as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+            genome_idx = header.index(DOMAIN_FILE_GENOME)
+            domain_idx = header.index(DOMAIN_FILE_DOMAIN)
+
+            for line in handle:
+                fields = line.rstrip('\n').split('\t')
+                if len(fields) <= max(genome_idx, domain_idx):
+                    continue
+
+                gid = fields[genome_idx]
+                for prefix in GTDB_ID_PREFIXES:
+                    if gid.startswith(prefix):
+                        gid = gid[len(prefix):]
+                        break
+
+                # 'None' is what the column holds for a genome the prediction
+                # could not be made for; NCBI's taxonomy answers for those
+                domain = DOMAIN_OF_TAXON.get(fields[domain_idx])
+                if not domain:
+                    continue
+
+                domains[gid] = domain
+                domains[canonical_gid(gid)] = domain
+                predicted.add(canonical_gid(gid))
+
+        self.logger.info(
+            'Read the domain of {:,} genome(s): {:,} predicted by GTDB and {:,} '
+            'taken from the NCBI taxonomy.'.format(
+                len(predicted | from_ncbi), len(predicted),
+                len(from_ncbi - predicted)))
 
         return domains
 
@@ -259,10 +316,11 @@ class tRNAScan(object):
         @return: the tRNAscan-SE flag, bacterial for a genome of no known domain.
         """
 
-        if self.domains.get(accession) == DOMAIN_ARCHAEA:
-            return ARCHAEAL_FLAG
+        domain = self.domains.get(accession)
+        if domain is None:
+            domain = self.domains.get(canonical_gid(accession))
 
-        return BACTERIAL_FLAG
+        return ARCHAEAL_FLAG if domain == DOMAIN_ARCHAEA else BACTERIAL_FLAG
 
     def run(self,
             gtdb_genome_path_file: str,
@@ -393,12 +451,15 @@ class tRNAScan(object):
         jobs = [TrnaJob(accession, genome_file, self.domain_flag(accession))
                 for genome_file, accession in present]
 
-        unknown = [job.accession for job in jobs if job.accession not in self.domains]
+        unknown = [job.accession for job in jobs
+                   if job.accession not in self.domains
+                   and canonical_gid(job.accession) not in self.domains]
         if unknown:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch are in none of the NCBI '
-                'assembly summary files and are scanned as bacteria, e.g. '
-                '{}.'.format(len(unknown), ', '.join(sorted(unknown)[:3])))
+                'warning: {:,} genome(s) of this batch have no domain in either '
+                'the GTDB domain file or the NCBI taxonomy and are scanned as '
+                'bacteria, e.g. {}.'.format(
+                    len(unknown), ', '.join(sorted(unknown)[:3])))
 
         if all_genomes:
             to_scan, already_scanned = jobs, 0

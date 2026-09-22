@@ -859,10 +859,8 @@ def get_main_parser():
                    'Identifies tRNAs in genomes.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
-            __gbk_bac_assembly_file(grp, required=True)
-            __gbk_arc_assembly_file(grp, required=True)
-            __rfq_arc_assembly_file(grp, required=True)
-            __rfq_bac_assembly_file(grp, required=True)
+            __gtdb_domain_file(grp, required=True)
+            __taxonomy_file(grp, required=True)
             __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:

@@ -659,10 +659,27 @@ it. A table whose checksum disagrees was written by a run interrupted partway
 through it, and is scanned again.
 
 **The domain decides the model.** tRNAscan-SE searches with a bacterial or an
-archaeal model, so the four NCBI assembly summary files are read for each genome's
-domain -- `--ga`, `--gb`, `--ra`, `--rb`, the same files `select_genomes` works
-from, gzipped or not. A genome in none of them is scanned as a bacterium, and the
+archaeal model and the two give different answers, so each genome's domain comes
+from the same two files `rna_silva` and `rna_ltp` use:
+
+| Argument | |
+| --- | --- |
+| `-d`, `--gtdb_domain_file` | GTDB's own `Predicted domain`, from the genome's marker genes |
+| `-t`, `--taxonomy_file` | the standardised NCBI taxonomy, for the genomes GTDB has no prediction for |
+
+GTDB's call is preferred because it is made from the genome rather than from where
+NCBI filed it, and it is the one that catches a genome under the wrong domain at
+NCBI; `None` in that column means the markers gave no answer, and the NCBI lineage
+answers for those. The taxonomy is matched on the accession and then on its
+canonical form, so a GenBank genome finds the lineage recorded against its RefSeq
+counterpart. A genome neither file answers for is scanned as a bacterium, and the
 run says how many of those there were.
+
+Until 0.1.29 the domain came from which of four NCBI assembly summary files an
+accession appeared in. Nothing in those files says "bacteria" -- NCBI tells them
+apart by directory -- so the answer was asserted by which argument each file was
+passed as, and swapping two of them on the command line would have scanned every
+archaeon as a bacterium in silence.
 
 **A genome that got no tRNAs is named once, for the release**, in
 `trnascan_not_scanned.tsv`:

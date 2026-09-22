@@ -387,12 +387,12 @@ class OptionsParser():
               options.output_file)
 
     def generate_trnascan_data(self, options):
-        for assembly_summary in (options.ga, options.gb, options.ra, options.rb):
-            check_file_exists(assembly_summary)
         check_file_exists(options.gtdb_genome_path_file)
+        check_file_exists(options.gtdb_domain_file)
+        check_file_exists(options.taxonomy_file)
         make_sure_path_exists(options.output_dir)
-        p = tRNAScan(options.ga, options.gb,
-                     options.ra, options.rb,
+        p = tRNAScan(options.gtdb_domain_file,
+                     options.taxonomy_file,
                      options.cpus,
                      options.tmp_dir,
                      options.batch_size,

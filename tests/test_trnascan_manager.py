@@ -23,6 +23,7 @@ from unittest import mock
 
 from gtdb_migration_tk import batching as B
 from gtdb_migration_tk import trnascan_manager as T
+from gtdb_migration_tk.utils import common as C
 
 
 # What the stub was asked to do, written into the log file tRNAscan-SE would
@@ -93,7 +94,7 @@ class TempDirCase(unittest.TestCase):
 
         # the progress bars and the per-genome warnings do not belong in the
         # output of a test run; assertLogs() raises the logger back up
-        for module in (T, B):
+        for module in (T, B, C):
             patch = mock.patch.object(module, 'tqdm', QuietTqdm)
             patch.start()
             self.addCleanup(patch.stop)
@@ -107,29 +108,36 @@ class TempDirCase(unittest.TestCase):
 
     # ------------------------------------------------------------- the release
 
-    def summary(self, name, accessions, compress=True):
-        """An NCBI assembly summary file, gzipped as a release holds it."""
-        path = os.path.join(self.dir, name)
-        opener = gzip.open if compress else open
-        with opener(path, 'wt') as handle:
-            handle.write('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README.txt\n')
-            handle.write('#assembly_accession\tbioproject\tftp_path\n')
-            for accession in accessions:
-                handle.write('{}\tPRJNA1\thttps://x\n'.format(accession))
+    def domain_file(self, predicted):
+        """The GTDB domain report, keyed by GTDB's own genome ids.
+
+        predicted maps an accession to 'ar', 'bac' or None, None being a genome
+        the marker genes gave no prediction for.
+        """
+        path = os.path.join(self.dir, 'gtdb_domain_report.tsv')
+        with open(path, 'w') as handle:
+            handle.write('Genome Id\tGenome size\t{}\n'.format(T.DOMAIN_FILE_DOMAIN))
+            for accession, domain in predicted.items():
+                prefix = 'RS_' if accession.startswith('GCF') else 'GB_'
+                handle.write('{}{}\t4000000\t{}\n'.format(
+                    prefix, accession,
+                    {'ar': 'd__Archaea', 'bac': 'd__Bacteria'}.get(domain,
+                                                                   T.NO_PREDICTION)))
         return path
 
-    def summaries(self, archaea=(), bacteria=(), compress=True):
-        """The four files the command takes, archaea and bacteria from GenBank.
+    def taxonomy_file(self, lineages):
+        """The standardised NCBI taxonomy: accession and lineage, no header."""
+        path = os.path.join(self.dir, 'ncbi_taxonomy.tsv')
+        with open(path, 'w') as handle:
+            for accession, domain in lineages.items():
+                handle.write('{}\td__{};p__Whatever;c__;o__;f__;g__;s__\n'.format(
+                    accession, 'Archaea' if domain == 'ar' else 'Bacteria'))
+        return path
 
-        Named .gz only when they are gzipped: open_summary() decides by the
-        name, which is how NCBI's own uncompressed files are read.
-        """
-        ext = '.txt.gz' if compress else '.txt'
-        return dict(
-            gbk_arc_assembly_file=self.summary('arc_gbk' + ext, archaea, compress),
-            gbk_bac_assembly_file=self.summary('bac_gbk' + ext, bacteria, compress),
-            rfq_arc_assembly_file=self.summary('arc_rfq' + ext, (), compress),
-            rfq_bac_assembly_file=self.summary('bac_rfq' + ext, (), compress))
+    def inputs(self, predicted=None, taxonomy=None):
+        """The two files the command reads the domain of each genome from."""
+        return dict(gtdb_domain_file=self.domain_file(predicted or {}),
+                    taxonomy_file=self.taxonomy_file(taxonomy or {}))
 
     def genome_dir(self, accession, fasta=True, refuse=False, trna=None):
         """A genome directory as a release holds it.
@@ -170,15 +178,14 @@ class TempDirCase(unittest.TestCase):
 
     # --------------------------------------------------------------- the run
 
-    def scanner(self, archaea=(), bacteria=(), compress=True, **kwargs):
+    def scanner(self, predicted=None, taxonomy=None, **kwargs):
         with mock.patch.object(T, 'check_dependencies'):
             return T.tRNAScan(cpus=1, tmp_dir=os.path.join(self.dir, 'tmp'),
-                              **dict(self.summaries(archaea, bacteria, compress),
-                                     **kwargs))
+                              **dict(self.inputs(predicted, taxonomy), **kwargs))
 
-    def run_trnascan(self, genomes, archaea=(), bacteria=(), all_genomes=False,
-                     batch_size=B.DEFAULT_BATCH_SIZE):
-        scanner = self.scanner(archaea, bacteria, batch_size=batch_size)
+    def run_trnascan(self, genomes, predicted=None, taxonomy=None,
+                     all_genomes=False, batch_size=B.DEFAULT_BATCH_SIZE):
+        scanner = self.scanner(predicted, taxonomy, batch_size=batch_size)
         with mock.patch.object(T.subprocess, 'Popen', StubPopen):
             ok = scanner.run(self.genome_dirs_file(genomes), self.out_dir, all_genomes)
         return scanner, ok
@@ -207,36 +214,53 @@ class TempDirCase(unittest.TestCase):
         return B.batch_dir_names(self.out_dir, T.LAYOUT)
 
 
-# ------------------------------------------------- reading the assembly summaries
+# ------------------------------------------------------- where the domain comes from
 
 class TheDomainOfEachGenome(TempDirCase):
-    """tRNAscan-SE searches with a bacterial or an archaeal model, so this decides
-    the answer, and it comes out of files the module could not previously open."""
+    """tRNAscan-SE searches with a bacterial or an archaeal model and the two give
+    different answers, so this decides what the genome's tRNAs come out as."""
 
-    def test_the_gzipped_summaries_a_release_holds_are_read(self):
-        scanner = self.scanner(archaea=['GCA_000002.1'], bacteria=['GCA_000001.1'])
+    def test_gtdb_s_own_prediction_is_used(self):
+        scanner = self.scanner(predicted={'GCA_000002.1': 'ar',
+                                          'GCA_000001.1': 'bac'})
 
-        self.assertEqual(scanner.domains, {'GCA_000002.1': T.DOMAIN_ARCHAEA,
-                                           'GCA_000001.1': T.DOMAIN_BACTERIA})
+        self.assertEqual(scanner.domain_flag('GCA_000002.1'), T.ARCHAEAL_FLAG)
+        self.assertEqual(scanner.domain_flag('GCA_000001.1'), T.BACTERIAL_FLAG)
 
-    def test_an_uncompressed_summary_is_read_too(self):
-        scanner = self.scanner(archaea=['GCA_000002.1'], compress=False)
+    def test_the_gtdb_id_prefix_is_stripped(self):
+        """GTDB names a genome GB_GCA_000002.1 where a genome_dirs file says
+        GCA_000002.1."""
+        scanner = self.scanner(predicted={'GCA_000002.1': 'ar'})
 
-        self.assertEqual(scanner.domains, {'GCA_000002.1': T.DOMAIN_ARCHAEA})
+        self.assertIn('GCA_000002.1', scanner.domains)
 
-    def test_the_header_row_is_not_taken_for_a_genome(self):
-        """NCBI writes two comment lines above the data, not one."""
-        scanner = self.scanner(bacteria=['GCA_000001.1'])
-
-        self.assertEqual(list(scanner.domains), ['GCA_000001.1'])
-
-    def test_an_archaeon_is_scanned_with_the_archaeal_model(self):
-        scanner = self.scanner(archaea=['GCA_000002.1'])
+    def test_the_ncbi_taxonomy_answers_for_a_genome_gtdb_could_not_predict(self):
+        """'None' is what the column holds when the markers gave no answer."""
+        scanner = self.scanner(predicted={'GCA_000002.1': None},
+                               taxonomy={'GCA_000002.1': 'ar'})
 
         self.assertEqual(scanner.domain_flag('GCA_000002.1'), T.ARCHAEAL_FLAG)
 
-    def test_a_genome_in_none_of_the_files_is_scanned_as_a_bacterium(self):
-        scanner = self.scanner(bacteria=['GCA_000001.1'])
+    def test_the_ncbi_taxonomy_answers_for_a_genome_the_domain_file_omits(self):
+        scanner = self.scanner(taxonomy={'GCA_000002.1': 'ar'})
+
+        self.assertEqual(scanner.domain_flag('GCA_000002.1'), T.ARCHAEAL_FLAG)
+
+    def test_gtdb_s_prediction_wins_over_the_ncbi_taxonomy(self):
+        """Which is the point of preferring it: it is made from the genome, and
+        catches one NCBI has filed under the wrong domain."""
+        scanner = self.scanner(predicted={'GCA_000002.1': 'ar'},
+                               taxonomy={'GCA_000002.1': 'bac'})
+
+        self.assertEqual(scanner.domain_flag('GCA_000002.1'), T.ARCHAEAL_FLAG)
+
+    def test_a_genbank_genome_finds_the_taxonomy_of_its_refseq_counterpart(self):
+        scanner = self.scanner(taxonomy={'GCF_000002.1': 'ar'})
+
+        self.assertEqual(scanner.domain_flag('GCA_000002.1'), T.ARCHAEAL_FLAG)
+
+    def test_a_genome_neither_file_answers_for_is_scanned_as_a_bacterium(self):
+        scanner = self.scanner(predicted={'GCA_000001.1': 'bac'})
 
         self.assertEqual(scanner.domain_flag('GCA_000009.1'), T.BACTERIAL_FLAG)
 
@@ -247,7 +271,7 @@ class TheDomainOfEachGenome(TempDirCase):
 
         self.run_trnascan([('GCA_000002.1', arc), ('GCA_000001.1', bac),
                            ('GCA_000009.1', unknown)],
-                          archaea=['GCA_000002.1'], bacteria=['GCA_000001.1'])
+                          predicted={'GCA_000002.1': 'ar', 'GCA_000001.1': 'bac'})
 
         self.assertEqual(self.model_flag(arc, 'GCA_000002.1'), T.ARCHAEAL_FLAG)
         self.assertEqual(self.model_flag(bac, 'GCA_000001.1'), T.BACTERIAL_FLAG)
@@ -259,8 +283,8 @@ class TheDomainOfEachGenome(TempDirCase):
         with self.assertLogs('timestamp', level='WARNING') as captured:
             self.run_trnascan([('GCA_000009.1', unknown)])
 
-        self.assertTrue(any('none of the NCBI assembly summary files' in r.getMessage()
-                            for r in captured.records), captured.records)
+        self.assertTrue(any('no domain in either' in record.getMessage()
+                            for record in captured.records), captured.records)
 
 
 # ---------------------------------------------------------- what decides the work
