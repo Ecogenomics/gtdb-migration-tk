@@ -14,20 +14,20 @@ from gtdb_migration_tk import config
 
 
 class DerivedNames(unittest.TestCase):
-    def test_marker_folder_suffixes_carry_the_configured_versions(self):
+    def test_marker_dir_suffixes_carry_the_configured_versions(self):
         # hmmsearch and top_hit default to these, so they decide which
         # pfam_*/tigrfam_* directory a release is annotated into
-        self.assertIn(config.PFAM_VERSION, config.MARKER_FOLDER_SUFFIX['pfam'])
-        self.assertIn(config.TIGRFAM_VERSION, config.MARKER_FOLDER_SUFFIX['tigrfam'])
+        self.assertIn(config.PFAM_VERSION, config.MARKER_DIR_SUFFIX['pfam'])
+        self.assertIn(config.TIGRFAM_VERSION, config.MARKER_DIR_SUFFIX['tigrfam'])
 
-    def test_marker_folder_suffixes_name_the_lite_sets(self):
+    def test_marker_dir_suffixes_name_the_lite_sets(self):
         # GTDB searches the reduced marker sets; marker_manager keys the
         # version-free symlink names off this suffix
-        for suffix in config.MARKER_FOLDER_SUFFIX.values():
+        for suffix in config.MARKER_DIR_SUFFIX.values():
             self.assertTrue(suffix.endswith('_lite'), suffix)
 
-    def test_marker_folder_suffixes_are_keyed_by_the_db_option(self):
-        self.assertEqual(sorted(config.MARKER_FOLDER_SUFFIX), ['pfam', 'tigrfam'])
+    def test_marker_dir_suffixes_are_keyed_by_the_db_option(self):
+        self.assertEqual(sorted(config.MARKER_DIR_SUFFIX), ['pfam', 'tigrfam'])
 
     def test_derived_directories_carry_the_configured_rrna_versions(self):
         # a genome directory may hold the results of several SILVA or LTP
@@ -56,7 +56,7 @@ class DerivedNames(unittest.TestCase):
         bumped = {}
         exec(compile(source, config.__file__, 'exec'), bumped)
 
-        self.assertEqual(bumped['MARKER_FOLDER_SUFFIX'],
+        self.assertEqual(bumped['MARKER_DIR_SUFFIX'],
                          {'pfam': '37.0_lite', 'tigrfam': '16.0_lite'})
         self.assertEqual(bumped['GTDB_DERIVED_DIRS_TO_COPY'],
                          ('prodigal', 'rna_silva_140.0', 'trna', 'rna_ltp_06_2026'))
@@ -79,7 +79,7 @@ class CurrentValues(unittest.TestCase):
     """The names in use for the current release, as a guard against typos."""
 
     def test_names_match_the_directories_on_disk(self):
-        self.assertEqual(config.MARKER_FOLDER_SUFFIX,
+        self.assertEqual(config.MARKER_DIR_SUFFIX,
                          {'pfam': '33.1_lite', 'tigrfam': '15.0_lite'})
         self.assertEqual(config.GTDB_DERIVED_DIRS_TO_COPY,
                          ('prodigal', 'rna_silva_138.2', 'trna', 'rna_ltp_10_2024'))

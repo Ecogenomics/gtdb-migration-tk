@@ -25,6 +25,8 @@ from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
 from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
+from gtdb_migration_tk.update_genomes import (genomes_in_release,
+                                             genomes_to_regenerate)
 
 
 class CheckMManager(object):
@@ -58,20 +60,18 @@ class CheckMManager(object):
 
         if not os.path.exists(tmp_dir):
             # get list of genomes to consider
+            genomes_to_consider = None
             if genome_report.lower() != 'none':
-                genomes_to_consider = set()
-                for line in open(genome_report):
-                    line_split = line.strip().split('\t')
-                    genome_id = line_split[1]
-                    attributes = line_split[2].split(';')
-                    if 'removed' in attributes:
-                        continue
-                    else:
-                        for attribute in attributes:
-                            if all_genomes or attribute == 'new' or attribute == 'modified':
-                                genomes_to_consider.add(genome_id)
+                # --all_genomes asks for every genome the release HOLDS, not every
+                # row of the report: a removed genome, and one that could not be
+                # compared, have no directory to look in
+                if all_genomes:
+                    genomes_to_consider = genomes_in_release(genome_report)
+                else:
+                    genomes_to_consider = genomes_to_regenerate(genome_report)
 
-                self.logger.info('Identified {} genomes as new or modified.'.format(len(genomes_to_consider)))
+                self.logger.info('Identified {} genomes to estimate the quality of.'.format(
+                    len(genomes_to_consider)))
 
             # determine gene files
             gene_files = []
@@ -80,6 +80,11 @@ class CheckMManager(object):
             for line in open(gtdb_genome_path_file):
                 line_split = line.strip().split('\t')
                 genome_paths[line_split[0]] = line_split[1]
+
+            # without a report there is nothing to narrow the release down by, so
+            # every genome it holds a path for is considered
+            if genomes_to_consider is None:
+                genomes_to_consider = set(genome_paths)
 
             for gid in genomes_to_consider:
                 gpath = genome_paths[gid]

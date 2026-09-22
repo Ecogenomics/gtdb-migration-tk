@@ -205,8 +205,8 @@ class OptionsParser():
               options.tt_override,
               options.all_genomes)
 
-    def marker_folder_suffix(self, options):
-        """The --folder_suffix given, or the one config.py declares for --db.
+    def marker_dir_suffix(self, options):
+        """The --dir_suffix given, or the one config.py declares for --db.
 
         Parameters
         ----------
@@ -216,24 +216,24 @@ class OptionsParser():
         @return: suffix naming the marker directory and files, e.g. 33.1_lite.
         """
 
-        if options.folder_suffix:
-            return options.folder_suffix
+        if options.dir_suffix:
+            return options.dir_suffix
 
-        folder_suffix = config.MARKER_FOLDER_SUFFIX[options.db]
-        self.logger.info('Using the {} version declared in config.py: --folder_suffix {}'.format(
-            options.db, folder_suffix))
-        return folder_suffix
+        dir_suffix = config.MARKER_DIR_SUFFIX[options.db]
+        self.logger.info('Using the {} version declared in config.py: --dir_suffix {}'.format(
+            options.db, dir_suffix))
+        return dir_suffix
 
     def run_hmmsearch(self, options):
         p = MarkerManager(options.tmp_dir, options.cpus)
         p.run_hmmsearch(options.gtdb_genome_path_file,
-                        options.report, options.db, self.marker_folder_suffix(options),
+                        options.report, options.db, self.marker_dir_suffix(options),
                         options.hmm_db_path)
         self.logger.info('Done.')
 
     def run_tophit(self, options):
         p = MarkerManager('/tmp', options.cpus)
-        p.run_tophit(options.gtdb_genome_path_file, options.db, self.marker_folder_suffix(options))
+        p.run_tophit(options.gtdb_genome_path_file, options.db, self.marker_dir_suffix(options))
 
     def generate_metadata(self, options):
         p = MetadataManager(options.cpus)

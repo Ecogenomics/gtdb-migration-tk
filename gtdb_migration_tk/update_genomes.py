@@ -108,7 +108,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, ExitStack
 from multiprocessing.queues import Queue
 from typing import (Collection, Dict, Iterable, Iterator, List, Optional,
-                    TextIO, Tuple)
+                    Set, TextIO, Tuple)
 
 from tqdm import tqdm
 
@@ -146,6 +146,38 @@ STATUS_TO_CURATE = 'to_curate'
 # has one cause and a handful of variants; the report holds every row regardless.
 CURATE_REASONS_LOGGED = 5
 
+# The outcome of a genome NCBI holds and the previous release did not, and of one
+# the previous release held and NCBI no longer does. Neither is compared, so they
+# sit outside the block above; they are named here because a reader of the report
+# has to tell every outcome apart, not only the compared ones.
+STATUS_NEW = 'new'
+STATUS_REMOVED = 'removed'
+
+# The outcomes that leave a genome in the release with NO derived data, and so the
+# genomes a later command has to call genes, search markers or scan tRNAs for.
+# Everything else means no work: STATUS_FASTA_UNCHANGED and
+# STATUS_SEQUENCES_UNCHANGED carry the previous release's derived data across
+# intact, STATUS_REMOVED is a genome that left the release, and a STATUS_TO_CURATE
+# genome was never copied into it at all -- both MD5s are read before the
+# copytree, so a comparison that raised leaves nothing behind. Annotating one of
+# those last two means looking for a directory the release does not have.
+STATUS_REGENERATE = frozenset((STATUS_NEW, STATUS_FASTA_CHANGED))
+
+# The outcomes of a genome the release HOLDS, whether or not it brought its
+# derived data with it. The complement is the two outcomes that leave no
+# directory behind, so this is the set to ask for when a command is told to
+# process every genome rather than only the ones that changed: a genome that was
+# removed or could not be compared has no directory for it to look in.
+STATUS_IN_RELEASE = STATUS_REGENERATE | frozenset(
+    (STATUS_FASTA_UNCHANGED, STATUS_SEQUENCES_UNCHANGED))
+
+# Columns of a report row, '<accession>\t<outcome>'. Checked rather than assumed
+# because update_refseq wrote a THREE column report until 0.0.9, opening with a
+# domain column that nothing fed any more. Read as though it were current, its
+# first column is a domain name rather than an accession, so no row matches any
+# outcome, and the command annotates nothing while reporting success.
+REPORT_COLUMNS = 2
+
 # How many copies are queued per thread while genomes are being added. Submitting
 # every genome at once would build one future per genome before the first copy
 # finished -- some 850 MB of them for a release of half a million genomes, which
@@ -163,6 +195,11 @@ COMPARE_BAR_WIDTH = 165
 # row was dropped by both runs without a word. It is now updated like any other
 # genome, and named here so that an unexpected one is seen rather than assumed.
 UNKNOWN_DATABASE = 'unrecognised'
+
+
+class BadReport(ValueError):
+    """Rejected report file: a row that is not '<accession>\t<outcome>'."""
+
 
 # What the listener process hands back once every comparison has been reported:
 # the outcome counts the summary is built from, those same counts per database,
@@ -260,6 +297,77 @@ def report_accession(row: str) -> str:
     """
 
     return row.split('\t')[0]
+
+
+def report_accessions(report_file: str, outcomes: Collection[str]) -> Set[str]:
+    """The genomes of a release whose report row records one of `outcomes`.
+
+    The one reader of the report for the commands that come after the update.
+    Marker searching and quality estimation both ask the same question of it --
+    which genomes does this release hold, and which of those did it not bring
+    derived data for -- and answering it in one place is what keeps them from
+    disagreeing when an outcome is added, as 'genomic FASTA sequences unchanged'
+    was in 0.1.7. Reading it in each command is how both came to be left behind
+    when the domain column went in 0.0.9: a report neither could parse, and tests
+    of each passing on rows nothing writes.
+
+    Parameters
+    ----------
+    report_file : str
+        report.log of the release, as written by UpdateGenomes.
+    outcomes : collection
+        Outcomes to keep, e.g. STATUS_REGENERATE or STATUS_IN_RELEASE.
+
+    @return: accessions whose outcome is one of `outcomes`.
+    """
+
+    accessions = set()
+    with open(report_file) as handle:
+        for number, row in enumerate(handle, start=1):
+            if not row.strip():
+                continue
+
+            columns = row.rstrip('\n').split('\t')
+            if len(columns) != REPORT_COLUMNS:
+                raise BadReport(
+                    '{}, line {}: expected {} tab-separated columns '
+                    "('<accession>\\t<outcome>'), found {}. A report written "
+                    'before 0.0.9 opens with a domain column and cannot be '
+                    'read: {!r}'.format(report_file, number, REPORT_COLUMNS,
+                                        len(columns), row.rstrip('\n')))
+
+            if report_outcome(row) in outcomes:
+                accessions.add(report_accession(row))
+
+    return accessions
+
+
+def genomes_to_regenerate(report_file: str) -> Set[str]:
+    """The genomes of a release whose derived data has to be made again.
+
+    Parameters
+    ----------
+    report_file : str
+        report.log of the release, as written by UpdateGenomes.
+
+    @return: accessions whose outcome is in STATUS_REGENERATE.
+    """
+
+    return report_accessions(report_file, STATUS_REGENERATE)
+
+
+def genomes_in_release(report_file: str) -> Set[str]:
+    """Every genome the release holds a directory for.
+
+    Parameters
+    ----------
+    report_file : str
+        report.log of the release, as written by UpdateGenomes.
+
+    @return: accessions whose outcome is in STATUS_IN_RELEASE.
+    """
+
+    return report_accessions(report_file, STATUS_IN_RELEASE)
 
 
 def database_of(gid: str) -> Optional[NCBIDatabase]:
@@ -1087,7 +1195,7 @@ class FTPTools():
         for gid, path_record in added_genomes.items():
             targets[gid] = release_genome_dir(
                 new_directory, os.path.relpath(path_record, ftp_dir), gid)
-            self.report.write("{0}\tnew\n".format(gid))
+            self.report.write("{0}\t{1}\n".format(gid, STATUS_NEW))
 
         if self.dry_run:
             return
@@ -1169,7 +1277,7 @@ class FTPTools():
         """
 
         for gid in removed_genomes:
-            self.report.write("{0}\tremoved\n".format(gid))
+            self.report.write("{0}\t{1}\n".format(gid, STATUS_REMOVED))
 
     def compare_genomes(self,
                         shared_genomes: List[str],

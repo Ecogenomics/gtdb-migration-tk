@@ -227,6 +227,20 @@ that command is for indexing the mirror. It names only the genomes whose
 directory was written, so a `--dry_run`, which writes none, writes no
 `genome_dirs.tsv` either.
 
+`report.log` is a headerless TSV of `accession<TAB>outcome`, one genome per line.
+The outcome is `new`, `removed`, or one of the four outcomes of a comparison:
+`genomic FASTA file unchanged`, `genomic FASTA sequences unchanged`,
+`genomic FASTA file changed`, or `to_curate;<exception>: <message>`. The commands
+that come after the update take their `--report` from it and read it through
+`genomes_to_regenerate()` and `genomes_in_release()` in `update_genomes.py`
+rather than parsing it themselves: the first gives the genomes the release did
+not bring derived data with (`new` and `genomic FASTA file changed`), which is
+what `hmmsearch` and `checkm` work on; the second gives every genome
+the release holds a directory for, which is what `--all_genomes` asks for. A
+`removed` genome is not in the release and a `to_curate` genome was never copied
+into it, so neither is ever handed to a later command. A report written before
+0.0.9 opens with a domain column and is refused rather than read as empty.
+
 `--fresh` starts the release from the NCBI genome data alone: every genome of the
 mirror is copied into the new release and reported as `new`, nothing is compared
 to the previous release and no derived data is carried across, so everything
@@ -639,7 +653,7 @@ Each names the directory, inside a genome directory, that the results of that
 database are written to. Two names derive from them:
 
 ```python
-MARKER_FOLDER_SUFFIX = {'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}
+MARKER_DIR_SUFFIX = {'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}
 GTDB_DERIVED_DIRS_TO_COPY = ('prodigal', 'rna_silva_138.2', 'trna', 'rna_ltp_10_2024')
 ```
 
@@ -654,9 +668,9 @@ the base case. Those genomes are reported as `genomic FASTA sequences unchanged`
 and keep their derived data. A genome whose contig was renamed does not, its
 gene calls naming a contig the new FASTA no longer has.
 
-`MARKER_FOLDER_SUFFIX` is the default `--folder_suffix` of `hmmsearch` and
+`MARKER_DIR_SUFFIX` is the default `--dir_suffix` of `hmmsearch` and
 `top_hit`, so by default they write `prodigal/pfam_33.1_lite/` and
-`prodigal/tigrfam_15.0_lite/`; pass `--folder_suffix` only to annotate against
+`prodigal/tigrfam_15.0_lite/`; pass `--dir_suffix` only to annotate against
 a version other than the declared one. `GTDB_DERIVED_DIRS_TO_COPY` lists the
 derived data `update_genomes` carries across from the previous release when a
 genome's genomic FASTA is unchanged; the Pfam and TIGRFAM results travel inside
