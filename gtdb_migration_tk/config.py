@@ -25,8 +25,8 @@ of that database are written to, so a version left behind in one place produces
 a release whose commands read and write different directories. The version
 constants below are the one place each is declared.
 
-The marker versions are the defaults of the --folder_suffix option of hmmsearch
-and top_hit, through MARKER_FOLDER_SUFFIX, so those commands write the
+The marker versions are the defaults of the --dir_suffix option of hmmsearch
+and top_hit, through MARKER_DIR_SUFFIX, so those commands write the
 directories this file declares unless told otherwise. The rRNA versions name the
 directories in GTDB_DERIVED_DIRS_TO_COPY, the derived data carried across from
 the previous release when a genome's sequence is unchanged; the rna_silva and
@@ -45,11 +45,11 @@ TIGRFAM_VERSION = '15.0'
 SILVA_VERSION = '138.2'
 LTP_VERSION = '10_2024'
 
-# Default --folder_suffix of hmmsearch and top_hit for each marker database: the
+# Default --dir_suffix of hmmsearch and top_hit for each marker database: the
 # directory they write is pfam_<suffix>/ or tigrfam_<suffix>/ inside prodigal/,
 # and the files in it carry the same suffix. GTDB searches the reduced ("lite")
 # marker sets, hence _lite. Keyed by the value of --db.
-MARKER_FOLDER_SUFFIX = {
+MARKER_DIR_SUFFIX = {
     'pfam': '{}_lite'.format(PFAM_VERSION),
     'tigrfam': '{}_lite'.format(TIGRFAM_VERSION),
 }

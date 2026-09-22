@@ -1037,6 +1037,108 @@ class ReportOutcome(unittest.TestCase):
         self.assertNotIn('\t', status)
 
 
+class WhatTheReportIsReadFor(TempDirCase):
+    """The report as the commands that come after the update read it.
+
+    hmmsearch and checkm each held their own copy of this parse until the reader
+    below, and both were left behind by a change to the report: the domain column
+    went in 0.0.9 and they went on taking the accession from the second column,
+    and 'modified' became four comparison outcomes in 0.1.7.
+    """
+
+    def report_file(self, *rows):
+        return self.write('report.log', ''.join(row + '\n' for row in rows))
+
+    def test_a_new_genome_and_a_changed_one_have_to_be_done_again(self):
+        # the two outcomes that put a genome in the release with no derived data
+        path = self.report_file('GCA_000000002.1\t' + UG.STATUS_NEW,
+                           'GCF_000000003.1\t' + UG.STATUS_FASTA_CHANGED)
+        self.assertEqual(UG.genomes_to_regenerate(path),
+                         {'GCA_000000002.1', 'GCF_000000003.1'})
+
+    def test_a_genome_carried_across_keeps_its_derived_data(self):
+        # doing these again is the work 0.1.7 exists to avoid; a reader that asked
+        # for them would annotate the whole release every time
+        path = self.report_file('GCF_000000001.1\t' + UG.STATUS_FASTA_UNCHANGED,
+                           'GCF_000000004.1\t' + UG.STATUS_SEQUENCES_UNCHANGED)
+        self.assertEqual(UG.genomes_to_regenerate(path), set())
+
+    def test_a_genome_the_release_does_not_hold_is_never_asked_for(self):
+        # neither has a directory in the release, so naming either hands the
+        # command a path that is not there
+        path = self.report_file('GCF_000000005.1\t' + UG.STATUS_REMOVED,
+                           'GCA_000000006.1\tto_curate;OSError: [Errno 2] /gone')
+        self.assertEqual(UG.genomes_to_regenerate(path), set())
+        self.assertEqual(UG.genomes_in_release(path), set())
+
+    def test_a_to_curate_row_is_excluded_whatever_it_blames(self):
+        # the reason is written after a semicolon, which is what the old parse
+        # split the outcome on
+        for reason in ('ValueError: no entry', 'OSError: [Errno 5]', 'KeyError'):
+            path = self.report_file('GCA_000000006.1\tto_curate;' + reason)
+            self.assertEqual(UG.genomes_to_regenerate(path), set(), reason)
+
+    def test_processing_every_genome_means_every_one_the_release_holds(self):
+        # what --all_genomes asks for: the carried-across genomes as well, but
+        # still not the ones with no directory
+        path = self.report_file('GCA_000000002.1\t' + UG.STATUS_NEW,
+                           'GCF_000000001.1\t' + UG.STATUS_FASTA_UNCHANGED,
+                           'GCF_000000004.1\t' + UG.STATUS_SEQUENCES_UNCHANGED,
+                           'GCF_000000003.1\t' + UG.STATUS_FASTA_CHANGED,
+                           'GCF_000000005.1\t' + UG.STATUS_REMOVED,
+                           'GCA_000000006.1\tto_curate;OSError: gone')
+        self.assertEqual(UG.genomes_in_release(path),
+                         {'GCA_000000002.1', 'GCF_000000001.1',
+                          'GCF_000000004.1', 'GCF_000000003.1'})
+
+    def test_every_outcome_the_update_writes_is_decided_one_way_or_the_other(self):
+        # the guard that makes adding an outcome a decision rather than an
+        # oversight: a new STATUS_ constant that is in neither set fails here
+        # rather than being silently dropped from every later command
+        outcomes = {value for name, value in vars(UG).items()
+                    if name.startswith('STATUS_') and isinstance(value, str)}
+        undecided = outcomes - UG.STATUS_IN_RELEASE - {UG.STATUS_REMOVED,
+                                                       UG.STATUS_TO_CURATE}
+        self.assertEqual(undecided, set())
+
+    def test_a_report_from_before_the_domain_column_went_is_refused(self):
+        # read as though it were current it yields nothing, and the command
+        # annotates no genome while reporting success
+        path = self.report_file('BACTERIAL\tGCF_000000001.1\tnew')
+        with self.assertRaises(UG.BadReport) as caught:
+            UG.genomes_to_regenerate(path)
+        self.assertIn('report.log, line 1', str(caught.exception))
+
+    def test_a_blank_line_is_not_a_row(self):
+        path = self.report_file('GCA_000000002.1\t' + UG.STATUS_NEW, '')
+        self.assertEqual(UG.genomes_to_regenerate(path), {'GCA_000000002.1'})
+
+
+class WhatTheReportSaysAboutARealRun(ReleaseFixture, TempDirCase):
+    """The report an update writes, read back by the commands that follow it."""
+
+    def test_only_the_new_genome_has_to_be_annotated(self):
+        # the shared genome is unchanged and keeps its derived data, the removed
+        # one has left the release, and the fourth could not be compared
+        ftp, new, old, out = self.release()
+
+        UG.UpdateGenomes(out).run_comparison(ftp, new, old)
+
+        self.assertEqual(UG.genomes_to_regenerate(os.path.join(out, 'report.log')),
+                         {'GCA_000000002.1'})
+
+    def test_the_release_it_reports_is_the_release_it_wrote(self):
+        # the genomes the report puts in the release and the genomes genome_dirs.tsv
+        # gives a path for are one list; a command reading either gets the same set
+        ftp, new, old, out = self.release()
+
+        UG.UpdateGenomes(out).run_comparison(ftp, new, old)
+
+        with open(os.path.join(out, 'genome_dirs.tsv')) as handle:
+            named = {line.split('\t')[0] for line in handle}
+        self.assertEqual(UG.genomes_in_release(os.path.join(out, 'report.log')), named)
+
+
 # ----------------------------------------------------------- carrying a genome across
 
 class ComparisonOutcome(TempDirCase):

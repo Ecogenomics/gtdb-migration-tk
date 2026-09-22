@@ -29,6 +29,7 @@ from gtdb_migration_tk.biolib_lite.checksum import sha256, sha256_rb
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.pfam_search import PfamSearch
+from gtdb_migration_tk.update_genomes import genomes_to_regenerate
 from gtdb_migration_tk.utils.tools import symlink, openfile
 
 
@@ -52,39 +53,31 @@ class MarkerManager(object):
 
         self.logger = logging.getLogger('timestamp')
 
-    def run_hmmsearch(self, gtdb_genome_path_file, report, db, folder_suffix,hmm_db_path):
+    def run_hmmsearch(self, gtdb_genome_path_file, report, db, dir_suffix, hmm_db_path):
         """Identify marker genes using Pfam and TIGRfam HMMs."""
 
         name = ""
         worker = None
         if db == 'pfam':
-            marker_folder = 'pfam_{}'.format(folder_suffix)
-            full_extension = '_pfam_{}.tsv'.format(folder_suffix)
+            marker_dir = 'pfam_{}'.format(dir_suffix)
+            full_extension = '_pfam_{}.tsv'.format(dir_suffix)
             name = 'Pfam'
             self.pfam_hmm_dir = hmm_db_path
             worker = self.__pfam_worker
         elif db == 'tigrfam':
-            marker_folder = 'tigrfam_{}'.format(folder_suffix)
-            full_extension = '_tigrfam_{}.tsv'.format(folder_suffix)
+            marker_dir = 'tigrfam_{}'.format(dir_suffix)
+            full_extension = '_tigrfam_{}.tsv'.format(dir_suffix)
             name = 'Tigrfam'
             self.tigrfam_hmms = hmm_db_path
             worker = self.__tigrfam_worker
         full_gz_extension = full_extension + '.gz'
 
-        # get genomes marker as new or modified, and limit
-        # marker gene finding to this subset of genomes
-        genomes_to_consider = set()
-        for line in open(report):
-            line_split = line.strip().split('\t')
-            genome_id = line_split[1]
-            attributes = line_split[2].split(';')
-
-            for attribute in attributes:
-                if attribute == 'new' or attribute == 'modified':
-                    genomes_to_consider.add(genome_id)
+        # limit marker gene finding to the genomes the release did not bring
+        # their derived data with; update_genomes owns what its report means
+        genomes_to_consider = genomes_to_regenerate(report)
 
         self.logger.info(
-            f'Identified {len(genomes_to_consider)} genomes as new or modified.')
+            f'Identified {len(genomes_to_consider)} genomes whose markers must be searched again.')
 
         # get path to all unprocessed genome gene files
         self.logger.info('Checking genomes.')
@@ -94,7 +87,7 @@ class MarkerManager(object):
         with open(gtdb_genome_path_file,'r') as  ggpf:
             for idx,line in enumerate(tqdm(ggpf)):
                 gid,gpath,*_ = line.strip().split('\t')
-                list_genomes_tuples.append((gid,gpath,marker_folder,full_extension,genomes_to_consider,name))
+                list_genomes_tuples.append((gid,gpath,marker_dir,full_extension,genomes_to_consider,name))
 
             # get top 10 genomes
             with mp.Pool(processes=self.cpus) as pool:
@@ -121,7 +114,7 @@ class MarkerManager(object):
 
         try:
             workerProc = [mp.Process(target=worker, args=(
-                workerQueue, writerQueue, folder_suffix)) for _ in range(self.cpus)]
+                workerQueue, writerQueue, dir_suffix)) for _ in range(self.cpus)]
             writeProc = mp.Process(target=self.__progress, args=(
                 len(genome_files), writerQueue))
 
@@ -142,9 +135,9 @@ class MarkerManager(object):
             writeProc.terminate
 
     def marker_parser(self, job):
-        gid, gpath,marker_folder,full_extension,genomes_to_consider,name = job
+        gid, gpath,marker_dir,full_extension,genomes_to_consider,name = job
         prodigal_dir = os.path.join(gpath, 'prodigal')
-        marker_file = os.path.join(prodigal_dir, marker_folder, gid + full_extension)
+        marker_file = os.path.join(prodigal_dir, marker_dir, gid + full_extension)
         marker_zipped_file = marker_file + '.gz'
         if os.path.exists(marker_zipped_file):
             # verify checksum

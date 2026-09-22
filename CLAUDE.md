@@ -195,13 +195,27 @@ where each genome of a release is held locally; the selection table says which
 genomes and where NCBI serves them. Whether a tree holds what it should is
 `ncbi_genome_sync --verify`.
 
+The second file between commands is **`report.log`**, `accession<TAB>outcome`,
+which says what became of each genome and so which of them still need their
+derived data made. `update_genomes` owns both ends of it: the `STATUS_*`
+constants it writes, and `report_accessions()` with the two questions built on it
+-- `genomes_to_regenerate()` (`STATUS_REGENERATE`: `new` and
+`genomic FASTA file changed`) and `genomes_in_release()` (`STATUS_IN_RELEASE`,
+adding the two carried-across outcomes). `hmmsearch` and `checkm` call those
+rather than splitting the rows themselves; each held its own copy of the parse
+until 0.1.25, and both were left behind by a change to the report.
+`trnascan_manager.py` holds a commented-out third copy. Add an outcome and
+`tests/test_update_genomes.WhatTheReportIsReadFor` fails until it is put in one
+set or deliberately left out of both. Nothing outside `update_genomes.py` parses
+a report row.
+
 ### `config.py` is the only place a reference database version lives
 
 `PFAM_VERSION`, `TIGRFAM_VERSION`, `SILVA_VERSION` and `LTP_VERSION` each name
 the directory inside a genome directory that database's results are written to.
 Two names derive from them, and `tests/test_config.py` asserts the derivation
-holds: `MARKER_FOLDER_SUFFIX` (`{'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}`)
-is the default `--folder_suffix` of `hmmsearch` and `top_hit`, resolved in
+holds: `MARKER_DIR_SUFFIX` (`{'pfam': '33.1_lite', 'tigrfam': '15.0_lite'}`)
+is the default `--dir_suffix` of `hmmsearch` and `top_hit`, resolved in
 `main.py`, so those commands write `prodigal/pfam_33.1_lite/` unless told
 otherwise; `GTDB_DERIVED_DIRS_TO_COPY` is the derived data `FTPTools` carries
 across from the previous release when a genome's sequences are unchanged. The
