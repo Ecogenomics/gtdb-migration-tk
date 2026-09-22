@@ -44,10 +44,10 @@ class TempDirCase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def manager(self, cpus=1, batch_size=10000, **kwargs):
+    def manager(self, cpus=1, batch_size=10000, tmp_dir=None, **kwargs):
         # the real one checks for prodigal and hmmsearch on PATH and exits without them
         with mock.patch.object(M, 'check_dependencies'):
-            return M.MarkerManager(tmp_dir=self.dir, cpus=cpus,
+            return M.MarkerManager(tmp_dir=tmp_dir or self.dir, cpus=cpus,
                                    batch_size=batch_size, **kwargs)
 
     def genome(self, gid, proteins=b'>gene\nMA\n', annotated=False, checksum=True,
@@ -561,6 +561,59 @@ class WhatABatchRecordsOfItself(TempDirCase):
         self.assertEqual(canary['searched'], '1')
         self.assertEqual(canary['already_searched'], '1')
         self.assertEqual(canary['not_searched'], '1')
+
+
+class WhereTheScratchCopiesGo(TempDirCase):
+    """--tmp_dir, which the workers ignored.
+
+    Each genome's proteins are decompressed before they are searched, one
+    directory per genome in flight. Both workers called tempfile.mkdtemp() with
+    no dir, so every copy went to /tmp whatever --tmp_dir said -- on a machine
+    running -c 40 that is forty decompressed proteomes in /tmp at a time, and a
+    scratch directory chosen to keep them off it did nothing.
+    """
+
+    class Stop(Exception):
+        """Raised in place of making the directory, to stop the worker there."""
+
+    def scratch_dir_of(self, worker_name):
+        """Where the named worker asks for its scratch directory.
+
+        @return: the `dir` it passed to tempfile.mkdtemp().
+        """
+
+        manager = self.manager()
+        asked = {}
+
+        def record(dir=None, **kwargs):
+            asked['dir'] = dir
+            raise self.Stop()
+
+        queue_in = mock.Mock()
+        queue_in.get.return_value = os.path.join(
+            self.genome('GCF_000000001.1'), 'prodigal', 'GCF_000000001.1_protein.faa.gz')
+        worker = getattr(manager, '_MarkerManager' + worker_name)
+
+        with mock.patch.object(M.tempfile, 'mkdtemp', record):
+            with self.assertRaises(self.Stop):
+                worker(queue_in, mock.Mock(), SUFFIX)
+
+        return asked['dir']
+
+    def test_the_pfam_worker_unzips_under_the_tmp_dir_it_was_given(self):
+        self.assertEqual(self.scratch_dir_of('__pfam_worker'), self.dir)
+
+    def test_the_tigrfam_worker_unzips_under_the_tmp_dir_it_was_given(self):
+        self.assertEqual(self.scratch_dir_of('__tigrfam_worker'), self.dir)
+
+    def test_a_tmp_dir_that_is_not_there_is_made_before_any_batch_is_claimed(self):
+        # met once, at the start, rather than once per genome inside a batch this
+        # machine has already taken and would then fail
+        scratch = os.path.join(self.dir, 'scratch', 'deeper')
+
+        self.manager(tmp_dir=scratch)
+
+        self.assertTrue(os.path.isdir(scratch))
 
 
 class ChoosingTheMarkerDatabase(TempDirCase):

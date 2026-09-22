@@ -131,9 +131,12 @@ class MarkerManager(object):
         Parameters
         ----------
         tmp_dir : str
-            Directory for scratch files; no results are written here.
+            Directory each genome's proteins are decompressed into before they
+            are searched, one directory per genome in flight and removed after.
+            No results are written here.
         cpus : int
-            How many genomes are annotated at once.
+            How many genomes are annotated at once, and so how many decompressed
+            proteomes sit in tmp_dir at once.
         batch_size : int
             Genomes per batch.
         reclaim : bool
@@ -154,6 +157,11 @@ class MarkerManager(object):
         self.heartbeat: float = heartbeat
 
         check_dependencies(['prodigal', 'hmmsearch'])
+
+        # made here rather than by the first worker that wants it: a --tmp_dir
+        # that cannot be made would otherwise be met once per genome, inside a
+        # batch already claimed, and would fail every batch this machine took
+        make_sure_path_exists(self.tmp_dir)
 
         # identify TIGRfam and Pfam marker genes comprising the bac120, ar122, ar53, or
         # rp2 marker sets using a carefully selected subset of HMMs. Which of the two is
@@ -701,10 +709,9 @@ class MarkerManager(object):
             output_hit_file = os.path.join(
                 assembly_dir, pfam_version, filename.replace(self.protein_file_ext, pfam_extension))
             #because the gene file is a zipped file, we need to unzip it in a temporary directory
-            temp_dir = tempfile.mkdtemp()
+            temp_dir = tempfile.mkdtemp(dir=self.tmp_dir)
             try:
                 temp_gene_file = os.path.join(temp_dir, filename[0:-3])
-                print(temp_gene_file)
 
                 # if size of temp_gene_file is 0, then skip hmmsearch
                 if os.stat(gene_file).st_size == 0:
@@ -887,7 +894,7 @@ class MarkerManager(object):
                 self.protein_file_ext, tigrfam_out))
 
             #because the gene file is a zipped file, we need to unzip it in a temporary directory
-            temp_dir = tempfile.mkdtemp()
+            temp_dir = tempfile.mkdtemp(dir=self.tmp_dir)
             try:
                 temp_gene_file = os.path.join(temp_dir, filename[0:-3])
                 with gzip.open(gene_file, 'rb') as f_in:
