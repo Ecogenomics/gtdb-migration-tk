@@ -1,3 +1,10 @@
+0.1.24
+- The tests of the shared batching machinery move from tests/test_trans_table.py to tests/test_batching.py, which is where batching.py's contracts belong now that it is neither command's. They run under a BatchLayout naming no real command: the mechanism is told which files a batch keeps, and a test that passed only under trans_table's filenames would be testing trans_table rather than the batching. tests/test_ncbi_utils.py takes the genomic_fasta tests, that function having moved there
+
+0.1.23
+- The Prodigal wrapper builds a genome's results beside their destination and moves them onto it, rather than writing into it. os.replace() is atomic within a filesystem, so a reader -- the next run deciding whether the genome still needs calling, or the command that takes the release -- sees either the whole file or the one that was there before, and never a half-written one. These files are the release itself and not scratch: a half-written one beside a genome is swept up by nothing
+- Two writers can meet on one genome. prodigal cuts a release into batches of disjoint genomes, so it takes two machines holding the SAME batch, which --reclaim does deliberately and an expired lease does to a machine that has stalled rather than stopped. This does not make that safe and is not meant to -- the proteins of one and the .sha256 of the other still pair up wrongly -- but the mismatch is then DETECTED, the digest not matching the file, and the genome is called again by the next run, where before a corrupt gzip was carried into the release
+
 0.1.22
 - The second progress bar of a prodigal batch says "Checking called genes" rather than "Checking genomes", which the first one says. They ask different questions -- the first stats the genomic FASTA going in, on threads, to find the genomes the release does not hold; the second reads the called genes already sitting there, on the worker processes, to find the genomes that need no calling -- and two bars a batch under one label left a reader unable to tell which pass they were watching
 

@@ -246,7 +246,9 @@ shadowed by it and never importable. Put small shared helpers in
   does. Keep that up when touching them.
 - Tests live in `tests/test_<module>.py`, one `TempDirCase` base for anything
   touching disk. Test names read as sentences about the contract that would
-  otherwise break silently in production.
+  otherwise break silently in production. `tests/test_batching.py` drives
+  `batching.py` under a `BatchLayout` naming no real command, so that a test
+  passing only under `trans_table`'s filenames would be testing `trans_table`.
 - Commit messages use `feat:`, `fix:`, `chore:` prefixes: a subject line, then
   a body explaining why the change is shaped as it is, as the module docstrings
   do. Work happens on feature branches merged to `master` by pull request, opened
