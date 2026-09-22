@@ -290,7 +290,7 @@ it on a file server shared with other work.
 | `prodigal` | Call genes using Prodigal, under the translation table `trans_table` predicted |
 | `hmmsearch` | Run HMMER on new and modified genomes |
 | `top_hit` | Generate TopHit file for TIGRFAM or Pfam |
-| `metadata` | Generate metadata derived from nucleotide and protein files |
+| `genomic_metadata` | Generate metadata derived from nucleotide and protein files |
 | `rna_silva` | Identify and classify 16S, 23S and 5S rRNA genes against SILVA |
 | `rna_ltp` | Identify and classify 16S rRNA genes against LTP |
 | `update_silva` | Update taxonomy files and BLAST database from the latest SILVA release |
@@ -590,6 +590,49 @@ Both `--db` runs write into `prodigal/` in each genome directory, so `top_hit` a
 everything downstream read them exactly where they always have. `--out_dir` holds
 the state of the run and nothing else, which is why two machines on different
 batches never write to the same place.
+
+`genomic_metadata` derives each genome's nucleotide statistics (GC, genome size, N50) and
+gene statistics (protein count, coding bases, coding density) and writes them into
+the genome's own directory as `metadata.genome_nt.tsv` and
+`metadata.genome_gene.tsv`, with a `.desc.tsv` beside each naming the fields.
+`create_tables` is what gathers them afterwards. It reads two files per genome:
+
+| File | Written by |
+| --- | --- |
+| `<assembly>_genomic.fna.gz` | the mirror, carried across by `update_genomes` |
+| `prodigal/<gid>_protein.gff.gz` | `prodigal` |
+
+So `genomic_metadata` waits on `prodigal` and on nothing else. It reads no marker table
+and no rRNA result, and can run while `hmmsearch` is still going -- the two write
+to different places inside `prodigal/`.
+
+**A genome missing a file is reported, not fatal.** The metadata of a release is
+generated while the gene calling of its last genomes is still finishing, and until
+0.1.28 a genome whose files were not there ended the command: the check called
+`sys.exit()` from inside a pool worker, on the first such genome, throwing away
+however many of the million were already done. Such a genome is now warned about
+and named in `metadata_missing_files.tsv` in `--out_dir`, one row per missing file:
+
+| `missing` | |
+| --- | --- |
+| `genomic_fasta` | the genome's sequences are not in the mirror |
+| `protein_gff` | `prodigal` has not called this genome's genes |
+
+with the path that was looked for in the third column. The file is written even
+when there is nothing in it, so a release with nothing missing says so. `--out_dir`
+is required and holds that report alone; the metadata itself goes into the genome
+directories as it always has.
+
+How much of a genome is done follows from which files it has. The nucleotide
+statistics need only the FASTA and are written whenever the FASTA is there, so a
+genome whose genes are not called yet still contributes its `metadata.genome_nt.tsv`
+-- `create_tables` reads the two files independently, and that half is not
+calculated again once `prodigal` catches up. The gene statistics are a coding
+density, which needs the genome size as well as the GFF, so a genome with no
+sequences yields neither file and is left untouched.
+
+`--cpus` is a count of genomes in flight, not of threads: each is a worker process
+handling whole genomes one after another, and nothing within a genome is parallel.
 
 ### Genome quality
 

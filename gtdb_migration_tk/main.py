@@ -246,7 +246,9 @@ class OptionsParser():
 
     def generate_metadata(self, options):
         p = MetadataManager(options.cpus)
-        p.generate_metadata(options.gtdb_genome_path_file)
+        check_file_exists(options.gtdb_genome_path_file)
+        make_sure_path_exists(options.output_dir)
+        p.generate_metadata(options.gtdb_genome_path_file, options.output_dir)
 
     def create_metadata_tables(self, options):
         p = MetadataTable(options.silva_version)
@@ -463,7 +465,7 @@ class OptionsParser():
             self.run_hmmsearch(options)
         elif options.subparser_name == 'top_hit':
             self.run_tophit(options)
-        elif options.subparser_name == 'metadata':
+        elif options.subparser_name == 'genomic_metadata':
             self.generate_metadata(options)
         elif options.subparser_name == 'create_tables':
             self.create_metadata_tables(options)

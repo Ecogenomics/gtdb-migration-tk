@@ -20,14 +20,42 @@ import datetime
 import logging
 import multiprocessing as mp
 import ntpath
-from typing import List, Optional, Set, TextIO
+from typing import Dict, List, Optional, Sequence, Set, TextIO, Tuple
 
 from tqdm import tqdm
 
-from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists, get_num_lines
+from gtdb_migration_tk.batching import write_table
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, get_num_lines
 from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 from gtdb_migration_tk.genometk_lite.metadata_genes import MetadataGenes
 from gtdb_migration_tk.genometk_lite.metadata_nucleotide import MetadataNucleotide
+
+
+# What a genome needed and did not have. The metadata of a release is generated
+# while the gene calling of its last genomes is still finishing, and a genome
+# whose files are not there yet is a straggler rather than a broken run: it is
+# named here and passed over, where check_file_exists() would have ended the
+# command on the first one and thrown away the million genomes already done. The
+# file is what makes that safe -- a warning in a log of a million lines is not
+# something anyone will find, and what the reader needs is the list.
+MISSING_FILES_NAME = 'metadata_missing_files.tsv'
+MISSING_FILES_HEADER = ('genome_id', 'missing', 'path')
+
+# The two files a genome is expected to have, and what the log calls each. The
+# genomic FASTA comes from the mirror; the GFF is the one prodigal wrote.
+MISSING_GENOMIC_FASTA = 'genomic_fasta'
+MISSING_PROTEIN_GFF = 'protein_gff'
+MISSING_LABEL: Dict[str, str] = {MISSING_GENOMIC_FASTA: 'genomic FASTA',
+                                 MISSING_PROTEIN_GFF: 'called genes (GFF)'}
+
+# One genome as _producer() receives it, the tuple being what
+# mp.Pool.imap_unordered can carry: accession, its genomic FASTA, and the GFF of
+# the genes prodigal called on it.
+MetadataJob = Tuple[str, str, str]
+
+# One file a genome should have had: accession, which of the two it is, and
+# where it was looked for. A row of MISSING_FILES_NAME.
+MissingFile = Tuple[str, str, str]
 
 
 class MetadataTable(object):
@@ -548,24 +576,32 @@ class MetadataManager(object):
         self.starttime: Optional[datetime.datetime] = None
 
 ########### GENERATE METADATA ######
-    def generate_metadata(self, gtdb_genome_path_file: str) -> None:
+    def generate_metadata(self, gtdb_genome_path_file: str, out_dir: str) -> None:
         """Calculate the nucleotide and gene metadata of every genome of a release.
 
         The results are written into each genome directory rather than gathered
-        here; create_metadata_tables() is what gathers them afterwards.
+        here; create_metadata_tables() is what gathers them afterwards. What
+        --out_dir holds is the account of the run: which genomes could not be
+        done, and why.
 
         Parameters
         ----------
         gtdb_genome_path_file : str
             genome_dirs file of the release: accession, directory, canonical
             accession, one genome per line.
+        out_dir : str
+            Directory MISSING_FILES_NAME is written to, made if it does not
+            exist. No metadata is written here.
 
         @return: nothing; two tables and their descriptions are written into
-                 each genome directory.
+                 each genome directory, and the genomes missing a file are
+                 written to out_dir.
         """
 
+        make_sure_path_exists(out_dir)
+
         self.starttime = datetime.datetime.utcnow().replace(microsecond=0)
-        input_files = []
+        input_files: List[MetadataJob] = []
         with open(gtdb_genome_path_file) as ggpf:
             for line in tqdm(ggpf,total=get_num_lines(gtdb_genome_path_file)):
                 gid,gpath,*_ = line.strip().split('\t')
@@ -573,7 +609,7 @@ class MetadataManager(object):
 
                 genome_file = os.path.join(gpath, assembly_id + '_genomic.fna.gz')
                 gff_file = os.path.join(gpath, 'prodigal', gid + '_protein.gff.gz')
-                input_files.append([genome_file, gff_file])
+                input_files.append((gid, genome_file, gff_file))
 
         # process each genome. imap_unordered rather than the vendored Parallel
         # class: a producer that raised there killed its worker silently, and the
@@ -581,24 +617,91 @@ class MetadataManager(object):
         # given. Here the exception reaches this loop and stops the command.
         self.logger.info('Generating metadata for {:,} genomes:'.format(
             len(input_files)))
+        missing: List[MissingFile] = []
         with mp.Pool(processes=self.cpus) as pool:
-            for _ in tqdm(pool.imap_unordered(self._producer, input_files),
-                          total=len(input_files), ncols=100, unit='genome'):
-                pass
+            for result in tqdm(pool.imap_unordered(self._producer, input_files),
+                               total=len(input_files), ncols=100, unit='genome'):
+                # warned here rather than in the worker: several processes
+                # appending to one log file interleave, and the parent is
+                # reading every result anyway
+                for gid, what, missing_file in result:
+                    self.logger.warning('{} has no {}: {}'.format(
+                        gid, MISSING_LABEL[what], missing_file))
+                missing.extend(result)
 
-    def _producer(self, input_files: List[str]) -> str:
-        """Process each genome.
+        self.report_missing(missing, len(input_files), out_dir)
+
+    def report_missing(self,
+                       missing: Sequence[MissingFile],
+                       genome_count: int,
+                       out_dir: str) -> str:
+        """Name the genomes that were missing a file, once, for the release.
+
+        Written whether or not anything was missing, so that a release with
+        nothing missing says so rather than leaving the reader to wonder
+        whether the run got that far.
 
         Parameters
         ----------
-        input_files : list of str
-            The genome's genomic FASTA and the GFF of the genes Prodigal called.
+        missing : sequence of MissingFile
+            What every genome was missing, gathered from the workers.
+        genome_count : int
+            Genomes the run was given, for the tally.
+        out_dir : str
+            Directory the report is written to.
 
-        @return: the genome directory the metadata was written into.
+        @return: the file written.
         """
 
-        genome_file, gff_file = input_files
+        report = os.path.join(out_dir, MISSING_FILES_NAME)
+        write_table(missing, report, MISSING_FILES_HEADER)
+
+        if missing:
+            genomes = len({gid for gid, _, _ in missing})
+            self.logger.warning(
+                '{:,} of {:,} genomes were missing a file; they are named in {}.'.format(
+                    genomes, genome_count, report))
+        else:
+            self.logger.info(
+                'Every one of {:,} genomes had both of its files; {} is empty.'.format(
+                    genome_count, report))
+
+        return report
+
+    def _producer(self, job: MetadataJob) -> List[MissingFile]:
+        """Process each genome.
+
+        A genome missing a file is reported and passed over rather than ending
+        the run. Which files are there decides how much of the genome can be
+        done: the gene metadata needs the GFF and the genome size both, so it
+        needs the two files, while the nucleotide metadata needs only the
+        FASTA and is written whenever the FASTA is there. The two are separate
+        files that create_metadata_tables() reads independently, so half a
+        genome is worth having and is not done again when prodigal catches up.
+
+        Parameters
+        ----------
+        job : MetadataJob
+            The genome's accession, its genomic FASTA and the GFF of the genes
+            Prodigal called.
+
+        @return: the files this genome should have had and did not, which is
+                 empty for a genome that was processed in full.
+        """
+
+        gid, genome_file, gff_file = job
         full_genome_dir, _ = ntpath.split(genome_file)
+
+        missing: List[MissingFile] = []
+        if not os.path.isfile(genome_file):
+            missing.append((gid, MISSING_GENOMIC_FASTA, genome_file))
+        if not os.path.isfile(gff_file):
+            missing.append((gid, MISSING_PROTEIN_GFF, gff_file))
+
+        # without the sequences there is nothing to calculate at all, and the
+        # genome directory is left as it was found -- including its old log
+        if any(what == MISSING_GENOMIC_FASTA for _, what, _ in missing):
+            return missing
 
         # clean up old log files
         log_file = os.path.join(full_genome_dir, 'genometk.log')
@@ -607,9 +710,10 @@ class MetadataManager(object):
 
         # calculate metadata
         self.nucleotide(genome_file,full_genome_dir)
-        self.gene(genome_file,gff_file,full_genome_dir)
+        if not missing:
+            self.gene(genome_file,gff_file,full_genome_dir)
 
-        return full_genome_dir
+        return missing
 
     def nucleotide(self, genome_file: str, output_dir: str) -> None:
         """Calculate metadata derived from one genome's nucleotide sequences.
@@ -626,7 +730,8 @@ class MetadataManager(object):
                  under output_dir.
         """
 
-        check_file_exists(genome_file)
+        # whether the file is there is _producer()'s to decide: it reports a
+        # genome that has not got one rather than ending the release on it
         make_sure_path_exists(output_dir)
 
         meta_nuc = MetadataNucleotide()
@@ -666,8 +771,8 @@ class MetadataManager(object):
                  written under output_dir.
         """
 
-        check_file_exists(genome_file)
-        check_file_exists(gff_file)
+        # as nucleotide(): _producer() calls this only for a genome that has
+        # both of its files
         make_sure_path_exists(output_dir)
 
         meta_genes = MetadataGenes()

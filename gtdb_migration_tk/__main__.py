@@ -57,18 +57,18 @@ def print_help():
       update_genomes -> Update RefSeq and GenBank genomes from the NCBI FTP mirror.
 
     Call genes:
-      call_genes_wf  -> Full call genes workflow (prodigal -> hmmsearch -> top_hit).
-      trans_table    -> Predict translation table for each genome using gTranslate.
-      prodigal       -> Call genes using Prodigal.
-      hmmsearch      -> Search Tigrfam/Pfam markers genes and generate tophit files.
-      top_hit        -> Generate tophit files.
-      metadata       -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
-      rna_silva      -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA.
-      rna_ltp        -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
-      trnascan       -> Identifies tRNAs in genomes.
-      join_checkm    -> Join CheckM output files for different releases.
-      checkm         -> Estimates the quality of the new genomes.
-      busco          -> Estimate quality of new fungal genomes.
+      call_genes_wf    -> Full call genes workflow (prodigal -> hmmsearch -> top_hit).
+      trans_table      -> Predict translation table for each genome using gTranslate.
+      prodigal         -> Call genes using Prodigal.
+      hmmsearch        -> Search Tigrfam/Pfam markers genes and generate tophit files.
+      top_hit          -> Generate tophit files.
+      genomic_metadata -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
+      rna_silva        -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA.
+      rna_ltp          -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
+      trnascan         -> Identifies tRNAs in genomes.
+      join_checkm      -> Join CheckM output files for different releases.
+      checkm           -> Estimates the quality of the new genomes.
+      busco            -> Estimate quality of new fungal genomes.
       
     Access to Database:
      update_db          -> Update the GTDB database.
@@ -800,11 +800,12 @@ def get_main_parser():
             __cpus(grp)
 
     # Generate metadata for each genome
-    with subparser(sub_parsers, 'metadata',
+    with subparser(sub_parsers, 'genomic_metadata',
                    'Generate metadata derived from nucleotide (e.g., GC) '
                    'and protein (e.g., gene count) files.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
