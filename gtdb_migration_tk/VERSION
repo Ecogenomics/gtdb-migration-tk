@@ -1,5 +1,6 @@
 0.1.28
 - the five files checked in with CRLF line endings are LF, like the other eighty. metadata_manager.py and strains.py held both, so a single change anywhere in either could rewrite the whole file in the diff and bury itself. Nothing but the endings changed in seq_tk.py, database_configuration/__init__.py, lpsn.py and strains.py
+- every argparse help string and subcommand description in __main__.py ends with a period, as does every line of the command table in print_help(). Fifty-eight of them did not, and of the thirty-six lines of the command table exactly one did, so the punctuation looked as though it distinguished something. Only the punctuation changed; no help text was reworded
 
 0.1.27
 - hmmsearch takes an --out_dir and cuts the release into batches under it, the same machinery trans_table and prodigal use (batching.py), so the marker search can be spread over several machines. Several machines given the same --out_dir divide the release between them, each claiming batches no other holds; --batch_size, --reclaim, --lease and --all behave as they do for prodigal, and a batch is skipped once it has SUCCESS. --out_dir holds the state of the run and nothing else: the marker tables go into each genome's prodigal/ directory as they always have, which is why two machines on different batches never write to the same place
