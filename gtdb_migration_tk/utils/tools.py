@@ -1071,8 +1071,6 @@ class Tools(object):
             raise RuntimeError("%r failed, status code %s stdout %r stderr %r" % (
                 cmd_to_run, proc.returncode, stdout, stderr))
 
-        print('Done.')
-
     def check_db_population(self, metadata, id_last_genome, log_file):
         # we parse the metadata file to get the last genome id
         pass

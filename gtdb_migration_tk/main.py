@@ -374,7 +374,6 @@ class OptionsParser():
     def update_type_designation(self, options):
         p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
         p.update_type_designation()
-        self.logger.info('Done.')
 
     def update_propagated_tax(self, options):
         p = Propagate(options.hostname, options.user, options.password, options.db)
