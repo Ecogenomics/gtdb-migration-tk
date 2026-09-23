@@ -513,7 +513,9 @@ why two machines on different batches never write to the same place:
     RUNNING / SUCCESS / FAILED        as in trans_table
     prodigal.log                      what this command did to this batch
     not_called.tsv                    genomes of this batch that got no genes
+    meta_fallback.tsv                 genomes of this batch called in meta mode
   prodigal_not_called.tsv             the whole release, once every batch has SUCCESS
+  prodigal_meta_fallback.tsv          the whole release, once every batch has SUCCESS
 ```
 
 `prodigal_not_called.tsv` names every genome the release has no genes for, with
@@ -521,11 +523,28 @@ the reason: `no_translation_table`, `no_genomic_fasta`, or `prodigal_failed`. Th
 next command needs to know which genomes have no proteins, and it should not have
 to look in 135 directories to find out.
 
-**A genome Prodigal refuses costs that genome and not its batch.** It is named
-`prodigal_failed` and what Prodigal said is in the log; the other ten thousand
-genomes of the batch are called as usual. A batch of several genomes in which
-EVERY one was refused is failed instead, that being Prodigal not working on the
-machine rather than a batch of difficult genomes.
+**A genome single mode refuses is called in meta mode.** Single mode trains
+Prodigal's model on the genome itself and is what a genome big enough to train on
+is called under; it refuses a draft assembly it cannot train on — `saw too many
+regions of N's` — however ordinary the bases between the gaps. Meta mode uses
+Prodigal's precalculated parameters instead, under the SAME translation table.
+Eleven genomes of one 2014 submission of N-rich actinomycetes, 9 to 13 Mb each,
+had been called under neither mode since 2020; meta mode calls eight to twelve
+thousand genes for each of them. gTranslate falls back the same way.
+
+Those genomes are named in `prodigal_meta_fallback.tsv` under `--out_dir`, with
+what single mode said about each, and each one's own
+`prodigal/prodigal_translation_table.tsv` gains a `prodigal_mode` line saying the
+same thing. Their proteins were called from precalculated parameters rather than
+from a model trained on the genome, and afterwards the proteome looks like any
+other, so unless the run says which genomes those were nothing downstream can
+tell. A genome called as asked gets no such line.
+
+**A genome Prodigal refuses costs that genome and not its batch.** Where neither
+mode will call it, it is named `prodigal_failed` and what both modes said is in
+the log; the other ten thousand genomes of the batch are called as usual. A batch
+of several genomes in which EVERY one was refused is failed instead, that being
+Prodigal not working on the machine rather than a batch of difficult genomes.
 
 A rerun skips finished batches rather than re-reading the proteins of the whole
 release, which is what batching buys over the per-genome checksum alone. The

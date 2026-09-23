@@ -24,8 +24,12 @@ from gtdb_migration_tk import batching as B
 from gtdb_migration_tk import prodigal_manager as P
 
 
+# as ConsumerData reaches the manager: meta_fallback is what single mode said
+# about a genome meta mode called instead, and None for a genome called as asked
 Summary = collections.namedtuple(
-    'Summary', 'best_translation_table coding_density_4 coding_density_11')
+    'Summary',
+    'best_translation_table coding_density_4 coding_density_11 meta_fallback',
+    defaults=(None,))
 
 
 class StubProdigal:
@@ -36,6 +40,10 @@ class StubProdigal:
     # accessions the stub answers for as the real wrapper answers for a genome
     # Prodigal would not call: no results, and a reason in the second return value
     refuse = set()
+
+    # accession to what single mode said about it, for the genomes the stub
+    # answers for as the wrapper answers for one meta mode called instead
+    fell_back = {}
 
     def __init__(self, cpus=1):
         self.cpus = cpus
@@ -60,7 +68,9 @@ class StubProdigal:
                 with open(task.checksum_file, 'w') as handle:
                     handle.write(P.sha256_rb(
                         gzip.GzipFile(fileobj=open(task.aa_gene_file, 'rb'))) + '\n')
-            summary_stats[task.genome_id] = Summary(task.translation_table, -1, -1)
+            summary_stats[task.genome_id] = Summary(
+                task.translation_table, -1, -1,
+                StubProdigal.fell_back.get(task.genome_id))
 
         return summary_stats, failed
 
@@ -91,6 +101,7 @@ class TempDirCase(unittest.TestCase):
         self._check, P.check_dependencies = P.check_dependencies, lambda *a, **k: True
         StubProdigal.last_tasks = None
         StubProdigal.refuse = set()
+        StubProdigal.fell_back = {}
 
     def tearDown(self):
         P.Prodigal = self._prodigal
@@ -341,6 +352,105 @@ class TranslationTableFileTests(TempDirCase):
             self.genome_dirs(one), self.summary(('GCF_000000001.1', '11')),
                 self.out_dir)
         self.assertNotIn('coding_density', self.written_table(one[1]))
+
+
+class MetaFallbackReportTests(TempDirCase):
+    """Which genomes were called in meta mode, and where that is said.
+
+    Their genes come from Prodigal's precalculated parameters rather than from a
+    model trained on the genome. The proteome looks like any other afterwards, so
+    unless the run says which genomes those were, nothing downstream can tell.
+    """
+
+    def release(self, *accessions):
+        genomes = [self.genome(a) for a in accessions]
+        return (self.genome_dirs(*genomes),
+                self.summary(*[(a, '11') for a in accessions]),
+                genomes)
+
+    def release_file(self):
+        path = os.path.join(self.out_dir, P.META_FALLBACK_RELEASE_NAME)
+        if not os.path.exists(path):
+            return None
+        with open(path) as handle:
+            return handle.read().splitlines()
+
+    def test_a_genome_that_fell_back_is_named_for_the_release(self):
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        StubProdigal.fell_back = {'GCF_000000002.1': "saw too many regions of N's"}
+
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertEqual(self.release_file(),
+                         ['genome_id\treason',
+                          "GCF_000000002.1\tsaw too many regions of N's"])
+
+    def test_the_batch_records_its_own_before_the_release_does(self):
+        paths, summary, _ = self.release('GCF_000000001.1')
+        StubProdigal.fell_back = {'GCF_000000001.1': "saw too many regions of N's"}
+
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        batch_file = os.path.join(self.out_dir, 'batch_000001',
+                                  P.META_FALLBACK_NAME)
+        with open(batch_file) as handle:
+            self.assertEqual(handle.read().splitlines()[1:],
+                             ["GCF_000000001.1\tsaw too many regions of N's"])
+
+    def test_the_release_file_is_written_with_no_rows_where_nothing_fell_back(self):
+        # a release in which nothing fell back says so, rather than leaving a
+        # reader to wonder how far the run got
+        paths, summary, _ = self.release('GCF_000000001.1')
+
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertEqual(self.release_file(), ['genome_id\treason'])
+
+    def test_the_genome_records_the_mode_its_genes_were_called_in(self):
+        paths, summary, genomes = self.release('GCF_000000001.1')
+        StubProdigal.fell_back = {'GCF_000000001.1': "saw too many regions of N's"}
+
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        written = self.written_table(genomes[0][1])
+        self.assertIn('{}\t{}'.format(P.MODE_FIELD, P.MODE_META), written)
+        self.assertIn("saw too many regions of N's", written)
+        # and still says what table it was called under, which the fallback keeps
+        self.assertIn('best_translation_table\t11', written)
+
+    def test_a_genome_called_as_asked_says_nothing_about_the_mode(self):
+        # the file of every other genome of the release is what it has always been
+        paths, summary, genomes = self.release('GCF_000000001.1')
+
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertNotIn(P.MODE_FIELD, self.written_table(genomes[0][1]))
+
+    def test_the_run_says_how_many_genomes_fell_back(self):
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        StubProdigal.fell_back = {'GCF_000000001.1': "saw too many regions of N's",
+                                  'GCF_000000002.1': "saw too many regions of N's"}
+
+        with self.assertLogs('timestamp', level='WARNING') as captured:
+            P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertIn("2 genome(s) of the release were called in Prodigal's meta mode",
+                      '\n'.join(captured.output))
+
+    def test_a_genome_that_fell_back_still_counts_as_called(self):
+        # it has proteins, and they are the release's proteins for that genome
+        paths, summary, _ = self.release('GCF_000000001.1')
+        StubProdigal.fell_back = {'GCF_000000001.1': "saw too many regions of N's"}
+
+        with self.assertLogs('timestamp', level='INFO') as captured:
+            P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertIn('1 genome(s) had their genes called',
+                      '\n'.join(captured.output))
+
+        # and is named nowhere as a genome the release has no genes for
+        with open(os.path.join(self.out_dir, P.NOT_CALLED_RELEASE_NAME)) as handle:
+            self.assertEqual(handle.read().splitlines()[1:], [])
 
 
 if __name__ == '__main__':

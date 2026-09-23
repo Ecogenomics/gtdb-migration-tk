@@ -5,12 +5,18 @@ What is tested here is how the wrapper FILES a genome's results. The gene callin
 is Prodigal's business; leaving a half-written protein file in a genome directory
 of the release, where nothing sweeps it up and the next command reads it, is the
 wrapper's.
+
+The meta mode fallback is tested against a Prodigal of a few lines of shell, put
+on PATH for the test: what matters is what the wrapper does with an exit status
+and with a mode, and a stub that answers on its argv tests that where a mocked
+subprocess would only test the mock.
 """
 
 import gzip
 import hashlib
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -145,6 +151,162 @@ class CompressToTests(TempDirCase):
         self.assertEqual(len(staged), 1)
         self.assertEqual(os.path.dirname(staged[0]),
                          os.path.dirname(destination))
+
+
+class MetaFallbackTests(TempDirCase):
+    """Single mode trains on the genome; meta mode answers for what it refuses.
+
+    Eleven genomes of one 2014 submission of N-rich actinomycetes, 9 to 13 Mb
+    each, were called by neither mode in r237: Prodigal exits 52 on them saying
+    "saw too many regions of N's", and the empty protein file it leaves behind was
+    carried forward from release to release. Meta mode calls eight to twelve
+    thousand genes for each of them.
+    """
+
+    def prodigal(self, single_exit=0, meta_exit=0, complaint="too many N's",
+                 read_stdin=True):
+        """A Prodigal of a few lines of shell, first on PATH for this test.
+
+        It records its argv for each run, answers on the mode it was given, and
+        writes a GFF to stdout where it succeeds.
+
+        Parameters
+        ----------
+        single_exit : int
+            What it exits with under -p single.
+        meta_exit : int
+            What it exits with under -p meta.
+        complaint : str
+            What it says on stderr where it exits non-zero.
+        read_stdin : bool
+            Whether it reads the genome at all. A Prodigal that refuses one
+            without reading it closes stdin while the wrapper is still writing.
+
+        @return: the file its argv are recorded in, one run per line.
+        """
+
+        argv_log = os.path.join(self.dir, 'argv.log')
+        script = os.path.join(self.dir, 'bin', 'prodigal')
+        os.makedirs(os.path.dirname(script), exist_ok=True)
+        with open(script, 'w') as handle:
+            handle.write(
+                '#!/bin/bash\n'
+                'echo "$@" >> {log}\n'
+                'pwd -P > {cwd}\n'
+                'mode=single; for a in "$@"; do [ "$a" = meta ] && mode=meta; done\n'
+                '{read_in}\n'
+                'if [ $mode = single ]; then code={single}; else code={meta}; fi\n'
+                'if [ $code -ne 0 ]; then echo "Error: {complaint}" >&2; exit $code; fi\n'
+                'echo "##gff-version 3"\n'
+                'for f in "$@"; do case $prev in -a|-d) : > "$f";; esac; prev=$f; done\n'
+                'exit 0\n'.format(
+                    log=argv_log, cwd=os.path.join(self.dir, 'cwd'),
+                    single=single_exit, meta=meta_exit,
+                    complaint=complaint,
+                    read_in='cat > /dev/null' if read_stdin else 'true'))
+        os.chmod(script, os.stat(script).st_mode | stat.S_IEXEC)
+
+        self.addCleanup(os.environ.__setitem__, 'PATH', os.environ['PATH'])
+        os.environ['PATH'] = os.path.dirname(script) + os.pathsep + os.environ['PATH']
+        return argv_log
+
+    def genome(self, bases=b'ACGT' * 1000):
+        path = os.path.join(self.dir, 'genome.fna.gz')
+        with gzip.open(path, 'wb') as handle:
+            handle.write(b'>contig\n' + bases + b'\n')
+        return path
+
+    def call(self, table=11, mode='single'):
+        """Run the wrapper's one attempt-and-fall-back over the stub.
+
+        @return: what run_prodigal() returned.
+        """
+
+        cmd = ['prodigal', '-m', '-p', mode, '-q', '-f', 'gff', '-g', str(table),
+               '-a', os.path.join(self.dir, 'genes.faa'),
+               '-d', os.path.join(self.dir, 'genes.fna')]
+        return W.run_prodigal(cmd, self.genome(),
+                              os.path.join(self.dir, 'genes.gff'), self.dir)
+
+    def runs(self, argv_log):
+        with open(argv_log) as handle:
+            return handle.read().splitlines()
+
+    def test_a_genome_called_in_single_mode_reports_no_fallback(self):
+        argv_log = self.prodigal()
+
+        self.assertIsNone(self.call())
+        self.assertEqual(len(self.runs(argv_log)), 1)
+
+    def test_a_genome_single_mode_refuses_is_called_in_meta_mode(self):
+        argv_log = self.prodigal(single_exit=52)
+
+        complaint = self.call()
+
+        self.assertIn("too many N's", complaint)
+        runs = self.runs(argv_log)
+        self.assertEqual(len(runs), 2)
+        self.assertIn('-p single', runs[0])
+        self.assertIn('-p meta', runs[1])
+
+    def test_the_fallback_keeps_the_translation_table(self):
+        # the table is what the genome is called under and is not in question:
+        # gTranslate predicted it from the genome, and the mode is what failed
+        argv_log = self.prodigal(single_exit=52)
+
+        self.call(table=4)
+
+        for run in self.runs(argv_log):
+            self.assertIn('-g 4', run)
+
+    def test_a_genome_neither_mode_calls_raises_with_what_both_said(self):
+        self.prodigal(single_exit=52, meta_exit=55)
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.call()
+
+        message = str(raised.exception)
+        self.assertIn('single mode with exit code 52', message)
+        self.assertIn('meta mode with exit code 55', message)
+
+    def test_a_genome_already_in_meta_mode_is_not_tried_again(self):
+        # a genome too small to train on is called in meta mode from the start,
+        # and there is nothing to fall back to
+        argv_log = self.prodigal(meta_exit=55)
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.call(mode='meta')
+
+        self.assertEqual(len(self.runs(argv_log)), 1)
+        self.assertIn('exit code 55', str(raised.exception))
+
+    def test_prodigal_closing_stdin_early_is_not_an_error_of_its_own(self):
+        """A refusal that does not read the genome leaves the wrapper writing into
+        a closed pipe. BrokenPipeError is not RuntimeError, so it would come out
+        of the pool and fail the batch rather than the genome."""
+        self.prodigal(single_exit=52, meta_exit=55, read_stdin=False)
+
+        with self.assertRaises(RuntimeError):
+            self.call()
+
+    def test_a_genome_the_fallback_saves_is_not_raised_on(self):
+        self.prodigal(single_exit=52, meta_exit=0, read_stdin=False)
+
+        self.assertIn("too many N's", self.call())
+
+    def test_prodigal_runs_in_the_scratch_directory(self):
+        """It spools stdin into tmp.prodigal.stdin.<pid> in the CURRENT directory
+        and leaves it there when it exits non-zero: a copy of the genome,
+        uncompressed, per failure, in the working directory of whoever started the
+        run. Here it goes when the genome's scratch directory does."""
+        self.prodigal(single_exit=52)
+        here = os.getcwd()
+
+        self.call()
+
+        with open(os.path.join(self.dir, 'cwd')) as handle:
+            self.assertEqual(handle.read().strip(), os.path.realpath(self.dir))
+        self.assertEqual(os.getcwd(), here)
 
 
 if __name__ == '__main__':

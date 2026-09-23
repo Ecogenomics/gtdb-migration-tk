@@ -61,6 +61,23 @@ REASON_NO_TABLE = 'no_translation_table'
 REASON_NO_FASTA = 'no_genomic_fasta'
 REASON_FAILED = 'prodigal_failed'
 
+# Genomes Prodigal would not call in single mode and called in meta mode instead,
+# and the same gathered for the release. Their genes are called from Prodigal's
+# precalculated parameters rather than from a model trained on the genome, which
+# is a fact about those proteins that nothing downstream could otherwise recover:
+# the proteome looks like any other. The reason each one fell back is carried with
+# it, since 'too many regions of N' is a draft assembly full of gaps and says so.
+META_FALLBACK_NAME = 'meta_fallback.tsv'
+META_FALLBACK_RELEASE_NAME = 'prodigal_meta_fallback.tsv'
+META_FALLBACK_HEADER = ('genome_id', 'reason')
+
+# What a genome's own prodigal_translation_table.tsv calls the mode, on the line
+# written only for a genome whose genes were called in meta mode after single mode
+# refused it. A genome called as asked gets no such line, so the file of every
+# other genome of the release is what it has always been.
+MODE_FIELD = 'prodigal_mode'
+MODE_META = 'meta'
+
 
 def has_proteins(aa_gene_file: str) -> bool:
     """Whether a genome's protein FASTA holds anything at all.
@@ -438,7 +455,13 @@ class ProdigalManager(object):
             '{:,} genome(s) require gene calling; {:,} already have valid '
             'Prodigal results.'.format(len(genome_paths), already_called))
 
-        called = self.run_prodigal(genome_paths, tables, sources)
+        called, fell_back = self.run_prodigal(genome_paths, tables, sources)
+
+        # written whether or not anything fell back, so that a batch in which
+        # nothing did says so rather than leaving a reader to wonder
+        write_table(sorted(fell_back.items()),
+                    os.path.join(batch_dir, META_FALLBACK_NAME),
+                    header=META_FALLBACK_HEADER)
 
         # a genome the wrapper was given that has no proteins afterwards was
         # tried and produced nothing; it is named rather than left to be found by
@@ -516,6 +539,21 @@ class ProdigalManager(object):
             self.logger.info(
                 'Every genome of the release has called genes; wrote {} with no '
                 'rows.'.format(path))
+
+        fallback_path = os.path.join(out_dir, META_FALLBACK_RELEASE_NAME)
+        fell_back = concatenate(
+            [os.path.join(batch, META_FALLBACK_NAME) for batch in batches],
+            fallback_path)
+
+        if fell_back:
+            self.logger.warning(
+                'warning: {:,} genome(s) of the release were called in Prodigal\'s '
+                'meta mode, single mode having refused them, and are named in '
+                '{}.'.format(fell_back, fallback_path))
+        else:
+            self.logger.info(
+                'Every genome of the release was called in the mode it was asked '
+                'for; wrote {} with no rows.'.format(fallback_path))
 
     def prodigal_parser(self, data: Tuple[str, str, bool]) -> Tuple[str, str]:
         """Decide whether one genome still needs its genes called.
@@ -612,10 +650,11 @@ class ProdigalManager(object):
         sources : dict
             Accession to where that table came from, recorded with it.
 
-        @return: the accessions that have proteins afterwards. A genome the
-                 wrapper was given that has none was tried and produced nothing,
-                 and call_batch() names it rather than leaving it to be found by
-                 the next command.
+        @return: (the accessions that have proteins afterwards, the accessions
+                 called in meta mode to what single mode said about them). A genome
+                 the wrapper was given that has none was tried and produced
+                 nothing, and call_batch() names it rather than leaving it to be
+                 found by the next command.
         """
 
         self.logger.info(
@@ -682,6 +721,7 @@ class ProdigalManager(object):
         # business knowing about
         self.logger.info('Recording the translation table of each genome.')
         called = []
+        fell_back = {}
         for task in tasks:
             # the proteins are what the genome is carried into the release by, so
             # they are what says the genome was called and not the exit status of
@@ -693,12 +733,26 @@ class ProdigalManager(object):
                 continue
 
             called.append(task.genome_id)
+            stats = summary_stats[task.genome_id]
             table_file = os.path.join(os.path.dirname(task.aa_gene_file),
                                       'prodigal_translation_table.tsv')
             with open(table_file, 'w') as handle:
                 handle.write('{}\t{}\t{}\n'.format(
                     'best_translation_table',
-                    summary_stats[task.genome_id].best_translation_table,
+                    stats.best_translation_table,
                     sources.get(task.genome_id, SOURCE_PREDICTED)))
 
-        return called
+                # only for a genome that fell back, so that the file of every
+                # other genome of the release is byte for byte what it was
+                if stats.meta_fallback:
+                    fell_back[task.genome_id] = stats.meta_fallback
+                    handle.write('{}\t{}\t{}\n'.format(
+                        MODE_FIELD, MODE_META,
+                        'single mode failed: ' + stats.meta_fallback))
+
+        if fell_back:
+            self.logger.warning(
+                'warning: {:,} genome(s) were called in Prodigal\'s meta mode, '
+                'single mode having refused them.'.format(len(fell_back)))
+
+        return called, fell_back

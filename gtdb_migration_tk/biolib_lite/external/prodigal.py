@@ -104,13 +104,15 @@ class ConsumerData(NamedTuple):
     coding_density_4: float
     coding_density_11: float
     checksum: Optional[str] = None
+    meta_fallback: Optional[str] = None
 
 
-def run_prodigal(cmd: List[str], genome_file: str, gff_file: str, tmp_dir: str) -> None:
-    """Run Prodigal over one genome, feeding it the genome on stdin.
+def attempt_prodigal(cmd: List[str], genome_file: str, gff_file: str,
+                     tmp_dir: str) -> Tuple[int, str]:
+    """Run Prodigal once over one genome, feeding it the genome on stdin.
 
     Prodigal reads stdin when given no -i, so a gzipped genome needs no
-    uncompressed copy on disk. A non-zero exit raises, carrying what Prodigal said.
+    uncompressed copy on disk.
 
     Parameters
     ----------
@@ -119,11 +121,11 @@ def run_prodigal(cmd: List[str], genome_file: str, gff_file: str, tmp_dir: str) 
     genome_file : str
         Genome to feed it, optionally gzipped.
     gff_file : str
-        File its GFF output is written to.
+        File its GFF output is written to, truncated by each attempt.
     tmp_dir : str
         Directory its stderr is collected in.
 
-    @return: None
+    @return: (exit status, what it said on stderr as one line).
     """
 
     opener = gzip.open if genome_file.endswith('.gz') else open
@@ -131,21 +133,95 @@ def run_prodigal(cmd: List[str], genome_file: str, gff_file: str, tmp_dir: str) 
 
     # stdout and stderr both go to files, so neither can fill a pipe and deadlock
     # the process while this one is still writing the genome into its stdin
+    # run from the scratch directory: Prodigal spools what it is given on stdin
+    # into tmp.prodigal.stdin.<pid> in the CURRENT directory and leaves it there
+    # when it exits non-zero, which is a copy of the genome, uncompressed, per
+    # failure. In the working directory of whoever started the run that is litter
+    # nothing sweeps up; here it goes when the genome's scratch directory does
     with open(gff_file, 'wb') as gff_out, open(stderr_file, 'wb') as err_out:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                stdout=gff_out, stderr=err_out)
+                                stdout=gff_out, stderr=err_out, cwd=tmp_dir)
         try:
             with opener(genome_file, 'rb') as genome:
                 shutil.copyfileobj(genome, proc.stdin)
+        except BrokenPipeError:
+            # Prodigal refused the genome and closed stdin before this one had
+            # finished writing it in, which is how it answers a genome it will
+            # not read at all. What it did is the exit status below, and raising
+            # something the caller does not expect here would take the batch down
+            # rather than the genome: BrokenPipeError is not RuntimeError, and it
+            # would come out of the pool
+            pass
         finally:
-            proc.stdin.close()
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
             proc.wait()
 
-    if proc.returncode != 0:
-        with open(stderr_file) as handle:
-            complaint = ' '.join(handle.read().split())
+    with open(stderr_file) as handle:
+        complaint = ' '.join(handle.read().split())
+
+    return proc.returncode, complaint or '(no output on stderr)'
+
+
+def run_prodigal(cmd: List[str], genome_file: str, gff_file: str,
+                 tmp_dir: str) -> Optional[str]:
+    """Call the genes of one genome, in meta mode where single mode will not have it.
+
+    Single mode trains Prodigal's model on the genome itself and is what a genome
+    big enough to train on is called under. It refuses a genome whose sequence it
+    cannot train on -- "saw too many regions of N's" -- and a draft assembly full
+    of gaps is exactly that, however ordinary the bases between them: eleven
+    genomes of one 2014 submission of N-rich actinomycetes are 9 to 13 Mb each and
+    were called under neither mode by r237, having failed here and been carried
+    forward empty ever since. Meta mode uses Prodigal's precalculated parameters
+    instead of training, and calls eight to twelve thousand genes for each of them.
+
+    So single mode is tried first and kept where it works, because a model trained
+    on the genome is the better one; meta mode answers for the genomes it will not
+    have, under the SAME translation table, and the caller is told which genomes
+    those were. gTranslate falls back the same way.
+
+    Parameters
+    ----------
+    cmd : list of str
+        Prodigal and its arguments, without -i. The mode follows -p.
+    genome_file : str
+        Genome to feed it, optionally gzipped.
+    gff_file : str
+        File its GFF output is written to.
+    tmp_dir : str
+        Directory its stderr is collected in.
+
+    @return: what single mode said, where the genes were called in meta mode
+             instead; None where the genome was called as asked. A genome neither
+             mode will call raises, carrying what both of them said.
+    """
+
+    returncode, complaint = attempt_prodigal(cmd, genome_file, gff_file, tmp_dir)
+    if returncode == 0:
+        return None
+
+    mode = cmd.index('-p') + 1 if '-p' in cmd else None
+    if mode is None or cmd[mode] != 'single':
+        # already meta, whether by the genome being too small to train on or by
+        # this fallback: there is nothing else to try
         raise RuntimeError('prodigal failed on {} with exit code {}: {}'.format(
-            genome_file, proc.returncode, complaint or '(no output on stderr)'))
+            genome_file, returncode, complaint))
+
+    retry = list(cmd)
+    retry[mode] = 'meta'
+    meta_returncode, meta_complaint = attempt_prodigal(retry, genome_file,
+                                                       gff_file, tmp_dir)
+    if meta_returncode != 0:
+        raise RuntimeError(
+            'prodigal failed on {} in single mode with exit code {} ({}) and in '
+            'meta mode with exit code {} ({})'.format(
+                genome_file, returncode, complaint,
+                meta_returncode, meta_complaint))
+
+    return complaint
 
 
 def scratch_dir(tmp_root: Optional[str], results: Sequence[Optional[str]]) -> str:
@@ -200,12 +276,19 @@ def call_genes(task: ProdigalTask) -> Tuple[str, str, str, str, int, float, floa
         The genome, its table or None, and where the results go.
 
     @return: (genome_id, aa file, nt file, gff file, table, density 4, density 11,
-             checksum), the densities -1 where they were not measured, or a
+             checksum, what single mode said where meta mode called the genome
+             instead), the densities -1 where they were not measured, or a
              ProdigalFailure for a genome Prodigal would not call.
     """
 
     best_translation_table = -1
     table_coding_density = {4: -1, 11: -1}
+
+    # what single mode said about each table it would not call, where meta mode
+    # called it instead. Kept per table because the table that is kept is decided
+    # below, and a genome is reported as having fallen back only for the run whose
+    # results it keeps
+    fell_back = {}
 
     for path in (task.aa_gene_file, task.nt_gene_file, task.gff_file):
         make_sure_path_exists(os.path.dirname(path))
@@ -214,7 +297,7 @@ def call_genes(task: ProdigalTask) -> Tuple[str, str, str, str, int, float, floa
         shutil.copyfile(os.path.abspath(task.genome_file), task.aa_gene_file)
         return (task.genome_id, task.aa_gene_file, task.nt_gene_file, task.gff_file,
                 best_translation_table, table_coding_density[4],
-                table_coding_density[11], None)
+                table_coding_density[11], None, None)
 
     scratch = scratch_dir(task.tmp_root, (task.aa_gene_file, task.nt_gene_file,
                                           task.gff_file, task.checksum_file))
@@ -245,7 +328,9 @@ def call_genes(task: ProdigalTask) -> Tuple[str, str, str, str, int, float, floa
             if task.closed_ends:
                 cmd.append('-c')
 
-            run_prodigal(cmd, task.genome_file, gff_file_tmp, table_dir)
+            complaint = run_prodigal(cmd, task.genome_file, gff_file_tmp, table_dir)
+            if complaint:
+                fell_back[translation_table] = complaint
 
             if measure_density:
                 parser = ProdigalGeneFeatureParser(gff_file_tmp)
@@ -282,7 +367,8 @@ def call_genes(task: ProdigalTask) -> Tuple[str, str, str, str, int, float, floa
 
     return (task.genome_id, task.aa_gene_file, task.nt_gene_file, task.gff_file,
             best_translation_table, table_coding_density[4],
-            table_coding_density[11], checksum)
+            table_coding_density[11], checksum,
+            fell_back.get(best_translation_table))
 
 
 def compress_to(source: str, destination: str) -> str:
