@@ -78,6 +78,22 @@ class ProdigalTask(NamedTuple):
     closed_ends: bool = False
 
 
+class ProdigalFailure(NamedTuple):
+    """One genome Prodigal would not call, and what it said about it.
+
+    Returned in place of the statistics rather than raised out of the pool. A
+    genome Prodigal refuses is a fact about that genome -- GCA_000722275.1 is
+    9.9 Mb of Streptomyces in 466 contigs and a million N's, and Prodigal exits 52
+    on it saying "too many regions of N's" -- and it is answered for one genome at
+    a time, as a genome with no translation table and a genome with no FASTA
+    already are. Raising took the ten thousand genomes of its batch down with it
+    and, the genome being no different on the next run, took them down again.
+    """
+
+    genome_id: str
+    reason: str
+
+
 class ConsumerData(NamedTuple):
     """What the caller learns about one genome's called genes."""
 
@@ -184,7 +200,8 @@ def call_genes(task: ProdigalTask) -> Tuple[str, str, str, str, int, float, floa
         The genome, its table or None, and where the results go.
 
     @return: (genome_id, aa file, nt file, gff file, table, density 4, density 11,
-             checksum), the densities -1 where they were not measured.
+             checksum), the densities -1 where they were not measured, or a
+             ProdigalFailure for a genome Prodigal would not call.
     """
 
     best_translation_table = -1
@@ -255,6 +272,11 @@ def call_genes(task: ProdigalTask) -> Tuple[str, str, str, str, int, float, floa
         if task.checksum_file and checksum:
             with open(task.checksum_file, 'w') as handle:
                 handle.write(checksum)
+    except RuntimeError as exc:
+        # what the genome already holds is untouched: nothing is moved out of the
+        # scratch directory until every table has been called, so a genome
+        # Prodigal refuses keeps whatever the last release gave it
+        return ProdigalFailure(task.genome_id, ' '.join(str(exc).split()))
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -361,7 +383,8 @@ class Prodigal(object):
         self.cpus = cpus
         self.verbose = verbose
 
-    def run(self, tasks: Sequence[ProdigalTask]) -> Dict[str, ConsumerData]:
+    def run(self, tasks: Sequence[ProdigalTask]) -> Tuple[Dict[str, ConsumerData],
+                                                          Dict[str, str]]:
         """Call genes for a set of genomes, one task per genome.
 
         The caller says where each genome's results go and what they are called;
@@ -372,7 +395,10 @@ class Prodigal(object):
         tasks : sequence of ProdigalTask
             One per genome, each naming its own output paths.
 
-        @return: genome ID to the summary statistics of its called genes.
+        @return: (genome ID to the summary statistics of its called genes, genome
+                 ID to what Prodigal said about the genomes it would not call).
+                 The caller decides what a refusal costs; both halves are needed
+                 to tell a genome that was called from one that was tried.
         """
 
         file_type = 'scaffolds' if (tasks and tasks[0].meta) else 'genomes'
@@ -380,20 +406,27 @@ class Prodigal(object):
         if self.verbose:
             self.logger.info('Identifying genes within %s: ' % file_type)
 
-        # imap_unordered, so that a genome Prodigal failed on raises here rather
-        # than leaving the run to report success with a genome missing. The results
-        # are collected in the parent, as the vendored Parallel class collected them
+        # the results are collected in the parent, as the vendored Parallel class
+        # collected them. A genome Prodigal would not call comes back as a
+        # ProdigalFailure rather than as an exception out of the pool: it is one
+        # genome that cannot be called, and it is returned to be reported as such
+        # rather than costing the ten thousand genomes of its batch on this run
+        # and on every run after it
         summary_stats = {}
+        failed = {}
         with mp.Pool(processes=self.cpus) as pool:
             results = pool.imap_unordered(call_genes, tasks)
             for produced in tqdm(results, total=len(tasks),
                                  ncols=100,
                                  unit=file_type.rstrip('s'),
                                  disable=not self.verbose):
+                if isinstance(produced, ProdigalFailure):
+                    failed[produced.genome_id] = produced.reason
+                    continue
                 genome_id, *stats = produced
                 summary_stats[genome_id] = ConsumerData(*stats)
 
-        return summary_stats
+        return summary_stats, failed
 
 
 class ProdigalGeneFeatureParser():

@@ -33,6 +33,10 @@ class StubProdigal:
 
     last_tasks = None
 
+    # accessions the stub answers for as the real wrapper answers for a genome
+    # Prodigal would not call: no results, and a reason in the second return value
+    refuse = set()
+
     def __init__(self, cpus=1):
         self.cpus = cpus
 
@@ -41,7 +45,11 @@ class StubProdigal:
         StubProdigal.last_tasks = list(tasks)
 
         summary_stats = {}
+        failed = {}
         for task in tasks:
+            if task.genome_id in StubProdigal.refuse:
+                failed[task.genome_id] = 'prodigal failed with exit code 52'
+                continue
             for path in (task.aa_gene_file, task.nt_gene_file, task.gff_file):
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with gzip.open(path, 'wt') as handle:
@@ -54,7 +62,7 @@ class StubProdigal:
                         gzip.GzipFile(fileobj=open(task.aa_gene_file, 'rb'))) + '\n')
             summary_stats[task.genome_id] = Summary(task.translation_table, -1, -1)
 
-        return summary_stats
+        return summary_stats, failed
 
     @classmethod
     def genomes_called(cls):
@@ -82,6 +90,7 @@ class TempDirCase(unittest.TestCase):
         self._prodigal, P.Prodigal = P.Prodigal, StubProdigal
         self._check, P.check_dependencies = P.check_dependencies, lambda *a, **k: True
         StubProdigal.last_tasks = None
+        StubProdigal.refuse = set()
 
     def tearDown(self):
         P.Prodigal = self._prodigal
@@ -531,3 +540,182 @@ class BatchingTests(TempDirCase):
         with open(os.path.join(self.out_dir, P.NOT_CALLED_RELEASE_NAME)) as handle:
             rows = handle.read().splitlines()[1:]
         self.assertEqual(rows, ['GCF_000000002.1\t' + P.REASON_NO_FASTA])
+
+
+# --------------------------------------------- a genome that came out with no genes
+
+class EmptyProteomeTests(TempDirCase):
+    """An empty protein file is not results, however well its digest agrees.
+
+    Prodigal leaves an empty file behind where it failed, and da39a3ee... is the
+    digest of nothing, so the file and its .sha256 agreed and the genome was
+    counted as already called. GCA_000722275.1 carried its 2020 failure through
+    five releases that way: never called again, and named nowhere as failed.
+    """
+
+    def called_genes(self, gpath, accession, proteins=b'>gene\nMA\n'):
+        """Put called genes beside a genome, with the digest that vouches for them.
+
+        Parameters
+        ----------
+        proteins : bytes
+            What the protein FASTA decompresses to; b'' is what Prodigal leaves
+            where it failed.
+
+        @return: the protein file.
+        """
+
+        prodigal_dir = os.path.join(gpath, 'prodigal')
+        os.makedirs(prodigal_dir, exist_ok=True)
+        aa_gene_file = os.path.join(prodigal_dir, accession + '_protein.faa.gz')
+        with gzip.open(aa_gene_file, 'wb') as handle:
+            handle.write(proteins)
+        with open(aa_gene_file, 'rb') as raw:
+            digest = P.sha256_rb(gzip.GzipFile(fileobj=raw))
+        with open(aa_gene_file[:-3] + '.sha256', 'w') as handle:
+            handle.write(digest)
+        return aa_gene_file
+
+    def test_an_empty_proteome_is_called_again_though_its_checksum_agrees(self):
+        accession, gpath = self.genome('GCF_000000001.1')
+        self.called_genes(gpath, accession, proteins=b'')
+
+        self.assertEqual(
+            P.ProdigalManager(self.tmp_dir).prodigal_parser((accession, gpath, False)),
+            (accession, gpath))
+
+    def test_a_proteome_with_genes_in_it_is_still_skipped(self):
+        accession, gpath = self.genome('GCF_000000001.1')
+        self.called_genes(gpath, accession)
+
+        self.assertEqual(
+            P.ProdigalManager(self.tmp_dir).prodigal_parser((accession, gpath, False)),
+            ('null', 'null'))
+
+    def test_has_proteins_reads_the_decompressed_bytes(self):
+        # the gzip of an empty file is forty-odd bytes of header and trailer, so
+        # a stat of the compressed file says nothing about what is in it
+        accession, gpath = self.genome('GCF_000000001.1')
+        empty = self.called_genes(gpath, accession, proteins=b'')
+
+        self.assertGreater(os.stat(empty).st_size, 0)
+        self.assertFalse(P.has_proteins(empty))
+
+    def test_a_file_that_is_not_there_holds_no_proteins(self):
+        self.assertFalse(P.has_proteins(os.path.join(self.dir, 'nothing.faa.gz')))
+
+    def test_a_file_that_is_not_a_gzip_holds_no_proteins(self):
+        # a corrupt file is not proteins either, and saying so calls the genome
+        # again rather than raising in a pool worker
+        path = os.path.join(self.dir, 'broken.faa.gz')
+        with open(path, 'wb') as handle:
+            handle.write(b'not a gzip')
+
+        self.assertFalse(P.has_proteins(path))
+
+    def test_the_run_calls_the_genes_of_a_genome_whose_proteome_is_empty(self):
+        accession, gpath = self.genome('GCF_000000001.1')
+        self.called_genes(gpath, accession, proteins=b'')
+
+        P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs((accession, gpath)),
+            self.summary((accession, '11')), self.out_dir)
+
+        self.assertEqual(StubProdigal.genomes_called(), [accession])
+
+
+# ------------------------------------------- a genome Prodigal would not call
+
+class RefusedGenomeTests(TempDirCase):
+    """A genome Prodigal refuses costs that genome, not its batch.
+
+    GCA_000722275.1 is 9.9 Mb of Streptomyces in 466 contigs with a million N's,
+    and Prodigal exits 52 on it: 'too many regions of N's'. Once an empty proteome
+    is work again, that genome is handed to Prodigal on every run -- and raising
+    out of the pool would have failed its batch on every run with it.
+    """
+
+    def release(self, *accessions):
+        genomes = [self.genome(a) for a in accessions]
+        return (self.genome_dirs(*genomes),
+                self.summary(*[(a, '11') for a in accessions]),
+                genomes)
+
+    def not_called(self):
+        path = os.path.join(self.out_dir, P.NOT_CALLED_RELEASE_NAME)
+        if not os.path.exists(path):
+            return None
+        with open(path) as handle:
+            return handle.read().splitlines()[1:]
+
+    def test_a_refused_genome_is_named_rather_than_dropped(self):
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        StubProdigal.refuse = {'GCF_000000002.1'}
+
+        P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertEqual(self.not_called(),
+                         ['GCF_000000002.1\t' + P.REASON_FAILED])
+
+    def test_a_refused_genome_does_not_cost_the_rest_of_the_batch(self):
+        paths, summary, genomes = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        StubProdigal.refuse = {'GCF_000000002.1'}
+
+        finished = P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertTrue(finished)
+        self.assertEqual(B.batch_state(os.path.join(self.out_dir, 'batch_000001')),
+                         B.STATE_SUCCESS)
+        self.assertTrue(P.has_proteins(os.path.join(
+            genomes[0][1], 'prodigal', 'GCF_000000001.1_protein.faa.gz')))
+
+    def test_what_prodigal_said_is_logged_for_each_genome_it_refused(self):
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        StubProdigal.refuse = {'GCF_000000002.1'}
+
+        with self.assertLogs('timestamp', level='WARNING') as captured:
+            P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        logged = '\n'.join(captured.output)
+        self.assertIn('would not call GCF_000000002.1', logged)
+        self.assertIn('exit code 52', logged)
+
+    def test_a_batch_prodigal_refused_entirely_is_failed(self):
+        # Prodigal not working on this machine rather than a batch of difficult
+        # genomes, and a batch left FAILED is retried by a later run
+        paths, summary, _ = self.release('GCF_000000001.1', 'GCF_000000002.1')
+        StubProdigal.refuse = {'GCF_000000001.1', 'GCF_000000002.1'}
+
+        finished = P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertFalse(finished)
+        self.assertEqual(B.batch_state(os.path.join(self.out_dir, 'batch_000001')),
+                         B.STATE_FAILED)
+
+    def test_the_only_genome_of_a_batch_being_refused_does_not_fail_it(self):
+        # it would fail identically on every retry, and the genome is named
+        paths, summary, _ = self.release('GCF_000000001.1')
+        StubProdigal.refuse = {'GCF_000000001.1'}
+
+        finished = P.ProdigalManager(self.tmp_dir).run(paths, summary, self.out_dir)
+
+        self.assertTrue(finished)
+        self.assertEqual(self.not_called(),
+                         ['GCF_000000001.1\t' + P.REASON_FAILED])
+
+    def test_a_refused_genome_keeps_what_the_last_release_gave_it(self):
+        # nothing is moved out of the scratch directory until every table has
+        # been called, so a refusal leaves the genome as it was found
+        accession, gpath = self.genome('GCF_000000001.1')
+        aa_gene_file = os.path.join(gpath, 'prodigal', accession + '_protein.faa.gz')
+        os.makedirs(os.path.dirname(aa_gene_file))
+        with gzip.open(aa_gene_file, 'wb') as handle:
+            handle.write(b'>from_the_last_release\nMA\n')
+        StubProdigal.refuse = {accession}
+
+        P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs((accession, gpath)),
+            self.summary((accession, '11')), self.out_dir)
+
+        with gzip.open(aa_gene_file, 'rb') as handle:
+            self.assertEqual(handle.read(), b'>from_the_last_release\nMA\n')
