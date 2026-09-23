@@ -521,12 +521,26 @@ the reason: `no_translation_table`, `no_genomic_fasta`, or `prodigal_failed`. Th
 next command needs to know which genomes have no proteins, and it should not have
 to look in 135 directories to find out.
 
+**A genome Prodigal refuses costs that genome and not its batch.** It is named
+`prodigal_failed` and what Prodigal said is in the log; the other ten thousand
+genomes of the batch are called as usual. A batch of several genomes in which
+EVERY one was refused is failed instead, that being Prodigal not working on the
+machine rather than a batch of difficult genomes.
+
 A rerun skips finished batches rather than re-reading the proteins of the whole
 release, which is what batching buys over the per-genome checksum alone. The
 checksum still decides genome by genome inside a batch that is not finished, which
 is what a batch retried after a failure leans on. `--all_genomes` does the
 finished batches again, since otherwise it would skip every batch it was asked to
 redo.
+
+**A genome is skipped only where its proteins are there, vouched for, and hold
+something.** The digest is of the decompressed protein file, so a genome is judged
+by its amino acids rather than by the gzip container. An empty protein file agrees
+with its digest exactly — Prodigal leaves one where it failed, and
+`da39a3ee5e6b4b0d3255bfef95601890afd80709` is the digest of nothing — so what is
+asked is whether there are proteins in it. Otherwise a failure is carried from
+release to release, re-vouched for at every step and named nowhere.
 
 **A genome with no table is not called.** gTranslate returns no prediction for a
 handful of genomes of a release — eight of r237's 1.35M, two of which have no

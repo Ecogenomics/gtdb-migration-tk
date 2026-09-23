@@ -62,6 +62,28 @@ REASON_NO_FASTA = 'no_genomic_fasta'
 REASON_FAILED = 'prodigal_failed'
 
 
+def has_proteins(aa_gene_file: str) -> bool:
+    """Whether a genome's protein FASTA holds anything at all.
+
+    Read rather than stat: the file is gzipped, and a gzip of nothing is still
+    forty-odd bytes of header and trailer. Only the first block is decompressed.
+
+    Parameters
+    ----------
+    aa_gene_file : str
+        Gzipped protein FASTA of one genome.
+
+    @return: True where it decompresses to at least one byte. A file that is not
+             there, or that cannot be read as a gzip, holds no proteins either.
+    """
+
+    try:
+        with gzip.open(aa_gene_file, 'rb') as handle:
+            return bool(handle.read(1))
+    except OSError:
+        return False
+
+
 class BatchCounts(NamedTuple):
     """What calling the genes of one batch came to.
 
@@ -541,6 +563,16 @@ class ProdigalManager(object):
             checksum_file = aa_gene_file[0:-3] + '.sha256'
 
             if os.path.exists(aa_gene_file) and os.path.exists(checksum_file):
+                # a proteome with nothing in it is not a result, however exactly
+                # the digest beside it agrees. Prodigal leaves an empty file where
+                # it failed, and da39a3ee... is the digest of nothing, so the two
+                # agreed and the genome was called valid and skipped -- by this
+                # run and by the five releases before it. GCA_000722275.1 has
+                # carried an empty proteome since 2020 that way, never called
+                # again and never named as failed
+                if not has_proteins(aa_gene_file):
+                    return (gid, gpath)
+
                 # verify checksum
                 checksum = sha256_rb(gzip.GzipFile(fileobj=open(aa_gene_file, 'rb')))
                 cur_checksum = open(checksum_file).readline().strip()
@@ -629,7 +661,21 @@ class ProdigalManager(object):
         # release short of a FASTA reported the full count and then called
         # genes for fewer, with nothing saying so
         self.logger.info('Running Prodigal on {:,} genomes.'.format(len(tasks)))
-        summary_stats = Prodigal(cpus=self.cpus).run(tasks)
+        summary_stats, refused = Prodigal(cpus=self.cpus).run(tasks)
+
+        for gid, reason in sorted(refused.items()):
+            self.logger.warning(
+                'Prodigal would not call {}: {}'.format(gid, reason))
+
+        # every genome of a batch refused is Prodigal not working on this machine
+        # rather than a batch of difficult genomes, and the batch is failed for a
+        # later run to take. One genome refused on its own is not: a batch whose
+        # last uncalled genome is a bad one would fail identically on every retry
+        if len(tasks) > 1 and len(refused) == len(tasks):
+            raise RuntimeError(
+                'Prodigal would not call any of the {:,} genome(s) of this batch; '
+                'the first said: {}'.format(
+                    len(tasks), sorted(refused.items())[0][1]))
 
         # everything else a genome's directory holds was written by the worker
         # that called its genes; this is the one record the wrapper has no
@@ -639,8 +685,11 @@ class ProdigalManager(object):
         for task in tasks:
             # the proteins are what the genome is carried into the release by, so
             # they are what says the genome was called and not the exit status of
-            # a worker that may have written nothing
-            if not os.path.exists(task.aa_gene_file):
+            # a worker that may have written nothing. A genome Prodigal refused
+            # still HAS a protein file -- the empty one the last release gave it,
+            # which is what had it skipped here in the first place -- so what is
+            # asked is whether there are proteins in it
+            if task.genome_id in refused or not has_proteins(task.aa_gene_file):
                 continue
 
             called.append(task.genome_id)
