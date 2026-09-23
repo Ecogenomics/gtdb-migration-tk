@@ -591,6 +591,21 @@ everything downstream read them exactly where they always have. `--out_dir` hold
 the state of the run and nothing else, which is why two machines on different
 batches never write to the same place.
 
+**`--hmm_db_path` is a directory for `--db pfam` and a file for `--db tigrfam`.**
+Pfam is searched by `PfamScan`, which is handed the directory `Pfam-A.hmm` sits
+in; TIGRFAM is searched by `hmmsearch`, which is handed the HMM file itself.
+
+```
+--db pfam     --hmm_db_path /srv/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15
+--db tigrfam  --hmm_db_path /srv/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm
+```
+
+The path is checked before the release is cut into batches, and a run given the
+one where the other was wanted stops there with a line saying so. It used not to
+be: `hmmsearch` reads a directory as a file that "appears to be empty", wrote no
+marker table, and the run met that one call later as a `FileNotFoundError` on the
+table in a worker.
+
 `genomic_metadata` derives each genome's nucleotide statistics (GC, genome size, N50) and
 gene statistics (protein count, coding bases, coding density) and writes them into
 the genome's own directory as `metadata.genome_nt.tsv` and
