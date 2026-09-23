@@ -370,8 +370,18 @@ class PfamScan(object):
             proc_out, proc_err = proc.communicate()
             proc_out_ascii = proc_out
 
-            if proc_err:
-                sys.exit('An error was encountered while running hmmsearch: %s' % proc_err)
+            # proc_err is always None here, stderr having been merged into stdout
+            # above, so this never fired: a search that failed on the HMMs it was
+            # given returned its error text to be parsed as hits, and the genome
+            # was written an empty marker table and a checksum vouching for it.
+            # The exit status is what says the search ran, and the output holds
+            # whatever hmmsearch said about why it did not.
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    'hmmsearch exited %s searching %s against %s: %s'
+                    % (proc.returncode, self._fasta,
+                       os.path.join(self._dir, hmmlib),
+                       ' '.join((proc_out or '').split()) or 'it said nothing'))
 
             self._hmmresultIO = HMMResultsIO()
             self._all_results = self._hmmresultIO.parseMultiHMMER3(proc_out_ascii)

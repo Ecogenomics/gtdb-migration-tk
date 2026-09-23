@@ -11,6 +11,12 @@ a batch still need their markers found, and what is handed to the workers.
 search_markers() is replaced by a recorder, so the real run_hmmsearch() runs over
 real batch directories and what it would have searched can be read back.
 
+What a search coming to nothing costs is tested here too, with no HMM searched:
+that --hmm_db_path is refused at the start where it is not the HMMs --db will be
+searched against, and that a batch whose workers died is failed rather than
+finished. r237 was searched against a directory hmmsearch could not read, and all
+135 batches were marked SUCCESS with no marker table written by any of them.
+
 The batching machinery itself is tested in tests/test_batching.py. What is tested
 here is this command's use of it: that a Pfam run and a TIGRFAM run of one output
 directory do not read each other's canaries, and that the work list can hold
@@ -20,6 +26,7 @@ nothing a worker would mistake for the end of the work.
 import gzip
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -34,6 +41,28 @@ MARKER_EXT = '_pfam_{}.tsv'.format(SUFFIX)
 TIGR_SUFFIX = '15.0_lite'
 
 
+def dying_worker(queue_in, queue_out, dir_suffix):
+    """A worker whose search cannot run, as all 96 of them could not in r237."""
+
+    raise RuntimeError('hmmsearch exited 1: the HMM file appears to be empty')
+
+
+def exiting_worker(queue_in, queue_out, dir_suffix):
+    """A worker that leaves by sys.exit(), which is how PfamScan gives up."""
+
+    raise SystemExit(1)
+
+
+def quiet_worker(queue_in, queue_out, dir_suffix):
+    """A worker that does the work and ends as one should."""
+
+    while True:
+        item = queue_in.get()
+        if item is None:
+            break
+        queue_out.put(item)
+
+
 class TempDirCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='marker_manager_test.')
@@ -43,6 +72,27 @@ class TempDirCase(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+
+    def hmm_db(self, db='pfam', magic=b'HMMER3/f [3.1b2]\n'):
+        """An HMM database of the shape --db asks for, holding nothing to search.
+
+        marker_setup() checks --hmm_db_path before a batch is claimed, so a test
+        that runs the command needs the directory Pfam is given or the file
+        TIGRFAM is, and both are read for their first five bytes alone.
+
+        @return: what --hmm_db_path would be.
+        """
+
+        root = os.path.join(self.dir, 'hmms')
+        if not os.path.isdir(root):
+            os.makedirs(root)
+
+        name = M.PFAM_LIBRARY if db == 'pfam' else 'tigrfam.hmm'
+        library = os.path.join(root, name)
+        with open(library, 'wb') as handle:
+            handle.write(magic)
+
+        return root if db == 'pfam' else library
 
     def manager(self, cpus=1, batch_size=10000, tmp_dir=None, **kwargs):
         # the real one checks for prodigal and hmmsearch on PATH and exits without them
@@ -137,7 +187,7 @@ class TempDirCase(unittest.TestCase):
         with mock.patch.object(M.MarkerManager, 'search_markers',
                                searcher or record):
             return manager.run_hmmsearch(dirs_file, report, db, suffix,
-                                         '/nonexistent/hmms', self.out_dir, **kwargs)
+                                         self.hmm_db(db), self.out_dir, **kwargs)
 
     def state_dir(self, marker_dir=MARKER_DIR):
         return os.path.join(self.out_dir, marker_dir)
@@ -618,8 +668,9 @@ class WhereTheScratchCopiesGo(TempDirCase):
 
 class ChoosingTheMarkerDatabase(TempDirCase):
     def test_pfam_and_tigrfam_name_their_own_directories_and_files(self):
-        pfam = self.manager().marker_setup('pfam', SUFFIX, '/hmms')
-        tigr = self.manager().marker_setup('tigrfam', TIGR_SUFFIX, '/hmms')
+        pfam = self.manager().marker_setup('pfam', SUFFIX, self.hmm_db('pfam'))
+        tigr = self.manager().marker_setup('tigrfam', TIGR_SUFFIX,
+                                           self.hmm_db('tigrfam'))
 
         self.assertEqual((pfam.marker_dir, pfam.extension, pfam.name),
                          ('pfam_33.1_lite', '_pfam_33.1_lite.tsv', 'Pfam'))
@@ -630,7 +681,172 @@ class ChoosingTheMarkerDatabase(TempDirCase):
         # it used to leave the marker directory unbound and fail further in with
         # a NameError naming nothing
         with self.assertRaises(ValueError):
-            self.manager().marker_setup('panther', SUFFIX, '/hmms')
+            self.manager().marker_setup('panther', SUFFIX, self.hmm_db('pfam'))
+
+
+class TheHmmDatabaseIsCheckedBeforeTheSearch(TempDirCase):
+    """--hmm_db_path, which means a directory for one --db and a file for the other.
+
+    Pfam is handed the directory Pfam-A.hmm sits in and TIGRFAM the HMM file
+    itself, and the r237 run gave TIGRFAM the directory. hmmsearch read it as a
+    file that "appears to be empty" and wrote no marker table; the run met that as
+    a FileNotFoundError in a worker, one call later, having already claimed and
+    finished 135 batches.
+    """
+
+    def test_a_pfam_directory_holding_the_library_is_taken(self):
+        M.check_hmm_db('pfam', self.hmm_db('pfam'))
+
+    def test_a_tigrfam_hmm_file_is_taken(self):
+        M.check_hmm_db('tigrfam', self.hmm_db('tigrfam'))
+
+    def test_the_directory_pfam_wants_is_refused_for_tigrfam(self):
+        directory = os.path.dirname(self.hmm_db('tigrfam'))
+
+        with self.assertRaises(M.BadHmmDatabase) as raised:
+            M.check_hmm_db('tigrfam', directory)
+
+        # and says which file in it was meant, that being the whole of the mistake
+        self.assertIn('tigrfam.hmm', str(raised.exception))
+
+    def test_the_file_tigrfam_wants_is_refused_for_pfam(self):
+        with self.assertRaises(M.BadHmmDatabase):
+            M.check_hmm_db('pfam', self.hmm_db('tigrfam'))
+
+    def test_a_directory_with_no_library_in_it_is_refused_for_pfam(self):
+        empty = os.path.join(self.dir, 'empty')
+        os.makedirs(empty)
+
+        with self.assertRaises(M.BadHmmDatabase) as raised:
+            M.check_hmm_db('pfam', empty)
+
+        self.assertIn(M.PFAM_LIBRARY, str(raised.exception))
+
+    def test_a_path_that_is_not_there_is_refused(self):
+        with self.assertRaises(M.BadHmmDatabase):
+            M.check_hmm_db('tigrfam', os.path.join(self.dir, 'nothing.hmm'))
+
+        with self.assertRaises(M.BadHmmDatabase):
+            M.check_hmm_db('pfam', os.path.join(self.dir, 'nothing'))
+
+    def test_a_file_that_is_not_an_hmm_library_is_refused(self):
+        # the format line is read rather than the name: a FASTA called tigrfam.hmm
+        # is refused, and hmmsearch would have said the same thing a batch later
+        not_hmms = self.hmm_db('tigrfam', magic=b'>gene\nMAKV\n')
+
+        with self.assertRaises(M.BadHmmDatabase):
+            M.check_hmm_db('tigrfam', not_hmms)
+
+    def test_the_run_claims_no_batch_when_the_hmms_are_wrong(self):
+        # the point of checking in marker_setup(): nothing is planned, claimed or
+        # finished, so no other machine is told the release was searched
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+        dirs_file, report = self.inputs(genomes)
+        directory = os.path.dirname(self.hmm_db('tigrfam'))
+
+        with self.assertRaises(M.BadHmmDatabase):
+            self.manager().run_hmmsearch(dirs_file, report, 'tigrfam', TIGR_SUFFIX,
+                                         directory, self.out_dir)
+
+        self.assertFalse(os.path.isdir(self.state_dir('tigrfam_' + TIGR_SUFFIX)))
+
+
+class WhenTheSearchProcessesDie(TempDirCase):
+    """A batch is finished on what came back, not on what was handed out.
+
+    search_markers() started the workers, joined them and returned, whatever they
+    had done: BatchCounts.searched is the length of the work list. So a batch in
+    which every worker died on its first genome was written a SUCCESS canary
+    saying searched=10,000, and no later run would look behind it.
+    """
+
+    def test_a_worker_that_raised_fails_the_search(self):
+        with self.assertRaises(RuntimeError) as raised:
+            self.manager().search_markers(['/no/such/genome_protein.faa.gz'],
+                                          dying_worker, SUFFIX)
+
+        self.assertIn('1 of 1 search process(es) ended in error',
+                      str(raised.exception))
+
+    def test_a_worker_that_exited_fails_the_search(self):
+        # PfamScan gives up with sys.exit() rather than an exception, and that is
+        # a worker gone just the same
+        with self.assertRaises(RuntimeError):
+            self.manager().search_markers(['/no/such/genome_protein.faa.gz'],
+                                          exiting_worker, SUFFIX)
+
+    def test_workers_that_did_the_work_are_not_called_a_failure(self):
+        self.manager(cpus=2).search_markers(
+            ['/one_protein.faa.gz', '/two_protein.faa.gz'], quiet_worker, SUFFIX)
+
+    def test_a_search_with_nothing_to_do_is_not_called_a_failure(self):
+        self.manager().search_markers([], quiet_worker, SUFFIX)
+
+    def test_the_batch_is_failed_rather_than_finished(self):
+        genomes = {'GCF_000000001.1': self.genome('GCF_000000001.1')}
+
+        def search(manager, genome_files, worker, dir_suffix):
+            M.MarkerManager.search_markers(manager, genome_files, dying_worker,
+                                           dir_suffix)
+
+        finished = self.run_hmmsearch(genomes, searcher=search)
+
+        self.assertFalse(finished)
+        batch = self.batches()[0]
+        self.assertEqual(B.batch_state(batch), B.STATE_FAILED)
+        self.assertFalse(os.path.exists(os.path.join(batch, B.SUCCESS_CANARY)))
+
+
+class WhatTheTigrfamWorkerDoesWithAFailedSearch(TempDirCase):
+    """os.system() returned the exit status to nobody.
+
+    A search that failed was met one call later, in _tigr_top_hit(), as a
+    FileNotFoundError on the marker table that was never written -- a traceback
+    naming the missing file and not the reason there was none.
+    """
+
+    def worker_on(self, completed):
+        """Run the TIGRFAM worker over one genome with hmmsearch replaced.
+
+        @return: nothing; what the worker raised is what is being tested.
+        """
+
+        manager = self.manager()
+        manager.tigrfam_hmms = self.hmm_db('tigrfam')
+        gene_file = os.path.join(self.genome('GCF_000000001.1'), 'prodigal',
+                                 'GCF_000000001.1_protein.faa.gz')
+
+        queue_in = mock.Mock()
+        queue_in.get.return_value = gene_file
+
+        with mock.patch.object(M.subprocess, 'run', return_value=completed):
+            manager._MarkerManager__tigrfam_worker(queue_in, mock.Mock(),
+                                                   TIGR_SUFFIX)
+
+    def test_a_search_that_failed_raises_what_hmmsearch_said(self):
+        failed = subprocess.CompletedProcess(
+            [], 1, stderr='Error: File format problem in trying to open HMM file '
+                          '/srv/db/gtdb/marker_genes/hmms. File exists, but appears '
+                          'to be empty?\n')
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.worker_on(failed)
+
+        message = str(raised.exception)
+        self.assertIn('exited 1', message)
+        self.assertIn('File format problem', message)
+        # and not the FileNotFoundError on the table the search never wrote
+        self.assertNotIn('_tigrfam_15.0_lite.tsv', message)
+
+    def test_a_search_that_said_nothing_still_raises(self):
+        with self.assertRaises(RuntimeError):
+            self.worker_on(subprocess.CompletedProcess([], 1, stderr=''))
+
+    def test_a_search_that_ran_is_not_raised_on(self):
+        # it gets as far as reading the table, which a search that ran would have
+        # written; the point is that it is reached at all
+        with self.assertRaises(FileNotFoundError):
+            self.worker_on(subprocess.CompletedProcess([], 0, stderr=''))
 
 
 if __name__ == '__main__':

@@ -28,7 +28,7 @@ from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
 from gtdb_migration_tk.trans_table import GTranslate
 from gtdb_migration_tk.lpsn import LPSN
-from gtdb_migration_tk.marker_manager import MarkerManager
+from gtdb_migration_tk.marker_manager import BadHmmDatabase, MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
 from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
@@ -233,12 +233,18 @@ class OptionsParser():
         check_file_exists(options.gtdb_genome_path_file)
         check_file_exists(options.report)
         make_sure_path_exists(options.output_dir)
-        p.run_hmmsearch(options.gtdb_genome_path_file,
-                        options.report, options.db, self.marker_dir_suffix(options),
-                        options.hmm_db_path,
-                        options.output_dir,
-                        options.all_genomes)
-        self.logger.info('Done.')
+        try:
+            p.run_hmmsearch(options.gtdb_genome_path_file,
+                            options.report, options.db, self.marker_dir_suffix(options),
+                            options.hmm_db_path,
+                            options.output_dir,
+                            options.all_genomes)
+        except BadHmmDatabase as exc:
+            # a mistyped --hmm_db_path is the user's to fix and says so in one
+            # line, rather than coming out as a traceback through the argparse
+            # frames; nothing has been claimed or written by this point
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def run_tophit(self, options):
         p = MarkerManager('/tmp', options.cpus)

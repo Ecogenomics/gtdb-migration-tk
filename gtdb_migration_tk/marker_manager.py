@@ -20,6 +20,7 @@ import gzip
 import logging
 import multiprocessing as mp
 import shutil
+import subprocess
 import tempfile
 from collections import defaultdict
 from multiprocessing.queues import Queue
@@ -88,6 +89,23 @@ MarkerJob = Tuple[str, str, str, str, Set[str], str, bool]
 PfamTopHits = Dict[str, Dict[str, Tuple[float, float]]]
 TigrTopHits = Dict[str, Tuple[str, float, float]]
 
+# What --hmm_db_path is checked to be before a batch is claimed. The two values of
+# --db want different things of it and neither says so when handed the other:
+# PfamScan is given a DIRECTORY and looks for Pfam-A.hmm inside it, hmmsearch is
+# given the TIGRFAM HMM FILE itself. Given the directory, hmmsearch reads it as a
+# file that "appears to be empty", exits non-zero and writes no marker table, and
+# the run met that only one call later, in a worker, as a FileNotFoundError on the
+# table -- naming the missing file rather than the reason for it. In r237 that cost
+# seven hours on five machines and 303,096 genomes, every batch of them marked
+# SUCCESS. The first five bytes of an HMM library are its format line, so being
+# sure costs a stat and a read.
+HMM_MAGIC = b'HMMER'
+PFAM_LIBRARY = 'Pfam-A.hmm'
+
+
+class BadHmmDatabase(ValueError):
+    """--hmm_db_path is not the HMMs the database asked for on --db is searched from."""
+
 
 class BatchCounts(NamedTuple):
     """What searching the markers of one batch came to.
@@ -114,6 +132,81 @@ class MarkerSetup(NamedTuple):
     extension: str
     name: str
     worker: Callable
+
+
+def check_hmm_file(path: str) -> None:
+    """Refuse a file that is not an HMM library.
+
+    Parameters
+    ----------
+    path : str
+        File hmmsearch or hmmscan would be pointed at.
+
+    @return: None; BadHmmDatabase where the file is not one hmmsearch can read.
+    """
+
+    try:
+        with open(path, 'rb') as handle:
+            magic = handle.read(len(HMM_MAGIC))
+    except OSError as exc:
+        raise BadHmmDatabase('{} cannot be read: {}'.format(path, exc))
+
+    if magic != HMM_MAGIC:
+        raise BadHmmDatabase(
+            '{} does not begin with {}, so it is not an HMM library hmmsearch '
+            'can read.'.format(path, HMM_MAGIC.decode()))
+
+
+def check_hmm_db(db: str, hmm_db_path: str) -> None:
+    """Refuse --hmm_db_path now where the search would fail on every genome.
+
+    Called before the release is cut into batches, so a path the search cannot
+    use costs a second at startup rather than a run that claims batches for hours
+    and finishes them with nothing in them.
+
+    Parameters
+    ----------
+    db : str
+        'pfam' or 'tigrfam'.
+    hmm_db_path : str
+        --hmm_db_path: the directory holding Pfam-A.hmm for 'pfam', the HMM file
+        itself for 'tigrfam'.
+
+    @return: None; BadHmmDatabase naming what was wanted where it is not that.
+    """
+
+    if db == 'pfam':
+        if not os.path.isdir(hmm_db_path):
+            raise BadHmmDatabase(
+                "--db pfam searches a DIRECTORY holding {}, and --hmm_db_path "
+                "{} is not a directory.".format(PFAM_LIBRARY, hmm_db_path))
+
+        library = os.path.join(hmm_db_path, PFAM_LIBRARY)
+        if not os.path.isfile(library):
+            raise BadHmmDatabase(
+                "--db pfam looks for {} inside --hmm_db_path, and there is no "
+                "{}.".format(PFAM_LIBRARY, library))
+
+        check_hmm_file(library)
+        return
+
+    if os.path.isdir(hmm_db_path):
+        # the r237 mistake, and the one the two --db values invite: the directory
+        # that IS --hmm_db_path for Pfam holds the file that is --hmm_db_path here
+        suggestion = os.path.join(hmm_db_path, 'tigrfam.hmm')
+        raise BadHmmDatabase(
+            "--db tigrfam searches ONE HMM FILE rather than a directory of them, "
+            "and --hmm_db_path {} is a directory.{}".format(
+                hmm_db_path,
+                ' Did you mean {}?'.format(suggestion)
+                if os.path.isfile(suggestion) else ''))
+
+    if not os.path.isfile(hmm_db_path):
+        raise BadHmmDatabase(
+            "--db tigrfam searches the HMM file --hmm_db_path names, and there is "
+            "no {}.".format(hmm_db_path))
+
+    check_hmm_file(hmm_db_path)
 
 
 class MarkerManager(object):
@@ -191,6 +284,13 @@ class MarkerManager(object):
         @return: where the results go, what they are called, what the log calls
                  the database, and the worker that searches it.
         """
+
+        if db in ('pfam', 'tigrfam'):
+            # here rather than in either worker: run_hmmsearch() settles the
+            # database before it plans the batches, so HMMs the search cannot use
+            # are met once, at the start, by the machine that was mistyped at --
+            # not ninety-six times a batch by workers that die one after another
+            check_hmm_db(db, hmm_db_path)
 
         if db == 'pfam':
             self.pfam_hmm_dir = hmm_db_path
@@ -472,8 +572,25 @@ class MarkerManager(object):
             for p in workerProc:
                 p.join()
 
+            # how a worker ended was never looked at. A worker that raises is
+            # gone, and the genomes still in the queue go unsearched with it, but
+            # the batch was finished all the same and its canary said
+            # searched=10,000 -- the length of the work list, which is what was
+            # handed out and not what came back. In r237 every worker of every
+            # batch died on the first genome, on HMMs hmmsearch could not read,
+            # and the run marked all 135 batches SUCCESS.
+            died = [p.exitcode for p in workerProc if p.exitcode]
+
             writerQueue.put(None)
             writeProc.join()
+
+            if died:
+                raise RuntimeError(
+                    '{:,} of {:,} search process(es) ended in error, the first '
+                    'with exit status {}; the genomes they held have no marker '
+                    'table, and the batch is failed rather than finished. What '
+                    'the search said is above this in the log.'.format(
+                        len(died), len(workerProc), died[0]))
         except BaseException:
             # raised on, rather than swallowed: a batch whose search died has not
             # searched its genomes, and returning quietly here would have
@@ -483,6 +600,14 @@ class MarkerManager(object):
                 p.terminate()
             writeProc.terminate()
             raise
+        finally:
+            # a worker that died left the work it never took in the queue, and a
+            # queue still holding data holds the process open: the feeder thread
+            # is joined at exit and waits forever for a reader that has gone. The
+            # r237 run sat there for hours after its last batch, with every
+            # worker dead, its log finished and nothing left to do.
+            workerQueue.cancel_join_thread()
+            writerQueue.cancel_join_thread()
 
     def aggregate(self, batches: Sequence[str], state_dir: str, name: str) -> None:
         """Report the release, once every batch of this database has succeeded.
@@ -908,13 +1033,22 @@ class MarkerManager(object):
 
                 hmmsearch_out = os.path.join(assembly_dir, tigrfam_version, filename.replace(
                     self.protein_file_ext, f'_{tigrfam_version}.out'))
-                cmd = 'hmmsearch -o {} --tblout {} --noali --notextw --cut_nc --cpu 1 {} {}'.format(
-                    hmmsearch_out,
-                    output_hit_file,
-                    self.tigrfam_hmms,
-                    temp_gene_file)
+                cmd = ['hmmsearch', '-o', hmmsearch_out, '--tblout', output_hit_file,
+                       '--noali', '--notextw', '--cut_nc', '--cpu', '1',
+                       self.tigrfam_hmms, temp_gene_file]
 
-                os.system(cmd)
+                # os.system() threw the exit status away, so a search that failed
+                # was met one call later, as a FileNotFoundError on the marker
+                # table it never wrote: the traceback named the missing table and
+                # not the reason there was none. hmmsearch says the reason on
+                # stderr, so the reason is what is raised.
+                search = subprocess.run(cmd, stderr=subprocess.PIPE,
+                                        universal_newlines=True)
+                if search.returncode != 0:
+                    raise RuntimeError(
+                        'hmmsearch exited {} searching {} against {}: {}'.format(
+                            search.returncode, gene_file, self.tigrfam_hmms,
+                            ' '.join(search.stderr.split()) or 'it said nothing'))
 
                 # determine top hits
                 tigrfam_tophit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
