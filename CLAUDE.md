@@ -78,8 +78,13 @@ the command table in `README.md`.
 `main()` in `__main__.py` calls `logger_setup()` (from `biolib_lite/logger.py`)
 before dispatching. That creates two named loggers, `'timestamp'` and
 `'no_timestamp'`; every manager does `logging.getLogger('timestamp')` rather
-than creating its own. `--log` sets the log file; without it the log goes to
-`./gtdb_migration_tk.log`. `parse_options()` returns an exit code, and `main()`
+than creating its own. `log_candidates()` decides where the log goes: `--log`,
+then `gtdb_migration_tk.log` under the command's `--out_dir`, then the current
+directory, then the console alone. A run whose `--log` could not be opened says
+so in one line and carries on, since a release should not end over where its log
+goes. `logger_setup()` clears the handlers of an earlier call before adding its
+own; it did not, and the second call __main__ makes on a failed `--log` printed
+every line of the run twice. `parse_options()` returns an exit code, and `main()`
 only calls `sys.exit()` when it is non-zero. Today only `ncbi_genome_sync` returns a
 meaningful code (see README for the table); every other command returns 0.
 

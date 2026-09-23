@@ -24,6 +24,7 @@ __maintainer__ = "Pierre Chaumeil"
 __email__ = "uqpchaum@uq.edu.au"
 __status__ = "Development"
 
+import logging
 import os
 import sys
 import argparse
@@ -37,6 +38,44 @@ from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.main import OptionsParser
 from gtdb_migration_tk.ncbi_metadata_sync import NCBI_GROUPS
 from gtdb_migration_tk.ncbi_genome_sync import add_sync_arguments
+
+# Where a run's log goes when --log cannot be opened: beside the command's own
+# results rather than nowhere, and said so in the log itself.
+FALLBACK_LOG = 'gtdb_migration_tk.log'
+
+
+def log_candidates(log, out_dir):
+    """Where a run's log is tried, in the order it is tried.
+
+    --log first, since it is what the command was told. Then the command's own
+    --out_dir, that being where the rest of what the run produces goes and 22 of
+    the subcommands requiring one: a log written to whatever directory the command
+    happened to be run from is a log nobody looks for. Then that directory, for
+    the commands that take no --out_dir. And failing all of those the console
+    alone, which cannot fail -- a release should not end over where its log goes.
+
+    Parameters
+    ----------
+    log : str or None
+        --log as given, or None for a command that has none.
+    out_dir : str or None
+        --out_dir as given, or None for a command that has none.
+
+    @return: [(directory, filename)], each to be tried in turn. A falsy directory
+             is what logger_setup() means by "no log file", so the last of them
+             logs to the console alone.
+    """
+
+    candidates = []
+    for candidate in ((os.path.dirname(log) or '.', os.path.basename(log))
+                      if log else None,
+                      (out_dir, FALLBACK_LOG) if out_dir else None,
+                      ('.', FALLBACK_LOG),
+                      (None, FALLBACK_LOG)):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    return candidates
 
 
 def print_help():
@@ -1393,22 +1432,34 @@ def main():
             # and why; logger_setup() creates the directory before opening the file
             args.log = os.path.join(args.output_dir, 'gtdb_migration_tk.log')
 
-        try:
-            # dirname('sync.log') is '' and logger_setup() treats a falsy directory as
-            # "no log file", so a bare filename silently produced no log at all
-            logger_setup(os.path.dirname(args.log) or '.',
-                         os.path.basename(args.log),
-                         'GTDB Migration Tk',
-                         software_name,
-                         __version__,
-                         silent)
-        except:
-            logger_setup('.',
-                         'gtdb_migration_tk.log',
-                         'GTDB Migration Tk',
-                         software_name,
-                         __version__,
-                         silent)
+        candidates = log_candidates(getattr(args, 'log', None),
+                                    getattr(args, 'output_dir', None))
+        wanted = candidates[0] if getattr(args, 'log', None) else None
+
+        chosen, refused = None, None
+        for log_dir, log_file in candidates:
+            try:
+                logger_setup(log_dir, log_file, 'GTDB Migration Tk',
+                             software_name, __version__, silent)
+                chosen = (log_dir, log_file)
+                break
+            except (OSError, SystemExit) as exc:
+                # SystemExit as well as OSError: make_sure_path_exists() calls
+                # sys.exit() where the directory cannot be made
+                if refused is None and wanted:
+                    refused = (os.path.join(*wanted), exc)
+
+        # said, rather than left to be found. A --log naming a file where a
+        # directory is wanted -- -l logs/run.log where ./logs is a file, which is
+        # one keystroke from -l logs -- was met by a bare except that logged the
+        # run somewhere else and printed nothing about it, and the command went on
+        # as though it had been given the log it asked for
+        if refused:
+            logging.getLogger('timestamp').warning(
+                'warning: --log {} could not be opened ({}); this run is logged '
+                'to {} instead.'.format(
+                    refused[0], str(refused[1]) or refused[1].__class__.__name__,
+                    os.path.join(*chosen) if chosen[0] else 'the console only'))
 
         # do what we came here to do
         rtn_code = 0
