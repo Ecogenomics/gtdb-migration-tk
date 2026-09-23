@@ -62,6 +62,18 @@ def logger_setup(log_dir, log_file, program_name,software_name, version, silent)
     no_timestamp_logger = logging.getLogger('no_timestamp')
     no_timestamp_logger.setLevel(logging.DEBUG)
 
+    # the handlers of an earlier call go before this one's are added. Both loggers
+    # are named, so they are the SAME objects on a second call, and the handlers
+    # it added are still on them: every line of the run then reached the console
+    # twice. That happens whenever the first call could not open the log it was
+    # given -- __main__ falls back to ./gtdb_migration_tk.log and calls again --
+    # and a command whose --log named a file where a directory was wanted, which
+    # is one keystroke, printed itself double from beginning to end
+    for logger in (timestamp_logger, no_timestamp_logger):
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+
     # setup logging to console
     timestamp_stream_logger = logging.StreamHandler(sys.stdout)
     timestamp_stream_logger.setFormatter(log_format)

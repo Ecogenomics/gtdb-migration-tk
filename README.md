@@ -91,8 +91,12 @@ The toolkit can also be invoked as a module, which is equivalent:
 python -m gtdb_migration_tk <command>
 ```
 
-Most commands take `-l/--log` and write a run log there; without it the log is
-written to `./gtdb_migration_tk.log`. Add `--silent` to suppress console output.
+Most commands take `-l/--log` and write a run log there. Where that file cannot
+be opened — `-l logs/run.log` where `./logs` is a file, which is one keystroke
+from `-l logs` — the run says so in one line and is logged to
+`gtdb_migration_tk.log` under the command's `--out_dir` instead, that being where
+the rest of what the run produces goes; a command with no `--out_dir` writes it
+to the current directory. Add `--silent` to suppress console output.
 
 ### Example: mirroring NCBI
 
