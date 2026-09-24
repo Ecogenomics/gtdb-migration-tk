@@ -1,8 +1,11 @@
 import csv
 import os
 import gzip
+import logging
+import re
+import subprocess
 from collections import namedtuple
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from tqdm import tqdm
 
@@ -69,6 +72,128 @@ def protein_fasta(accession: str, genome_dir: str) -> str:
     """
 
     return os.path.join(genome_dir, PRODIGAL_DIR, accession + PROTEIN_FASTA_EXT)
+
+
+# How each external program the toolkit runs is asked its version, and what the
+# answer looks like. Every program a command runs is recorded twice: once in the
+# run's log, and once in a <program>.version file beside the results it made --
+# the results outlive the run, a genome's being carried across from release to
+# release while its sequences are unchanged, so the version that made them is not
+# the version of the run that last looked at them and only the file can say.
+# Asked of the program rather than of conda or of a path, since what matters is
+# what ran and a machine of a shared run can have another build first on PATH. A
+# program the toolkit runs goes here, and is asked by the command running it.
+HMMER_VERSION = r'HMMER \d\S*(?: \([^)]*\))?'
+VERSION_QUERIES: Dict[str, Tuple[Tuple[str, ...], str]] = {
+    'tRNAscan-SE': (('tRNAscan-SE', '-h'), r'tRNAscan-SE \d\S*(?: \([^)]*\))?'),
+    'prodigal': (('prodigal', '-v'), r'Prodigal V\d\S*(?: .*)?'),
+    'hmmsearch': (('hmmsearch', '-h'), HMMER_VERSION),
+    'nhmmer': (('nhmmer', '-h'), HMMER_VERSION),
+    'blastn': (('blastn', '-version'), r'blastn: \d\S*'),
+    'makeblastdb': (('makeblastdb', '-version'), r'makeblastdb: \d\S*'),
+    'gtranslate': (('gtranslate', '--version'), r'gtranslate: version \d\S*'),
+    'checkm2': (('checkm2', '--version'), r'(?m)^\d+\.\d+\S*'),
+    'checkm': (('checkm', '-h'), r'CheckM v\d\S*'),
+    'busco': (('busco', '--version'), r'BUSCO \d\S*'),
+}
+VERSION_EXT = '.version'
+
+
+def program_version(program: str) -> str:
+    """The version of an external program, as the program itself states it.
+
+    tRNAscan-SE and Prodigal say it on stderr and the rest on stdout, so both
+    are read. The exit status is not: a version printed is a version, whatever
+    the program thought of the rest of what it was asked.
+
+    Parameters
+    ----------
+    program : str
+        A key of VERSION_QUERIES, as the program is called on the command line.
+
+    @return: the version as the program printed it, e.g.
+             'Prodigal V2.6.3: February, 2016'.
+
+    Raises
+    ------
+    RuntimeError
+        The program could not be run, or said nothing that looks like a
+        version. A version file saying something other than what ran is worse
+        than none, so this is not guessed at.
+    """
+
+    command, pattern = VERSION_QUERIES[program]
+    try:
+        proc = subprocess.run(list(command), stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=300)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError('Could not run {} to learn its version: {}'.format(
+            ' '.join(command), error))
+
+    output = proc.stdout.decode('utf-8', 'replace')
+    match = re.search(pattern, output)
+    if not match:
+        raise RuntimeError(
+            '{} did not state a version matching {!r}; it said: {}'.format(
+                ' '.join(command), pattern,
+                ' '.join(output.split())[:200] or 'nothing'))
+
+    return match.group(0).strip()
+
+
+def record_program_version(program: str) -> str:
+    """Ask an external program its version, and say it in the run's log.
+
+    Called once per run, where the command starts, rather than by each worker:
+    it is one binary for the whole run, and a program that will not say what it
+    is is met before any work is claimed rather than inside it.
+
+    Parameters
+    ----------
+    program : str
+        A key of VERSION_QUERIES.
+
+    @return: the version, for write_version_file() to put beside each result.
+    """
+
+    version = program_version(program)
+    logging.getLogger('timestamp').info('Using {}: {}.'.format(program, version))
+    return version
+
+
+def version_file(directory: str, program: str) -> str:
+    """Where a program's version is recorded, beside the results it made.
+
+    Parameters
+    ----------
+    directory : str
+        Directory holding the results.
+    program : str
+        The program, as it is called; the file is named for it in lower case.
+
+    @return: e.g. <directory>/trnascan-se.version.
+    """
+
+    return os.path.join(directory, program.lower() + VERSION_EXT)
+
+
+def write_version_file(directory: str, program: str, version: str) -> None:
+    """Record the version of the program that made some results, beside them.
+
+    Parameters
+    ----------
+    directory : str
+        Directory holding the results.
+    program : str
+        The program, as it is called.
+    version : str
+        What record_program_version() returned.
+
+    @return: None
+    """
+
+    with open(version_file(directory, program), 'w') as handle:
+        handle.write('{}\n'.format(version))
 
 
 def open_text(path: str):

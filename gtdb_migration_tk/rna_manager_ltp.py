@@ -27,6 +27,12 @@ from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, remove_files_in_directory
 from gtdb_migration_tk.genometk_lite.rna import RNA
+from gtdb_migration_tk.utils.common import (record_program_version,
+                                            write_version_file)
+
+# The program, as it is called. Its version goes into the log and, as
+# blastn.version, into the rna_ltp directory of each genome it classified.
+BLASTN = 'blastn'
 
 
 class RnaManagerLTP(object):
@@ -40,6 +46,7 @@ class RnaManagerLTP(object):
         self.rna_ssu_version = silva_version
         self.rna_path = rna_path
         self.logger = logging.getLogger('timestamp')
+        self.blastn_version = record_program_version(BLASTN)
 
         # needed to pick up previously identified and extracted 16S rRNA genes
         self.silva_output_dir = 'rna_silva_{}'.format(self.rna_ssu_version)
@@ -74,6 +81,8 @@ class RnaManagerLTP(object):
                      self.ltp_ssu_file,
                      self.ltp_taxonomy_file,
                      output_dir)
+
+        write_version_file(output_dir, BLASTN, self.blastn_version)
 
         canary_file = os.path.join(full_genome_dir, self.ltp_output_dir, 'ltp.canary.txt')
         with open(canary_file, 'w') as filehandle:

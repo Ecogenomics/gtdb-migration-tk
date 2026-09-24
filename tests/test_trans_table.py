@@ -24,6 +24,22 @@ from unittest import mock
 from gtdb_migration_tk import trans_table as G
 
 
+# What the stubbed gTranslate and CheckM2 say they are. Neither is installed for
+# the tests, and every GTranslate() asks both, so the question is answered here
+# for the whole module rather than by each test that builds one.
+VERSIONS = {G.GTRANSLATE_BIN: 'gtranslate: version 0.0.4', G.CHECKM2_BIN: '1.1.0'}
+
+
+def setUpModule():
+    global _record_program_version
+    _record_program_version = G.record_program_version
+    G.record_program_version = VERSIONS.__getitem__
+
+
+def tearDownModule():
+    G.record_program_version = _record_program_version
+
+
 def conflict_row(**fields):
     """A conflict row of whatever width CONFLICT_HEADER currently is.
 
@@ -1087,6 +1103,46 @@ class CheckM2RunTests(TempDirCase):
 
         for staged in seen['input']:
             self.assertFalse(staged.startswith(seen['out'] + os.sep))
+
+
+class ProgramVersionTests(TempDirCase):
+    """What predicted a batch, and what estimated the quality of the conflicts,
+    are recorded beside what they made."""
+
+    def setUp(self):
+        super().setUp()
+        self._check, G.check_dependencies = G.check_dependencies, lambda *a, **k: True
+        self.out_dir = os.path.join(self.dir, 'out')
+        genome_dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        with open(genome_dirs, 'w') as handle:
+            handle.write('GCA_000001.1\t{}\tG000001\n'.format(
+                self.genome_dir('GCA_000001.1_ASM1')))
+        self.batch = G.GTranslate().plan_batches(genome_dirs, self.out_dir)[0]
+
+    def tearDown(self):
+        G.check_dependencies = self._check
+        super().tearDown()
+
+    def predict(self, returncode):
+        with mock.patch.object(G.subprocess, 'run',
+                               return_value=mock.Mock(returncode=returncode)):
+            try:
+                G.GTranslate().run_gtranslate(self.batch)
+            except (RuntimeError, OSError):
+                # a failed run raises, and a run that succeeded goes on to read
+                # the summary the stub never wrote -- after the version is down
+                pass
+
+    def test_a_predicted_batch_records_the_gtranslate_that_predicted_it(self):
+        self.predict(0)
+
+        with open(os.path.join(self.batch, 'gtranslate.version')) as handle:
+            self.assertEqual(handle.read(), VERSIONS[G.GTRANSLATE_BIN] + '\n')
+
+    def test_a_batch_gtranslate_failed_on_records_no_version(self):
+        self.predict(1)
+
+        self.assertFalse(os.path.exists(os.path.join(self.batch, 'gtranslate.version')))
 
 
 # ------------------------------------------------------------- standard GTDB QC

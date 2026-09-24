@@ -228,6 +228,21 @@ until 0.1.25, and both were left behind by a change to the report.
 set or deliberately left out of both. Nothing outside `update_genomes.py` parses
 a report row.
 
+### Every external program's version is recorded, in the log and beside its results
+
+A command that runs an external program asks its version once, where the command
+starts, with `utils.common.record_program_version(program)`, which logs
+`Using <program>: <version>.`; after each piece of work that program completes, it
+calls `write_version_file(directory, program, version)` to write
+`<program lowercased>.version` beside the results (`trna/trnascan-se.version`,
+`prodigal/prodigal.version`, `prodigal/pfam_33.1_lite/hmmsearch.version`,
+`gtranslate.version` in a trans_table batch). The results outlive the run, since
+derived data is carried across between releases, so only the file can say what
+made them. Nothing is written where the program made nothing, or where the
+results were already there and skipped. How each program is asked is the one
+table `VERSION_QUERIES`; a new external program needs an entry there, and
+`tests/test_common.py` holds each pattern against what the real program prints.
+
 ### `config.py` is the only place a reference database version lives
 
 `PFAM_VERSION`, `TIGRFAM_VERSION`, `SILVA_VERSION` and `LTP_VERSION` each name

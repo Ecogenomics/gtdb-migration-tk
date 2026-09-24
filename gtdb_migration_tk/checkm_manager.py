@@ -27,6 +27,12 @@ from gtdb_migration_tk.biolib_lite.common import get_num_lines
 from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 from gtdb_migration_tk.update_genomes import (genomes_in_release,
                                              genomes_to_regenerate)
+from gtdb_migration_tk.utils.common import (record_program_version,
+                                            write_version_file)
+
+# The program, as it is called. Its version goes into the log and, as
+# checkm.version, into each chunk directory it was run over.
+CHECKM = 'checkm'
 
 
 class CheckMManager(object):
@@ -54,6 +60,8 @@ class CheckMManager(object):
         """Applying CheckM to genomes."""
 
         tmp_dir = os.path.join(output_dir, 'genome_chunks')
+
+        checkm_version = record_program_version(CHECKM)
 
         if all_genomes:
             self.logger.info('Processing all genomes.')
@@ -156,6 +164,10 @@ class CheckMManager(object):
                 checkm_output_dir, 'alignment_file.chunk%d.tsv' % i)
             os.system('checkm qa --aai_strain 0.9999 -t %d -a %s --tab_table -f %s %s %s' % (self.cpus,
                                                                                              alignment_file, qa_file_sh100, os.path.join(checkm_output_dir, 'lineage.ms'), checkm_output_dir))
+
+            # per chunk, since a chunk already there is skipped above and may
+            # have been made by an earlier run with another CheckM
+            write_version_file(checkm_output_dir, CHECKM, checkm_version)
 
         # create single file with CheckM results
         print('Creating single file with CheckM results.')

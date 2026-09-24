@@ -21,9 +21,7 @@ import datetime
 import gzip
 import logging
 import ntpath
-import re
 import shutil
-import subprocess
 import multiprocessing as mp
 import tempfile
 from typing import Tuple
@@ -31,10 +29,18 @@ from typing import Tuple
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import remove_files_in_directory
-from gtdb_migration_tk.biolib_lite.external.blast import get_blastn_version
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.seq_io import read_seq
 from gtdb_migration_tk.genometk_lite.rna import RNA
+from gtdb_migration_tk.utils.common import (record_program_version,
+                                            write_version_file)
+
+# The programs, as they are called. Their versions go into the log and, as
+# nhmmer.version and blastn.version, into the rna_silva directory of each genome
+# -- blastn's only where it ran, which is where nhmmer found a gene to classify
+# and there is a database to classify it against.
+NHMMER = 'nhmmer'
+BLASTN = 'blastn'
 
 
 class RnaManagerSILVA(object):
@@ -45,9 +51,9 @@ class RnaManagerSILVA(object):
 
         self.logger = logging.getLogger('timestamp')
 
-        check_dependencies(['nhmmer', 'blastn'])
-        self.logger.info('Using nhmmer v{}.'.format(self.get_nhmmer_version()))
-        self.logger.info('Using blastn v{}.'.format(get_blastn_version()))
+        check_dependencies([NHMMER, BLASTN])
+        self.nhmmer_version = record_program_version(NHMMER)
+        self.blastn_version = record_program_version(BLASTN)
 
         self.silva_version = silva_version
         self.rna_path = rna_path
@@ -84,29 +90,6 @@ class RnaManagerSILVA(object):
             self.taxonomy = None
             self.logger.info(
                 'We currently do not curate against a 5S database, but do identify these sequences for quality assessment purposes.')
-
-    def get_nhmmer_version(self):
-        """Returns the version of nhmmer on the system path.
-
-        Returns
-        -------
-        str
-            The string containing the nhmmer version.
-        """
-        try:
-            proc = subprocess.Popen(['nhmmer', '-h'],
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE,
-                                    encoding='utf-8')
-            stdout, _stderr = proc.communicate()
-            version = re.search(r'HMMER (\S+)', stdout)
-            if version:
-                return version.group(1)
-            else:
-                return 'unknown'
-        except Exception as e:
-            print(e)
-            return 'unknown'
 
     def _producer(self, input_data: Tuple[str, str]) -> str:
         """Process each genome."""
@@ -265,6 +248,11 @@ class RnaManagerSILVA(object):
                     shutil.copy(os.path.join(temp_output_dir, file), os.path.join(output_dir, file))
             else:
                 shutil.copytree(temp_output_dir, output_dir)
+
+            write_version_file(output_dir, NHMMER, self.nhmmer_version)
+            if os.path.exists(os.path.join(output_dir,
+                                           f'{self.rna_gene}.blastn.tsv')):
+                write_version_file(output_dir, BLASTN, self.blastn_version)
 
         finally:
             shutil.rmtree(temp_dir)

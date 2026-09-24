@@ -32,6 +32,10 @@ Summary = collections.namedtuple(
     defaults=(None,))
 
 
+# What the stubbed Prodigal says it is.
+VERSION = 'Prodigal V2.6.3: February, 2016'
+
+
 class StubProdigal:
     """Stands in for the vendored wrapper, which would call the real Prodigal."""
 
@@ -99,6 +103,7 @@ class TempDirCase(unittest.TestCase):
         # neither the real Prodigal nor the check for it is wanted offline
         self._prodigal, P.Prodigal = P.Prodigal, StubProdigal
         self._check, P.check_dependencies = P.check_dependencies, lambda *a, **k: True
+        self._version, P.record_program_version = P.record_program_version, lambda *a, **k: VERSION
         StubProdigal.last_tasks = None
         StubProdigal.refuse = set()
         StubProdigal.fell_back = {}
@@ -106,6 +111,7 @@ class TempDirCase(unittest.TestCase):
     def tearDown(self):
         P.Prodigal = self._prodigal
         P.check_dependencies = self._check
+        P.record_program_version = self._version
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def genome(self, accession):
@@ -311,6 +317,38 @@ class TranslationTableHandoverTests(TempDirCase):
 
 
 # ------------------------------------------------------ what each genome records
+
+class ProdigalVersionTests(TempDirCase):
+    """The version that called a genome's genes is recorded beside them, since
+    the proteins outlive the run that made them."""
+
+    def version_file(self, gpath):
+        return os.path.join(gpath, 'prodigal', 'prodigal.version')
+
+    def test_a_called_genome_records_the_version_that_called_it(self):
+        one = self.genome('GCF_000000001.1')
+
+        P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs(one), self.summary(('GCF_000000001.1', '11')),
+            self.out_dir)
+
+        with open(self.version_file(one[1])) as handle:
+            self.assertEqual(handle.read(), VERSION + '\n')
+
+    def test_a_genome_prodigal_refused_records_no_version(self):
+        """Nothing was made, so there is nothing for a version to vouch for."""
+        one = self.genome('GCF_000000001.1')
+        two = self.genome('GCF_000000002.1')
+        StubProdigal.refuse = {'GCF_000000002.1'}
+
+        P.ProdigalManager(self.tmp_dir).run(
+            self.genome_dirs(one, two),
+            self.summary(('GCF_000000001.1', '11'), ('GCF_000000002.1', '11')),
+            self.out_dir)
+
+        self.assertTrue(os.path.exists(self.version_file(one[1])))
+        self.assertFalse(os.path.exists(self.version_file(two[1])))
+
 
 class TranslationTableFileTests(TempDirCase):
     """The file is written per genome, so it must describe THAT genome."""

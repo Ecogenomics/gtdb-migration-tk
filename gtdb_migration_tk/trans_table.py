@@ -301,7 +301,9 @@ from gtdb_migration_tk.utils.common import (TT_SUMMARY_DENSITY_4,
                                             checkm_translation_table,
                                             open_text,
                                             read_taxonomy,
-                                            read_translation_table_summary)
+                                            read_translation_table_summary,
+                                            record_program_version,
+                                            write_version_file)
 
 
 # The executable, looked up on PATH rather than given a path of its own: it is
@@ -1382,9 +1384,16 @@ class GTranslate(object):
         self.lease = lease
         self.heartbeat = heartbeat
 
-        check_dependencies([GTRANSLATE_BIN, 'checkm2', 'prodigal'])
+        check_dependencies([GTRANSLATE_BIN, CHECKM2_BIN, 'prodigal'])
 
         self.logger = logging.getLogger('timestamp')
+
+        # the two programs this command runs; Prodigal is gTranslate's to run,
+        # and gTranslate's own log is where what it ran is recorded. A batch's
+        # gtranslate.version says what predicted it, and checkm2.version beside
+        # the conflict file what estimated the quality there
+        self.gtranslate_version = record_program_version(GTRANSLATE_BIN)
+        self.checkm2_version = record_program_version(CHECKM2_BIN)
 
     def plan_batches(self, gtdb_genome_path_file: str, out_dir: str) -> List[str]:
         """Settle which genomes are in which batch, once for every machine.
@@ -1457,6 +1466,9 @@ class GTranslate(object):
             raise RuntimeError('{} returned exit code {}; {} says what it was '
                                'doing.'.format(GTRANSLATE_BIN, proc.returncode,
                                                os.path.join(batch_dir, 'gtranslate.log')))
+
+        # before PREDICTED, so that a batch past it always says what predicted it
+        write_version_file(batch_dir, GTRANSLATE_BIN, self.gtranslate_version)
 
         # the hours of the batch are over and what they produced is final, so a
         # machine that takes this batch after here compares rather than predicts
@@ -1810,6 +1822,10 @@ class GTranslate(object):
 
         annotated = annotate_conflicts(rows, quality)
         write_table(annotated, conflict_file, header=CONFLICT_HEADER_CHECKM2)
+
+        # beside the conflict file and not in the CheckM2 directory, which is
+        # removed below once the estimates are in the file
+        write_version_file(out_dir, CHECKM2_BIN, self.checkm2_version)
 
         first = CONFLICT_HEADER_CHECKM2.index(CHECKM2_COLUMNS[0])
         estimated = sum(1 for row in annotated
