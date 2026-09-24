@@ -46,6 +46,8 @@ from tqdm import tqdm
 from gtdb_migration_tk.biolib_lite.common import canonical_gid, make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.filemgmt import select_delimiter, matching_brackets
 from gtdb_migration_tk.biolib_lite.seq_io import read_seq
+from gtdb_migration_tk.utils.common import (record_program_version,
+                                            write_version_file)
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.utils.prettytable import PrettyTable
 
@@ -1062,6 +1064,7 @@ class Tools(object):
         # Time to run makeblastdb on the new fasta file
         print('Running makeblastdb...')
 
+        makeblastdb_version = record_program_version('makeblastdb')
         cmd_to_run = ['makeblastdb','-in',os.path.join(output_directory,output_prefix + '.fna'),'-dbtype','nucl']
         proc = subprocess.Popen(
             cmd_to_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1070,6 +1073,9 @@ class Tools(object):
         if proc.returncode != 0:
             raise RuntimeError("%r failed, status code %s stdout %r stderr %r" % (
                 cmd_to_run, proc.returncode, stdout, stderr))
+
+        # beside the database it built
+        write_version_file(output_directory, 'makeblastdb', makeblastdb_version)
 
     def check_db_population(self, metadata, id_last_genome, log_file):
         # we parse the metadata file to get the last genome id

@@ -24,6 +24,12 @@ import shutil
 import tempfile
 
 from gtdb_migration_tk.biolib_lite.external.execute import run_bash, check_on_path
+from gtdb_migration_tk.utils.common import (record_program_version,
+                                            write_version_file)
+
+# The program, as it is called. Its version goes into the log and, as
+# busco.version, into the busco/ directory of each genome it was run over.
+BUSCO = 'busco'
 
 
 class BuscoManager(object):
@@ -41,7 +47,8 @@ class BuscoManager(object):
 
         self.cpus = cpus
         self.logger = logging.getLogger('timestamp')
-        check_on_path('busco')
+        check_on_path(BUSCO)
+        self.version = record_program_version(BUSCO)
 
     def worker(self, queue_in, queue_out):
         """Process genomes with BUSCO in parallel."""
@@ -131,6 +138,8 @@ class BuscoManager(object):
                         elif f.startswith('short_summary.specific.') and f.endswith('.json'):
                             in_file = os.path.join(busco_results_dir, f)
                             shutil.copyfile(in_file, specific_out_file)
+
+                    write_version_file(busco_out_dir, BUSCO, self.version)
 
             queue_out.put(gid)
 

@@ -25,7 +25,9 @@ from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.prodigal import Prodigal, ProdigalTask
 from gtdb_migration_tk.ncbi_utils import GENOMIC_FASTA_EXT
 from gtdb_migration_tk.utils.common import (TT_SUMMARY_TABLE,
-                                            read_translation_table_summary)
+                                            read_translation_table_summary,
+                                            record_program_version,
+                                            write_version_file)
 
 
 
@@ -77,6 +79,10 @@ META_FALLBACK_HEADER = ('genome_id', 'reason')
 # other genome of the release is what it has always been.
 MODE_FIELD = 'prodigal_mode'
 MODE_META = 'meta'
+
+# The program, as it is called. Its version goes into the log and, as
+# prodigal.version, into the prodigal/ directory of each genome it called.
+PRODIGAL = 'prodigal'
 
 
 def has_proteins(aa_gene_file: str) -> bool:
@@ -213,9 +219,10 @@ class ProdigalManager(object):
         self.lease = lease
         self.heartbeat = heartbeat
 
-        check_dependencies(['prodigal'])
+        check_dependencies([PRODIGAL])
 
         self.logger = logging.getLogger('timestamp')
+        self.version = record_program_version(PRODIGAL)
 
     def run(self,
             gtdb_genome_path_file: str,
@@ -717,9 +724,10 @@ class ProdigalManager(object):
                     len(tasks), sorted(refused.items())[0][1]))
 
         # everything else a genome's directory holds was written by the worker
-        # that called its genes; this is the one record the wrapper has no
+        # that called its genes; these are the two records the wrapper has no
         # business knowing about
-        self.logger.info('Recording the translation table of each genome.')
+        self.logger.info('Recording the translation table and Prodigal version '
+                         'of each genome.')
         called = []
         fell_back = {}
         for task in tasks:
@@ -749,6 +757,9 @@ class ProdigalManager(object):
                     handle.write('{}\t{}\t{}\n'.format(
                         MODE_FIELD, MODE_META,
                         'single mode failed: ' + stats.meta_fallback))
+
+            write_version_file(os.path.dirname(task.aa_gene_file), PRODIGAL,
+                               self.version)
 
         if fell_back:
             self.logger.warning(

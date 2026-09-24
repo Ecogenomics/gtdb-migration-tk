@@ -77,6 +77,7 @@ as a success, because that is not a release of difficult genomes -- it is
 tRNAscan-SE not working on this machine.
 """
 
+import functools
 import gzip
 import logging
 import multiprocessing as mp
@@ -102,7 +103,9 @@ from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
 from gtdb_migration_tk.biolib_lite.checksum import sha256
 from gtdb_migration_tk.biolib_lite.common import canonical_gid, make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
-from gtdb_migration_tk.utils.common import read_taxonomy
+from gtdb_migration_tk.utils.common import (read_taxonomy,
+                                            record_program_version,
+                                            write_version_file)
 
 
 # What this command calls the files of its own batches. The batchfile's first
@@ -130,6 +133,10 @@ TRNA_EXT = '_trna.tsv'
 TRNA_LOG_EXT = '_trna.log'
 TRNA_STATS_EXT = '_trna_stats.tsv'
 CHECKSUM_EXT = '.sha256'
+
+# The program, as it is called. Its version goes into the log and, as
+# trnascan-se.version, into the trna/ directory of each genome it scanned.
+TRNASCAN = 'tRNAscan-SE'
 
 # The two models tRNAscan-SE searches with. A genome of neither domain is scanned
 # with the bacterial one, which is what this command has always done.
@@ -181,6 +188,122 @@ class BatchCounts(NamedTuple):
     not_scanned: int
 
 
+# The two things a worker of the pool does, as functions of the module rather than
+# methods of tRNAScan. The pool pickles the function it is handed with every
+# genome, and a bound method pickles its instance -- the domain table of the whole
+# release with it, 2.7M entries and 47 MB, for each of the ten thousand genomes of
+# a batch. The parent pickles them one at a time, 0.6 s apiece, so a batch spent
+# hours 'Checking tRNAs' that is seconds of work, and the scan after it could feed
+# its workers fewer than two genomes a second however many -c it was given. The
+# domain is settled in the parent and travels in the TrnaJob, so a worker needs
+# nothing of the instance. They log where the instance would have: 'timestamp'.
+LOGGER = logging.getLogger('timestamp')
+
+
+def trnascan_parser(job: TrnaJob) -> Optional[TrnaJob]:
+    """Decide whether a genome's tRNAs still need identifying.
+
+    A genome is skipped where its tRNA table is there AND its checksum
+    agrees. A table whose checksum does not agree was written by a run that
+    was interrupted partway through it, and is scanned again.
+
+    Parameters
+    ----------
+    job : TrnaJob
+        The genome to consider.
+
+    @return: the job where the genome is to be scanned, None where its tRNAs
+             are already there and vouched for.
+    """
+
+    trna_file = os.path.join(os.path.dirname(job.genome_file), TRNA_DIR,
+                             job.accession + TRNA_EXT)
+    checksum_file = trna_file + CHECKSUM_EXT
+
+    if not (os.path.exists(trna_file) and os.path.exists(checksum_file)):
+        return job
+
+    checksum = str(sha256(trna_file))
+    with open(checksum_file) as handle:
+        recorded = handle.readline().strip()
+
+    if checksum == recorded:
+        return None
+
+    LOGGER.warning(
+        'warning: {} has tRNAs called with an invalid checksum ({} against '
+        '{} in {}); the genome is scanned again.'.format(
+            job.accession, checksum, recorded, checksum_file))
+
+    return job
+
+def trnascan_worker(job: TrnaJob, tmp_dir: str, version: str) -> Optional[str]:
+    """Identify the tRNAs of one genome.
+
+    The genome is decompressed into --tmp_dir first, tRNAscan-SE reading a
+    plain FASTA, and the copy is removed however the scan ends. The results
+    go into the genome's own directory, which is why two machines on
+    different batches never write to the same place.
+
+    Parameters
+    ----------
+    job : TrnaJob
+        The genome to scan, and the model to scan it with.
+    tmp_dir : str
+        Directory the genome is decompressed into, one directory per genome.
+    version : str
+        tRNAscan-SE's version, recorded beside the tRNAs.
+
+    @return: None where the genome was scanned, its accession where
+             tRNAscan-SE failed on it -- which is reported and left rather
+             than taking the rest of the batch down.
+    """
+
+    trna_dir = os.path.join(os.path.dirname(job.genome_file), TRNA_DIR)
+    make_sure_path_exists(trna_dir)
+
+    output_file = os.path.join(trna_dir, job.accession + TRNA_EXT)
+    log_file = os.path.join(trna_dir, job.accession + TRNA_LOG_EXT)
+    stats_file = os.path.join(trna_dir, job.accession + TRNA_STATS_EXT)
+
+    # tRNAscan-SE reads a plain FASTA, and the genomes are held gzipped
+    temp_dir = tempfile.mkdtemp(dir=tmp_dir)
+    try:
+        genome_copy = os.path.join(
+            temp_dir, os.path.basename(job.genome_file)[:-len('.gz')])
+        with gzip.open(job.genome_file, 'rb') as f_in:
+            with open(genome_copy, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+        # -o the tRNAs, -m the statistics metadata reads, -l the log
+        command = [TRNASCAN, job.domain_flag, '-q', '-Q',
+                   '-o', output_file, '-m', stats_file, '-l', log_file,
+                   genome_copy]
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        stdout, stderr = proc.communicate()
+        if proc.returncode != 0:
+            LOGGER.warning(
+                'warning: tRNAscan-SE failed on {} with status {}: {}'.format(
+                    job.accession, proc.returncode,
+                    (stderr or stdout).decode('utf-8', 'replace').strip()[:200]))
+            return job.accession
+
+        write_version_file(trna_dir, TRNASCAN, version)
+
+        # written last, so a table without one is a scan that was interrupted
+        with open(output_file + CHECKSUM_EXT, 'w') as handle:
+            handle.write('{}\n'.format(sha256(output_file)))
+    except Exception as error:
+        LOGGER.warning(
+            'warning: {} could not be scanned: {}'.format(job.accession, error))
+        return job.accession
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return None
+
+
 class tRNAScan(object):
     """Runs tRNAscan-SE over the genomes of a release."""
 
@@ -221,7 +344,10 @@ class tRNAScan(object):
         @return: None
         """
 
-        check_dependencies(['tRNAscan-SE'])
+        check_dependencies([TRNASCAN])
+
+        self.logger: logging.Logger = logging.getLogger('timestamp')
+        self.version: str = record_program_version(TRNASCAN)
 
         self.cpus: int = cpus
         self.tmp_dir: str = tmp_dir
@@ -230,7 +356,6 @@ class tRNAScan(object):
         self.lease: float = lease
         self.heartbeat: float = heartbeat
 
-        self.logger: logging.Logger = logging.getLogger('timestamp')
 
         # made here rather than by the first worker that wants it: a --tmp_dir
         # that cannot be made would otherwise be met once per genome, inside a
@@ -465,7 +590,7 @@ class tRNAScan(object):
             to_scan, already_scanned = jobs, 0
         else:
             with mp.Pool(processes=self.cpus) as pool:
-                decided = list(tqdm(pool.imap_unordered(self.trnascan_parser, jobs),
+                decided = list(tqdm(pool.imap_unordered(trnascan_parser, jobs),
                                     total=len(jobs), unit='genome', ncols=100,
                                     leave=False, desc='Checking tRNAs'))
             to_scan = [job for job in decided if job is not None]
@@ -522,7 +647,9 @@ class tRNAScan(object):
             return []
 
         with mp.Pool(processes=self.cpus) as pool:
-            results = list(tqdm(pool.imap_unordered(self.trnascan_worker, jobs),
+            worker = functools.partial(trnascan_worker, tmp_dir=self.tmp_dir,
+                                       version=self.version)
+            results = list(tqdm(pool.imap_unordered(worker, jobs),
                                 total=len(jobs), unit='genome', ncols=100,
                                 desc='Identifying tRNAs'))
 
@@ -535,103 +662,6 @@ class tRNAScan(object):
                 'given.'.format(len(jobs)))
 
         return failures
-
-    def trnascan_parser(self, job: TrnaJob) -> Optional[TrnaJob]:
-        """Decide whether a genome's tRNAs still need identifying.
-
-        A genome is skipped where its tRNA table is there AND its checksum
-        agrees. A table whose checksum does not agree was written by a run that
-        was interrupted partway through it, and is scanned again.
-
-        Parameters
-        ----------
-        job : TrnaJob
-            The genome to consider.
-
-        @return: the job where the genome is to be scanned, None where its tRNAs
-                 are already there and vouched for.
-        """
-
-        trna_file = os.path.join(os.path.dirname(job.genome_file), TRNA_DIR,
-                                 job.accession + TRNA_EXT)
-        checksum_file = trna_file + CHECKSUM_EXT
-
-        if not (os.path.exists(trna_file) and os.path.exists(checksum_file)):
-            return job
-
-        checksum = str(sha256(trna_file))
-        with open(checksum_file) as handle:
-            recorded = handle.readline().strip()
-
-        if checksum == recorded:
-            return None
-
-        self.logger.warning(
-            'warning: {} has tRNAs called with an invalid checksum ({} against '
-            '{} in {}); the genome is scanned again.'.format(
-                job.accession, checksum, recorded, checksum_file))
-
-        return job
-
-    def trnascan_worker(self, job: TrnaJob) -> Optional[str]:
-        """Identify the tRNAs of one genome.
-
-        The genome is decompressed into --tmp_dir first, tRNAscan-SE reading a
-        plain FASTA, and the copy is removed however the scan ends. The results
-        go into the genome's own directory, which is why two machines on
-        different batches never write to the same place.
-
-        Parameters
-        ----------
-        job : TrnaJob
-            The genome to scan, and the model to scan it with.
-
-        @return: None where the genome was scanned, its accession where
-                 tRNAscan-SE failed on it -- which is reported and left rather
-                 than taking the rest of the batch down.
-        """
-
-        trna_dir = os.path.join(os.path.dirname(job.genome_file), TRNA_DIR)
-        make_sure_path_exists(trna_dir)
-
-        output_file = os.path.join(trna_dir, job.accession + TRNA_EXT)
-        log_file = os.path.join(trna_dir, job.accession + TRNA_LOG_EXT)
-        stats_file = os.path.join(trna_dir, job.accession + TRNA_STATS_EXT)
-
-        # tRNAscan-SE reads a plain FASTA, and the genomes are held gzipped
-        temp_dir = tempfile.mkdtemp(dir=self.tmp_dir)
-        try:
-            genome_copy = os.path.join(
-                temp_dir, os.path.basename(job.genome_file)[:-len('.gz')])
-            with gzip.open(job.genome_file, 'rb') as f_in:
-                with open(genome_copy, 'wb') as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-
-            # -o the tRNAs, -m the statistics metadata reads, -l the log
-            command = ['tRNAscan-SE', job.domain_flag, '-q', '-Q',
-                       '-o', output_file, '-m', stats_file, '-l', log_file,
-                       genome_copy]
-            proc = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE)
-            stdout, stderr = proc.communicate()
-            if proc.returncode != 0:
-                self.logger.warning(
-                    'warning: tRNAscan-SE failed on {} with status {}: {}'.format(
-                        job.accession, proc.returncode,
-                        (stderr or stdout).decode('utf-8', 'replace').strip()[:200]))
-                return job.accession
-
-            # written last, so a table without one is a scan that was interrupted
-            with open(output_file + CHECKSUM_EXT, 'w') as handle:
-                handle.write('{}\n'.format(sha256(output_file)))
-        except Exception as error:
-            self.logger.warning(
-                'warning: {} could not be scanned: {}'.format(job.accession, error))
-            return job.accession
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-        return None
 
     def aggregate(self, batches: Sequence[str], out_dir: str) -> None:
         """Report the release, once every batch has succeeded.

@@ -63,12 +63,21 @@ def quiet_worker(queue_in, queue_out, dir_suffix):
         queue_out.put(item)
 
 
+# What the stubbed HMMER says it is.
+VERSION = 'HMMER 3.4 (Aug 2023)'
+
+
 class TempDirCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='marker_manager_test.')
         self.out_dir = os.path.join(self.dir, 'out')
         os.makedirs(self.out_dir)
         self.searched = []
+
+        # HMMER is not installed for the tests, so it cannot be asked
+        patch = mock.patch.object(M, 'record_program_version', return_value=VERSION)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -795,6 +804,65 @@ class WhenTheSearchProcessesDie(TempDirCase):
         batch = self.batches()[0]
         self.assertEqual(B.batch_state(batch), B.STATE_FAILED)
         self.assertFalse(os.path.exists(os.path.join(batch, B.SUCCESS_CANARY)))
+
+
+class TheVersionThatSearchedAGenome(TempDirCase):
+    """hmmsearch.version goes into the marker directory with the marker table,
+    since the table outlives the run that made it."""
+
+    def search_one(self, returncode=0):
+        """Run the TIGRFAM worker over one genome, hmmsearch replaced by a stub
+        that writes what the real one writes.
+
+        @return: the genome's marker directory.
+        """
+
+        manager = self.manager()
+        manager.tigrfam_hmms = self.hmm_db('tigrfam')
+        manager.hmmer_version = VERSION
+        gene_file = os.path.join(self.genome('GCF_000000001.1'), 'prodigal',
+                                 'GCF_000000001.1_protein.faa.gz')
+
+        def hmmsearch(cmd, **kwargs):
+            if returncode == 0:
+                for flag in ('-o', '--tblout'):
+                    with open(cmd[cmd.index(flag) + 1], 'w') as handle:
+                        handle.write('# nothing found\n')
+            return subprocess.CompletedProcess(cmd, returncode, stderr='refused')
+
+        queue_in = mock.Mock()
+        queue_in.get.side_effect = [gene_file, None]
+
+        with mock.patch.object(M.subprocess, 'run', hmmsearch):
+            try:
+                manager._MarkerManager__tigrfam_worker(queue_in, mock.Mock(),
+                                                       TIGR_SUFFIX)
+            except RuntimeError:
+                pass
+
+        return os.path.join(os.path.dirname(gene_file),
+                            'tigrfam_{}'.format(TIGR_SUFFIX))
+
+    def test_a_searched_genome_records_the_version_that_searched_it(self):
+        marker_dir = self.search_one()
+
+        with open(os.path.join(marker_dir, 'hmmsearch.version')) as handle:
+            self.assertEqual(handle.read(), VERSION + '\n')
+
+    def test_a_search_that_failed_records_no_version(self):
+        marker_dir = self.search_one(returncode=1)
+
+        self.assertFalse(os.path.exists(os.path.join(marker_dir, 'hmmsearch.version')))
+
+    def test_both_databases_ask_hmmsearch_which_is_what_both_run(self):
+        """PfamScan runs hmmsearch too, whatever its name suggests."""
+        for db in ('pfam', 'tigrfam'):
+            manager = self.manager()
+            with mock.patch.object(M, 'record_program_version',
+                                   return_value=VERSION) as asked:
+                manager.marker_setup(db, SUFFIX, self.hmm_db(db))
+            asked.assert_called_once_with('hmmsearch')
+            self.assertEqual(manager.hmmer_version, VERSION)
 
 
 class WhatTheTigrfamWorkerDoesWithAFailedSearch(TempDirCase):

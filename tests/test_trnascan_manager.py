@@ -16,6 +16,7 @@ run in forked processes.
 import gzip
 import logging
 import os
+import pickle
 import shutil
 import tempfile
 import unittest
@@ -33,6 +34,10 @@ FLAG_LINE = 'model flag: {}\n'
 # A genome whose sequences say this is one the stub refuses, standing in for the
 # genomes the real tRNAscan-SE cannot process.
 REFUSE = 'REFUSE'
+
+
+# What the stubbed tRNAscan-SE says it is.
+VERSION = 'tRNAscan-SE 2.0.12 (Nov 2022)'
 
 
 class StubPopen(object):
@@ -98,6 +103,11 @@ class TempDirCase(unittest.TestCase):
             patch = mock.patch.object(module, 'tqdm', QuietTqdm)
             patch.start()
             self.addCleanup(patch.stop)
+
+        # tRNAscan-SE is not installed for the tests, so it cannot be asked
+        patch = mock.patch.object(T, 'record_program_version', return_value=VERSION)
+        patch.start()
+        self.addCleanup(patch.stop)
 
         logger = logging.getLogger('timestamp')
         self.addCleanup(logger.setLevel, logger.level)
@@ -294,11 +304,10 @@ class WhatDecidesTheWork(TempDirCase):
 
     def decide(self, accession, **kwargs):
         gpath = self.genome_dir(accession, **kwargs)
-        scanner = self.scanner()
         job = T.TrnaJob(accession,
                         os.path.join(gpath, os.path.basename(gpath) + '_genomic.fna.gz'),
                         T.BACTERIAL_FLAG)
-        return scanner.trnascan_parser(job)
+        return T.trnascan_parser(job)
 
     def test_a_genome_with_no_trnas_is_scanned(self):
         self.assertIsNotNone(self.decide('GCA_000001.1'))
@@ -326,6 +335,55 @@ class WhatDecidesTheWork(TempDirCase):
         self.run_trnascan([('GCA_000001.1', gpath)], all_genomes=True)
 
         self.assertIsNotNone(self.model_flag(gpath, 'GCA_000001.1'))
+
+
+class WhatThePoolIsHanded(TempDirCase):
+    """Each genome, and not the release's domain table with it.
+
+    The pool pickles what it is handed once per genome, one at a time in the
+    parent. Handed a bound method, it pickled the instance and the 2.7M-entry
+    domain table in it -- 47 MB and 0.6 s a genome -- and a batch spent hours
+    'Checking tRNAs' that is seconds of work.
+    """
+
+    # a genome's task is its function, its accession, two paths and a flag
+    MOST_A_TASK_SHOULD_WEIGH = 10000
+
+    def test_neither_pass_hands_a_worker_the_domain_table(self):
+        genomes = [('GCA_00000{}.1'.format(i),
+                    self.genome_dir('GCA_00000{}.1'.format(i))) for i in (1, 2)]
+        scanner = self.scanner()
+        # a table of a size that would weigh far more than a task, were it sent
+        scanner.domains = {'GCA_{:09d}.1'.format(i): T.DOMAIN_BACTERIA
+                           for i in range(100000)}
+
+        sizes = []
+
+        class RecordingPool(object):
+            """Runs the work in this process, weighing what each genome sends."""
+
+            def __init__(self, processes=None):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def imap_unordered(self, func, items):
+                for item in items:
+                    sizes.append(len(pickle.dumps((func, item))))
+                    yield func(item)
+
+        with mock.patch.object(T.mp, 'Pool', RecordingPool), \
+                mock.patch.object(T.subprocess, 'Popen', StubPopen):
+            ok = scanner.run(self.genome_dirs_file(genomes), self.out_dir)
+
+        self.assertTrue(ok)
+        # both passes, both genomes: the check, and the scan it decided on
+        self.assertEqual(len(sizes), 4)
+        self.assertLess(max(sizes), self.MOST_A_TASK_SHOULD_WEIGH)
 
 
 # ------------------------------------------------------ a genome missing its FASTA
@@ -401,6 +459,57 @@ class WhenTheScanFails(TempDirCase):
         self.assertTrue(ok)
         self.assertEqual(self.release_report(),
                          [('GCA_000004.1', T.REASON_TRNASCAN_FAILED)])
+
+
+# -------------------------------------------------- what the tRNAs were made with
+
+class TheVersionThatScannedAGenome(TempDirCase):
+    """Recorded beside the tRNAs, since they outlive the run that made them."""
+
+    def version_file(self, gpath):
+        return os.path.join(gpath, T.TRNA_DIR, 'trnascan-se.version')
+
+    def test_a_scanned_genome_records_the_version_that_scanned_it(self):
+        gpath = self.genome_dir('GCA_000001.1')
+
+        self.run_trnascan([('GCA_000001.1', gpath)])
+
+        with open(self.version_file(gpath)) as handle:
+            self.assertEqual(handle.read(), VERSION + '\n')
+
+    def test_the_version_is_asked_of_trnascan_se_once_for_the_run(self):
+        """Not once per genome: a million-odd questions with one answer."""
+        genomes = [('GCA_00000{}.1'.format(i),
+                    self.genome_dir('GCA_00000{}.1'.format(i))) for i in (1, 2, 3)]
+
+        with mock.patch.object(T, 'record_program_version',
+                               return_value=VERSION) as asked:
+            scanner = self.scanner()
+        with mock.patch.object(T.subprocess, 'Popen', StubPopen):
+            scanner.run(self.genome_dirs_file(genomes), self.out_dir)
+
+        asked.assert_called_once_with('tRNAscan-SE')
+
+    def test_a_genome_trnascan_se_failed_on_records_no_version(self):
+        """Nothing was made, so there is nothing for a version to vouch for."""
+        whole = self.genome_dir('GCA_000001.1')
+        bad = self.genome_dir('GCA_000004.1', refuse=True)
+
+        self.run_trnascan([('GCA_000001.1', whole), ('GCA_000004.1', bad)])
+
+        self.assertFalse(os.path.exists(self.version_file(bad)))
+
+    def test_a_genome_skipped_keeps_the_version_it_was_scanned_with(self):
+        """Its tRNAs were not made by this run, so this run's version would say
+        something untrue about them."""
+        gpath = self.genome_dir('GCA_000001.1', trna='valid')
+        with open(self.version_file(gpath), 'w') as handle:
+            handle.write('tRNAscan-SE 2.0.9 (July 2021)\n')
+
+        self.run_trnascan([('GCA_000001.1', gpath)])
+
+        with open(self.version_file(gpath)) as handle:
+            self.assertEqual(handle.read(), 'tRNAscan-SE 2.0.9 (July 2021)\n')
 
 
 # --------------------------------------------------------- batches and the release

@@ -44,7 +44,9 @@ from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.pfam_search import PfamSearch
 from gtdb_migration_tk.update_genomes import genomes_to_regenerate
-from gtdb_migration_tk.utils.common import PROTEIN_FASTA_EXT, protein_fasta
+from gtdb_migration_tk.utils.common import (PROTEIN_FASTA_EXT, protein_fasta,
+                                            record_program_version,
+                                            write_version_file)
 from gtdb_migration_tk.utils.tools import symlink, openfile
 
 
@@ -101,6 +103,13 @@ TigrTopHits = Dict[str, Tuple[str, float, float]]
 # sure costs a stat and a read.
 HMM_MAGIC = b'HMMER'
 PFAM_LIBRARY = 'Pfam-A.hmm'
+
+# The program both databases are searched with -- PfamScan runs it too, despite
+# its name. Its version goes into the log and, as hmmsearch.version, into the
+# marker directory of each genome searched (prodigal/pfam_33.1_lite/), not into
+# prodigal/: Pfam and TIGRFAM are searched by separate runs that need not have
+# had the same HMMER on PATH.
+HMMSEARCH = 'hmmsearch'
 
 
 class BadHmmDatabase(ValueError):
@@ -249,7 +258,7 @@ class MarkerManager(object):
         self.lease: float = lease
         self.heartbeat: float = heartbeat
 
-        check_dependencies(['prodigal', 'hmmsearch'])
+        check_dependencies(['prodigal', HMMSEARCH])
 
         # made here rather than by the first worker that wants it: a --tmp_dir
         # that cannot be made would otherwise be met once per genome, inside a
@@ -261,6 +270,10 @@ class MarkerManager(object):
         # searched is decided per run, so only one of these is ever set.
         self.tigrfam_hmms: str = ''
         self.pfam_hmm_dir: str = ''
+
+        # asked in marker_setup(), once the HMMs have been checked, so that a
+        # mistyped --hmm_db_path is reported before a missing HMMER is
+        self.hmmer_version: str = ''
 
         self.protein_file_ext: str = PROTEIN_FASTA_EXT
 
@@ -291,6 +304,8 @@ class MarkerManager(object):
             # are met once, at the start, by the machine that was mistyped at --
             # not ninety-six times a batch by workers that die one after another
             check_hmm_db(db, hmm_db_path)
+
+            self.hmmer_version = record_program_version(HMMSEARCH)
 
         if db == 'pfam':
             self.pfam_hmm_dir = hmm_db_path
@@ -849,6 +864,8 @@ class MarkerManager(object):
 
                 pfam_search = PfamSearch(self.pfam_hmm_dir)
                 pfam_search.run(temp_gene_file, output_hit_file)
+                write_version_file(os.path.join(assembly_dir, pfam_version),
+                                   HMMSEARCH, self.hmmer_version)
 
                 # determine top hits
                 pfam_tophit_file = os.path.join(assembly_dir, pfam_version, filename.replace(
@@ -1049,6 +1066,8 @@ class MarkerManager(object):
                         'hmmsearch exited {} searching {} against {}: {}'.format(
                             search.returncode, gene_file, self.tigrfam_hmms,
                             ' '.join(search.stderr.split()) or 'it said nothing'))
+                write_version_file(os.path.join(assembly_dir, tigrfam_version),
+                                   HMMSEARCH, self.hmmer_version)
 
                 # determine top hits
                 tigrfam_tophit_file = os.path.join(assembly_dir, tigrfam_version, filename.replace(
