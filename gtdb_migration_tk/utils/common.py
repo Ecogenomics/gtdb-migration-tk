@@ -386,3 +386,120 @@ def read_taxonomy(taxonomy_file: str) -> Dict[str, str]:
     canonical.update(exact)
 
     return canonical
+
+
+# The two domains a genome is searched as, by the commands whose models differ
+# between them: tRNAscan-SE's bacterial and archaeal models, and the bac_ and ar_
+# rRNA HMMs of rna_silva. Both files a domain is read from spell it with the GTDB
+# rank prefix -- the domain file in its Predicted domain column, the taxonomy in
+# the first rank of each lineage -- so one table reads both.
+DOMAIN_ARCHAEA = 'Archaea'
+DOMAIN_BACTERIA = 'Bacteria'
+DOMAIN_OF_TAXON = {'d__Archaea': DOMAIN_ARCHAEA, 'd__Bacteria': DOMAIN_BACTERIA}
+
+# Columns of the GTDB domain file, read by name. The prediction is made from the
+# genome's marker genes, and is the string below for a genome it could not be
+# made for -- those fall through to the NCBI taxonomy.
+DOMAIN_FILE_GENOME = 'Genome Id'
+DOMAIN_FILE_DOMAIN = 'Predicted domain'
+NO_PREDICTION = 'None'
+
+# GTDB names a genome for the database it came from, e.g. GB_GCA_000009065.1,
+# where a genome_dirs file names it GCA_000009065.1.
+GTDB_ID_PREFIXES = ('GB_', 'RS_')
+
+
+def read_domains(gtdb_domain_file: str, taxonomy_file: str) -> Dict[str, str]:
+    """Read the domain of each genome from GTDB's prediction and NCBI's taxonomy.
+
+    The NCBI lineages are read first and GTDB's predictions written over them,
+    so a genome GTDB has a prediction for is searched on that and one it has
+    none for falls through to where NCBI filed it. GTDB's call is preferred
+    because it is made from the genome rather than from where NCBI filed it, and
+    it is the one that catches a genome under the wrong domain at NCBI. Both are
+    held under the accession as given and under its canonical form, so a GenBank
+    genome finds what is recorded against its RefSeq counterpart.
+
+    Here rather than in either command that reads it: trnascan chooses
+    tRNAscan-SE's model by it and rna_silva its rRNA HMM, a genome told the
+    wrong domain gets a worse answer from both rather than an error, and the
+    command modules do not import one another.
+
+    Parameters
+    ----------
+    gtdb_domain_file : str
+        GTDB domain report: Genome Id and Predicted domain, by column name.
+    taxonomy_file : str
+        Standardised NCBI taxonomy, accession and lineage per line.
+
+    @return: accession, and canonical accession, to DOMAIN_ARCHAEA or
+             DOMAIN_BACTERIA.
+    """
+
+    # counted by canonical accession rather than by entry: each genome is held
+    # under the accession as given and under its canonical form, so counting
+    # the table would report every genome twice
+    domains: Dict[str, str] = {}
+    from_ncbi = set()
+    for key, lineage in read_taxonomy(taxonomy_file).items():
+        domain = DOMAIN_OF_TAXON.get(lineage.split(';')[0])
+        if domain:
+            domains[key] = domain
+            from_ncbi.add(canonical_gid(key))
+
+    predicted = set()
+    with open(gtdb_domain_file) as handle:
+        header = handle.readline().rstrip('\n').split('\t')
+        genome_idx = header.index(DOMAIN_FILE_GENOME)
+        domain_idx = header.index(DOMAIN_FILE_DOMAIN)
+
+        for line in handle:
+            fields = line.rstrip('\n').split('\t')
+            if len(fields) <= max(genome_idx, domain_idx):
+                continue
+
+            gid = fields[genome_idx]
+            for prefix in GTDB_ID_PREFIXES:
+                if gid.startswith(prefix):
+                    gid = gid[len(prefix):]
+                    break
+
+            # 'None' is what the column holds for a genome the prediction could
+            # not be made for; NCBI's taxonomy answers for those
+            domain = DOMAIN_OF_TAXON.get(fields[domain_idx])
+            if not domain:
+                continue
+
+            domains[gid] = domain
+            domains[canonical_gid(gid)] = domain
+            predicted.add(canonical_gid(gid))
+
+    logging.getLogger('timestamp').info(
+        'Read the domain of {:,} genome(s): {:,} predicted by GTDB and {:,} '
+        'taken from the NCBI taxonomy.'.format(
+            len(predicted | from_ncbi), len(predicted),
+            len(from_ncbi - predicted)))
+
+    return domains
+
+
+def domain_of(domains: Dict[str, str], accession: str) -> Optional[str]:
+    """The domain read_domains() found for a genome.
+
+    Parameters
+    ----------
+    domains : dict
+        What read_domains() returned.
+    accession : str
+        Genome accession, as the genome_dirs file names it.
+
+    @return: DOMAIN_ARCHAEA or DOMAIN_BACTERIA, or None where neither file
+             answers for the genome -- which each caller decides what to do
+             with, and says how many there were.
+    """
+
+    domain = domains.get(accession)
+    if domain is None:
+        domain = domains.get(canonical_gid(accession))
+
+    return domain

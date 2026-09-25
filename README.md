@@ -295,8 +295,8 @@ it on a file server shared with other work.
 | `hmmsearch` | Run HMMER on new and modified genomes |
 | `top_hit` | Generate TopHit file for TIGRFAM or Pfam |
 | `genomic_metadata` | Generate metadata derived from nucleotide and protein files |
-| `rna_silva` | Identify and classify 16S, 23S and 5S rRNA genes against SILVA |
-| `rna_ltp` | Identify and classify 16S rRNA genes against LTP |
+| `rna_silva` | Identify and classify 16S, 23S and 5S rRNA genes against SILVA, in batches under `--out_dir` |
+| `rna_ltp` | Classify the 16S rRNA genes `rna_silva` extracted against LTP, in batches under `--out_dir` |
 | `update_silva` | Update taxonomy files and BLAST database from the latest SILVA release |
 | `generate_ltp_db` | Generate BLAST database from the LTP website |
 | `trnascan` | Identify tRNAs in genomes, in batches under `--out_dir` |
@@ -712,7 +712,7 @@ through it, and is scanned again.
 
 **The domain decides the model.** tRNAscan-SE searches with a bacterial or an
 archaeal model and the two give different answers, so each genome's domain comes
-from the same two files `rna_silva` and `rna_ltp` use:
+from the same two files `rna_silva` reads it from:
 
 | Argument | |
 | --- | --- |
@@ -747,6 +747,85 @@ genomes were to be scanned and every one of them failed is failed rather than
 recorded as a success: that is not a batch of difficult genomes, it is tRNAscan-SE
 not working on this machine. One genome failing on its own is not, for the reason
 the naming exists.
+
+`rna_silva` identifies, extracts and classifies one rRNA gene per run -- `-r ssu`,
+`lsu_23S` or `lsu_5S` -- writing into each genome's own
+`rna_silva_<version>/` directory (`ssu.fna`,
+`ssu.hmm_summary.tsv`, `ssu.taxonomy.tsv`, ...). It is batched under `--out_dir`
+as `trnascan` is, with the same `--batch_size`, `--reclaim`, `--lease`, `--all`
+and `--tmp_dir`. Each gene at each SILVA version has batches of its own, for the
+reason `hmmsearch` keeps a directory per database: an ssu batch and an lsu_23S
+batch cover the same genomes and are different work.
+
+```
+<out_dir>/
+  rna_silva_138.2/
+    ssu/
+      batch_000001/
+        rna_silva_batchfile.tsv.gz  the genomes of this batch
+        RUNNING / SUCCESS / FAILED  as in trans_table
+        rna_silva.log               what this command did to this batch
+        not_searched.tsv            genomes of this batch that were not searched
+      rna_silva_not_searched.tsv    the whole release, once every batch has SUCCESS
+    lsu_23S/
+      ...
+```
+
+**What decides the work is the canary.** A genome is skipped where
+`<gene>.canary.txt` is in its results directory, which is written once the gene has
+been searched for, whether or not one was found. The results are made in
+`--tmp_dir` and copied into place with the canary last, so a run stopped mid-copy
+leaves a genome that is searched again. What an earlier search of the same gene
+left is removed before the new results are copied in; `--remove` goes further and
+empties the directory of every genome it searches, the other genes' results
+included.
+
+**The domain decides the HMM**, `bac_16S` against `ar_16S` and so on, and is read
+exactly as `trnascan` reads it: `-d/--gtdb_domain_file` for GTDB's own prediction,
+`-t/--taxonomy_file` for the standardised NCBI taxonomy where GTDB has none. Until
+0.1.35 the fallback was the `NCBI taxonomy` column of the domain file itself. A
+genome neither file answers for is searched as a bacterium, and each batch says how
+many of those it had.
+
+**A genome that could not be searched is named** in `rna_silva_not_searched.tsv`:
+
+| `reason` | |
+| --- | --- |
+| `no_genomic_fasta` | the genome's sequences are not where the release says they are |
+| `rna_search_failed` | nhmmer or blastn was given the genome and failed on it |
+
+A genome with no copy of the gene is not among them: it was searched, and has a
+canary. As with `trnascan`, a batch in which several genomes were to be searched and
+every one failed is failed rather than recorded as a success.
+
+`rna_ltp` classifies the 16S rRNA genes `rna_silva` extracted against the LTP, and
+writes into each genome's own `rna_ltp_<ltp version>/` directory (`ssu.blastn.tsv`,
+`ssu.taxonomy.tsv`, `ltp.canary.txt`). It is batched as `rna_silva` is, with the
+same options, under `<out_dir>/rna_ltp_<ltp version>-silva_<ssu version>/`: both
+versions decide what a genome's results are.
+
+| Argument | |
+| --- | --- |
+| `--ltp_version` | the LTP release classified against |
+| `-v`, `--ssu_version` | the SILVA version naming the `rna_silva_<version>/` directory the genes are read from |
+| `-p`, `--rnapath` | the directory holding one directory per LTP release; its default, `/srv/db/silva/`, is `rna_silva`'s, so pass `-p /srv/db/silva/ltp` |
+
+A batch is planned around each genome's `rna_silva_<version>/ssu.fna`, the file
+the command reads. A genome with none is one of two things, and `rna_silva`'s own
+`ssu.canary.txt` tells them apart: where it is there, `rna_silva` searched the
+genome and found no 16S gene, which is counted (`no_ssu_gene` in each batch's
+SUCCESS) and not named; where it is not, `rna_silva` has not searched the genome
+yet, and it is named in `rna_ltp_not_classified.tsv`:
+
+| `reason` | |
+| --- | --- |
+| `ssu_not_identified` | `rna_silva` has not searched the genome for its 16S gene |
+| `blastn_failed` | blastn was given the genome's genes and failed on them |
+
+A genome is skipped where `ltp.canary.txt` is there, and its results are copied
+into place with the canary last. The command takes no domain file: the domain
+decides which HMM a gene is searched for with, which is `rna_silva`'s work, and
+the LTP classification of a gene already extracted does not depend on it.
 
 ### Genome quality
 
