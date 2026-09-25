@@ -34,6 +34,55 @@ from collections import namedtuple
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 
 
+class BlastError(RuntimeError):
+    """A BLAST program exited with an error.
+
+    Every program here was run through os.system(), which returns the exit
+    status to nobody, so a blastn that could not open its database left an empty
+    or partial table behind and the caller went on to read it as a genome with
+    no hits -- rna_silva and rna_ltp then wrote a canary saying the genome was
+    classified. A RuntimeError, so the callers that already name a genome whose
+    search failed and carry on catch it without knowing about BLAST.
+    """
+
+
+def run_blast_command(cmd, output_file=None, quiet=False):
+    """Run one BLAST program, raising where it fails.
+
+    Parameters
+    ----------
+    cmd : list of str
+        The program and its arguments, run without a shell, so no path or
+        -outfmt string needs quoting.
+    output_file : str
+        File the program writes its results to. Removed where the program
+        fails, since what it wrote before failing is not a result.
+    quiet : bool
+        Discard what the program prints on stdout.
+
+    @return: None
+
+    Raises
+    ------
+    BlastError
+        The program exited non-zero or was killed, with what it said on stderr.
+    """
+
+    try:
+        proc = subprocess.run(cmd,
+                              stdout=subprocess.DEVNULL if quiet else None,
+                              stderr=subprocess.PIPE)
+    except OSError as error:
+        raise BlastError('{} could not be run: {}'.format(cmd[0], error))
+
+    if proc.returncode != 0:
+        if output_file is not None and os.path.exists(output_file):
+            os.remove(output_file)
+        stderr = proc.stderr.decode('utf-8', 'replace').strip()
+        raise BlastError('{} failed with status {}: {}'.format(
+            cmd[0], proc.returncode, stderr[:500] or 'no message'))
+
+
 def get_blastn_version():
     """Returns the version of blastn on the system path.
 
@@ -137,29 +186,31 @@ class Blast():
             Maximum hits per query sequence.
         output_fmt : str
             Specified output format of blast table: standard or custom.
+
+        @return: the command as a list of arguments, for run_blast_command().
         """
 
         assert (output_fmt in self.output_fmt.keys())
         assert (task in self.blastp_tasks)
 
-        cmd = "blastp -num_threads %d" % self.cpus
-        cmd += " -query %s -db %s -out %s -evalue %g" % (query_seqs, prot_db, output_file, evalue)
-        cmd += " -max_target_seqs %d" % max_matches
-        cmd += " -task %s" % task
-        cmd += " -outfmt '%s'" % self.output_fmt[output_fmt]
-
-        return cmd
+        return ['blastp', '-num_threads', str(self.cpus),
+                '-query', query_seqs, '-db', prot_db, '-out', output_file,
+                '-evalue', '%g' % evalue,
+                '-max_target_seqs', str(max_matches),
+                '-task', task,
+                '-outfmt', self.output_fmt[output_fmt]]
 
     def blastp(self, query_seqs, prot_db, output_file, evalue=1e-3, max_matches=500, output_fmt='standard', task='blastp'):
-        """Run BLASTp command."""
+        """Run BLASTp command, raising BlastError where it fails."""
 
-        os.system(self.blastp_cmd(query_seqs,
-                                  prot_db,
-                                  output_file,
-                                  evalue,
-                                  max_matches,
-                                  output_fmt,
-                                  task))
+        run_blast_command(self.blastp_cmd(query_seqs,
+                                          prot_db,
+                                          output_file,
+                                          evalue,
+                                          max_matches,
+                                          output_fmt,
+                                          task),
+                          output_file)
 
     def blastn(self, query_seqs, nucl_db, output_file, evalue=1e-3, max_matches=500, output_fmt='standard', task='megablast'):
         """Apply blastn to query file.
@@ -184,47 +235,48 @@ class Blast():
             Maximum hits per query sequence.
         output_fmt : str
             Specified output format of blast table: standard or custom.
+
+        @return: None
+
+        Raises
+        ------
+        BlastError
+            blastn failed; output_file is removed rather than left to be read
+            as a query with no hits.
         """
 
         assert (output_fmt in self.output_fmt.keys())
         assert (task in self.blastn_tasks)
 
-        cmd = "blastn -num_threads %d" % self.cpus
-        cmd += " -query %s -db %s -out %s -evalue %g" % (query_seqs, nucl_db, output_file, evalue)
-        cmd += " -max_target_seqs %d" % max_matches
-        cmd += " -task %s" % task
-        cmd += " -outfmt '%s'" % self.output_fmt[output_fmt]
-        os.system(cmd)
+        cmd = ['blastn', '-num_threads', str(self.cpus),
+               '-query', query_seqs, '-db', nucl_db, '-out', output_file,
+               '-evalue', '%g' % evalue,
+               '-max_target_seqs', str(max_matches),
+               '-task', task,
+               '-outfmt', self.output_fmt[output_fmt]]
+        run_blast_command(cmd, output_file)
 
     def create_blastn_db_cmd(self, prot_file, db_file):
-        """Get command to create nucleotide database."""
+        """Get command to create nucleotide database, as a list of arguments."""
 
-        if self.silent:
-            cmd = 'makeblastdb -dbtype nucl -in %s -out %s > /dev/null' % (prot_file, db_file)
-        else:
-            cmd = 'makeblastdb -dbtype nucl -in %s -out %s' % (prot_file, db_file)
-
-        return cmd
+        return ['makeblastdb', '-dbtype', 'nucl', '-in', prot_file, '-out', db_file]
 
     def create_blastn_db(self, prot_file, db_file):
-        """Create protein database."""
+        """Create nucleotide database, raising BlastError where it fails."""
 
-        os.system(self.create_blastn_db_cmd(prot_file, db_file))
+        run_blast_command(self.create_blastn_db_cmd(prot_file, db_file),
+                          quiet=self.silent)
 
     def create_blastp_db_cmd(self, prot_file, db_file):
-        """Get command to create protein database."""
+        """Get command to create protein database, as a list of arguments."""
 
-        if self.silent:
-            cmd = 'makeblastdb -dbtype prot -in %s -out %s > /dev/null' % (prot_file, db_file)
-        else:
-            cmd = 'makeblastdb -dbtype prot -in %s -out %s' % (prot_file, db_file)
-
-        return cmd
+        return ['makeblastdb', '-dbtype', 'prot', '-in', prot_file, '-out', db_file]
 
     def create_blastp_db(self, prot_file, db_file):
-        """Create protein database."""
+        """Create protein database, raising BlastError where it fails."""
 
-        os.system(self.create_blastp_db_cmd(prot_file, db_file))
+        run_blast_command(self.create_blastp_db_cmd(prot_file, db_file),
+                          quiet=self.silent)
 
     def read_hit(self, table, table_fmt):
         """Generator function to read hits from a blast output table.

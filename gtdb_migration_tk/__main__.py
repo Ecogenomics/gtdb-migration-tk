@@ -103,7 +103,7 @@ def print_help():
       top_hit          -> Generate tophit files.
       genomic_metadata -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
       rna_silva        -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA.
-      rna_ltp          -> Identify, extract, and taxonomically classify 16S rRNA genes against the LTP DB.
+      rna_ltp          -> Classify the 16S rRNA genes rna_silva extracted against the LTP DB.
       trnascan         -> Identifies tRNAs in genomes.
       join_checkm      -> Join CheckM output files for different releases.
       checkm           -> Estimates the quality of the new genomes.
@@ -570,13 +570,13 @@ def __rfq_bac_assembly_file(group, required):
 
 
 def __rna_file_path(group):
-    group.add_argument('-p', '--rnapath', help='Path to rna Silva file.',
+    group.add_argument('-p', '--rnapath', help='Path to rRNA Silva file.',
                        default='/srv/db/silva/')
 
 
 def __rna_gene(group, required):
     group.add_argument('-r', '--rna_gene', required=required,
-                       choices=['ssu', 'lsu_23S', 'lsu_5S'], help="RRNA gene to process.")
+                       choices=['ssu', 'lsu_23S', 'lsu_5S'], help="rRNA gene to process.")
 
 
 def __rna_version(group, required):
@@ -664,7 +664,7 @@ def __ssu_ref(group, required):
 
 
 def __ssu_version(group, required):
-    group.add_argument('-v', '--ssu_version', help='SSu version to use.', required=required)
+    group.add_argument('-v', '--ssu_version', help='SSU version to use.', required=required)
 
 
 def __surveillance_list(group, required):
@@ -731,11 +731,6 @@ def __hmm_db_path(group, required):
                             "for tigrfam_15.0 : '/srv/db/tigrfam/15.0/TIGRFAMs_15.0_HMM/tigrfam.hmm',"
                             "for tigrfam_15.0_lite : '/srv/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm').",
                        required=required)
-
-def __rerun(group):
-    group.add_argument('--rerun', help='Rerun all genomes.', action='store_true')
-    pass
-
 
 def __remove(group, db_name):
     group.add_argument('--remove',
@@ -862,37 +857,47 @@ def get_main_parser():
 
     with subparser(sub_parsers,
                    'rna_silva',
-                   'Identify, extracts and taxonomically classifies 16S '
-                   '23S, and 5S rRNA genes in genomes against SILVA.') as parser:
+                   'Identify, extract and taxonomically classify 16S, '
+                   '23S and 5S rRNA genes in genomes against SILVA, in batches '
+                   'under --out_dir.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
             __gtdb_domain_file(grp, required=True)
+            __taxonomy_file(grp, required=True)
             __rna_version(grp, required=True)
             __rna_gene(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __rna_file_path(grp)
-            __silent(grp)
-            __rerun(grp)
-            __remove(grp, 'SILVA')
             __cpus(grp)
+            __tmp_dir(grp)
+            __batch_size(grp)
+            __reclaim(grp)
+            __lease(grp)
             __all_genomes(grp)
+            __remove(grp, 'SILVA')
+            __silent(grp)
 
     with subparser(sub_parsers, 'rna_ltp',
-                   'Identify, extracts and taxonomically classifies 16S '
-                   'rRNA genes in genomes against LTP.') as parser:
+                   'Classify the 16S rRNA genes rna_silva extracted against '
+                   'LTP, in batches under --out_dir.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
-            __gtdb_domain_file(grp, required=True)
             __ltp_version(grp, required=True)
             __ssu_version(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __rna_file_path(grp)
-            __silent(grp)
             __cpus(grp)
+            __tmp_dir(grp)
+            __batch_size(grp)
+            __reclaim(grp)
+            __lease(grp)
             __all_genomes(grp)
             __remove(grp, 'LTP')
+            __silent(grp)
 
     with subparser(sub_parsers, 'trnascan',
                    'Identifies tRNAs in genomes.') as parser:

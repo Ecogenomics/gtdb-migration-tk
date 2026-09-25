@@ -269,28 +269,43 @@ class OptionsParser():
                            options.ga, options.metadata, options.output_file)
 
     def generate_rna_silva(self, options):
+        check_file_exists(options.gtdb_genome_path_file)
+        check_file_exists(options.gtdb_domain_file)
+        check_file_exists(options.taxonomy_file)
+        make_sure_path_exists(options.output_dir)
         p = RnaManagerSILVA(options.rna_version,
-                            options.rnapath, 
-                            options.rna_gene, 
-                            options.cpus)
-        p.generate_rna_silva(options.gtdb_genome_path_file,
-                             options.gtdb_domain_file,
-                             options.all_genomes,
-                             options.remove)
+                            options.rnapath,
+                            options.rna_gene,
+                            options.gtdb_domain_file,
+                            options.taxonomy_file,
+                            options.cpus,
+                            options.tmp_dir,
+                            options.batch_size,
+                            options.reclaim,
+                            options.lease * 60 * 60)
+        p.run(options.gtdb_genome_path_file,
+              options.output_dir,
+              options.all_genomes,
+              options.remove)
 
     def update_silva(self, options):
-        p = RnaManagerSILVA(None, None, None, 1)
-        p.update_silva(options.ssu_ref, options.lsu_ref, options.output_dir)
+        RnaManagerSILVA.update_silva(options.ssu_ref, options.lsu_ref, options.output_dir)
 
     def generate_rna_ltp(self, options):
+        check_file_exists(options.gtdb_genome_path_file)
+        make_sure_path_exists(options.output_dir)
         p = RnaManagerLTP(options.ltp_version,
-                          options.ssu_version, 
-                          options.rnapath, 
-                          options.cpus, )
-        p.generate_rna_ltp(options.gtdb_genome_path_file,
-                           options.gtdb_domain_file,
-                           options.all_genomes,
-                           options.remove)
+                          options.ssu_version,
+                          options.rnapath,
+                          options.cpus,
+                          options.tmp_dir,
+                          options.batch_size,
+                          options.reclaim,
+                          options.lease * 60 * 60)
+        p.run(options.gtdb_genome_path_file,
+              options.output_dir,
+              options.all_genomes,
+              options.remove)
 
     def generate_checkm_data(self, options):
         p = CheckMManager(options.cpus)
