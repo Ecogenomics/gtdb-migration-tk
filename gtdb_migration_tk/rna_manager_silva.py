@@ -76,7 +76,12 @@ ONE BAD GENOME DOES NOT COST A BATCH
 
 A genome whose genomic FASTA is missing or empty is named in the batch's
 not_searched.tsv and left, and so is one nhmmer or blastn fails on; neither takes
-the other ten thousand genomes of the batch down with it. A batch in which every
+the other ten thousand genomes of the batch down with it. A genome larger than
+--max_genome_size is named and left too, before nhmmer is given it: it is a
+metagenome deposited as one genome, and GCA_964261755.1, at 9,529 Mbp, held an
+r237 ssu batch for a day on one single-threaded blastn classifying the 16S genes
+nhmmer found in it. Only the genomes still to be searched are sized, so one
+already searched is not named for work it no longer needs. A batch in which every
 genome was to be searched and none could be is failed rather than recorded as a
 success, because that is the tools not working on this machine rather than a
 batch of difficult genomes.
@@ -112,13 +117,15 @@ from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
                                         fail_batch, finish_batch, plan_batches,
                                         read_batchfile, read_canary,
                                         release_claim, split_by_fasta,
-                                        tally_reasons, write_table)
+                                        split_by_genome_size, tally_reasons,
+                                        write_table)
 from gtdb_migration_tk.biolib_lite.common import (make_sure_path_exists,
                                                   remove_files_in_directory)
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.seq_io import read_seq
 from gtdb_migration_tk.genometk_lite.rna import RNA
-from gtdb_migration_tk.utils.common import (DOMAIN_ARCHAEA, domain_of,
+from gtdb_migration_tk.utils.common import (DEFAULT_MAX_GENOME_SIZE,
+                                            DOMAIN_ARCHAEA, MBP, domain_of,
                                             read_domains,
                                             record_program_version,
                                             write_version_file)
@@ -144,6 +151,7 @@ NOT_SEARCHED_RELEASE_NAME = 'rna_silva_not_searched.tsv'
 NOT_SEARCHED_HEADER = ('genome_id', 'reason')
 REASON_NO_GENOMIC_FASTA = 'no_genomic_fasta'
 REASON_SEARCH_FAILED = 'rna_search_failed'
+REASON_GENOME_TOO_LARGE = 'genome_too_large'
 
 # The directory inside each genome directory the results go into, for a SILVA
 # version. It is the agreement with three readers: metadata_manager reads
@@ -395,7 +403,8 @@ class RnaManagerSILVA(object):
                  batch_size: int = DEFAULT_BATCH_SIZE,
                  reclaim: bool = False,
                  lease: float = CLAIM_LEASE_SECONDS,
-                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
+                 heartbeat: float = HEARTBEAT_SECONDS,
+                 max_genome_size: float = DEFAULT_MAX_GENOME_SIZE) -> None:
         """Initialization.
 
         Parameters
@@ -425,6 +434,8 @@ class RnaManagerSILVA(object):
             Seconds a claim survives without the machine holding it saying so.
         heartbeat : float
             Seconds between this machine saying so about a batch of its own.
+        max_genome_size : float
+            Largest genome assembly searched, in Mbp.
 
         @return: None
         """
@@ -443,6 +454,7 @@ class RnaManagerSILVA(object):
         self.reclaim: bool = reclaim
         self.lease: float = lease
         self.heartbeat: float = heartbeat
+        self.max_genome_bases: int = int(max_genome_size * MBP)
 
         self.results_dir: str = RESULTS_DIR_FORMAT.format(silva_version)
 
@@ -676,6 +688,12 @@ class RnaManagerSILVA(object):
                                     leave=False, desc='Checking rRNA results'))
             to_search = [job for job in decided if job is not None]
             already_searched = len(jobs) - len(to_search)
+
+        to_search, too_large = split_by_genome_size(
+            to_search, lambda job: os.path.dirname(job.genome_file),
+            self.max_genome_bases, self.logger, STAT_THREADS)
+        not_searched.extend((job.accession, REASON_GENOME_TOO_LARGE)
+                            for job, _ in too_large)
 
         self.logger.info(
             '{:,} genome(s) require {} identification; {:,} already have '

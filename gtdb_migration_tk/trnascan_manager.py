@@ -71,7 +71,12 @@ ONE BAD GENOME DOES NOT COST A BATCH
 A genome whose genomic FASTA is missing or empty is named in the batch's
 not_scanned.tsv and left, and so is one tRNAscan-SE itself fails on; neither
 takes the other ten thousand genomes of the batch down with it, and neither is
-retried for ever by a batch that fails identically every time. A batch in which
+retried for ever by a batch that fails identically every time. A genome larger
+than --max_genome_size is named and left too: it is a metagenome deposited as
+one genome, and would hold its batch for as long as it took to scan. Its size is
+asked only of the genomes that are to be scanned, so a rerun over a finished
+release reads no statistics, and a genome whose tRNAs are already there is not
+named for a scan it no longer needs. A batch in which
 every genome was to be scanned and none could be is failed rather than recorded
 as a success, because that is not a release of difficult genomes -- it is
 tRNAscan-SE not working on this machine.
@@ -99,7 +104,8 @@ from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
                                         fail_batch, finish_batch, plan_batches,
                                         read_batchfile, read_canary,
                                         release_claim, split_by_fasta,
-                                        tally_reasons, write_table)
+                                        split_by_genome_size, tally_reasons,
+                                        write_table)
 from gtdb_migration_tk.biolib_lite.checksum import sha256
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
@@ -107,7 +113,8 @@ from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 # found here, where they were declared until rna_silva came to read them too.
 from gtdb_migration_tk.utils.common import (DOMAIN_ARCHAEA, DOMAIN_BACTERIA,  # noqa: F401
                                             DOMAIN_FILE_DOMAIN,
-                                            DOMAIN_FILE_GENOME, NO_PREDICTION,
+                                            DEFAULT_MAX_GENOME_SIZE,
+                                            DOMAIN_FILE_GENOME, MBP, NO_PREDICTION,
                                             domain_of, read_domains,
                                             record_program_version,
                                             write_version_file)
@@ -128,6 +135,7 @@ NOT_SCANNED_RELEASE_NAME = 'trnascan_not_scanned.tsv'
 NOT_SCANNED_HEADER = ('genome_id', 'reason')
 REASON_NO_GENOMIC_FASTA = 'no_genomic_fasta'
 REASON_TRNASCAN_FAILED = 'trnascan_failed'
+REASON_GENOME_TOO_LARGE = 'genome_too_large'
 
 # Where a genome's tRNAs are written, within its own directory, and what they are
 # called. metadata_manager reads <gid>_trna_stats.tsv from here by the accession
@@ -304,7 +312,8 @@ class tRNAScan(object):
                  batch_size: int = DEFAULT_BATCH_SIZE,
                  reclaim: bool = False,
                  lease: float = CLAIM_LEASE_SECONDS,
-                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
+                 heartbeat: float = HEARTBEAT_SECONDS,
+                 max_genome_size: float = DEFAULT_MAX_GENOME_SIZE) -> None:
         """Initialization.
 
         Parameters
@@ -329,6 +338,8 @@ class tRNAScan(object):
             Seconds a claim survives without the machine holding it saying so.
         heartbeat : float
             Seconds between this machine saying so about a batch of its own.
+        max_genome_size : float
+            Largest genome assembly scanned, in Mbp.
 
         @return: None
         """
@@ -344,7 +355,7 @@ class tRNAScan(object):
         self.reclaim: bool = reclaim
         self.lease: float = lease
         self.heartbeat: float = heartbeat
-
+        self.max_genome_bases: int = int(max_genome_size * MBP)
 
         # made here rather than by the first worker that wants it: a --tmp_dir
         # that cannot be made would otherwise be met once per genome, inside a
@@ -517,6 +528,12 @@ class tRNAScan(object):
                                     leave=False, desc='Checking tRNAs'))
             to_scan = [job for job in decided if job is not None]
             already_scanned = len(jobs) - len(to_scan)
+
+        to_scan, too_large = split_by_genome_size(
+            to_scan, lambda job: os.path.dirname(job.genome_file),
+            self.max_genome_bases, self.logger, STAT_THREADS)
+        not_scanned.extend((job.accession, REASON_GENOME_TOO_LARGE)
+                           for job, _ in too_large)
 
         self.logger.info(
             '{:,} genome(s) require tRNA identification; {:,} already have valid '

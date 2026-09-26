@@ -136,7 +136,9 @@ class OptionsParser():
         for assembly_summary in options.new_list_genomes:
             check_file_exists(assembly_summary)
         make_sure_path_exists(options.output_dir)
-        p = SelectGenomes(options.output_dir)
+        p = SelectGenomes(options.output_dir,
+                          min_genome_size=options.min_genome_size,
+                          max_genome_size=options.max_genome_size)
         p.run(options.new_list_genomes)
 
     def parse_genome_directory(self, options):
@@ -282,7 +284,8 @@ class OptionsParser():
                             options.tmp_dir,
                             options.batch_size,
                             options.reclaim,
-                            options.lease * 60 * 60)
+                            options.lease * 60 * 60,
+                            max_genome_size=options.max_genome_size)
         p.run(options.gtdb_genome_path_file,
               options.output_dir,
               options.all_genomes,
@@ -301,7 +304,8 @@ class OptionsParser():
                           options.tmp_dir,
                           options.batch_size,
                           options.reclaim,
-                          options.lease * 60 * 60)
+                          options.lease * 60 * 60,
+                          max_genome_size=options.max_genome_size)
         p.run(options.gtdb_genome_path_file,
               options.output_dir,
               options.all_genomes,
@@ -417,7 +421,8 @@ class OptionsParser():
                      options.tmp_dir,
                      options.batch_size,
                      options.reclaim,
-                     options.lease * 60 * 60)
+                     options.lease * 60 * 60,
+                     max_genome_size=options.max_genome_size)
         p.run(options.gtdb_genome_path_file,
               options.output_dir,
               options.all_genomes)

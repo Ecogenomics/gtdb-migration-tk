@@ -607,6 +607,16 @@ def __batch_size(group, default=10000):
                             'restart and of sharing between machines.')
 
 
+def __min_genome_size(group, default=10.0):
+    group.add_argument('--min_genome_size', type=float, default=default,
+                       help='minimum genome assembly size to process in kbp')
+
+
+def __max_genome_size(group, default=100.0):
+    group.add_argument('--max_genome_size', type=float, default=default,
+                       help='maximum genome assembly size to process in Mbp')
+
+
 def __reclaim(group):
     group.add_argument('--reclaim', action='store_true',
                        help='Take over a batch another machine holds before its claim has '
@@ -784,6 +794,8 @@ def get_main_parser():
             __new_list_genomes(grp, required=True)
             __output_dir(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __min_genome_size(grp)
+            __max_genome_size(grp)
             __silent(grp)
 
     # Call genes with prodigal
@@ -876,6 +888,7 @@ def get_main_parser():
             __reclaim(grp)
             __lease(grp)
             __all_genomes(grp)
+            __max_genome_size(grp)
             __remove(grp, 'SILVA')
             __silent(grp)
 
@@ -896,6 +909,7 @@ def get_main_parser():
             __reclaim(grp)
             __lease(grp)
             __all_genomes(grp)
+            __max_genome_size(grp)
             __remove(grp, 'LTP')
             __silent(grp)
 
@@ -914,6 +928,7 @@ def get_main_parser():
             __reclaim(grp)
             __lease(grp)
             __all_genomes(grp)
+            __max_genome_size(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'join_checkm',

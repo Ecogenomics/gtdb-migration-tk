@@ -43,6 +43,16 @@ not searched the genome yet, and it is named in not_classified.tsv as
 ssu_not_identified, so that the order the two commands ran in is not mistaken for
 a release of genomes without a 16S gene.
 
+A GENOME TOO LARGE TO CLASSIFY
+
+A genome larger than --max_genome_size is named as genome_too_large and left, as
+rna_silva names and leaves one larger than its own: it is a metagenome deposited
+as one genome. rna_silva writes no canary for a genome it left out, so a genome
+with no ssu.fna and no canary is sized too, and one rna_silva left for its size
+is named for that rather than as one rna_silva has yet to search. The size is
+asked of no other genome, a genome already classified or found to have no 16S
+gene having nothing left to be spared.
+
 WHAT DECIDES THE WORK
 
 ltp.canary.txt beside a genome's results, as it always has been: the rna_ltp
@@ -91,12 +101,14 @@ from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
                                         fail_batch, finish_batch, plan_batches,
                                         read_batchfile, read_canary,
                                         release_claim, split_by_fasta,
-                                        tally_reasons, write_table)
+                                        split_by_genome_size, tally_reasons,
+                                        write_table)
 from gtdb_migration_tk.biolib_lite.common import (make_sure_path_exists,
                                                   remove_files_in_directory)
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.genometk_lite.rna import RNA
-from gtdb_migration_tk.utils.common import (record_program_version,
+from gtdb_migration_tk.utils.common import (DEFAULT_MAX_GENOME_SIZE, MBP,
+                                            record_program_version,
                                             write_version_file)
 
 # The program, as it is called. Its version goes into the log and, as
@@ -117,6 +129,7 @@ NOT_CLASSIFIED_RELEASE_NAME = 'rna_ltp_not_classified.tsv'
 NOT_CLASSIFIED_HEADER = ('genome_id', 'reason')
 REASON_SSU_NOT_IDENTIFIED = 'ssu_not_identified'
 REASON_BLASTN_FAILED = 'blastn_failed'
+REASON_GENOME_TOO_LARGE = 'genome_too_large'
 
 # Where rna_silva left the 16S rRNA genes, and what says it searched for them.
 # The name is rna_silva's RESULTS_DIR_FORMAT, repeated here because the command
@@ -187,6 +200,20 @@ def ssu_fasta(ssu_version: str, accession: str, genome_dir: str) -> str:
                         SSU_FASTA)
 
 
+def genome_dir_of(ssu_file: str) -> str:
+    """The genome directory holding the rna_silva directory an ssu.fna is in.
+
+    Parameters
+    ----------
+    ssu_file : str
+        The genome's ssu.fna, inside its rna_silva directory.
+
+    @return: path of the genome directory.
+    """
+
+    return os.path.dirname(os.path.dirname(ssu_file))
+
+
 def output_dir_of(ssu_file: str, results_dir: str) -> str:
     """The rna_ltp directory of the genome whose ssu.fna this is.
 
@@ -200,8 +227,7 @@ def output_dir_of(ssu_file: str, results_dir: str) -> str:
     @return: path of the rna_ltp directory inside the genome directory.
     """
 
-    genome_dir = os.path.dirname(os.path.dirname(ssu_file))
-    return os.path.join(genome_dir, results_dir)
+    return os.path.join(genome_dir_of(ssu_file), results_dir)
 
 
 def ltp_parser(job: LtpJob, results_dir: str) -> Optional[LtpJob]:
@@ -325,7 +351,8 @@ class RnaManagerLTP(object):
                  batch_size: int = DEFAULT_BATCH_SIZE,
                  reclaim: bool = False,
                  lease: float = CLAIM_LEASE_SECONDS,
-                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
+                 heartbeat: float = HEARTBEAT_SECONDS,
+                 max_genome_size: float = DEFAULT_MAX_GENOME_SIZE) -> None:
         """Initialization.
 
         Parameters
@@ -349,6 +376,8 @@ class RnaManagerLTP(object):
             Seconds a claim survives without the machine holding it saying so.
         heartbeat : float
             Seconds between this machine saying so about a batch of its own.
+        max_genome_size : float
+            Largest genome assembly classified, in Mbp.
 
         @return: None
         """
@@ -366,6 +395,7 @@ class RnaManagerLTP(object):
         self.reclaim: bool = reclaim
         self.lease: float = lease
         self.heartbeat: float = heartbeat
+        self.max_genome_bases: int = int(max_genome_size * MBP)
 
         self.results_dir: str = LTP_RESULTS_DIR_FORMAT.format(ltp_version)
 
@@ -524,10 +554,19 @@ class RnaManagerLTP(object):
         # says whether that is because it has no 16S gene or because rna_silva
         # has not looked yet, and only the second is worth naming
         present, missing = split_by_fasta(rows, STAT_THREADS)
+        unsearched = [accession for accession in missing
+                      if not ssu_searched(ssu_of[accession])]
+        no_ssu_gene = len(missing) - len(unsearched)
+
+        # rna_silva writes no canary for a genome it left out for its size, and
+        # that genome is named for its size rather than as one not yet searched
+        unsearched, too_large = split_by_genome_size(
+            unsearched, lambda accession: genome_dir_of(ssu_of[accession]),
+            self.max_genome_bases, self.logger, STAT_THREADS)
         not_classified = [(accession, REASON_SSU_NOT_IDENTIFIED)
-                          for accession in missing
-                          if not ssu_searched(ssu_of[accession])]
-        no_ssu_gene = len(missing) - len(not_classified)
+                          for accession in unsearched]
+        not_classified.extend((accession, REASON_GENOME_TOO_LARGE)
+                              for accession, _ in too_large)
 
         jobs = [LtpJob(accession, ssu_file) for ssu_file, accession in present]
 
@@ -541,6 +580,12 @@ class RnaManagerLTP(object):
                                     leave=False, desc='Checking LTP results'))
             to_classify = [job for job in decided if job is not None]
             already_classified = len(jobs) - len(to_classify)
+
+        to_classify, too_large = split_by_genome_size(
+            to_classify, lambda job: genome_dir_of(job.ssu_file),
+            self.max_genome_bases, self.logger, STAT_THREADS)
+        not_classified.extend((job.accession, REASON_GENOME_TOO_LARGE)
+                              for job, _ in too_large)
 
         self.logger.info(
             '{:,} genome(s) require classification against the LTP; {:,} already '

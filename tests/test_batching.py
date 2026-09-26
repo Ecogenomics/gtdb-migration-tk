@@ -14,6 +14,7 @@ told which files a batch keeps, and a test that passed only under trans_table's
 names would be testing trans_table.
 """
 
+import gzip
 import logging
 import os
 import shutil
@@ -24,6 +25,7 @@ from unittest import mock
 
 from gtdb_migration_tk import batching as B
 from gtdb_migration_tk.ncbi_utils import genomic_fasta
+from gtdb_migration_tk.utils import common as C
 
 
 # A command of no name at all, so that nothing here leans on what trans_table or
@@ -177,6 +179,106 @@ class SplitByFastaTests(TempDirCase):
 
         self.assertEqual(missing, [])
         self.assertEqual(present, rows)
+
+
+class SizedGenomeCase(TempDirCase):
+
+    def sized_genome(self, assembly, stated=None, bases=None):
+        """A genome directory whose statistics state one size and whose FASTA holds another."""
+        path = os.path.join(self.dir, assembly)
+        os.makedirs(path)
+        if stated is not None:
+            with open(os.path.join(path, assembly + '_assembly_stats.txt'), 'w') as handle:
+                handle.write('all\tall\tall\tall\ttotal-length\t{}\n'.format(stated))
+        if bases is not None:
+            with gzip.open(genomic_fasta(path), 'wt') as handle:
+                handle.write('>contig_1\n{}\n>contig_2\nNNNN\n'.format('A' * (bases - 4)))
+        return path
+
+
+class GenomeSizeTests(SizedGenomeCase):
+    """The size of an assembly, from NCBI's statistics where they are there."""
+
+    def test_the_size_ncbi_states_is_taken_without_reading_the_fasta(self):
+        path = self.sized_genome('GCA_1.1_ASM1', stated=9528631298, bases=40)
+        self.assertEqual(B.genome_size(path), 9528631298)
+
+    def test_a_genome_with_no_statistics_is_measured_from_its_fasta_gaps_included(self):
+        path = self.sized_genome('GCA_2.1_ASM2', bases=40)
+        self.assertEqual(B.genome_size(path), 40)
+
+    def test_a_genome_with_neither_has_no_size_rather_than_raising(self):
+        self.assertIsNone(B.genome_size(self.sized_genome('GCA_3.1_ASM3')))
+
+    def test_a_fasta_that_cannot_be_read_has_no_size_rather_than_raising(self):
+        path = self.sized_genome('GCA_4.1_ASM4')
+        with open(genomic_fasta(path), 'wb') as handle:
+            handle.write(b'not gzip at all')
+        self.assertIsNone(B.genome_size(path))
+
+
+class SplitByGenomeSizeTests(SizedGenomeCase):
+    """A metagenome deposited as one genome is named and left, not worked on for a day."""
+
+    MAX_BASES = 100 * C.MBP
+
+    def split(self, *genome_dirs, threads=B.STAT_THREADS):
+        with self.assertLogs('timestamp', level='WARNING') as logs:
+            logging.getLogger('timestamp').warning('split')
+            kept, too_large = B.split_by_genome_size(
+                list(genome_dirs), lambda path: path, self.MAX_BASES,
+                logging.getLogger('timestamp'), threads)
+        self.warnings = logs.output[1:]
+        return kept, too_large
+
+    def test_a_genome_within_the_limit_is_kept(self):
+        path = self.sized_genome('GCA_1.1_ASM1', stated=5 * C.MBP)
+        self.assertEqual(self.split(path), ([path], []))
+
+    def test_a_genome_over_the_limit_is_left_out_with_its_size(self):
+        path = self.sized_genome('GCA_964261755.1_UC_feces_MAGs_combined',
+                                 stated=9528631298)
+        self.assertEqual(self.split(path), ([], [(path, 9528631298)]))
+
+    def test_a_genome_exactly_at_the_limit_is_kept(self):
+        path = self.sized_genome('GCA_1.1_ASM1', stated=self.MAX_BASES)
+        self.assertEqual(self.split(path), ([path], []))
+
+    def test_a_genome_whose_size_cannot_be_told_is_kept(self):
+        # what is left out is what is KNOWN to be too large
+        path = self.sized_genome('GCA_1.1_ASM1')
+        self.assertEqual(self.split(path), ([path], []))
+
+    def test_each_genome_left_out_is_named_with_its_size(self):
+        path = self.sized_genome('GCA_964261755.1_UC_feces_MAGs_combined',
+                                 stated=9528631298)
+        self.split(path)
+        self.assertEqual(len(self.warnings), 1)
+        self.assertIn('GCA_964261755.1_UC_feces_MAGs_combined is 9,528.6 Mbp',
+                      self.warnings[0])
+        self.assertIn('100.0 Mbp', self.warnings[0])
+
+    def test_the_order_given_is_the_order_returned_whatever_the_thread_count(self):
+        paths = [self.sized_genome('GCA_%d.1_ASM%d' % (i, i),
+                                   stated=(200 if i % 3 == 0 else 2) * C.MBP)
+                 for i in range(1, 30)]
+
+        serial = self.split(*paths, threads=1)
+        parallel = self.split(*paths, threads=16)
+
+        self.assertEqual(serial, parallel)
+        self.assertEqual(serial[0], [p for i, p in enumerate(paths, start=1) if i % 3])
+        self.assertEqual(len(serial[1]), 9)
+
+    def test_the_genome_is_handed_back_in_the_form_it_was_given(self):
+        # a command holds its genomes as its own jobs, and gets its jobs back
+        path = self.sized_genome('GCA_1.1_ASM1', stated=200 * C.MBP)
+        job = ('GCA_1.1', path)
+        with self.assertLogs('timestamp', level='WARNING'):
+            kept, too_large = B.split_by_genome_size(
+                [job], lambda item: item[1], self.MAX_BASES,
+                logging.getLogger('timestamp'))
+        self.assertEqual(too_large, [(job, 200 * C.MBP)])
 
 
 class WriteBatchfileTests(TempDirCase):

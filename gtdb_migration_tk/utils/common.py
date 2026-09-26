@@ -42,6 +42,18 @@ CHECKM_DENSITY_FLOOR = 70.0
 # somebody gunzipped, or one renamed on the way to another machine.
 GZIP_MAGIC = b'\x1f\x8b'
 
+# The genome assembly sizes a command processes by default: select_genomes selects
+# none outside them, and trnascan, rna_silva and rna_ltp process none larger. The
+# largest bacterial and archaeal genomes are under 20 Mbp, so nothing GTDB would
+# keep comes near the upper bound; what does is a metagenome deposited as one
+# genome, such as GCA_964261755.1 at 9,529 Mbp, which held an r237 rna_silva batch
+# for a day on a single blastn. The lower bound is in kbp and the upper in Mbp, as
+# --min_genome_size and --max_genome_size take them.
+DEFAULT_MIN_GENOME_SIZE = 10.0
+DEFAULT_MAX_GENOME_SIZE = 100.0
+KBP = 1000
+MBP = 1000000
+
 # Where prodigal leaves a genome's called proteins, and what it calls them. The
 # directory and the extension are one fact about a genome directory, written by
 # prodigal and read by everything downstream of it -- hmmsearch, top_hit, checkm,

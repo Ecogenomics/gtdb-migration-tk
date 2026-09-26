@@ -25,6 +25,7 @@ from gtdb_migration_tk import batching as B
 from gtdb_migration_tk import config
 from gtdb_migration_tk import rna_manager_ltp as L
 from gtdb_migration_tk import rna_manager_silva as S
+from gtdb_migration_tk.ncbi_utils import assembly_stats
 from gtdb_migration_tk.biolib_lite.external.blast import BlastError
 from gtdb_migration_tk.utils import common as C
 
@@ -426,6 +427,68 @@ class TheBatchesAndTheRelease(TempDirCase):
         self.run_ltp(self.genomes, batch_size=2)
 
         self.assertEqual(B.batch_state(batch), B.STATE_RUNNING)
+
+
+# ------------------------------------------------------------ a genome too large
+
+# GCA_964261755.1, a faecal metagenome deposited as one genome
+METAGENOME_BASES = 9528631298
+
+
+def state_size(gpath, bases):
+    """Write the assembly statistics NCBI publishes beside a genome, stating its size."""
+    with open(assembly_stats(gpath), 'w') as handle:
+        handle.write('all\tall\tall\tall\ttotal-length\t{}\n'.format(bases))
+
+
+class AGenomeTooLargeToClassify(TempDirCase):
+    """Named for its size, whether it is rna_ltp or rna_silva that left it."""
+
+    def run_with_limit(self, genomes, max_genome_size=C.DEFAULT_MAX_GENOME_SIZE):
+        manager = self.manager(max_genome_size=max_genome_size)
+        return manager.run(self.genome_dirs_file(genomes), self.out_dir)
+
+    def test_one_with_16s_genes_is_named_and_not_classified(self):
+        small = self.genome_dir('GCA_000001.1')
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        ok = self.run_with_limit([('GCA_000001.1', small), ('GCA_000003.1', large)])
+
+        self.assertTrue(ok)
+        self.assertEqual(self.release_report(),
+                         [('GCA_000003.1', L.REASON_GENOME_TOO_LARGE)])
+        self.assertFalse(self.classified(large))
+        self.assertTrue(self.classified(small))
+
+    def test_one_rna_silva_left_for_its_size_is_named_for_that(self):
+        """Not as a genome rna_silva has still to search, which it will not."""
+        large = self.genome_dir('GCA_000003.1', ssu=None)
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)])
+
+        self.assertEqual(self.release_report(),
+                         [('GCA_000003.1', L.REASON_GENOME_TOO_LARGE)])
+
+    def test_one_rna_silva_found_no_gene_in_is_still_counted_not_named(self):
+        large = self.genome_dir('GCA_000003.1', ssu='none')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)])
+
+        self.assertEqual(self.release_report(), [])
+
+    def test_the_limit_is_the_one_given(self):
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)], max_genome_size=10000)
+
+        self.assertTrue(self.classified(large))
+
+    def test_the_default_limit_is_100_mbp(self):
+        self.assertEqual(self.manager().max_genome_bases, 100 * 1000 * 1000)
 
 
 if __name__ == '__main__':

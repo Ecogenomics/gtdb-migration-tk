@@ -538,7 +538,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm, __version__ as tqdm_version
 
-from gtdb_migration_tk.ncbi_utils import (CHUNK, GENOME_COLUMNS, GENOMIC_FASTA_EXT,
+from gtdb_migration_tk.ncbi_utils import (ASSEMBLY_STATS_EXT, CHUNK, GENOME_COLUMNS,
+                                          GENOMIC_FASTA_EXT,
                                           MD5_MANIFEST, NCBI_HOST, NCBI_URL, BadInput,
                                           file_md5, has_ftp_path, read_md5_manifest,
                                           read_summary_rows, summary_field, table_header)
@@ -605,7 +606,7 @@ WANTED_SUFFIXES = (
     "_ani_contam_ranges.tsv",
     "_ani_report.txt",
     "_assembly_report.txt",
-    "_assembly_stats.txt",
+    ASSEMBLY_STATS_EXT,
     "_fcs_report.txt",
     GENOMIC_FASTA_EXT,
     "_genomic.gbff.gz",

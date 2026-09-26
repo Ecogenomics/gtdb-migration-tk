@@ -17,6 +17,7 @@ most attention:
 
 import logging
 import os
+import signal
 import shutil
 import tempfile
 import types
@@ -25,6 +26,23 @@ import unittest
 from gtdb_migration_tk import ncbi_genome_sync as N
 
 P = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/"
+
+# NCBIGenomeSync.run() installs its own SIGINT and SIGTERM handlers, which is right for
+# a process that runs one command and wrong for a test process that runs every module:
+# left in place, a multiprocessing pool in a later module stops its workers with SIGTERM,
+# the handler inherited over fork() only notes the request, and the pool waits for ever
+# on a worker that will not exit. They are put back as they were found.
+SIGNALS = (signal.SIGINT, signal.SIGTERM)
+_saved_handlers = {}
+
+
+def setUpModule():
+    _saved_handlers.update((signum, signal.getsignal(signum)) for signum in SIGNALS)
+
+
+def tearDownModule():
+    for signum, handler in _saved_handlers.items():
+        signal.signal(signum, handler)
 
 
 def write(path, text):
