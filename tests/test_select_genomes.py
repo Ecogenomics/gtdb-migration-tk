@@ -437,3 +437,91 @@ class MisfiledRowTests(TempDirCase):
         with gzip.open(os.path.join(self.dir, 'gtdb_selected_genomes.tsv.gz'), 'rt') as handle:
             rows = [line.split('\t')[0] for line in handle if not line.startswith('#')]
         self.assertEqual(rows, ['GCA_000000023.1'])
+
+
+# ------------------------------------------------------------------ genome size
+
+SIZED_HEADER = HEADER + '\tgenome_size_ungapped'
+
+
+class GenomeSizeTests(TempDirCase):
+    """A genome outside the sizes a release wants is named and not selected."""
+
+    def select(self, refseq=(), genbank=(), **limits):
+        files = [self.write('assembly_summary_refseq.txt', summary(*refseq, header=SIZED_HEADER)),
+                 self.write('assembly_summary_genbank.txt', summary(*genbank, header=SIZED_HEADER))]
+        S.SelectGenomes(self.dir, **limits).run(files)
+
+        with gzip.open(os.path.join(self.dir, S.SELECTED_GENOMES_FILE), 'rt') as handle:
+            selected = [line.split('\t')[0] for line in handle if not line.startswith('#')]
+        with open(os.path.join(self.dir, S.SIZE_FILTERED_FILE)) as handle:
+            header = tuple(handle.readline().rstrip('\n').split('\t'))
+            self.assertEqual(header, S.SIZE_FILTERED_HEADER)
+            filtered = [tuple(line.rstrip('\n').split('\t')) for line in handle]
+        return selected, filtered
+
+    def test_a_genome_within_the_limits_is_selected(self):
+        selected, filtered = self.select(
+            genbank=['GCA_000000001.1\tP\tlatest\tna\tna\tftp://a\t4000000'])
+        self.assertEqual((selected, filtered), (['GCA_000000001.1'], []))
+
+    def test_a_metagenome_deposited_as_one_genome_is_named_and_not_selected(self):
+        selected, filtered = self.select(
+            genbank=['GCA_964261755.1\tP\tlatest\tna\tna\tftp://a\t9528631298'])
+        self.assertEqual(selected, [])
+        self.assertEqual(filtered, [('GCA_964261755.1', '9528631298', S.REASON_GENOME_TOO_LARGE)])
+
+    def test_a_fragment_filed_as_a_genome_is_named_and_not_selected(self):
+        selected, filtered = self.select(
+            genbank=['GCA_000000002.1\tP\tlatest\tna\tna\tftp://a\t9999'])
+        self.assertEqual(selected, [])
+        self.assertEqual(filtered, [('GCA_000000002.1', '9999', S.REASON_GENOME_TOO_SMALL)])
+
+    def test_a_genome_exactly_at_either_limit_is_selected(self):
+        selected, _ = self.select(
+            genbank=['GCA_000000001.1\tP\tlatest\tna\tna\tftp://a\t10000',
+                     'GCA_000000002.1\tP\tlatest\tna\tna\tftp://b\t100000000'])
+        self.assertEqual(selected, ['GCA_000000001.1', 'GCA_000000002.1'])
+
+    def test_the_limits_are_the_ones_given_in_kbp_and_mbp(self):
+        selected, filtered = self.select(
+            genbank=['GCA_000000001.1\tP\tlatest\tna\tna\tftp://a\t9999',
+                     'GCA_964261755.1\tP\tlatest\tna\tna\tftp://b\t9528631298'],
+            min_genome_size=5, max_genome_size=10000)
+        self.assertEqual((selected, filtered), (['GCA_000000001.1', 'GCA_964261755.1'], []))
+
+    def test_the_default_limits_are_10_kbp_and_100_mbp(self):
+        selection = S.SelectGenomes(self.dir)
+        self.assertEqual((selection.min_genome_bases, selection.max_genome_bases),
+                         (10 * 1000, 100 * 1000 * 1000))
+
+    def test_the_size_is_the_ungapped_one(self):
+        # genome_size counts runs of N; genome_size_ungapped is the genome itself
+        header = HEADER + '\tgenome_size\tgenome_size_ungapped'
+        files = [self.write('assembly_summary_refseq.txt', summary(header=header)),
+                 self.write('assembly_summary_genbank.txt', summary(
+                     'GCA_000000001.1\tP\tlatest\tna\tna\tftp://a\t200000000\t4000000',
+                     header=header))]
+        S.SelectGenomes(self.dir).run(files)
+        with open(os.path.join(self.dir, S.SIZE_FILTERED_FILE)) as handle:
+            self.assertEqual(len(handle.readlines()), 1)
+
+    def test_a_genome_stating_no_size_is_selected_as_before(self):
+        """Archived summary files predate the column."""
+        selected, filtered = self.select(
+            genbank=['GCA_000000001.1\tP\tlatest\tna\tna\tftp://a\tna'])
+        self.assertEqual((selected, filtered), (['GCA_000000001.1'], []))
+
+    def test_a_refseq_genome_passed_over_leaves_its_genbank_copy_to_its_own_size(self):
+        selected, filtered = self.select(
+            refseq=['GCF_000000003.1\tP\tlatest\tGCA_000000003.1\tna\tftp://c\t9999'],
+            genbank=['GCA_000000003.1\tP\tlatest\tGCF_000000003.1\tna\tftp://d\t9999'])
+        self.assertEqual(selected, [])
+        self.assertEqual([row[0] for row in filtered], ['GCA_000000003.1', 'GCF_000000003.1'])
+
+    def test_a_genome_left_out_for_another_reason_is_not_named_for_its_size(self):
+        # the table says what the size filter decided, not what it would have
+        selected, filtered = self.select(
+            genbank=['GCA_000000004.1\tP\tlatest\tna\tlarge multi-isolate project'
+                     '\tftp://a\t9999'])
+        self.assertEqual((selected, filtered), ([], []))

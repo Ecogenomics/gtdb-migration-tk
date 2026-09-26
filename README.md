@@ -213,6 +213,19 @@ Run `gtdb_migration_tk <command> -h` for the arguments of any command.
 | `update_genomes` | Update RefSeq and GenBank genomes from the NCBI FTP mirror, carrying derived data across where the genome's sequences are unchanged |
 | `list_genomes` | Produce file indicating the directory of each genome |
 
+`select_genomes` passes over a genome whose `genome_size_ungapped` in its
+assembly summary file is below `--min_genome_size` (10 kbp by default) or above
+`--max_genome_size` (100 Mbp). Genomes under the minimum are fragments or plasmids
+filed as genomes. Genomes over the maximum are metagenomes deposited as one genome.
+Over r237's summary files the defaults pass over 139 GenBank genomes under 10 kbp
+and 8 over 100 Mbp, seven of them between 1.1 and 9.5 Gbp. Each is named in
+`genomes_filtered_by_size.tsv` in `--output_dir` (`genome_id`,
+`genome_size_ungapped`, `reason` of `genome_too_small` or `genome_too_large`),
+which is written even when it has no rows. A RefSeq genome passed over for its size
+leaves its GenBank counterpart to be judged on its own size. A genome whose summary
+file states no size (archived files predate the column) is selected, and the run
+says how many there were.
+
 `update_genomes` writes the new release under `--new_directory`, RefSeq and
 GenBank in trees of their own and each genome under NCBI's own nesting:
 
@@ -740,6 +753,7 @@ archaeon as a bacterium in silence.
 | --- | --- |
 | `no_genomic_fasta` | the genome's sequences are not where the release says they are |
 | `trnascan_failed` | tRNAscan-SE was given the genome and returned an error |
+| `genome_too_large` | the assembly is larger than `--max_genome_size` |
 
 Neither costs the other ten thousand genomes of the batch, and neither is retried
 for ever by a batch that fails identically every time. A batch in which several
@@ -747,6 +761,18 @@ genomes were to be scanned and every one of them failed is failed rather than
 recorded as a success: that is not a batch of difficult genomes, it is tRNAscan-SE
 not working on this machine. One genome failing on its own is not, for the reason
 the naming exists.
+
+**A genome larger than `--max_genome_size` is left out** (100 Mbp by default, well
+above the largest bacterial or archaeal genome). What comes near it is a
+metagenome deposited as one genome: GCA_964261755.1 is 9,529 Mbp in 107,915
+contigs, and held an r237 `rna_silva` batch for a day. Its size is read from NCBI's
+`<assembly>_assembly_stats.txt` (the `all all all all total-length` row), and
+counted from the genomic FASTA only where that file is missing. A genome whose size
+cannot be told is processed. Only genomes that are still to be processed are sized,
+so a genome whose results are already there is not named. Each one left out is
+logged with its size and named as `genome_too_large`. It gets no results and no
+canary, so a later run with a larger `--max_genome_size` processes it.
+`rna_silva` and `rna_ltp` take the same option.
 
 `rna_silva` identifies, extracts and classifies one rRNA gene per run -- `-r ssu`,
 `lsu_23S` or `lsu_5S` -- writing into each genome's own
@@ -793,6 +819,7 @@ many of those it had.
 | --- | --- |
 | `no_genomic_fasta` | the genome's sequences are not where the release says they are |
 | `rna_search_failed` | nhmmer or blastn was given the genome and failed on it |
+| `genome_too_large` | the assembly is larger than `--max_genome_size`, as for `trnascan` |
 
 A genome with no copy of the gene is not among them: it was searched, and has a
 canary. As with `trnascan`, a batch in which several genomes were to be searched and
@@ -821,6 +848,12 @@ yet, and it is named in `rna_ltp_not_classified.tsv`:
 | --- | --- |
 | `ssu_not_identified` | `rna_silva` has not searched the genome for its 16S gene |
 | `blastn_failed` | blastn was given the genome's genes and failed on them |
+| `genome_too_large` | the assembly is larger than `--max_genome_size`, as for `trnascan` |
+
+`rna_silva` writes no canary for a genome it left out for its size, so a genome
+with neither `ssu.fna` nor a canary is sized too. One that is too large is named
+`genome_too_large`, not `ssu_not_identified`, since `rna_silva` will not be
+searching it.
 
 A genome is skipped where `ltp.canary.txt` is there, and its results are copied
 into place with the canary last. The command takes no domain file: the domain

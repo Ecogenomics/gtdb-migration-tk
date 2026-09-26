@@ -77,12 +77,12 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import (Callable, Dict, Iterator, List, NamedTuple, Optional,
-                    Sequence, Tuple)
+                    Sequence, Tuple, TypeVar)
 
 from tqdm import tqdm
 
-from gtdb_migration_tk.ncbi_utils import genomic_fasta
-from gtdb_migration_tk.utils.common import open_text
+from gtdb_migration_tk.ncbi_utils import assembly_total_length, genomic_fasta
+from gtdb_migration_tk.utils.common import MBP, open_text
 
 
 class BatchLayout(NamedTuple):
@@ -155,6 +155,9 @@ STAT_THREADS = 32
 # comes back. A chunk is large enough that no thread waits for the next one to be
 # cut and small enough to be nothing in memory.
 STAT_CHUNK = 50000
+
+# A genome in whatever form the command holding it keeps it.
+T = TypeVar('T')
 
 
 def read_genome_dirs(gtdb_genome_path_file: str) -> List[Tuple[str, str]]:
@@ -258,6 +261,117 @@ def split_by_fasta(rows: Sequence[Tuple[str, str]],
                 pbar.update()
 
     return present, missing
+
+
+def count_bases(fasta: str) -> int:
+    """The number of bases in a genomic FASTA, gaps included.
+
+    Counted a line at a time rather than with biolib_lite's reader, which calls
+    sys.exit() on a file it cannot read -- from a thread of the pool that would
+    be the end of the run rather than of one genome.
+
+    Parameters
+    ----------
+    fasta : str
+        Path of the gzipped genomic FASTA.
+
+    @return: number of bases.
+    """
+
+    bases = 0
+    with gzip.open(fasta, 'rt') as handle:
+        for line in handle:
+            if not line.startswith('>'):
+                bases += len(line.strip())
+
+    return bases
+
+
+def genome_size(genome_dir: str) -> Optional[int]:
+    """The size of a genome assembly, in bases.
+
+    NCBI's assembly statistics are read where they are there, which is one small
+    file; the genomic FASTA is counted only where they are not, since that means
+    reading every base of it.
+
+    Parameters
+    ----------
+    genome_dir : str
+        Genome directory of the release.
+
+    @return: the size in bases, or None where neither file can say.
+    """
+
+    size = assembly_total_length(genome_dir)
+    if size is not None:
+        return size
+
+    fasta = genomic_fasta(genome_dir)
+    if fasta_size(fasta) == 0:
+        return None
+
+    try:
+        return count_bases(fasta)
+    except (OSError, EOFError, UnicodeDecodeError):
+        # a FASTA that cannot be read is not known to be too large; it is left to
+        # the command, whose own failure path names it
+        return None
+
+
+def split_by_genome_size(items: Sequence[T],
+                         genome_dir_of: Callable[[T], str],
+                         max_bases: int,
+                         logger: logging.Logger,
+                         threads: int = STAT_THREADS) -> Tuple[List[T], List[Tuple[T, int]]]:
+    """Leave out the genomes too large for a command to be given.
+
+    A genome assembly of billions of bases is a metagenome deposited as one
+    genome, and a command run over it for each of its genes -- tRNAscan-SE,
+    nhmmer, a blastn per rRNA gene against SILVA and the LTP -- is not seconds but
+    a day or more, which holds its whole batch unfinished for that long. It is
+    left out and named rather than worked on.
+
+    A genome whose size cannot be told is kept: what is left out is what is known
+    to be too large.
+
+    Parameters
+    ----------
+    items : sequence
+        The genomes to consider, in whatever form the command holds them.
+    genome_dir_of : callable
+        The genome directory of an item.
+    max_bases : int
+        Largest assembly processed, in bases.
+    logger : logging.Logger
+        Where each genome left out is named, with its size.
+    threads : int
+        Genomes asked about at once, the files being held over NFS.
+
+    @return: (kept, too_large), the items to process in the order given and the
+             (item, size in bases) of those left out.
+    """
+
+    kept, too_large = [], []
+    with tqdm(total=len(items), ncols=100, leave=False,
+              desc='Checking genome sizes') as pbar, \
+            ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
+        for start in range(0, len(items), STAT_CHUNK):
+            chunk = items[start:start + STAT_CHUNK]
+            for item, size in zip(
+                    chunk, pool.map(genome_size, [genome_dir_of(item) for item in chunk])):
+                if size is not None and size > max_bases:
+                    too_large.append((item, size))
+                else:
+                    kept.append(item)
+                pbar.update()
+
+    for item, size in too_large:
+        logger.warning('warning: {} is {:,.1f} Mbp, larger than the {:,.1f} Mbp '
+                       'maximum genome size, and is not processed.'.format(
+                           os.path.basename(genome_dir_of(item)),
+                           size / MBP, max_bases / MBP))
+
+    return kept, too_large
 
 
 def write_batchfile(rows: Sequence[Tuple[str, str]], batchfile: str,

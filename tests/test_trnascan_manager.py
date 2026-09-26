@@ -24,6 +24,7 @@ from unittest import mock
 
 from gtdb_migration_tk import batching as B
 from gtdb_migration_tk import trnascan_manager as T
+from gtdb_migration_tk.ncbi_utils import assembly_stats
 from gtdb_migration_tk.utils import common as C
 
 
@@ -575,6 +576,81 @@ class TheBatchesAndTheRelease(TempDirCase):
         self.run_trnascan(self.genomes, batch_size=2)
 
         self.assertEqual(B.batch_state(batch), B.STATE_RUNNING)
+
+
+# ------------------------------------------------------------ a genome too large
+
+# GCA_964261755.1, a faecal metagenome deposited as one genome
+METAGENOME_BASES = 9528631298
+
+
+def state_size(gpath, bases):
+    """Write the assembly statistics NCBI publishes beside a genome, stating its size."""
+    with open(assembly_stats(gpath), 'w') as handle:
+        handle.write('all\tall\tall\tall\ttotal-length\t{}\n'.format(bases))
+
+
+class AGenomeTooLargeToScan(TempDirCase):
+    """Named and left, rather than holding its batch for as long as it takes."""
+
+    def run_with_limit(self, genomes, max_genome_size=C.DEFAULT_MAX_GENOME_SIZE,
+                       all_genomes=False):
+        scanner = self.scanner(max_genome_size=max_genome_size)
+        with mock.patch.object(T.subprocess, 'Popen', StubPopen):
+            return scanner.run(self.genome_dirs_file(genomes), self.out_dir, all_genomes)
+
+    def test_it_is_named_in_the_release_report_and_not_scanned(self):
+        small = self.genome_dir('GCA_000001.1')
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        ok = self.run_with_limit([('GCA_000001.1', small), ('GCA_000003.1', large)])
+
+        self.assertTrue(ok)
+        self.assertEqual(self.release_report(),
+                         [('GCA_000003.1', T.REASON_GENOME_TOO_LARGE)])
+        self.assertIsNone(self.model_flag(large, 'GCA_000003.1'))
+        self.assertIsNotNone(self.model_flag(small, 'GCA_000001.1'))
+
+    def test_the_limit_is_the_one_given(self):
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)], max_genome_size=10000)
+
+        self.assertIsNotNone(self.model_flag(large, 'GCA_000003.1'))
+        self.assertEqual(self.release_report(), [])
+
+    def test_the_default_limit_is_100_mbp(self):
+        self.assertEqual(self.scanner().max_genome_bases, 100 * 1000 * 1000)
+
+    def test_a_genome_whose_trnas_are_already_there_is_not_named(self):
+        """It has not been left out of anything."""
+        large = self.genome_dir('GCA_000003.1', trna='valid')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)])
+
+        self.assertEqual(self.release_report(), [])
+
+    def test_all_does_not_hand_it_over_either(self):
+        large = self.genome_dir('GCA_000003.1', trna='valid')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)], all_genomes=True)
+
+        self.assertEqual(self.release_report(),
+                         [('GCA_000003.1', T.REASON_GENOME_TOO_LARGE)])
+        self.assertIsNone(self.model_flag(large, 'GCA_000003.1'))
+
+    def test_the_batch_counts_it_as_not_scanned(self):
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)])
+
+        canary = B.read_canary(os.path.join(self.batches()[0], B.SUCCESS_CANARY))
+        self.assertEqual((canary['scanned'], canary['not_scanned']), ('0', '1'))
 
 
 if __name__ == '__main__':

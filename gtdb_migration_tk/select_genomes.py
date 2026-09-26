@@ -28,13 +28,27 @@ updated from the mirror by update_genomes.py.
 Which genomes NCBI considers latest, which belong to large multi-isolate projects,
 and which are paired with a RefSeq assembly are all read from the NCBI assembly
 summary files by ncbi_utils.py, which ncbi_genome_sync.py reads them with too.
+
+A genome is also passed over for its size, from the genome_size_ungapped column,
+where it lies outside --min_genome_size and --max_genome_size. Below the first is
+a fragment or a plasmid filed as a genome. Above the second is a metagenome
+deposited as one genome, which is what a GTDB release does not want and which,
+once mirrored, costs the commands after this one a day each (GCA_964261755.1, 9,529
+Mbp, held an r237 rna_silva batch for that long). The size is the one NCBI
+publishes, so the decision is made before a genome is fetched. The ungapped size
+is used because runs of N are not genome, and a scaffold mostly gaps is no larger
+for them. A genome whose summary file states no size -- the column is recent, and
+an archived summary file does not carry it -- is selected, and the run says how
+many there were. Those passed over are named, with their size, in
+genomes_filtered_by_size.tsv; the log gives only how many, as there can be
+thousands.
 """
 
 import os
 import sys
 import gzip
 import logging
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from tqdm import tqdm
 
@@ -43,6 +57,8 @@ from gtdb_migration_tk.ncbi_utils import (
     GENBANK, GENBANK_PREFIX, GENOME_COLUMNS, NCBI_DATABASES, NCBI_NA, REFSEQ,
     REFSEQ_PREFIX, assembly_summary_database, count_summary_rows, has_ftp_path,
     read_assembly_summary, table_header)
+from gtdb_migration_tk.utils.common import (DEFAULT_MAX_GENOME_SIZE,
+                                            DEFAULT_MIN_GENOME_SIZE, KBP, MBP)
 
 
 # Values of excluded_from_refseq marking an assembly as one of the thousands of
@@ -83,6 +99,15 @@ SelectedRow = Tuple[str, str, str, str, str, str]
 # appears to be covered by RefSeq was taken from GenBank instead.
 SELECTED_GENOMES_HEADER = table_header(*GENOME_COLUMNS, 'gbrs_paired_asm', 'notes')
 
+# The column a genome's size is read from, and the table naming each genome passed
+# over for it. The reasons are the ones trnascan, rna_silva and rna_ltp give a
+# genome they leave out for its size.
+GENOME_SIZE_COLUMN = 'genome_size_ungapped'
+SIZE_FILTERED_FILE = 'genomes_filtered_by_size.tsv'
+SIZE_FILTERED_HEADER = ('genome_id', GENOME_SIZE_COLUMN, 'reason')
+REASON_GENOME_TOO_SMALL = 'genome_too_small'
+REASON_GENOME_TOO_LARGE = 'genome_too_large'
+
 
 def is_multi_isolate(excluded_from_refseq: str) -> bool:
     """Report whether an assembly belongs to a large multi-isolate project.
@@ -117,6 +142,25 @@ def write_selected_genomes(selected: List[SelectedRow], output_file: str) -> Non
     with gzip.open(output_file, 'wt') as table:
         table.write(SELECTED_GENOMES_HEADER + '\n')
         for row in sorted(selected):
+            table.write('\t'.join(row) + '\n')
+
+
+def write_size_filtered(rows: List[Tuple[str, str, str]], output_file: str) -> None:
+    """Write the table of genomes passed over for their size.
+
+    Parameters
+    ----------
+    rows : list
+        (accession, genome_size_ungapped, reason) of each genome passed over.
+    output_file : str
+        Table to write.
+
+    @return: None
+    """
+
+    with open(output_file, 'w') as table:
+        table.write('\t'.join(SIZE_FILTERED_HEADER) + '\n')
+        for row in sorted(rows):
             table.write('\t'.join(row) + '\n')
 
 
@@ -173,17 +217,31 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
     NCBI's mistake.
     """
 
-    def __init__(self, output_dir: str) -> None:
+    def __init__(self, output_dir: str,
+                 min_genome_size: float = DEFAULT_MIN_GENOME_SIZE,
+                 max_genome_size: float = DEFAULT_MAX_GENOME_SIZE) -> None:
         """Record where the selection and its log are to be written.
 
         Parameters
         ----------
         output_dir : str
             Output directory for the selected genome table.
+        min_genome_size : float
+            Smallest genome assembly selected, in kbp.
+        max_genome_size : float
+            Largest genome assembly selected, in Mbp.
         """
 
         self.output_dir = output_dir
         self.logger = logging.getLogger('timestamp')
+
+        self.min_genome_bases = int(min_genome_size * KBP)
+        self.max_genome_bases = int(max_genome_size * MBP)
+
+        # (accession, genome_size_ungapped, reason) of each genome passed over for
+        # its size, and how many genomes stated no size to be judged by
+        self.size_filtered: List[Tuple[str, str, str]] = []
+        self.no_stated_size = 0
 
     def _read_summary(self, assembly_summary: str):
         """Read the fields of an assembly summary file needed to select genomes.
@@ -194,7 +252,8 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
             NCBI assembly summary file.
 
         @return: iterator over (accession, version_status, gbrs_paired_asm,
-            excluded_from_refseq, ftp_path), one tuple per genome.
+            excluded_from_refseq, ftp_path, genome_size_ungapped), one tuple per
+            genome.
         """
 
         records = read_assembly_summary(assembly_summary,
@@ -202,7 +261,8 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
                                         'version_status',
                                         'gbrs_paired_asm',
                                         'excluded_from_refseq',
-                                        'ftp_path')
+                                        'ftp_path',
+                                        GENOME_SIZE_COLUMN)
 
         return tqdm(records,
                     total=count_summary_rows(assembly_summary),
@@ -234,6 +294,62 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
                 accession, version_status or NCBI_NA))
 
         return False
+
+    def _size_reason(self, accession: str, genome_size: str) -> Optional[str]:
+        """Decide whether a genome is outside the sizes a release wants.
+
+        A genome passed over is recorded for the table of them, and one stating
+        no size is counted and selected.
+
+        Parameters
+        ----------
+        accession : str
+            Assembly accession of the genome.
+        genome_size : str
+            Value of the genome_size_ungapped column.
+
+        @return: REASON_GENOME_TOO_SMALL or REASON_GENOME_TOO_LARGE where the
+            genome is outside the limits, None where it is within them or states
+            no size.
+        """
+
+        try:
+            bases = int(genome_size)
+        except ValueError:
+            self.no_stated_size += 1
+            return None
+
+        if bases < self.min_genome_bases:
+            reason = REASON_GENOME_TOO_SMALL
+        elif bases > self.max_genome_bases:
+            reason = REASON_GENOME_TOO_LARGE
+        else:
+            return None
+
+        self.size_filtered.append((accession, genome_size, reason))
+
+        return reason
+
+    def _log_size_filtered(self, label: str, by_reason: Dict[str, int]) -> None:
+        """Report how many genomes of a database were passed over for their size.
+
+        Parameters
+        ----------
+        label : str
+            The database, as it is written in the log.
+        by_reason : dict
+            Reason to the number of genomes passed over for it.
+
+        @return: None
+        """
+
+        for reason, bound in ((REASON_GENOME_TOO_SMALL,
+                               'smaller than {:,.1f} kbp'.format(self.min_genome_bases / KBP)),
+                              (REASON_GENOME_TOO_LARGE,
+                               'larger than {:,.1f} Mbp'.format(self.max_genome_bases / MBP))):
+            if by_reason.get(reason):
+                self.logger.info('{}: {:,} genomes skipped as {}; each is named in {}.'.format(
+                    label, by_reason[reason], bound, SIZE_FILTERED_FILE))
 
     def group_by_database(self, new_list_genomes: List[str]) -> Tuple[List[str], List[str]]:
         """Split the assembly summary files into the RefSeq files and the GenBank files.
@@ -313,10 +429,11 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
         read = 0
         misfiled = 0
         no_ftp_path = 0
+        by_size = {}
 
         for assembly_summary in refseq_files:
-            for accession, version_status, paired_asm, excluded, ftp_path in self._read_summary(
-                    assembly_summary):
+            for (accession, version_status, paired_asm, excluded, ftp_path,
+                 genome_size) in self._read_summary(assembly_summary):
 
                 if not accession.startswith(REFSEQ_PREFIX):
                     # the file is named for RefSeq but this row is not a RefSeq
@@ -347,11 +464,20 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
                     dropped[gid] = 'NCBI serves no directory for it'
                     continue
 
+                size_reason = self._size_reason(accession, genome_size)
+                if size_reason is not None:
+                    # recorded in `dropped` like any other RefSeq genome passed
+                    # over: its GenBank counterpart is judged on its own size
+                    by_size[size_reason] = by_size.get(size_reason, 0) + 1
+                    dropped[gid] = '{} of {} bp'.format(GENOME_SIZE_COLUMN, genome_size)
+                    continue
+
                 selected.append((accession, ftp_path, version_status, excluded,
                                  paired_asm, NO_NOTE))
                 covered.add(gid)
 
         self.logger.info('RefSeq: selected {:,} of {:,} genomes.'.format(len(selected), read))
+        self._log_size_filtered('RefSeq', by_size)
         if no_ftp_path:
             self.logger.warning('RefSeq: {:,} genomes ignored, NCBI serves no directory for '
                                 'them (ftp_path is na); where a GenBank assembly exists it is '
@@ -400,10 +526,11 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
         misfiled = 0
         no_ftp_path = 0
         rescued = 0
+        by_size = {}
 
         for assembly_summary in genbank_files:
-            for accession, version_status, paired_asm, excluded, ftp_path in self._read_summary(
-                    assembly_summary):
+            for (accession, version_status, paired_asm, excluded, ftp_path,
+                 genome_size) in self._read_summary(assembly_summary):
 
                 if not accession.startswith(GENBANK_PREFIX):
                     misfiled += 1
@@ -427,6 +554,11 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
 
                 if is_multi_isolate(excluded):
                     multi_isolate += 1
+                    continue
+
+                size_reason = self._size_reason(accession, genome_size)
+                if size_reason is not None:
+                    by_size[size_reason] = by_size.get(size_reason, 0) + 1
                     continue
 
                 note = NO_NOTE
@@ -455,6 +587,7 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
         self.logger.info('GenBank: selected {:,} of {:,} genomes.'.format(len(selected), read))
         self.logger.info('GenBank: {:,} genomes skipped as part of a large multi-isolate '
                          'project.'.format(multi_isolate))
+        self._log_size_filtered('GenBank', by_size)
         if no_ftp_path:
             self.logger.warning('GenBank: {:,} genomes ignored, NCBI serves no directory for '
                                 'them (ftp_path is na).'.format(no_ftp_path))
@@ -484,6 +617,7 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
         """
 
         refseq_files, genbank_files = self.group_by_database(new_list_genomes)
+        self.size_filtered, self.no_stated_size = [], 0
         self.logger.info('Reading {:,} RefSeq and {:,} GenBank assembly summary file(s).'.format(
             len(refseq_files), len(genbank_files)))
 
@@ -492,6 +626,18 @@ A third discrepancy is recorded but not acted on. NCBI regularly pairs a
 
         output_file = os.path.join(self.output_dir, SELECTED_GENOMES_FILE)
         write_selected_genomes(refseq + genbank, output_file)
+
+        # written whether or not any genome was passed over, so that the file
+        # being empty says none was rather than that the check never ran
+        size_file = os.path.join(self.output_dir, SIZE_FILTERED_FILE)
+        write_size_filtered(self.size_filtered, size_file)
+        self.logger.info('{:,} genomes were passed over for their size: {}'.format(
+            len(self.size_filtered), size_file))
+        if self.no_stated_size:
+            self.logger.warning(
+                '{:,} genomes state no {} in their assembly summary file and were '
+                'selected without their size being checked.'.format(
+                    self.no_stated_size, GENOME_SIZE_COLUMN))
 
         self.logger.info('Selected {:,} genomes for the new release: {}'.format(
             len(refseq) + len(genbank), output_file))

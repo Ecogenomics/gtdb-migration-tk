@@ -406,3 +406,56 @@ class FileMd5Tests(TempDirCase):
     def test_the_chunk_is_one_mebibyte(self):
         # the measured flat region; the sync's memory bound is CHUNK x threads
         self.assertEqual(U.CHUNK, 1024 * 1024)
+
+
+# --------------------------------------------------------------- assembly statistics
+
+# The head of an assembly_stats.txt as NCBI writes it: the whole assembly first,
+# then the same statistic again for each assembly unit and molecule type.
+ASSEMBLY_STATS = (
+    '# Assembly Statistics Report\n'
+    '# Assembly name:  UC_feces_MAGs_combined\n'
+    '# unit-name\tmolecule-name\tmolecule-type/loc\tsequence-type\tstatistic\tvalue\n'
+    'all\tall\tall\tall\ttotal-length\t9528631298\n'
+    'all\tall\tall\tall\tcontig-count\t107915\n'
+    'Primary Assembly\tall\tall\tall\ttotal-length\t9528631298\n'
+    'Primary Assembly\tall\tall\tassembled-molecule\ttotal-length\t0\n'
+)
+
+
+class AssemblyTotalLengthTests(TempDirCase):
+    """The size of an assembly is read as NCBI states it, never by reading its FASTA."""
+
+    def genome_dir(self, stats=None):
+        path = os.path.join(self.dir, 'GCA_964261755.1_UC_feces_MAGs_combined')
+        os.makedirs(path)
+        if stats is not None:
+            with open(U.assembly_stats(path), 'w') as handle:
+                handle.write(stats)
+        return path
+
+    def test_the_statistics_are_named_for_the_assembly_directory(self):
+        self.assertEqual(
+            os.path.basename(U.assembly_stats('/rel/genbank/GCA/964/261/755/'
+                                              'GCA_964261755.1_UC_feces_MAGs_combined/')),
+            'GCA_964261755.1_UC_feces_MAGs_combined_assembly_stats.txt')
+
+    def test_the_total_length_of_the_whole_assembly_is_read(self):
+        self.assertEqual(U.assembly_total_length(self.genome_dir(ASSEMBLY_STATS)),
+                         9528631298)
+
+    def test_a_molecule_type_s_length_is_not_mistaken_for_the_assembly_s(self):
+        stats = ASSEMBLY_STATS.replace('all\tall\tall\tall\ttotal-length\t9528631298\n', '')
+        stats = stats.replace('Primary Assembly\tall\tall\tall\ttotal-length\t9528631298\n', '')
+        self.assertIsNone(U.assembly_total_length(self.genome_dir(stats)))
+
+    def test_a_genome_with_no_statistics_has_no_size_rather_than_raising(self):
+        self.assertIsNone(U.assembly_total_length(self.genome_dir()))
+
+    def test_a_length_that_is_not_a_number_has_no_size_rather_than_raising(self):
+        stats = 'all\tall\tall\tall\ttotal-length\tna\n'
+        self.assertIsNone(U.assembly_total_length(self.genome_dir(stats)))
+
+    def test_the_sync_mirrors_the_file_read(self):
+        from gtdb_migration_tk import ncbi_genome_sync
+        self.assertIn(U.ASSEMBLY_STATS_EXT, ncbi_genome_sync.WANTED_SUFFIXES)

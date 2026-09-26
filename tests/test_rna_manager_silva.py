@@ -24,6 +24,7 @@ from unittest import mock
 
 from gtdb_migration_tk import batching as B
 from gtdb_migration_tk import rna_manager_silva as S
+from gtdb_migration_tk.ncbi_utils import assembly_stats
 from gtdb_migration_tk.utils import common as C
 
 
@@ -577,6 +578,78 @@ class UpdateSilva(TempDirCase):
 
         with open(os.path.join(self.dir, 'silva_taxonomy.ssu.tsv')) as handle:
             self.assertEqual(handle.read(), 'A1\tBacteria;Firmicutes\n')
+
+
+# ------------------------------------------------------------ a genome too large
+
+# GCA_964261755.1, a faecal metagenome deposited as one genome, which held an
+# r237 ssu batch for a day on a single blastn
+METAGENOME_BASES = 9528631298
+
+
+def state_size(gpath, bases):
+    """Write the assembly statistics NCBI publishes beside a genome, stating its size."""
+    with open(assembly_stats(gpath), 'w') as handle:
+        handle.write('all\tall\tall\tall\ttotal-length\t{}\n'.format(bases))
+
+
+class AGenomeTooLargeToSearch(TempDirCase):
+    """Named and left before nhmmer is given it."""
+
+    def run_with_limit(self, genomes, max_genome_size=C.DEFAULT_MAX_GENOME_SIZE,
+                       all_genomes=False):
+        manager = self.manager(max_genome_size=max_genome_size)
+        return manager.run(self.genome_dirs_file(genomes), self.out_dir, all_genomes)
+
+    def test_it_is_named_in_the_release_report_and_not_searched(self):
+        small = self.genome_dir('GCA_000001.1')
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        ok = self.run_with_limit([('GCA_000001.1', small), ('GCA_000003.1', large)])
+
+        self.assertTrue(ok)
+        self.assertEqual(self.release_report(),
+                         [('GCA_000003.1', S.REASON_GENOME_TOO_LARGE)])
+        self.assertIsNone(self.searched_as(large))
+        self.assertIsNotNone(self.searched_as(small))
+
+    def test_it_is_given_no_canary_so_a_larger_limit_searches_it_later(self):
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)])
+
+        self.assertFalse(os.path.exists(
+            os.path.join(self.results(large), 'ssu' + S.CANARY_EXT)))
+
+    def test_the_limit_is_the_one_given(self):
+        large = self.genome_dir('GCA_000003.1')
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)], max_genome_size=10000)
+
+        self.assertIsNotNone(self.searched_as(large))
+
+    def test_the_default_limit_is_100_mbp(self):
+        self.assertEqual(self.manager().max_genome_bases, 100 * 1000 * 1000)
+
+    def test_a_genome_already_searched_is_not_named(self):
+        large = self.genome_dir('GCA_000003.1', searched=True)
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)])
+
+        self.assertEqual(self.release_report(), [])
+
+    def test_all_does_not_hand_it_over_either(self):
+        large = self.genome_dir('GCA_000003.1', searched=True)
+        state_size(large, METAGENOME_BASES)
+
+        self.run_with_limit([('GCA_000003.1', large)], all_genomes=True)
+
+        self.assertEqual(self.release_report(),
+                         [('GCA_000003.1', S.REASON_GENOME_TOO_LARGE)])
 
 
 if __name__ == '__main__':

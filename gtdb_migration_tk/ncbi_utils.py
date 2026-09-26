@@ -517,6 +517,58 @@ def genomic_fasta(genome_dir: str) -> str:
     return os.path.join(genome_dir, assembly + GENOMIC_FASTA_EXT)
 
 
+# The statistics NCBI publishes for an assembly, e.g. GCF_036600855.1_ASM3660085v1
+# + _assembly_stats.txt. Its size is the row whose first five columns are
+# ASSEMBLY_TOTAL_LENGTH: every base of every sequence, gaps included, which is
+# what the genomic FASTA holds. The size is read from here because the other way
+# of knowing it is to read the FASTA, and the genomes a size is asked about for are
+# the ones whose FASTA is gigabytes.
+ASSEMBLY_STATS_EXT = '_assembly_stats.txt'
+ASSEMBLY_TOTAL_LENGTH = ('all', 'all', 'all', 'all', 'total-length')
+
+
+def assembly_stats(genome_dir: str) -> str:
+    """The assembly statistics NCBI serves for a genome.
+
+    Parameters
+    ----------
+    genome_dir : str
+        Genome directory, of a release or of the mirror.
+
+    @return: path of the assembly statistics in that directory, which may not exist.
+    """
+
+    assembly = os.path.basename(os.path.normpath(genome_dir))
+
+    return os.path.join(genome_dir, assembly + ASSEMBLY_STATS_EXT)
+
+
+def assembly_total_length(genome_dir: str) -> Optional[int]:
+    """The size of a genome assembly as NCBI states it.
+
+    Parameters
+    ----------
+    genome_dir : str
+        Genome directory, of a release or of the mirror.
+
+    @return: the assembly's total length in bases, or None where the statistics
+             are absent, cannot be read, or state no total length.
+    """
+
+    try:
+        with open(assembly_stats(genome_dir)) as handle:
+            for line in handle:
+                if line.startswith('#'):
+                    continue
+                fields = line.rstrip('\n').split('\t')
+                if tuple(fields[:5]) == ASSEMBLY_TOTAL_LENGTH:
+                    return int(fields[5])
+    except (OSError, IndexError, ValueError):
+        return None
+
+    return None
+
+
 def read_md5_manifest(lines: Iterable[str]) -> Iterator[Tuple[str, str]]:
     """Read the (md5, name) entries of an md5checksums.txt.
 
