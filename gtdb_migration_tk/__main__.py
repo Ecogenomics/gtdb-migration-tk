@@ -107,6 +107,7 @@ def print_help():
       trnascan         -> Identifies tRNAs in genomes.
       join_checkm      -> Join CheckM output files for different releases.
       checkm           -> Estimates the quality of the new genomes.
+      checkm2          -> Estimates the quality of the new genomes with CheckM2.
       busco            -> Estimate quality of new fungal genomes.
       
     Access to Database:
@@ -949,8 +950,28 @@ def get_main_parser():
             __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
-            __all_genomes(grp)
             __cpus(grp)
+            __tmp_dir(grp)
+            __batch_size(grp, default=1000)
+            __reclaim(grp)
+            __lease(grp)
+            __all_genomes(grp)
+            __silent(grp)
+
+    with subparser(sub_parsers, 'checkm2',
+                   'Run CheckM2 on new and modified genomes.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __gtdb_genome_path_file(grp, required=True)
+            __gtdb_comparison_report(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __cpus(grp)
+            __tmp_dir(grp)
+            __batch_size(grp, default=5000)
+            __reclaim(grp)
+            __lease(grp)
+            __all_genomes(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'busco', 'Estimate quality of new fungal genomes.') as parser:

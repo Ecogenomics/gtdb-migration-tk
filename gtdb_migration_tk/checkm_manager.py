@@ -15,401 +15,694 @@
 #                                                                             #
 ###############################################################################
 
-import os
-import sys
+"""Estimate the completeness and contamination of the genomes of a release with
+CheckM (checkm) and CheckM2 (checkm2).
+
+WHY THE WORK IS CUT INTO BATCHES
+
+CheckM runs for hours over a thousand genomes and CheckM2 over a few thousand,
+and a release brings tens of thousands of new ones, so the run is days and
+belongs on several machines. The batching is the machinery trans_table,
+prodigal, hmmsearch and trnascan share, in batching.py: the genomes are
+partitioned once under --out_dir, and a machine claims a batch directory before
+working on it, so several machines given the same --out_dir divide the work
+between them without being told which genomes to take. Each batch keeps its
+own log, and its SUCCESS canary is what says it is done.
+
+Unlike those commands, what CheckM makes lives in the batch and not in the
+genome directories, and nothing beside a genome can say it was assessed. So the
+genomes to assess are decided once, when the batches are planned, from the
+release report -- those update_genomes says are to be regenerated, or with --all
+every genome the release holds -- and only those are planned
+(batching.plan_batches(accessions=...)), so that a batch's size is the size of
+its work. Once planned the batches are authoritative, as they are for every
+batched command: a run with another report or --all over the same --out_dir
+uses the plan already there. The batches are planned in --out_dir itself, and
+the release files are written beside them once every batch has succeeded, and
+never a part of them that reads like the whole. checkm and checkm2 are each
+given an --out_dir of their own: one that holds batch directories another
+command planned is refused, since that command's SUCCESS would tell this one
+it had nothing to do.
+
+THE PROTEINS
+
+Both commands are handed the proteins the prodigal command called (--genes),
+and take them as correct: they are called once for a release, by one program,
+under the table trans_table chose, and what CheckM and CheckM2 assess is then
+the same proteome hmmsearch and the metadata are made from. Left to call genes
+themselves, both would call them under whichever of tables 4 and 11 codes more
+of the genome, a rule that cannot express table 25.
+
+Handed genes, CheckM2 reports only its estimates, not the statistics it takes
+from calling genes itself (the table used, coding density, genome size, GC,
+N50 and the rest); its models read their features from the proteins either
+way.
+
+ONE BAD GENOME DOES NOT COST A BATCH
+
+A genome with no protein file, or an empty one, is named in
+the batch's not_assessed.tsv, gathered into checkm_not_assessed.tsv or
+checkm2_not_assessed.tsv for the release, and left; the program is run over the
+rest. The program failing fails the batch, which the next run repeats.
+"""
+
 import logging
-import ntpath
+import os
+import shutil
+import subprocess
 from collections import defaultdict
+from typing import List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from tqdm import tqdm
 
-from gtdb_migration_tk.biolib_lite.common import get_num_lines
-from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
+from gtdb_migration_tk.batching import (BATCH_DIR_PREFIX, CLAIM_LEASE_SECONDS, HEARTBEAT_SECONDS,
+                                        RUNNING_CANARY, STATE_SUCCESS,
+                                        SUCCESS_CANARY, STAT_THREADS,
+                                        BatchLayout, Heartbeat, age_phrase,
+                                        batch_log, batch_state, batchfile_path,
+                                        claim_age, claim_batch, concatenate,
+                                        fail_batch, finish_batch,
+                                        plan_batches, read_batchfile, read_canary,
+                                        release_claim, split_by_fasta,
+                                        tally_reasons, write_table)
+from gtdb_migration_tk.biolib_lite.common import get_num_lines, make_sure_path_exists
+from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.update_genomes import (genomes_in_release,
                                              genomes_to_regenerate)
-from gtdb_migration_tk.utils.common import (record_program_version,
+from gtdb_migration_tk.utils.common import (protein_fasta,
+                                            record_program_version,
                                             write_version_file)
 
-# The program, as it is called. Its version goes into the log and, as
-# checkm.version, into each chunk directory it was run over.
+# The programs, as they are called. Each one's version goes into the log and, as
+# checkm.version or checkm2.version, into each batch it was run over.
 CHECKM = 'checkm'
+CHECKM2 = 'checkm2'
 
+# What each command calls the files of its batches. There is no older name to
+# look for: neither command has had batches before.
+CHECKM_LAYOUT = BatchLayout(batchfiles=('checkm_batchfile.tsv.gz',), log='checkm.log')
+CHECKM2_LAYOUT = BatchLayout(batchfiles=('checkm2_batchfile.tsv.gz',), log='checkm2.log')
+
+# Genomes per batch. CheckM2 loads its models and searches the whole of its
+# DIAMOND database once per run whatever the number of genomes, so its batches
+# are larger; CheckM's are the chunks of 1,000 it has always been run over.
+DEFAULT_CHECKM_BATCH_SIZE = 1000
+DEFAULT_CHECKM2_BATCH_SIZE = 5000
+
+# The genomes a batch left out, and why, and the same gathered for the release.
+NOT_ASSESSED_NAME = 'not_assessed.tsv'
+CHECKM_NOT_ASSESSED = 'checkm_not_assessed.tsv'
+CHECKM2_NOT_ASSESSED = 'checkm2_not_assessed.tsv'
+NOT_ASSESSED_HEADER = ('genome_id', 'reason', 'detail')
+REASON_NO_PROTEINS = 'no_protein_file'
+
+# Within a checkm batch: the proteins linked in for CheckM, what it writes, and
+# the three tables made from that, with the release file each is gathered into.
+# The alignment file has no header, so it is joined rather than concatenated.
+CHECKM_INPUT_DIR = 'input'
+CHECKM_OUTPUT_DIR = 'checkm'
+CHECKM_PROTEIN_EXT = 'faa.gz'
+CHECKM_TREE_QA = 'tree_qa.o2.tsv'
+CHECKM_QA = 'qa.tsv'
+CHECKM_PROFILE = 'profile.tsv'
+CHECKM_QA_SH100 = 'qa_sh100.tsv'
+CHECKM_ALIGNMENT = 'alignment_file.tsv'
+CHECKM_RELEASE_FILES = ((CHECKM_PROFILE, 'checkm.profiles.tsv'),
+                        (CHECKM_QA_SH100, 'checkm.qa_sh100.tsv'))
+CHECKM_RELEASE_ALIGNMENT = 'checkm.alignment_file.tsv'
+
+# Within a checkm2 batch: the proteins linked in, what CheckM2 wrote, and a
+# copy of its report beside the batch's other files. The input is beside the output rather than in
+# it, since --force empties the output directory before CheckM2 starts. A
+# genome is linked as <accession>.faa.gz: CheckM2 labels a genome with its
+# file's basename less '.faa.gz', which gives the report the accession alone
+# rather than prodigal's <accession>_protein.
+CHECKM2_INPUT_DIR = 'input'
+CHECKM2_OUTPUT_DIR = 'checkm2'
+CHECKM2_LINK_EXT = '.faa.gz'
+CHECKM2_REPORT = 'quality_report.tsv'
+CHECKM2_BATCH_REPORT = 'checkm2.quality_report.tsv'
+CHECKM2_RELEASE_REPORT = 'checkm2.quality_report.tsv'
+
+
+class BatchCounts(NamedTuple):
+    """What assessing one batch came to, recorded in its SUCCESS canary."""
+
+    assessed: int
+    not_assessed: int
+
+
+def accessions_rows(genome_report: str, all_genomes: bool = False) -> Optional[Set[str]]:
+    """The genomes whose quality is to be estimated, from the release report.
+
+    Parameters
+    ----------
+    genome_report : str
+        update_genomes report.log, or 'none' for every genome in the release.
+    all_genomes : bool
+        Every genome the release holds, not only those to regenerate.
+
+    @return: the accessions, or None for every genome of the genome_dirs file.
+    """
+
+    if genome_report.lower() == 'none':
+        return None
+
+    # --all asks for every genome the release HOLDS, not every row of the
+    # report: a removed genome, and one that could not be compared, have no
+    # directory to look in
+    if all_genomes:
+        return set(genomes_in_release(genome_report))
+
+    return set(genomes_to_regenerate(genome_report))
+
+
+def foreign_batches(out_dir: str, layout: BatchLayout) -> List[str]:
+    """Batch directories under an output directory that another command planned.
+
+    Parameters
+    ----------
+    out_dir : str
+        Output directory of the run.
+    layout : BatchLayout
+        What this command calls the files of its batches.
+
+    @return: names of the batch directories holding none of its batchfiles.
+    """
+
+    if not os.path.isdir(out_dir):
+        return []
+
+    return sorted(name for name in os.listdir(out_dir)
+                  if name.startswith(BATCH_DIR_PREFIX)
+                  and os.path.isdir(os.path.join(out_dir, name))
+                  and not os.path.exists(batchfile_path(os.path.join(out_dir, name), layout)))
+
+
+def checkm2_command(proteins: Sequence[str], out_dir: str,
+                    threads: int, tmp_dir: str) -> List[str]:
+    """The CheckM2 command run over the proteins of one batch.
+
+    No --ttable: CheckM2 ignores it when handed genes, the proteins having been
+    called under their table by prodigal already. The files are named on the command line,
+    not given as a directory: CheckM2 decompresses gzipped files only when they
+    are listed.
+
+    Parameters
+    ----------
+    proteins : sequence of str
+        Staged protein files, named for their accessions.
+    out_dir : str
+        Directory CheckM2 writes its report and intermediates to.
+    threads : int
+        Threads CheckM2 is given.
+    tmp_dir : str
+        Directory CheckM2 decompresses the proteins into.
+
+    @return: the command as a list of arguments, ready for subprocess.
+    """
+
+    # --input takes the rest of the command line, so it goes last
+    return [CHECKM2, 'predict',
+            '--genes',
+            '--threads', str(threads),
+            '--tmpdir', tmp_dir,
+            '--remove_intermediates',
+            '--force',
+            '--output-directory', out_dir,
+            '--input'] + list(proteins)
+
+
+def join_tables(tables: Sequence[str], path: str) -> None:
+    """Join CheckM tables on their first column, the bin, as checkm join_tables does.
+
+    Parameters
+    ----------
+    tables : sequence of str
+        Tab-separated tables with a header, the bin ID first.
+    path : str
+        File to write.
+
+    @return: None
+    """
+
+    headers = []
+    rows = defaultdict(dict)
+    bins = []
+    for table in tables:
+        with open(table) as handle:
+            header = [field.strip() for field in handle.readline().split('\t')][1:]
+            headers.append(header)
+            for line in handle:
+                fields = [field.strip() for field in line.split('\t')]
+                if fields[0] not in rows:
+                    bins.append(fields[0])
+                for name, value in zip(header, fields[1:]):
+                    rows[fields[0]][name] = value
+
+    with open(path, 'w') as handle:
+        handle.write('\t'.join(['Bin Id'] + [name for header in headers
+                                             for name in header]) + '\n')
+        for bin_id in bins:
+            handle.write('\t'.join([bin_id] + [rows[bin_id].get(name, '')
+                                               for header in headers
+                                               for name in header]) + '\n')
+
+
+class BatchedQuality(object):
+    """What checkm and checkm2 share: the batches, the claims, and the release files.
+
+    A subclass names its program and layout, the file a batch is planned
+    around, how a batch is assessed, and the batch tables concatenated into the
+    release's (RELEASE_TABLES, as (batch file, release file)).
+    """
+
+    PROGRAM = None
+    LAYOUT = None
+    RELEASE_TABLES = ()
+    NOT_ASSESSED_RELEASE = None
+
+    def __init__(self,
+                 cpus: int = 1,
+                 tmp_dir: str = '/tmp/',
+                 batch_size: int = DEFAULT_CHECKM_BATCH_SIZE,
+                 reclaim: bool = False,
+                 lease: float = CLAIM_LEASE_SECONDS,
+                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
+        """Initialization.
+
+        Parameters
+        ----------
+        cpus : int
+            Threads the program is given.
+        tmp_dir : str
+            Directory for the program's scratch files; no results are written here.
+        batch_size : int
+            Genomes per batch.
+        reclaim : bool
+            Take over a batch another machine holds before its claim has expired.
+        lease : float
+            Seconds a claim survives without the machine holding it saying so.
+        heartbeat : float
+            Seconds between this machine saying so about a batch of its own.
+
+        @return: None
+        """
+
+        check_dependencies([self.PROGRAM])
+
+        self.logger = logging.getLogger('timestamp')
+        self.version = record_program_version(self.PROGRAM)
+
+        self.cpus = cpus
+        self.tmp_dir = tmp_dir
+        self.batch_size = batch_size
+        self.reclaim = reclaim
+        self.lease = lease
+        self.heartbeat = heartbeat
+
+        # made here rather than by the first batch that wants it, so that a
+        # --tmp_dir that cannot be made is met before a batch is claimed
+        make_sure_path_exists(self.tmp_dir)
+
+    def genome_file(self, accession: str, genome_dir: str) -> str:
+        """The file a batch is planned around: what the program reads."""
+        raise NotImplementedError
+
+    def assess_batch(self, batch_dir: str, rows: Sequence[Tuple[str, str]]) -> int:
+        """Run the program over the genomes of a batch that have proteins.
+
+        @return: the number of genomes assessed.
+        """
+        raise NotImplementedError
+
+    def run(self,
+            gtdb_genome_path_file: str,
+            genome_report: str,
+            out_dir: str,
+            all_genomes: bool = False) -> bool:
+        """Estimate the quality of the genomes of a release, batch by batch.
+
+        Parameters
+        ----------
+        gtdb_genome_path_file : str
+            genome_dirs file of the release.
+        genome_report : str
+            update_genomes report.log, or 'none' for every genome in the release.
+        out_dir : str
+            Directory the batches and the release files are written to.
+        all_genomes : bool
+            Every genome the release holds, not only those to regenerate. It
+            decides what is planned, and so has no effect on batches already
+            planned.
+
+        @return: True where every batch this machine took finished, False where
+                 one failed and is left to a later run.
+        """
+
+        foreign = foreign_batches(out_dir, self.LAYOUT)
+        if foreign:
+            raise RuntimeError(
+                '{} holds {:,} batch director(ies) {} did not plan, e.g. {}; give '
+                'each command an --out_dir of its own.'.format(
+                    out_dir, len(foreign), self.PROGRAM, foreign[0]))
+
+        accessions = accessions_rows(genome_report, all_genomes)
+        if accessions is not None:
+            self.logger.info('The report names {:,} genome(s) to estimate the '
+                             'quality of.'.format(len(accessions)))
+        batches = plan_batches(gtdb_genome_path_file, out_dir, self.batch_size,
+                               self.LAYOUT, self.logger,
+                               genome_file=self.genome_file, accessions=accessions)
+
+        done, held, failed = 0, 0, 0
+        for index, batch_dir in enumerate(batches, start=1):
+            label = 'Batch {:,} of {:,} ({})'.format(
+                index, len(batches), os.path.basename(batch_dir))
+
+            if batch_state(batch_dir) == STATE_SUCCESS:
+                self.logger.info('{}: already finished, skipping.'.format(label))
+                continue
+
+            if not claim_batch(batch_dir, self.reclaim, self.lease):
+                owner = read_canary(os.path.join(batch_dir, RUNNING_CANARY))
+                held += 1
+                self.logger.info('{}: held by {} since {}, last heard from {}, '
+                                 'skipping.'.format(
+                                     label, owner.get('host', 'another machine'),
+                                     owner.get('time', 'an unknown time'),
+                                     age_phrase(claim_age(
+                                         os.path.join(batch_dir, RUNNING_CANARY)))))
+                continue
+
+            # the batch has its own log from here, since this is where anything
+            # happens to it and every machine of a run writes its own --log
+            with batch_log(batch_dir, self.logger, self.LAYOUT):
+                self.logger.info('{}: starting.'.format(label))
+                try:
+                    with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY),
+                                   self.heartbeat):
+                        counts = self.process_batch(batch_dir)
+                except KeyboardInterrupt:
+                    # the machine holding it is stopping, so the batch is handed
+                    # back rather than left to sit out its lease
+                    release_claim(batch_dir)
+                    self.logger.error('{}: interrupted; the claim is given up.'.format(label))
+                    raise
+                except Exception as exc:
+                    failed += 1
+                    fail_batch(batch_dir, str(exc))
+                    self.logger.error('{}: failed and will be retried by a later '
+                                      'run: {}'.format(label, exc))
+                    continue
+
+                finish_batch(batch_dir, assessed=counts.assessed,
+                             not_assessed=counts.not_assessed)
+                done += 1
+                self.logger.info('{}: done.'.format(label))
+
+        self.logger.info(
+            '{:,} batch(es) finished here, {:,} held by another machine, '
+            '{:,} failed.'.format(done, held, failed))
+
+        self.aggregate(batches, out_dir)
+
+        # a batch that failed has already said why, in its own log and in its
+        # FAILED file
+        if failed:
+            self.logger.error(
+                '{:,} batch(es) failed; they are the directories holding a FAILED '
+                'file and are retried by running the command again.'.format(failed))
+            return False
+
+        return True
+
+    def process_batch(self, batch_dir: str) -> BatchCounts:
+        """Assess one batch, and name the genomes it left out.
+
+        Parameters
+        ----------
+        batch_dir : str
+            Batch directory.
+
+        @return: what the batch came to, which run() records in its canary.
+        """
+
+        rows = read_batchfile(batchfile_path(batch_dir, self.LAYOUT))
+
+        # a genome whose file is not there has nothing to assess; it is named and
+        # left rather than stopping the rest of the batch
+        present, missing = split_by_fasta(rows, STAT_THREADS)
+        not_assessed = [(accession, REASON_NO_PROTEINS, '') for accession in missing]
+
+        assessed = self.assess_batch(batch_dir, present)
+
+        not_assessed.sort()
+        write_table(not_assessed, os.path.join(batch_dir, NOT_ASSESSED_NAME),
+                    header=NOT_ASSESSED_HEADER)
+        if not_assessed:
+            self.logger.warning(
+                'warning: {:,} genome(s) of this batch were not assessed: {}.'.format(
+                    len(not_assessed),
+                    '; '.join('{:,} {}'.format(count, reason)
+                              for reason, count in sorted(tally_reasons(
+                                  [(gid, reason) for gid, reason, _ in not_assessed]).items()))))
+
+        return BatchCounts(assessed=assessed, not_assessed=len(not_assessed))
+
+    def aggregate(self, batches: Sequence[str], out_dir: str) -> None:
+        """Write the release files from the batches, once every batch has succeeded.
+
+        As trans_table writes its own: written only once every batch has
+        succeeded, so that the files at the top of the output directory are
+        either the whole release or absent, and never a part of it that reads
+        like the whole; each table is the batches' own concatenated in batch
+        order under a single header; and whichever machine finishes last writes
+        them, having counted the release from every batch's SUCCESS canary.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run, in batch order.
+        out_dir : str
+            Directory the release files are written to.
+
+        @return: None
+        """
+
+        unfinished = [batch for batch in batches if batch_state(batch) != STATE_SUCCESS]
+        if unfinished:
+            self.logger.info(
+                '{:,} of {:,} batch(es) are done; the release files are written '
+                'once they all are.'.format(len(batches) - len(unfinished), len(batches)))
+            return
+
+        for batch_name, release_name in self.RELEASE_TABLES:
+            # a batch in which no genome could be assessed never ran the program
+            # and so has no table to add
+            path = os.path.join(out_dir, release_name)
+            written = concatenate([os.path.join(batch, batch_name) for batch in batches
+                                   if os.path.exists(os.path.join(batch, batch_name))],
+                                  path)
+            self.logger.info('Wrote {:,} rows to {}.'.format(written, path))
+
+        self.write_release(batches, out_dir)
+        self.report_not_assessed(batches, out_dir)
+
+        assessed = 0
+        for batch_dir in batches:
+            try:
+                assessed += int(read_canary(os.path.join(batch_dir, SUCCESS_CANARY))['assessed'])
+            except (KeyError, ValueError):
+                pass
+        self.logger.info('Release: {:,} genome(s) assessed with {}.'.format(
+            assessed, self.PROGRAM))
+
+    def write_release(self, batches: Sequence[str], out_dir: str) -> None:
+        """Write any release file that is not a table the batches' concatenate into.
+
+        @return: None
+        """
+
+    def report_not_assessed(self, batches: Sequence[str], out_dir: str) -> None:
+        """Name the genomes of the release that were not assessed, and why.
+
+        Each batch names its own in not_assessed.tsv; this is the one file that
+        says it for the release. It is written whether or not there are any, so
+        that a release with nothing left out says so rather than leaving the
+        question open.
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run.
+        out_dir : str
+            Directory the release files are written to.
+
+        @return: None
+        """
+
+        rows = []
+        for batch in batches:
+            with open(os.path.join(batch, NOT_ASSESSED_NAME)) as handle:
+                handle.readline()
+                rows.extend(tuple(line.rstrip('\n').split('\t'))
+                            for line in handle if line.strip())
+        rows.sort()
+
+        path = os.path.join(out_dir, self.NOT_ASSESSED_RELEASE)
+        write_table(rows, path, header=NOT_ASSESSED_HEADER)
+
+        if not rows:
+            self.logger.info('Every genome was assessed; wrote {} with no rows.'.format(path))
+            return
+
+        by_reason = tally_reasons([(row[0], row[1]) for row in rows])
+        self.logger.warning(
+            'warning: {:,} genome(s) of the release were not assessed and are named '
+            'in {}: {}.'.format(
+                len(rows), path,
+                '; '.join('{:,} {}'.format(count, reason)
+                          for reason, count in sorted(by_reason.items()))))
+
+    def run_program(self, cmd: Sequence[str]) -> None:
+        """Run one step of the program, failing the batch where it fails.
+
+        @return: None
+        """
+
+        self.logger.info('Command: {}'.format(' '.join(cmd[:12])
+                                              + (' ...' if len(cmd) > 12 else '')))
+        silent = getattr(self.logger, 'is_silent', False)
+        proc = subprocess.run(list(cmd),
+                              stdout=subprocess.DEVNULL if silent else None,
+                              stderr=subprocess.STDOUT if silent else None)
+        if proc.returncode != 0:
+            raise RuntimeError('{} {} returned exit code {}.'.format(
+                cmd[0], cmd[1], proc.returncode))
+
+
+class CheckM(BatchedQuality):
+    """CheckM over the Prodigal proteins of the genomes of a release."""
+
+    PROGRAM = CHECKM
+    LAYOUT = CHECKM_LAYOUT
+    RELEASE_TABLES = CHECKM_RELEASE_FILES
+    NOT_ASSESSED_RELEASE = CHECKM_NOT_ASSESSED
+
+    def genome_file(self, accession: str, genome_dir: str) -> str:
+        return protein_fasta(accession, genome_dir)
+
+    def assess_batch(self, batch_dir, rows):
+        # what an earlier attempt at the batch left is removed, so a retry
+        # starts from nothing rather than from a CheckM run stopped part-way
+        input_dir = os.path.join(batch_dir, CHECKM_INPUT_DIR)
+        output_dir = os.path.join(batch_dir, CHECKM_OUTPUT_DIR)
+        for path in [input_dir, output_dir] + [os.path.join(batch_dir, name) for name in (
+                CHECKM_TREE_QA, CHECKM_QA, CHECKM_PROFILE, CHECKM_QA_SH100, CHECKM_ALIGNMENT)]:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            elif os.path.exists(path):
+                os.remove(path)
+
+        if not rows:
+            return 0
+
+        # linked under the name prodigal gave them, which CheckM takes the bin ID
+        # from, so the tables name <accession>_protein as they always have
+        os.makedirs(input_dir)
+        for gene_file, _ in rows:
+            os.symlink(os.path.abspath(gene_file),
+                       os.path.join(input_dir, os.path.basename(gene_file)))
+
+        threads = str(self.cpus)
+        lineage_ms = os.path.join(output_dir, 'lineage.ms')
+        tree_qa = os.path.join(batch_dir, CHECKM_TREE_QA)
+        qa = os.path.join(batch_dir, CHECKM_QA)
+        self.run_program([CHECKM, 'lineage_wf', '--pplacer_threads', threads, '--genes',
+                          '-x', CHECKM_PROTEIN_EXT, '-t', threads, '--tmpdir', self.tmp_dir,
+                          input_dir, output_dir])
+        self.run_program([CHECKM, 'tree_qa', '-o', '2', '--tab_table', '-f', tree_qa,
+                          '--tmpdir', self.tmp_dir, output_dir])
+        self.run_program([CHECKM, 'qa', '-t', threads, '--tab_table', '-f', qa,
+                          '--tmpdir', self.tmp_dir, lineage_ms, output_dir])
+        join_tables([qa, tree_qa], os.path.join(batch_dir, CHECKM_PROFILE))
+        self.run_program([CHECKM, 'qa', '--aai_strain', '0.9999', '-t', threads,
+                          '-a', os.path.join(batch_dir, CHECKM_ALIGNMENT),
+                          '--tab_table', '-f', os.path.join(batch_dir, CHECKM_QA_SH100),
+                          '--tmpdir', self.tmp_dir, lineage_ms, output_dir])
+
+        shutil.rmtree(input_dir)
+        write_version_file(batch_dir, CHECKM, self.version)
+
+        return len(rows)
+
+    def write_release(self, batches, out_dir):
+        # the alignments have no header, and a blank line between genes that
+        # concatenate() would drop, so they are joined as they are
+        path = os.path.join(out_dir, CHECKM_RELEASE_ALIGNMENT)
+        with open(path, 'w') as out:
+            for batch in batches:
+                alignment = os.path.join(batch, CHECKM_ALIGNMENT)
+                if os.path.exists(alignment):
+                    with open(alignment) as handle:
+                        shutil.copyfileobj(handle, out)
+        self.logger.info('Wrote the alignments of multi-copy genes to {}.'.format(path))
+
+
+class CheckM2(BatchedQuality):
+    """CheckM2 over the Prodigal proteins of the genomes of a release."""
+
+    PROGRAM = CHECKM2
+    LAYOUT = CHECKM2_LAYOUT
+    RELEASE_TABLES = ((CHECKM2_BATCH_REPORT, CHECKM2_RELEASE_REPORT),)
+    NOT_ASSESSED_RELEASE = CHECKM2_NOT_ASSESSED
+
+    def genome_file(self, accession: str, genome_dir: str) -> str:
+        return protein_fasta(accession, genome_dir)
+
+    def assess_batch(self, batch_dir, rows):
+        # what an earlier attempt at the batch left is removed first
+        input_dir = os.path.join(batch_dir, CHECKM2_INPUT_DIR)
+        output_dir = os.path.join(batch_dir, CHECKM2_OUTPUT_DIR)
+        batch_report = os.path.join(batch_dir, CHECKM2_BATCH_REPORT)
+        for path in (input_dir, output_dir):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+        if os.path.exists(batch_report):
+            os.remove(batch_report)
+
+        if not rows:
+            return 0
+
+        os.makedirs(input_dir)
+        links = []
+        for gene_file, accession in rows:
+            link = os.path.join(input_dir, accession + CHECKM2_LINK_EXT)
+            os.symlink(os.path.abspath(gene_file), link)
+            links.append(link)
+
+        self.run_program(checkm2_command(links, output_dir, self.cpus, self.tmp_dir))
+
+        # CheckM2 writes its report last, so a run that exited cleanly without
+        # one did not finish
+        report = os.path.join(output_dir, CHECKM2_REPORT)
+        if not os.path.exists(report):
+            raise RuntimeError('{} wrote no {}.'.format(CHECKM2, CHECKM2_REPORT))
+
+        shutil.copyfile(report, batch_report)
+        shutil.rmtree(input_dir)
+        write_version_file(batch_dir, CHECKM2, self.version)
+
+        return len(rows)
 
 class CheckMManager(object):
-    """Apply CheckM to a large set of genomes.
-
-    This script assumes that genomes are stored in individual
-    directories in the following format:
-
-    <domain>/<genome_id>/<assembly_id>/<assembly_id>_protein.faa
-
-    where <domain> is either 'archaea' or 'bacteria', and there
-      may be multiple assembly_id for a given genome_id. These
-      typically represent different strains from a species.
-
-    This is the directory structure which results from extract_ncbi.py.
-    """
+    """Joining and preparing CheckM and CheckM2 results between releases."""
 
     def __init__(self,cpus=1):
         """Initialization."""
         self.cpus = cpus
         self.logger = logging.getLogger('timestamp')
-
-
-    def run_checkm(self, gtdb_genome_path_file, genome_report, output_dir, all_genomes=False):
-        """Applying CheckM to genomes."""
-
-        tmp_dir = os.path.join(output_dir, 'genome_chunks')
-
-        checkm_version = record_program_version(CHECKM)
-
-        if all_genomes:
-            self.logger.info('Processing all genomes.')
-
-        if not os.path.exists(tmp_dir):
-            # get list of genomes to consider
-            genomes_to_consider = None
-            if genome_report.lower() != 'none':
-                # --all_genomes asks for every genome the release HOLDS, not every
-                # row of the report: a removed genome, and one that could not be
-                # compared, have no directory to look in
-                if all_genomes:
-                    genomes_to_consider = genomes_in_release(genome_report)
-                else:
-                    genomes_to_consider = genomes_to_regenerate(genome_report)
-
-                self.logger.info('Identified {} genomes to estimate the quality of.'.format(
-                    len(genomes_to_consider)))
-
-            # determine gene files
-            gene_files = []
-
-            genome_paths = {}
-            for line in open(gtdb_genome_path_file):
-                line_split = line.strip().split('\t')
-                genome_paths[line_split[0]] = line_split[1]
-
-            # without a report there is nothing to narrow the release down by, so
-            # every genome it holds a path for is considered
-            if genomes_to_consider is None:
-                genomes_to_consider = set(genome_paths)
-
-            for gid in genomes_to_consider:
-                gpath = genome_paths[gid]
-                gene_file = os.path.join(gpath, 'prodigal', gid + '_protein.faa.gz')
-                gene_files.append(gene_file)
-
-            print('  Identified %d gene files.' % len(gene_files))
-
-            # copy genomes in batches of 1000
-            print('Partitioning genomes into chunks of 1000.')
-            num_chunks = 0
-            for i, gene_file in enumerate(gene_files):
-                if i % 1000 == 0:
-                    chunk_dir = os.path.join(tmp_dir, 'chunk%d' % num_chunks)
-                    print(chunk_dir)
-                    os.makedirs(chunk_dir)
-                    num_chunks += 1
-
-                #shutil.copy(gene_file, os.path.join(chunk_dir, ntpath.basename(gene_file)))
-                os.system('ln -s %s %s' % (os.path.abspath(gene_file),
-                                           os.path.join(chunk_dir, ntpath.basename(gene_file))))
-        else:
-            # just determine number of "chunk" directories
-            self.logger.info(f'{output_dir}Output directory does exist.')
-            num_chunks = 0
-            for d in os.listdir(tmp_dir):
-                if 'chunk' in d:
-                    num_chunks += 1
-
-        # apply CheckM to each set of 1000 genomes
-        print('Running CheckM on chunks:')
-        for i in range(0, num_chunks):
-            print('  Processing chunk %d of %d.' % (i + 1, num_chunks))
-
-            bin_dir = os.path.join(tmp_dir, 'chunk%d' % i)
-            checkm_output_dir = os.path.join(output_dir, 'chunk%d' % i)
-            if os.path.exists(checkm_output_dir):
-                continue
-
-            os.makedirs(checkm_output_dir)
-            # check if all genomes in bin_dir are nucleotide or amino acid
-            binFiles = self.binFiles(
-                bin_dir,'gz')
-
-            #self.checkProteinSeqs(binFiles)
-
-
-            os.system('checkm lineage_wf --pplacer_threads %d --genes -x faa.gz -t %d %s %s' %
-                      (self.cpus, self.cpus, bin_dir, checkm_output_dir))
-
-            tree_qa_file = os.path.join(
-                checkm_output_dir, 'tree_qa.o2.chunk%d.tsv' % i)
-            os.system('checkm tree_qa -o 2 --tab_table -f %s %s' %
-                      (tree_qa_file, checkm_output_dir))
-
-            qa_file = os.path.join(checkm_output_dir, 'qa.chunk%d.tsv' % i)
-            os.system('checkm qa -t %d --tab_table -f %s %s %s' % (self.cpus, qa_file,
-                                                                   os.path.join(checkm_output_dir, 'lineage.ms'), checkm_output_dir))
-
-            profile_file = os.path.join(
-                checkm_output_dir, 'profile.chunk%d.tsv' % i)
-            # os.system('checkm join_tables -f %s %s %s' %
-            #           (profile_file,qa_file, tree_qa_file)
-            self.joinTables([qa_file, tree_qa_file],profile_file)
-
-            qa_file_sh100 = os.path.join(
-                checkm_output_dir, 'qa_sh100.chunk%d.tsv' % i)
-            alignment_file = os.path.join(
-                checkm_output_dir, 'alignment_file.chunk%d.tsv' % i)
-            os.system('checkm qa --aai_strain 0.9999 -t %d -a %s --tab_table -f %s %s %s' % (self.cpus,
-                                                                                             alignment_file, qa_file_sh100, os.path.join(checkm_output_dir, 'lineage.ms'), checkm_output_dir))
-
-            # per chunk, since a chunk already there is skipped above and may
-            # have been made by an earlier run with another CheckM
-            write_version_file(checkm_output_dir, CHECKM, checkm_version)
-
-        # create single file with CheckM results
-        print('Creating single file with CheckM results.')
-        checkm_output = os.path.join(output_dir, 'checkm.profiles.tsv')
-        fout = open(checkm_output, 'w')
-        for i in range(0, num_chunks):
-            profile_file = os.path.join(
-                output_dir, 'chunk%d' % i, 'profile.chunk%d.tsv' % i)
-            with open(profile_file) as f:
-                if i != 0:
-                    f.readline()
-
-                for line in f:
-                    fout.write(line)
-        fout.close()
-
-        # create single file with CheckM strain heterogeneity results at 100%
-        print('Creating single file with CheckM results.')
-        checkm_output = os.path.join(output_dir, 'checkm.qa_sh100.tsv')
-        fout = open(checkm_output, 'w')
-        for i in range(0, num_chunks):
-            qa_file = os.path.join(output_dir, 'chunk%d' %
-                                   i, 'qa_sh100.chunk%d.tsv' % i)
-            with open(qa_file) as f:
-                if i != 0:
-                    f.readline()
-
-                for line in f:
-                    fout.write(line)
-        fout.close()
-
-        # create single file with CheckM alignments for multi-copy genes
-        print('Creating single file with CheckM results.')
-        checkm_output = os.path.join(output_dir, 'checkm.alignment_file.tsv')
-        fout = open(checkm_output, 'w')
-        for i in range(0, num_chunks):
-            align_file = os.path.join(
-                output_dir, 'chunk%d' % i, 'alignment_file.chunk%d.tsv' % i)
-            with open(align_file) as f:
-                for line in f:
-                    fout.write(line)
-        fout.close()
-
-        print('CheckM results written to: %s' % checkm_output)
-
-
-    def checkProteinSeqs(self,seq_files):
-        """Check if files contain sequences in amino acid space.
-
-        Parameters
-        ----------
-        seq_files : iterable
-            Sequence files to check.
-
-        Returns
-        -------
-        boolean
-            True if files can be treated as containing amino acid sequences.
-        """
-
-        for seq_file in seq_files:
-            if os.stat(seq_file).st_size == 0:
-                continue
-
-            if self.isNucleotide(seq_file):
-                logger = logging.getLogger('timestamp')
-                logger.warning(
-                    'File %s appears to contain nucleotide sequences. We delete the file from the input directory' % seq_file)
-                os.remove(seq_file)
-
-        return True
-
-    def isNucleotide(self,seq_file, req_perc=0.9, max_seqs_to_read=10):
-        """Check if a file contains sequences in nucleotide space.
-
-        The check is performed by looking for the characters in
-        {a,c,g,t,n,.,-} and confirming that these comprise the
-        majority of a sequences. A set number of sequences are
-        read and the file assumed to be not be in nucleotide space
-        if none of these sequences are comprised primarily of the
-        defined nucleotide set.
-
-        Parameters
-        ----------
-        seq_file : str
-            Name of fasta/q file to read.
-        req_perc : float
-            Percentage of bases in {a,c,g,t,n,.,-} before
-            declaring the sequences as being in nucleotide
-            space.
-        max_seqs_to_read : int
-            Maximum sequences to read before declaring
-            sequence file to not be in nucleotide space.
-
-        Returns
-        -------
-        boolean
-            True is sequences are in nucleotide space, or file
-            contains no sequences.
-
-        """
-
-        nucleotide_bases = {'a', 'c', 'g', 't'}
-        insertion_bases = {'-', '.'}
-
-        seqs = read_fasta(seq_file)
-        if len(seqs) == 0:
-            return True
-
-        seq_count = 0
-        for _seq_id, seq in seqs.items():
-            seq = seq.lower()
-
-            nt_bases = 0
-            for c in (nucleotide_bases | {'n'} | insertion_bases):
-                nt_bases += seq.count(c)
-
-            if float(nt_bases) / len(seq) >= req_perc:
-                return True
-
-            seq_count += 1
-            if seq_count == max_seqs_to_read:
-                break
-
-        return False
-
-    def binFiles(self, binInput, binExtension):
-        binFiles = []
-        binIDs = set()
-        isInputDir = True
-        if binInput is not None:
-            if os.path.isdir(binInput):
-                if binExtension[0] != '.':
-                    binExtension = '.' + binExtension
-
-                all_files = os.listdir(binInput)
-                for f in all_files:
-                    if f.endswith(binExtension):
-                        binFile = os.path.join(binInput, f)
-                        if os.stat(binFile).st_size == 0:
-                            self.logger.warning(
-                                "Skipping bin %s as it has a size of 0 bytes." % f)
-                        else:
-                            binFiles.append(binFile)
-                            binIDs.add(os.path.basename(binFile))
-            else:
-                with open(binInput, "r") as oh:
-                    for line in oh:
-                        files = line.strip().split("\t")
-                        binFile = files[1]
-                        if not os.path.exists(binFile):
-                            self.logger.warning(
-                                "Skipping bin %s as it doesn't exists." % binFile)
-                        elif os.stat(binFile).st_size == 0:
-                            self.logger.warning(
-                                "Skipping bin %s as it has a size of 0 bytes." % binFile)
-                        else:
-                            binFiles.append(binFile)
-                            binIDs.add(os.path.basename(binFile))
-
-        if not binFiles:
-            if isInputDir:
-                self.logger.error(
-                    "No bins found. Check the extension (-x) used to identify bins.")
-            else:
-                self.logger.error(
-                    "No bins found. Check the bins input table to verify bins exists.")
-            sys.exit(1)
-
-        if len(binIDs) != len(binFiles):
-            self.logger.error(
-                "There are redundant bin IDs, please check and update.")
-            sys.exit(1)
-
-        return sorted(binFiles)
-
-    def joinTables(self, check_tables,check_file):
-        self.logger.info('Joining tables containing bin information.')
-
-        # read all tables
-        headers = {}
-        rows = defaultdict(dict)
-        binIds = set()
-        for f in check_tables:
-            with open(f) as fin:
-                headers[f] = [x.strip() for x in fin.readline().split('\t')][1:]
-
-                for line in fin:
-                    lineSplit = [x.strip() for x in line.split('\t')]
-
-                    binId = lineSplit[0]
-                    binIds.add(binId)
-
-                    for i, header in enumerate(headers[f]):
-                        rows[binId][header] = lineSplit[i + 1]
-
-        # write merge table
-        oldStdOut = self.reassignStdOut(check_file)
-
-        row = 'Bin Id'
-        for f in check_tables:
-            row += '\t' + '\t'.join(headers[f])
-        print(row)
-
-        for binId in binIds:
-            row = binId
-            for f in check_tables:
-                for header in headers[f]:
-                    row += '\t' + rows[binId].get(header, '')
-            print(row)
-
-        self.restoreStdOut(check_file, oldStdOut)
-
-        if check_file:
-            self.logger.info('\n  Joined table written to: ' + check_file)
-
-    def reassignStdOut(self,outFile):
-        """Redirect standard out to a file."""
-        oldStdOut = sys.stdout
-        if(outFile != ''):
-            try:
-                # redirect stdout to a file
-                sys.stdout = open(outFile, 'w')
-            except:
-                logger = logging.getLogger()
-                logger.error("   [Error] Error diverting stdout to file: " + outFile)
-                sys.exit(1)
-
-        return oldStdOut
-
-
-    def restoreStdOut(self,outFile, oldStdOut):
-        """Redirect standard out back to system standard out."""
-        if(outFile != ''):
-            try:
-                # redirect stdout to a file
-                sys.stdout.close()
-                sys.stdout = oldStdOut
-            except:
-                logger = logging.getLogger()
-                logger.error("   [Error] Error restoring stdout ", outFile)
-                sys.exit(1)
 
     def uniq(self,seq):
         seen = set()

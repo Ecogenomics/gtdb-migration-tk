@@ -76,7 +76,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import (Callable, Dict, Iterator, List, NamedTuple, Optional,
+from typing import (Callable, Collection, Dict, Iterator, List, NamedTuple, Optional,
                     Sequence, Tuple, TypeVar)
 
 from tqdm import tqdm
@@ -1010,13 +1010,22 @@ def plan_batches(gtdb_genome_path_file: str,
              batch_size: int,
              layout: BatchLayout,
              logger: logging.Logger,
-             genome_file: Callable[[str, str], str] = genome_fasta_of) -> List[str]:
+             genome_file: Callable[[str, str], str] = genome_fasta_of,
+             accessions: Optional[Collection[str]] = None) -> List[str]:
     """Settle which genomes are in which batch, once for every machine.
 
     A plan already under the output directory is used as it stands. It is what
     another machine is working from and what the finished batches were cut
     from, and partitioning a release again that has since gained or lost a
     genome would move genomes between batches that are already done.
+
+    A command whose results live in its batches rather than in the genome
+    directories, and which works on only some genomes of the release -- checkm
+    and checkm2, over the genomes the release report says are to be
+    regenerated -- names them in accessions, so that a batch is cut from the
+    genomes it will work on and its size is the size of its work. A command that
+    decides genome by genome inside a batch whether there is work to do leaves
+    it None.
 
     Parameters
     ----------
@@ -1033,6 +1042,8 @@ def plan_batches(gtdb_genome_path_file: str,
     genome_file : callable
         (accession, genome directory) to the file the work reads, which becomes
         the first column of the batchfile. The default is the genomic FASTA.
+    accessions : collection of str
+        The only genomes of the genome_dirs file to plan, or None for all of them.
 
     @return: paths of the batch directories, in batch order.
     """
@@ -1048,6 +1059,11 @@ def plan_batches(gtdb_genome_path_file: str,
     genomes = read_genome_dirs(gtdb_genome_path_file)
     logger.info('Read {:,} genomes from {}.'.format(
         len(genomes), gtdb_genome_path_file))
+
+    if accessions is not None:
+        wanted = set(accessions)
+        genomes = [genome for genome in genomes if genome[0] in wanted]
+        logger.info('Planning the {:,} of them to be worked on.'.format(len(genomes)))
 
     # sorted so that which genomes are in batch N follows from the set of
     # genomes, and not from the order the genome_dirs file was written in

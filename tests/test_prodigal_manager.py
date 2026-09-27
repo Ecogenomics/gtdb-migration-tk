@@ -318,6 +318,23 @@ class TranslationTableHandoverTests(TempDirCase):
 
 # ------------------------------------------------------ what each genome records
 
+class TmpDirTests(TempDirCase):
+    """A --tmp_dir that is not there yet is made, not met by every worker."""
+
+    def test_a_tmp_dir_that_does_not_exist_is_made(self):
+        tmp_dir = os.path.join(self.dir, 'not', 'there', 'yet')
+        P.ProdigalManager(tmp_dir)
+        self.assertTrue(os.path.isdir(tmp_dir))
+
+    def test_genes_are_called_with_a_tmp_dir_that_did_not_exist(self):
+        one = self.genome('GCF_000000001.1')
+        tmp_dir = os.path.join(self.dir, 'fresh_tmp')
+        self.assertTrue(P.ProdigalManager(tmp_dir).run(
+            self.genome_dirs(one), self.summary(('GCF_000000001.1', '11')),
+            self.out_dir))
+        self.assertEqual(StubProdigal.genomes_called(), ['GCF_000000001.1'])
+
+
 class ProdigalVersionTests(TempDirCase):
     """The version that called a genome's genes is recorded beside them, since
     the proteins outlive the run that made them."""
