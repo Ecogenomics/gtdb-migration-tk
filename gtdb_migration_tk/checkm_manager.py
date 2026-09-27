@@ -64,6 +64,13 @@ A genome with no protein file, or an empty one, is named in
 the batch's not_assessed.tsv, gathered into checkm_not_assessed.tsv or
 checkm2_not_assessed.tsv for the release, and left; the program is run over the
 rest. The program failing fails the batch, which the next run repeats.
+
+A genome larger than --max_genome_size is named and left too, as trnascan,
+rna_silva and rna_ltp leave one: it is a metagenome deposited as one genome,
+whose completeness and contamination say nothing about any one organism. It is sized when its batch is assessed rather than when the batches are
+planned, so that a limit given to a run over batches already planned applies to
+them. A batch that finishes without it is done, and a larger limit does not go
+back to it: the genome is assessed later by removing that batch's SUCCESS.
 """
 
 import logging
@@ -84,12 +91,14 @@ from gtdb_migration_tk.batching import (BATCH_DIR_PREFIX, CLAIM_LEASE_SECONDS, H
                                         fail_batch, finish_batch,
                                         plan_batches, read_batchfile, read_canary,
                                         release_claim, split_by_fasta,
-                                        tally_reasons, write_table)
+                                        split_by_genome_size, tally_reasons,
+                                        write_table)
 from gtdb_migration_tk.biolib_lite.common import get_num_lines, make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.update_genomes import (genomes_in_release,
                                              genomes_to_regenerate)
-from gtdb_migration_tk.utils.common import (protein_fasta,
+from gtdb_migration_tk.utils.common import (DEFAULT_MAX_GENOME_SIZE, MBP,
+                                            protein_fasta,
                                             record_program_version,
                                             write_version_file)
 
@@ -109,12 +118,18 @@ CHECKM2_LAYOUT = BatchLayout(batchfiles=('checkm2_batchfile.tsv.gz',), log='chec
 DEFAULT_CHECKM_BATCH_SIZE = 1000
 DEFAULT_CHECKM2_BATCH_SIZE = 5000
 
+# The most threads pplacer is given, whatever --cpus says. pplacer runs badly
+# on more than 64, so a machine given -c 96 runs the rest of CheckM on 96 and
+# places the genomes in the tree on 64.
+PPLACER_MAX_THREADS = 64
+
 # The genomes a batch left out, and why, and the same gathered for the release.
 NOT_ASSESSED_NAME = 'not_assessed.tsv'
 CHECKM_NOT_ASSESSED = 'checkm_not_assessed.tsv'
 CHECKM2_NOT_ASSESSED = 'checkm2_not_assessed.tsv'
 NOT_ASSESSED_HEADER = ('genome_id', 'reason', 'detail')
 REASON_NO_PROTEINS = 'no_protein_file'
+REASON_GENOME_TOO_LARGE = 'genome_too_large'
 
 # Within a checkm batch: the proteins linked in for CheckM, what it writes, and
 # the three tables made from that, with the release file each is gathered into.
@@ -288,7 +303,8 @@ class BatchedQuality(object):
                  batch_size: int = DEFAULT_CHECKM_BATCH_SIZE,
                  reclaim: bool = False,
                  lease: float = CLAIM_LEASE_SECONDS,
-                 heartbeat: float = HEARTBEAT_SECONDS) -> None:
+                 heartbeat: float = HEARTBEAT_SECONDS,
+                 max_genome_size: float = DEFAULT_MAX_GENOME_SIZE) -> None:
         """Initialization.
 
         Parameters
@@ -305,6 +321,8 @@ class BatchedQuality(object):
             Seconds a claim survives without the machine holding it saying so.
         heartbeat : float
             Seconds between this machine saying so about a batch of its own.
+        max_genome_size : float
+            Largest genome assembly assessed, in Mbp.
 
         @return: None
         """
@@ -320,6 +338,7 @@ class BatchedQuality(object):
         self.reclaim = reclaim
         self.lease = lease
         self.heartbeat = heartbeat
+        self.max_genome_bases = int(max_genome_size * MBP)
 
         # made here rather than by the first batch that wants it, so that a
         # --tmp_dir that cannot be made is met before a batch is claimed
@@ -454,6 +473,13 @@ class BatchedQuality(object):
         # left rather than stopping the rest of the batch
         present, missing = split_by_fasta(rows, STAT_THREADS)
         not_assessed = [(accession, REASON_NO_PROTEINS, '') for accession in missing]
+
+        # a batch's file is <genome dir>/prodigal/<accession>_protein.faa.gz
+        present, too_large = split_by_genome_size(
+            present, lambda row: os.path.dirname(os.path.dirname(row[0])),
+            self.max_genome_bases, self.logger, STAT_THREADS)
+        not_assessed.extend((accession, REASON_GENOME_TOO_LARGE, str(size))
+                            for (_, accession), size in too_large)
 
         assessed = self.assess_batch(batch_dir, present)
 
@@ -616,10 +642,11 @@ class CheckM(BatchedQuality):
                        os.path.join(input_dir, os.path.basename(gene_file)))
 
         threads = str(self.cpus)
+        pplacer_threads = str(min(self.cpus, PPLACER_MAX_THREADS))
         lineage_ms = os.path.join(output_dir, 'lineage.ms')
         tree_qa = os.path.join(batch_dir, CHECKM_TREE_QA)
         qa = os.path.join(batch_dir, CHECKM_QA)
-        self.run_program([CHECKM, 'lineage_wf', '--pplacer_threads', threads, '--genes',
+        self.run_program([CHECKM, 'lineage_wf', '--pplacer_threads', pplacer_threads, '--genes',
                           '-x', CHECKM_PROTEIN_EXT, '-t', threads, '--tmpdir', self.tmp_dir,
                           input_dir, output_dir])
         self.run_program([CHECKM, 'tree_qa', '-o', '2', '--tab_table', '-f', tree_qa,

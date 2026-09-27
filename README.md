@@ -919,6 +919,17 @@ no genome could be assessed adds no rows.
 | `reason` | |
 | --- | --- |
 | `no_protein_file` | the genome has no `prodigal/<accession>_protein.faa.gz`, or it is empty |
+| `genome_too_large` | the assembly is larger than `--max_genome_size`, as for `trnascan`; `detail` is its size in bases |
+
+A genome larger than `--max_genome_size` (100 Mbp by default, as for
+`select_genomes`) is sized when its batch is assessed, not when the batches are
+planned, so the limit applies to a plan made before it. A batch that finishes
+without such a genome is done: to assess it later under a larger limit, remove
+that batch's `SUCCESS`.
+
+`checkm` gives pplacer at most 64 threads, whatever `--cpus` says, since pplacer
+runs badly on more than 64; the rest of CheckM is given all of them, so `-c 96`
+runs CheckM on 96 and pplacer on 64.
 
 CheckM or CheckM2 exiting non-zero fails the batch, which the next run repeats.
 Both programs put a Unix socket under `--tmp_dir`, and a socket path is limited

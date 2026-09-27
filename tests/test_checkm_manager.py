@@ -23,6 +23,7 @@ import unittest
 from gtdb_migration_tk import checkm_manager as M
 from gtdb_migration_tk.batching import (FAILED_CANARY, SUCCESS_CANARY,
                                         batchfile_path, read_batchfile)
+from gtdb_migration_tk.ncbi_utils import assembly_stats
 from gtdb_migration_tk.update_genomes import (STATUS_FASTA_CHANGED,
                                               STATUS_FASTA_UNCHANGED, STATUS_NEW,
                                               STATUS_REMOVED,
@@ -141,9 +142,10 @@ class TempDirCase(unittest.TestCase):
                 for _, accession in read_batchfile(batchfile_path(
                     os.path.join(self.out, name), layout))]
 
-    def command(self, program, dirs, report, cpus=1, batch_size=10, all_genomes=False):
+    def command(self, program, dirs, report, cpus=1, batch_size=10, all_genomes=False,
+                **kwargs):
         manager = program(cpus=cpus, tmp_dir=self.tmp, batch_size=batch_size,
-                          heartbeat=3600)
+                          heartbeat=3600, **kwargs)
         return manager.run(dirs, report, self.out, all_genomes)
 
     def table(self, name):
@@ -168,6 +170,9 @@ class TempDirCase(unittest.TestCase):
 
     def batch(self, number):
         return os.path.join(self.out, 'batch_{:06d}'.format(number))
+
+    def genome_dir(self, gid):
+        return os.path.join(self.dir, 'genomes', gid + '_ASM1v1')
 
 
 class ChoosingTheGenomes(TempDirCase):
@@ -331,6 +336,21 @@ class RunningCheckM(TempDirCase):
         self.assertEqual(args[args.index('-t') + 1], '3')
         self.assertEqual(args[args.index('--tmpdir') + 1], self.tmp)
 
+    def test_pplacer_is_given_the_cpus_up_to_64_and_the_rest_of_checkm_all_of_them(self):
+        dirs, report = self.release({'GCA_000000001.1': STATUS_NEW})
+        for cpus, pplacer in ((8, '8'), (64, '64'), (96, '64')):
+            # each a run of its own, from nothing
+            shutil.rmtree(self.out, True)
+            if os.path.exists(self.calls):
+                os.remove(self.calls)
+            self.assertTrue(self.run_checkm(dirs, report, cpus=cpus))
+
+            [args] = self.calls_of('lineage_wf')
+            self.assertEqual(args[args.index('--pplacer_threads') + 1], pplacer)
+            self.assertEqual(args[args.index('-t') + 1], str(cpus))
+            for qa in self.calls_of('qa'):
+                self.assertEqual(qa[qa.index('-t') + 1], str(cpus))
+
     def test_the_profile_joins_qa_and_tree_qa_for_each_genome(self):
         dirs, report = self.release({'GCA_000000001.1': STATUS_NEW,
                                      'GCA_000000002.1': STATUS_FASTA_UNCHANGED,
@@ -420,6 +440,75 @@ class RunningCheckM(TempDirCase):
         with self.assertRaises(RuntimeError):
             self.command(M.CheckM2, dirs, report)
         self.assertEqual(self.calls_of('predict'), [])
+
+
+
+# ------------------------------------------------------------ a genome too large
+
+# GCA_964261755.1, a faecal metagenome deposited as one genome
+METAGENOME_BASES = 9528631298
+
+
+class AGenomeTooLargeToAssess(TempDirCase):
+    """Named and left, rather than failing its batch on every machine that takes it."""
+
+    SMALL, LARGE = 'GCA_000000001.1', 'GCA_000000002.1'
+
+    def release_with_a_metagenome(self):
+        dirs, report = self.release({self.SMALL: STATUS_NEW, self.LARGE: STATUS_NEW})
+        with open(assembly_stats(self.genome_dir(self.LARGE)), 'w') as handle:
+            handle.write('all\tall\tall\tall\ttotal-length\t{}\n'.format(METAGENOME_BASES))
+        return dirs, report
+
+    def test_checkm_is_not_handed_it_and_the_release_names_it(self):
+        dirs, report = self.release_with_a_metagenome()
+        self.assertTrue(self.command(M.CheckM, dirs, report))
+
+        self.assertEqual(self.first_column('checkm.profiles.tsv'), [self.SMALL + '_protein'])
+        self.assertEqual(self.not_assessed(M.CHECKM_NOT_ASSESSED),
+                         {self.LARGE: M.REASON_GENOME_TOO_LARGE})
+
+    def test_checkm2_is_not_handed_it_and_the_release_names_it(self):
+        dirs, report = self.release_with_a_metagenome()
+        self.assertTrue(self.command(M.CheckM2, dirs, report))
+
+        self.assertEqual(self.first_column(M.CHECKM2_RELEASE_REPORT), [self.SMALL])
+        self.assertEqual(self.not_assessed(M.CHECKM2_NOT_ASSESSED),
+                         {self.LARGE: M.REASON_GENOME_TOO_LARGE})
+
+    def test_its_size_in_bases_is_the_detail(self):
+        dirs, report = self.release_with_a_metagenome()
+        self.command(M.CheckM, dirs, report)
+
+        _, rows = self.table(M.CHECKM_NOT_ASSESSED)
+        self.assertEqual(rows, [[self.LARGE, M.REASON_GENOME_TOO_LARGE, str(METAGENOME_BASES)]])
+
+    def test_the_limit_is_the_one_given(self):
+        dirs, report = self.release_with_a_metagenome()
+        self.command(M.CheckM, dirs, report, max_genome_size=10000)
+
+        self.assertEqual(self.first_column('checkm.profiles.tsv'),
+                         [self.SMALL + '_protein', self.LARGE + '_protein'])
+        self.assertEqual(self.not_assessed(M.CHECKM_NOT_ASSESSED), {})
+
+    def test_it_is_planned_so_a_limit_applies_to_batches_already_planned(self):
+        """r237's batches were planned before there was a limit."""
+        dirs, report = self.release_with_a_metagenome()
+        self.command(M.CheckM, dirs, report)
+
+        self.assertEqual(self.planned(M.CHECKM_LAYOUT), [self.SMALL, self.LARGE])
+
+    def test_a_batch_of_nothing_but_it_runs_no_checkm_and_succeeds(self):
+        dirs, report = self.release_with_a_metagenome()
+        self.assertTrue(self.command(M.CheckM, dirs, report, batch_size=1))
+
+        self.assertEqual(len(self.calls_of('lineage_wf')), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.batch(2), SUCCESS_CANARY)))
+
+    def test_the_default_limit_is_the_one_select_genomes_has(self):
+        for program in (M.CheckM, M.CheckM2):
+            manager = program(tmp_dir=self.tmp)
+            self.assertEqual(manager.max_genome_bases, 100 * 1000 * 1000)
 
 
 if __name__ == '__main__':

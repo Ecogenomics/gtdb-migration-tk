@@ -956,6 +956,7 @@ def get_main_parser():
             __reclaim(grp)
             __lease(grp)
             __all_genomes(grp)
+            __max_genome_size(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'checkm2',
@@ -972,6 +973,7 @@ def get_main_parser():
             __reclaim(grp)
             __lease(grp)
             __all_genomes(grp)
+            __max_genome_size(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'busco', 'Estimate quality of new fungal genomes.') as parser:

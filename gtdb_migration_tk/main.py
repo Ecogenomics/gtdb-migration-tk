@@ -316,7 +316,8 @@ class OptionsParser():
                     options.tmp_dir,
                     options.batch_size,
                     options.reclaim,
-                    options.lease * 60 * 60)
+                    options.lease * 60 * 60,
+                    max_genome_size=options.max_genome_size)
         p.run(options.gtdb_genome_path_file,
               options.report,
               options.output_dir,
