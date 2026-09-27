@@ -121,6 +121,16 @@ and a TIGRFAM batch cover the same genomes and are different work; sharing a
 directory would have one's `SUCCESS` tell the other it had nothing to do. The
 suffix is in the path for the same reason.
 
+`checkm` and `checkm2` are the batched commands whose results live in their
+batches rather than in the genome directories, so nothing beside a genome says it
+was assessed. They decide the genomes once, from `--report`, and plan only those
+(`plan_batches(accessions=...)`), in `--out_dir` itself, each command being given
+its own: one holding batches another command planned is refused
+(`foreign_batches()`). Their release files are the batches' concatenated, as
+`trans_table`'s are.
+Both are handed prodigal's proteins (`--genes`) and take them as correct; neither
+takes a translation table.
+
 ### `ncbi_genome_sync.py` is deliberately self-contained
 
 It is a standalone script grafted onto the toolkit. It owns its argparse via

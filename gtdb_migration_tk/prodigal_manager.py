@@ -21,6 +21,7 @@ from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS,
                                         split_by_fasta, tally_reasons,
                                         write_table)
 from gtdb_migration_tk.biolib_lite.checksum import sha256_rb
+from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.biolib_lite.external.prodigal import Prodigal, ProdigalTask
 from gtdb_migration_tk.ncbi_utils import GENOMIC_FASTA_EXT
@@ -223,6 +224,11 @@ class ProdigalManager(object):
 
         self.logger = logging.getLogger('timestamp')
         self.version = record_program_version(PRODIGAL)
+
+        # made here rather than left to the first worker's mkdtemp(), which
+        # fails on a --tmp_dir that is not there, inside a batch already claimed
+        # -- and so fails every batch this machine takes
+        make_sure_path_exists(self.tmp_dir)
 
     def run(self,
             gtdb_genome_path_file: str,

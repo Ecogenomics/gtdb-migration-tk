@@ -21,7 +21,7 @@ import logging
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists
 from gtdb_migration_tk.busco_manager import BuscoManager
 from gtdb_migration_tk.checkm_database_manager import CheckMDatabaseManager
-from gtdb_migration_tk.checkm_manager import CheckMManager
+from gtdb_migration_tk.checkm_manager import CheckM, CheckM2, CheckMManager
 from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk import config
 from gtdb_migration_tk.database_manager import DatabaseManager
@@ -311,10 +311,19 @@ class OptionsParser():
               options.all_genomes,
               options.remove)
 
-    def generate_checkm_data(self, options):
-        p = CheckMManager(options.cpus)
-        p.run_checkm(options.gtdb_genome_path_file, options.report,
-                     options.output_dir, options.all_genomes)
+    def generate_checkm_data(self, options, program=CheckM):
+        p = program(options.cpus,
+                    options.tmp_dir,
+                    options.batch_size,
+                    options.reclaim,
+                    options.lease * 60 * 60)
+        p.run(options.gtdb_genome_path_file,
+              options.report,
+              options.output_dir,
+              options.all_genomes)
+
+    def generate_checkm2_data(self, options):
+        self.generate_checkm_data(options, program=CheckM2)
 
     def prepare_checkm2_batch(self, options):
         p = CheckMManager(options.cpus)
@@ -525,6 +534,8 @@ class OptionsParser():
             self.join_checkm_files(options)
         elif options.subparser_name == 'checkm':
             self.generate_checkm_data(options)
+        elif options.subparser_name == 'checkm2':
+            self.generate_checkm2_data(options)
         elif options.subparser_name == 'prepare_checkm2':
             self.prepare_checkm2_batch(options)
         elif options.subparser_name == 'join_checkm2':

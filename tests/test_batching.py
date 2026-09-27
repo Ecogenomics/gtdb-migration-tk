@@ -344,6 +344,37 @@ class BatchfilePathTests(TempDirCase):
                          os.path.join(empty, BATCHFILE_NAME))
 
 
+class PlanBatchesTests(TempDirCase):
+    """A command working on part of the release plans only that part."""
+
+    def plan(self, accessions=None, batch_size=2):
+        dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        with open(dirs, 'w') as handle:
+            for i in range(5):
+                accession = 'GCA_00000000{}.1'.format(i)
+                handle.write('{}\t{}\n'.format(
+                    accession, self.genome_dir(accession + '_ASM1v1')))
+        out = os.path.join(self.dir, 'out')
+        logger = logging.getLogger('batching_test')
+        logger.addHandler(logging.NullHandler())
+        batches = B.plan_batches(dirs, out, batch_size, LAYOUT, logger,
+                                 accessions=accessions)
+        return [[accession for _, accession
+                 in B.read_batchfile(B.batchfile_path(batch, LAYOUT))]
+                for batch in batches]
+
+    def test_every_genome_of_the_release_is_planned_where_none_are_named(self):
+        self.assertEqual(self.plan(), [['GCA_000000000.1', 'GCA_000000001.1'],
+                                       ['GCA_000000002.1', 'GCA_000000003.1'],
+                                       ['GCA_000000004.1']])
+
+    def test_only_the_genomes_named_are_planned_and_batches_are_cut_from_them(self):
+        self.assertEqual(self.plan({'GCA_000000004.1', 'GCA_000000001.1',
+                                    'GCA_000000003.1', 'GCA_999999999.1'}),
+                         [['GCA_000000001.1', 'GCA_000000003.1'],
+                          ['GCA_000000004.1']])
+
+
 class ClaimTests(TempDirCase):
     """Two machines must never both take one batch, and a reset must not lose one."""
 

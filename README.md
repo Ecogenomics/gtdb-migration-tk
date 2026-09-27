@@ -38,14 +38,13 @@ Every step is a subcommand of a single `gtdb_migration_tk` executable.
   | --- | --- |
   | `prodigal` | `prodigal`, `trans_table` (via gTranslate) |
   | `gtranslate` | `trans_table` |
-  | `checkm2` | `trans_table` (quality of the genomes NCBI disagrees about) |
+  | `checkm` | `checkm` |
+  | `checkm2` | `checkm2`, `trans_table` (quality of the genomes NCBI disagrees about) |
   | `hmmsearch` | `hmmsearch`, `top_hit` |
   | `blastn`, `blastp`, `makeblastdb` | `rna_silva`, `rna_ltp`, `generate_ltp_db` |
   | `nhmmer` | `rna_silva`, `rna_ltp` |
   | `tRNAscan-SE` | `trnascan` |
   | `busco` | `busco` |
-
-  CheckM and CheckM2 are run separately; the toolkit consumes their output.
 
 Python dependencies are installed automatically: `requests`, `unidecode`,
 `pandas`, `numpy`, `sqlalchemy`, `beautifulsoup4`, `dendropy`, `tqdm`,
@@ -865,10 +864,66 @@ the LTP classification of a gene already extracted does not depend on it.
 | Command | Description |
 | --- | --- |
 | `checkm` | Run CheckM on new and modified genomes |
+| `checkm2` | Run CheckM2 on new and modified genomes |
 | `join_checkm` | Join CheckM output across GTDB versions |
 | `prepare_checkm2` | Prepare files to run CheckM2 for the new release |
 | `join_checkm2` | Join CheckM2 output files for different batches |
 | `busco` | Estimate quality of new fungal genomes |
+
+`checkm` and `checkm2` estimate the completeness and contamination of the
+genomes `--report` says are to be regenerated -- `new` and `genomic FASTA file
+changed`, as `genomes_to_regenerate()` reads it -- and of no others; a genome
+whose derived data the release carried across is not assessed again. `--all`
+takes every genome the release holds instead, and a `--report` of `none` every
+genome of the genome_dirs file. They cut those genomes into batches under `--out_dir` with the machinery
+`trans_table`, `prodigal` and `trnascan` share, so several machines given one
+`--out_dir` divide the work (`--batch_size`, default 1,000 for `checkm` and
+5,000 for `checkm2`, `--reclaim`, `--lease`). The batches are planned in
+`--out_dir` itself, so each command is given an `--out_dir` of its own; one that
+holds batch directories another command planned is refused, since that
+command's `SUCCESS` would tell this one it had nothing to do.
+
+```bash
+gtdb_migration_tk checkm2 -g genome_dirs.tsv --report report.log \
+    -o checkm2 -l checkm2/checkm2.$(hostname).log --tmp_dir /tmp -c 32
+```
+
+Unlike the gene calling commands, their results live in the batches and not in
+the genome directories, so the genomes to assess are decided once, when the
+batches are planned, and only those are planned. A plan already under
+`--out_dir` is used as it stands, whatever `--report` or `--all` a later run is
+given; remove the batch directories to plan again.
+
+Both are handed the proteins the `prodigal` command called (`--genes`) and take
+them as correct, so the genes of a release are called once, under the table
+`trans_table` chose, and CheckM and CheckM2 assess the proteome everything else
+is made from. Left to call genes themselves, both would call them under tables 4
+and 11 and keep whichever codes more of the genome, which cannot express table
+25.
+
+Once every batch has succeeded, whichever machine finishes last writes the
+release files beside the batches, as `trans_table` does: each table is the
+batches' own concatenated in batch order under a single header, the genomes left
+out are gathered into one file written even when it has no rows, and the count
+of genomes assessed is added up from every batch's `SUCCESS`. A batch in which
+no genome could be assessed adds no rows.
+
+| File | |
+| --- | --- |
+| `checkm.profiles.tsv` | CheckM `qa` joined with `tree_qa -o 2`, one row per genome, the bin named `<accession>_protein` |
+| `checkm.qa_sh100.tsv` | CheckM `qa --aai_strain 0.9999` |
+| `checkm.alignment_file.tsv` | the alignments of multi-copy genes that run writes |
+| `checkm2.quality_report.tsv` | CheckM2's `quality_report.tsv`, one row per genome, named by accession. Handed genes, CheckM2 writes none of the statistics it takes from calling genes itself (the table used, coding density, genome size, GC, N50 and the rest); its estimates are made from the proteins either way |
+| `checkm_not_assessed.tsv`, `checkm2_not_assessed.tsv` | `genome_id`, `reason`, `detail` of each genome left out |
+
+| `reason` | |
+| --- | --- |
+| `no_protein_file` | the genome has no `prodigal/<accession>_protein.faa.gz`, or it is empty |
+
+CheckM or CheckM2 exiting non-zero fails the batch, which the next run repeats.
+Both programs put a Unix socket under `--tmp_dir`, and a socket path is limited
+to 107 characters, so give them a short one: a `--tmp_dir` longer than about 75
+characters fails every batch with `OSError: AF_UNIX path too long`.
 
 ### Metadata
 
