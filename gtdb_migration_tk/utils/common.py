@@ -2,6 +2,7 @@ import csv
 import os
 import gzip
 import logging
+import json
 import re
 import subprocess
 from collections import namedtuple
@@ -206,6 +207,45 @@ def write_version_file(directory: str, program: str, version: str) -> None:
 
     with open(version_file(directory, program), 'w') as handle:
         handle.write('{}\n'.format(version))
+
+
+def conda_package_version(executable: str, package: str) -> Optional[str]:
+    """The version of the conda package an executable was installed from.
+
+    For a program that cannot say its own version: bioconda's pplacer answers
+    --version with 'dev', alpha20 and alpha22 alike. A conda environment
+    records each package it holds in <prefix>/conda-meta/<name>-<version>-
+    <build>.json, and an executable it installed is <prefix>/bin/<name>.
+
+    Parameters
+    ----------
+    executable : str
+        Path of the executable, as it ran; symlinks are followed.
+    package : str
+        Name of the conda package.
+
+    @return: the package's version, e.g. '1.1.alpha22', or None where the
+             executable is not in a conda environment holding that package.
+    """
+
+    prefix = os.path.dirname(os.path.dirname(os.path.realpath(executable)))
+    meta_dir = os.path.join(prefix, 'conda-meta')
+    if not os.path.isdir(meta_dir):
+        return None
+
+    for name in sorted(os.listdir(meta_dir)):
+        if not (name.startswith(package + '-') and name.endswith('.json')):
+            continue
+        try:
+            with open(os.path.join(meta_dir, name)) as handle:
+                meta = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        # the file name alone would take package 'pplacer-extra' for 'pplacer'
+        if meta.get('name') == package and meta.get('version'):
+            return str(meta['version'])
+
+    return None
 
 
 def open_text(path: str):
