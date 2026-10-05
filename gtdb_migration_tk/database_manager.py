@@ -88,21 +88,51 @@ whole or not at all, and the hours of hashing are not spent holding locks.
 --dry_run makes every change and rolls it back, so the statements are tried
 against the real tables and the report says what a run would have done.
 
-has_changed is TRUE for the genomes whose sequences this update brought --
-added, versioned, or changed under their accession -- and FALSE for every other
-NCBI genome, so that it says what changed in this release and nothing older.
+has_changed is TRUE for the genomes whose sequences this release brought and
+FALSE for every other NCBI genome, so that it says what changed in this release
+and nothing older: a genome the report calls new or changed, and one whose
+date_added is this update's download date, which is a genome an earlier run of
+the same update added.
 
 Deleting a genome deletes its metadata, its aligned markers and its place in
 every curated genome list, the foreign keys cascading. The lists each deleted
-genome was in are written to genome_lists_affected.tsv first.
+genome was in are appended to genome_lists_affected.tsv, with when the run began
+and whether it was a dry run, and are on disk before the transaction commits,
+so that no crash loses them.
+
+STOPPED PART WAY
+
+Nothing reaches the database until the one COMMIT, so a run stopped at any
+point -- an exception, Ctrl-C, a machine reset -- leaves it as it was or wholly
+updated. The connection asks the server to abort a transaction left idle for
+IDLE_IN_TRANSACTION_TIMEOUT, which is what a transaction becomes when the
+machine running it is reset: without it, the server holds its locks until TCP
+gives up on the connection, hours later, and a run started again waits behind
+them. TCP keepalives are asked for on the client's side too, so that a run does
+not wait for ever on a server that has gone.
+
+Running the update again once it has committed -- when a crash left it unknown
+whether the commit landed -- does what it did the first time, and nothing more:
+a genome the report calls new or changed that the database already holds with
+these very files was put there by the earlier run (already updated), keeps its
+aligned markers and is not rewritten, and the genomes deleted are no longer
+there to delete.
+
+The hashes are appended as they are made to update_db_hashes.tsv.gz in
+--out_dir (HashCache), with each file's size and modification time, and read
+back by the next run, which hashes only the files not in it or changed since:
+an interrupted run, or a run after a dry run, does not spend the hours again.
 """
 
 import gzip
 import logging
 import multiprocessing as mp
 import os
+import time
+import zlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from datetime import datetime
 from typing import (AbstractSet, Dict, Iterable, List, NamedTuple, Optional,
                     Sequence, Set, Tuple)
@@ -118,6 +148,7 @@ from gtdb_migration_tk.ncbi_utils import NCBI_DATABASES
 from gtdb_migration_tk.update_genomes import (STATUS_FASTA_CHANGED,
                                              STATUS_FASTA_UNCHANGED,
                                              STATUS_IN_RELEASE, STATUS_NEW,
+                                             STATUS_REGENERATE,
                                              STATUS_REMOVED,
                                              STATUS_SEQUENCES_UNCHANGED,
                                              STATUS_TO_CURATE, count_by_database,
@@ -136,6 +167,7 @@ ACTION_REPLACED = 'replaced by new version'
 ACTION_NOT_IN_DATABASE = 'not in database'
 ACTION_NOT_IN_REPORT = 'not in report'
 ACTION_NO_GENOMIC_FASTA = 'no genomic FASTA'
+ACTION_ALREADY_UPDATED = 'already updated'
 
 # The actions after which a genome's sequences are new to the database: the
 # genomes has_changed is TRUE for, and whose aligned markers have to be made.
@@ -158,7 +190,18 @@ DATABASE_PATH_DEPTH = 5
 REPORT_NAME = 'update_db_report.tsv'
 REPORT_HEADER = ('genome_id', 'report_outcome', 'action', 'detail')
 LISTS_AFFECTED_NAME = 'genome_lists_affected.tsv'
-LISTS_AFFECTED_HEADER = ('genome_id', 'list_id', 'list_name')
+LISTS_AFFECTED_HEADER = ('genome_id', 'list_id', 'list_name', 'run_started', 'dry_run')
+
+# The hashes of earlier runs, and how often the ones being made are put on disk.
+HASH_CACHE_NAME = 'update_db_hashes.tsv.gz'
+HASH_CACHE_FLUSH_SECONDS = 30.0
+
+# How long the server lets this update's transaction sit idle before aborting it
+# and releasing its locks: the gaps between its statements are seconds, and a
+# transaction idle for longer is one whose client has gone. TCP keepalives ask
+# the same of the connection from the client's side.
+IDLE_IN_TRANSACTION_TIMEOUT = '10min'
+KEEPALIVES = dict(keepalives=1, keepalives_idle=60, keepalives_interval=15, keepalives_count=4)
 
 # Rows sent to the database per statement.
 PAGE_SIZE = 1000
@@ -181,6 +224,7 @@ class DatabaseGenome(NamedTuple):
     fasta_hash: str
     genes_location: Optional[str]
     genes_hash: Optional[str]
+    date_added: Optional[datetime] = None
 
 
 class Decision(NamedTuple):
@@ -286,23 +330,129 @@ def content_hash(path: str) -> Optional[str]:
         return sha256_rb(gzip.GzipFile(fileobj=raw))
 
 
-def hash_genome(task: Tuple[str, Optional[str], Optional[str]]) -> Tuple[str, Optional[str], Optional[str]]:
-    """Hash the files of one genome; a worker of the pool.
+def file_identity(path: str) -> Optional[Tuple[int, int]]:
+    """What says a file is the one a hash was made of: its size and modification time.
 
-    Parameters
-    ----------
-    task : tuple
-        (accession, genomic FASTA or None, protein FASTA or None), None for a file
-        not to be hashed.
-
-    @return: (accession, genomic hash, protein hash), None for a file not hashed
-             or not there.
+    @return: (size in bytes, modification time in ns), or None where there is no file.
     """
 
-    accession, genomic, genes = task
-    return (accession,
-            content_hash(genomic) if genomic else None,
-            content_hash(genes) if genes else None)
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
+def hash_file(path: str) -> Tuple[str, Optional[int], Optional[int], Optional[str]]:
+    """Hash one file; a worker of the pool.
+
+    The file is identified before it is read, so that one rewritten while it is
+    hashed is recorded with the older time and hashed again by the next run.
+
+    @return: (path, size, modification time in ns, hash), the last three None
+             where there is no file.
+    """
+
+    identity = file_identity(path)
+    if identity is None:
+        return path, None, None, None
+    return (path,) + identity + (content_hash(path),)
+
+
+class HashCache(object):
+    """The hashes earlier runs made, so that a run started again need not remake them.
+
+    One gzipped TSV of path, size, modification time (ns) and hash. A hash is
+    taken from it only while the file's size and modification time are those it
+    was made of. Hashes are appended as they are made, as a gzip member of their
+    own, and put on disk every HASH_CACHE_FLUSH_SECONDS, so a run stopped hard
+    loses that much at most. The member a crash cut short is read as far as it
+    goes, and the file is written again whole when it is read, so that what is
+    appended next follows a gzip file that ends where it should.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.entries: Dict[str, Tuple[int, int, str]] = {}
+        self.raw = None
+        self.handle = None
+        self.flushed = 0.0
+
+    def load(self) -> bool:
+        """Read what earlier runs hashed, and write it back whole.
+
+        @return: True where the file ended part way through, as a crash leaves it.
+        """
+
+        if not os.path.exists(self.path):
+            return False
+
+        cut_short = False
+        try:
+            with gzip.open(self.path, 'rt') as handle:
+                for line in handle:
+                    if not line.endswith('\n'):
+                        cut_short = True
+                        break
+                    fields = line.rstrip('\n').split('\t')
+                    try:
+                        self.entries[fields[0]] = (int(fields[1]), int(fields[2]), fields[3])
+                    except (IndexError, ValueError):
+                        cut_short = True
+        except (EOFError, OSError, zlib.error):
+            cut_short = True
+
+        self.rewrite()
+        return cut_short
+
+    def rewrite(self) -> None:
+        """Write every entry to a new file, and put it in place of the old one."""
+
+        temporary = self.path + '.tmp'
+        with open(temporary, 'wb') as raw:
+            with gzip.GzipFile(fileobj=raw, mode='wb') as handle:
+                for path, (size, mtime, digest) in self.entries.items():
+                    handle.write('{}\t{}\t{}\t{}\n'.format(path, size, mtime, digest).encode())
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(temporary, self.path)
+
+    def lookup(self, path: str, identity: Optional[Tuple[int, int]]) -> Optional[str]:
+        """The hash of a file, where it is the file the hash was made of.
+
+        @return: the hash, or None.
+        """
+
+        entry = self.entries.get(path)
+        if entry is None or identity is None or entry[:2] != identity:
+            return None
+        return entry[2]
+
+    def __enter__(self) -> 'HashCache':
+        self.raw = open(self.path, 'ab')
+        self.handle = gzip.GzipFile(fileobj=self.raw, mode='wb')
+        self.flushed = time.monotonic()
+        return self
+
+    def add(self, path: str, size: int, mtime: int, digest: str) -> None:
+        """Record a hash just made, putting it on disk with the others in time."""
+
+        self.entries[path] = (size, mtime, digest)
+        self.handle.write('{}\t{}\t{}\t{}\n'.format(path, size, mtime, digest).encode())
+        if time.monotonic() - self.flushed >= HASH_CACHE_FLUSH_SECONDS:
+            self.flush()
+
+    def flush(self) -> None:
+        # Z_SYNC_FLUSH: what is on disk can be decompressed up to here
+        self.handle.flush(zlib.Z_SYNC_FLUSH)
+        os.fsync(self.raw.fileno())
+        self.flushed = time.monotonic()
+
+    def __exit__(self, *exc) -> None:
+        self.handle.close()
+        self.raw.flush()
+        os.fsync(self.raw.fileno())
+        self.raw.close()
 
 
 def missing_genomic_fasta(accessions: Iterable[str], genome_dirs: Dict[str, str],
@@ -474,6 +624,22 @@ def genome_files(decision: Decision,
     return GenomeFiles(fasta_location, genomic_hash, genes_location, genes_hash)
 
 
+def brought_by_this_update(decision: Decision, download_date: datetime) -> bool:
+    """Whether a genome the database holds is one this release brought.
+
+    One the report calls new or changed, or one whose date_added is this update's
+    download date, which an earlier run of the same update added: has_changed is
+    TRUE for it however many times the update is run.
+
+    @return: True for such a genome.
+    """
+
+    if decision.outcome in STATUS_REGENERATE:
+        return True
+    added = decision.row.date_added if decision.row is not None else None
+    return added is not None and added.date() == download_date.date()
+
+
 def changed_columns(row: DatabaseGenome, files: GenomeFiles) -> List[str]:
     """The columns of a genome's row that its files no longer agree with.
 
@@ -513,7 +679,10 @@ class DatabaseManager(object):
         self.logger = logging.getLogger('timestamp')
 
     def connect(self):
-        return psycopg2.connect(**self.connection)
+        """A connection whose abandoned transaction the server aborts; see STOPPED PART WAY."""
+        return psycopg2.connect(
+            **self.connection, **KEEPALIVES,
+            options='-c idle_in_transaction_session_timeout={}'.format(IDLE_IN_TRANSACTION_TIMEOUT))
 
     def ncbi_sources(self, cur) -> Dict[str, int]:
         """The genome_sources id of each NCBI database, by accession prefix.
@@ -536,12 +705,20 @@ class DatabaseManager(object):
         """
 
         cur.execute('SELECT id, name, genome_source_id, fasta_file_location, '
-                    'fasta_file_sha256, genes_file_location, genes_file_sha256 '
+                    'fasta_file_sha256, genes_file_location, genes_file_sha256, date_added '
                     'FROM genomes WHERE genome_source_id = ANY(%s)', (list(source_ids),))
         return {row[1]: DatabaseGenome(*row) for row in cur.fetchall()}
 
-    def hash_files(self, decisions: Sequence[Decision]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    def hash_files(self, decisions: Sequence[Decision],
+                   cache_file: Optional[str] = None) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
         """Hash the files the decisions ask for, on self.cpus processes.
+
+        Parameters
+        ----------
+        decisions : sequence of Decision
+            What is to be done with each genome.
+        cache_file : str
+            The HashCache of earlier runs, read and added to; None for none.
 
         @return: accession -> (genomic hash, protein hash).
 
@@ -551,25 +728,61 @@ class DatabaseManager(object):
             A genome of the release has no genomic FASTA to hash.
         """
 
-        tasks = [(d.accession,
-                  genomic_fasta(d.genome_dir) if d.hash_genomic else None,
-                  protein_fasta(d.accession, d.genome_dir) if d.hash_genes else None)
-                 for d in decisions if d.hash_genomic or d.hash_genes]
+        # (accession, 0 for the genomic FASTA and 1 for the proteins, path)
+        files = []
+        for d in decisions:
+            if d.hash_genomic:
+                files.append((d.accession, 0, genomic_fasta(d.genome_dir)))
+            if d.hash_genes:
+                files.append((d.accession, 1, protein_fasta(d.accession, d.genome_dir)))
         self.logger.info('Hashing the files of {:,} genome(s): {:,} genomic and {:,} '
                          'protein FASTA file(s).'.format(
-                             len(tasks), sum(1 for t in tasks if t[1]),
-                             sum(1 for t in tasks if t[2])))
-        if not tasks:
+                             len({f[0] for f in files}), sum(1 for f in files if f[1] == 0),
+                             sum(1 for f in files if f[1] == 1)))
+        if not files:
             return {}
 
-        hashes = {}
-        with mp.Pool(self.cpus) as pool:
-            for accession, genomic, genes in tqdm(pool.imap_unordered(hash_genome, tasks, chunksize=64),
-                                                  total=len(tasks), ncols=100, leave=False,
-                                                  desc='Hashing genomes'):
-                hashes[accession] = (genomic, genes)
+        digests = {}
+        todo = [path for _, _, path in files]
+        cache = HashCache(cache_file) if cache_file else None
+        if cache is not None:
+            if cache.load():
+                self.logger.warning(
+                    'warning: {} ends part way through, as a run stopped hard leaves it; '
+                    'the {:,} hash(es) before that are used.'.format(cache_file, len(cache.entries)))
+            if cache.entries:
+                # one stat a file, on threads, to tell a file hashed before from one
+                # rewritten since
+                with ThreadPoolExecutor(max_workers=max(1, self.cpus)) as pool:
+                    identities = dict(zip(todo, pool.map(file_identity, todo)))
+                for path in todo:
+                    digest = cache.lookup(path, identities[path])
+                    if digest is not None:
+                        digests[path] = digest
+                todo = [path for path in todo if path not in digests]
+                self.logger.info('{:,} of the {:,} file(s) were hashed by an earlier run and '
+                                 'are taken from {}, leaving {:,} to hash.'.format(
+                                     len(digests), len(files), cache_file, len(todo)))
 
-        missing = [t[0] for t in tasks if t[1] and hashes[t[0]][0] is None]
+        if todo:
+            with ExitStack() as stack:
+                if cache is not None:
+                    stack.enter_context(cache)
+                pool = stack.enter_context(mp.Pool(self.cpus))
+                for path, size, mtime, digest in tqdm(
+                        pool.imap_unordered(hash_file, todo, chunksize=64),
+                        total=len(todo), ncols=100, leave=False, desc='Hashing files'):
+                    digests[path] = digest
+                    if cache is not None and digest is not None:
+                        cache.add(path, size, mtime, digest)
+
+        found = {}
+        for accession, which, path in files:
+            found.setdefault(accession, [None, None])[which] = digests.get(path)
+        hashes = {accession: tuple(pair) for accession, pair in found.items()}
+
+        missing = [d.accession for d in decisions
+                   if d.hash_genomic and hashes[d.accession][0] is None]
         if missing:
             # a genome to be added was looked at before planning, so this is one
             # the database holds: the release has lost its file
@@ -609,6 +822,9 @@ class DatabaseManager(object):
         """
 
         make_sure_path_exists(out_dir)
+        run_started = datetime.now().isoformat(timespec='seconds')
+        # refused now rather than after hours of hashing
+        self.check_lists_affected(out_dir)
         outcomes = report_outcomes(report_file)
         genome_dirs = dict(read_genome_dirs(genome_dirs_file))
         self.logger.info('The report names {:,} genome(s) ({}); the release holds {:,}.'.format(
@@ -628,20 +844,20 @@ class DatabaseManager(object):
         unpublished = missing_genomic_fasta(
             [acc for acc in genome_dirs if acc not in database], genome_dirs, self.cpus)
         decisions = plan_update(outcomes, genome_dirs, database, rehash_all, unpublished)
-        hashes = self.hash_files(decisions)
+        hashes = self.hash_files(decisions, os.path.join(out_dir, HASH_CACHE_NAME))
         decisions = self.finish_decisions(decisions, hashes)
 
         conn = self.connect()
         try:
             with conn.cursor() as cur:
-                self.write_lists_affected(cur, decisions, out_dir)
+                self.write_lists_affected(cur, decisions, out_dir, run_started, dry_run)
                 self.apply(cur, decisions, hashes, sources, download_date)
             if dry_run:
                 conn.rollback()
                 self.logger.info('Dry run: every change was made and rolled back.')
             else:
                 conn.commit()
-                self.logger.info('Committed.')
+                self.logger.info('Committed the update begun {}.'.format(run_started))
         except BaseException:
             conn.rollback()
             raise
@@ -678,13 +894,45 @@ class DatabaseManager(object):
                                                       detail='; '.join(notes)))
                     continue
                 notes.append(', '.join(changed))
+            elif (decision.action == ACTION_SEQUENCES_CHANGED
+                  and not changed_columns(decision.row, files)):
+                # the database already holds these very files: an earlier run of
+                # this update put them there
+                notes.append('by an earlier run of this update')
+                finished.append(decision._replace(action=ACTION_ALREADY_UPDATED,
+                                                  detail='; '.join(notes)))
+                continue
 
             finished.append(decision._replace(detail='; '.join(notes)))
 
         return finished
 
-    def write_lists_affected(self, cur, decisions: Sequence[Decision], out_dir: str) -> None:
+    def check_lists_affected(self, out_dir: str) -> None:
+        """Refuse a genome_lists_affected.tsv whose columns are not this version's.
+
+        Rows are appended to it, so one of another layout would end up holding
+        two; checked where the run starts rather than once the files are hashed.
+
+        @return: None
+        """
+
+        path = os.path.join(out_dir, LISTS_AFFECTED_NAME)
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return
+        with open(path) as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+        if tuple(header) != LISTS_AFFECTED_HEADER:
+            raise UpdateDbError(
+                '{} has the columns {}, where this version appends rows of {}; move it '
+                'aside to keep it.'.format(path, ', '.join(header), ', '.join(LISTS_AFFECTED_HEADER)))
+
+    def write_lists_affected(self, cur, decisions: Sequence[Decision], out_dir: str,
+                             run_started: str, dry_run: bool) -> None:
         """Name the curated genome lists each genome to be deleted is in.
+
+        Appended, so that what one run records survives the next, and put on disk
+        before the transaction is committed, so that a crash at the commit cannot
+        lose it: a run that did not commit is told from one that did by its log.
 
         @return: None
         """
@@ -695,14 +943,18 @@ class DatabaseManager(object):
             cur.execute('SELECT glc.genome_id, gl.id, gl.name FROM genome_list_contents glc '
                         'JOIN genome_lists gl ON gl.id = glc.list_id '
                         'WHERE glc.genome_id = ANY(%s)', (list(ids),))
-            rows = sorted((ids[genome_id], str(list_id), name)
+            rows = sorted((ids[genome_id], str(list_id), name, run_started, str(dry_run))
                           for genome_id, list_id, name in cur.fetchall())
 
         path = os.path.join(out_dir, LISTS_AFFECTED_NAME)
-        with open(path, 'w') as handle:
-            handle.write('\t'.join(LISTS_AFFECTED_HEADER) + '\n')
+        new_file = not os.path.exists(path) or os.path.getsize(path) == 0
+        with open(path, 'a') as handle:
+            if new_file:
+                handle.write('\t'.join(LISTS_AFFECTED_HEADER) + '\n')
             for row in rows:
                 handle.write('\t'.join(row) + '\n')
+            handle.flush()
+            os.fsync(handle.fileno())
 
         if rows:
             self.logger.warning(
@@ -776,6 +1028,14 @@ class DatabaseManager(object):
         if remade:
             cur.execute('DELETE FROM aligned_markers WHERE genome_id = ANY(%s)', (remade,))
 
+        # a genome this release brought that the database already holds as it
+        # should: put there by an earlier run of this same update
+        brought = [d.row.id for d in decisions
+                   if d.action in (ACTION_ALREADY_UPDATED, ACTION_UPDATED, ACTION_UNCHANGED)
+                   and brought_by_this_update(d, download_date)]
+        if brought:
+            cur.execute('UPDATE genomes SET has_changed = TRUE WHERE id = ANY(%s)', (brought,))
+
         added = []
         for d in by_action.get(ACTION_ADDED, ()):
             f = genome_files(d, hashes)
@@ -820,7 +1080,7 @@ class DatabaseManager(object):
         for action in (ACTION_ADDED, ACTION_VERSIONED, ACTION_SEQUENCES_CHANGED,
                        ACTION_UPDATED, ACTION_UNCHANGED, ACTION_DELETED,
                        ACTION_REPLACED, ACTION_NOT_IN_DATABASE, ACTION_NOT_IN_REPORT,
-                       ACTION_NO_GENOMIC_FASTA):
+                       ACTION_NO_GENOMIC_FASTA, ACTION_ALREADY_UPDATED):
             accessions = by_action.get(action, ())
             self.logger.info('  {}: {:,} ({}).'.format(
                 action, len(accessions), count_by_database(accessions)))

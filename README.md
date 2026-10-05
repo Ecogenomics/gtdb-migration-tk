@@ -1008,8 +1008,26 @@ transaction; `--dry_run` makes it and rolls it back.
 
 | File in `--out_dir` | |
 | --- | --- |
-| `update_db_report.tsv` | `genome_id`, `report_outcome`, `action`, `detail` for every genome of the report and of the database |
-| `genome_lists_affected.tsv` | each curated genome list a deleted genome was in |
+| `update_db_report.tsv` | `genome_id`, `report_outcome`, `action`, `detail` for every genome of the report and of the database, for the latest run |
+| `genome_lists_affected.tsv` | each curated genome list a deleted genome was in, with `run_started` and `dry_run`; appended by every run, and on disk before the commit |
+| `update_db_hashes.tsv.gz` | every hash made, with the file's size and modification time, read back by the next run |
+
+Nothing reaches the database before the one `COMMIT`, so a run stopped at any
+point -- an error, Ctrl-C, a machine reset -- leaves it as it was or wholly
+updated, and is restarted by running the same command again:
+
+- the server aborts the transaction of a client that vanished once it has sat
+  idle for 10 minutes (`idle_in_transaction_session_timeout`), releasing its
+  locks, so a restarted run does not wait behind them;
+- the files hashed before the stop are not hashed again: hashes are flushed to
+  `update_db_hashes.tsv.gz` every 30 seconds and taken from it while a file's
+  size and modification time are unchanged, so a run after a dry run hashes
+  almost nothing;
+- a run after one that committed -- when a crash left it unknown whether the
+  commit landed -- changes nothing more: a `new` or changed genome the database
+  already holds with the same files is `already updated`, keeping its aligned
+  markers, and `has_changed` is TRUE for the genomes this release brought on
+  every run, given the same `-f`.
 
 `--checkm_profile`, `-r/--repository` and `--report_dir` are gone: the genomes to
 add were the rows of a CheckM profile, which left out what CheckM did not

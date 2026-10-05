@@ -322,11 +322,15 @@ class TheFilesRecorded(TempDirCase):
 # ------------------------------------------------------------ the statements
 
 class FakeCursor(object):
-    def __init__(self):
+    def __init__(self, rows=()):
         self.statements = []
+        self.rows = list(rows)
 
     def execute(self, sql, params=None):
         self.statements.append((' '.join(sql.split()), params))
+
+    def fetchall(self):
+        return self.rows
 
 
 class WritingTheDatabase(TempDirCase):
@@ -420,6 +424,182 @@ class WritingTheDatabase(TempDirCase):
 
         self.assertEqual(len(statements), 1)
         self.assertEqual(values, [])
+
+
+# ------------------------------------------------------------ stopped part way
+
+class ConnectingToTheDatabase(unittest.TestCase):
+    def test_the_server_aborts_a_transaction_its_client_abandoned(self):
+        # a machine reset mid-transaction leaves it idle; without the timeout the
+        # server keeps its locks until TCP gives up, and a run started again waits
+        with mock.patch.object(M.psycopg2, 'connect') as connect:
+            M.DatabaseManager('host', 'user', 'pw', 'db').connect()
+
+        kwargs = connect.call_args.kwargs
+        self.assertIn('idle_in_transaction_session_timeout=' + M.IDLE_IN_TRANSACTION_TIMEOUT,
+                      kwargs['options'])
+        self.assertEqual(kwargs['keepalives'], 1)
+        self.assertEqual(kwargs['password'], 'pw')
+
+
+class RunningTheUpdateAgain(TempDirCase):
+    """A second run of an update that committed does what the first did, and no more."""
+
+    DATE = datetime(2026, 10, 6)
+    GENOMIC, PROTEINS = b'>c1\nACGT\n', b'>g1\nMK\n'
+
+    def held(self, accession, id=1, date_added=datetime(2024, 9, 14)):
+        """A genome the database holds as an earlier run of this update left it."""
+        return self.row(accession, id=id, fasta_hash=content_sha1(self.GENOMIC),
+                        genes_hash=content_sha1(self.PROTEINS))._replace(date_added=date_added)
+
+    def apply(self, outcomes, database):
+        for accession, outcome in outcomes.items():
+            if outcome in UG.STATUS_IN_RELEASE:
+                self.make_genome(accession, self.GENOMIC, self.PROTEINS)
+        manager = M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+        decisions = list(self.plan(outcomes, database).values())
+        hashes = manager.hash_files(decisions)
+        decisions = manager.finish_decisions(decisions, hashes)
+        cur = FakeCursor()
+        with mock.patch.object(M, 'execute_values', lambda *a, **kw: None):
+            manager.apply(cur, decisions, hashes, SOURCES, self.DATE)
+        return {d.accession: d for d in decisions}, cur.statements
+
+    def flagged(self, statements):
+        for sql, params in statements:
+            if sql == 'UPDATE genomes SET has_changed = TRUE WHERE id = ANY(%s)':
+                return set(params[0])
+        return set()
+
+    def test_a_new_genome_an_earlier_run_added_is_already_updated_and_keeps_its_markers(self):
+        decisions, statements = self.apply({'GCA_000000001.1': STATUS_NEW},
+                                           [self.held('GCA_000000001.1', id=9, date_added=self.DATE)])
+
+        self.assertEqual(decisions['GCA_000000001.1'].action, M.ACTION_ALREADY_UPDATED)
+        self.assertFalse([s for s in statements if 'aligned_markers' in s[0]])
+        self.assertEqual(self.flagged(statements), {9})
+
+    def test_a_new_version_an_earlier_run_put_in_place_is_already_updated(self):
+        decisions, _ = self.apply({'GCA_000000001.3': STATUS_NEW, 'GCA_000000001.2': STATUS_REMOVED},
+                                  [self.held('GCA_000000001.3', id=7, date_added=self.DATE)])
+
+        self.assertEqual(decisions['GCA_000000001.3'].action, M.ACTION_ALREADY_UPDATED)
+        self.assertEqual(decisions['GCA_000000001.2'].action, M.ACTION_NOT_IN_DATABASE)
+
+    def test_a_genome_whose_sequences_really_changed_is_still_said_to_have(self):
+        # the database holds other files for it: this run is the first to see them
+        decisions, statements = self.apply({'GCA_000000001.1': STATUS_FASTA_CHANGED},
+                                           [self.row('GCA_000000001.1', id=5)])
+
+        self.assertEqual(decisions['GCA_000000001.1'].action, M.ACTION_SEQUENCES_CHANGED)
+        self.assertIn(('DELETE FROM aligned_markers WHERE genome_id = ANY(%s)', ([5],)), statements)
+
+    def test_a_genome_an_earlier_run_added_from_the_release_stays_flagged(self):
+        # one of r237's 15: in the release, missing from the database, added with
+        # this update's date and so has_changed on every run of it
+        decisions, statements = self.apply({'GCA_000000001.1': STATUS_FASTA_UNCHANGED},
+                                           [self.held('GCA_000000001.1', id=3, date_added=self.DATE)])
+
+        self.assertEqual(decisions['GCA_000000001.1'].action, M.ACTION_UNCHANGED)
+        self.assertEqual(self.flagged(statements), {3})
+
+    def test_a_genome_an_earlier_release_added_is_not_flagged(self):
+        _, statements = self.apply({'GCA_000000001.1': STATUS_FASTA_UNCHANGED},
+                                   [self.held('GCA_000000001.1', id=3)])
+
+        self.assertEqual(self.flagged(statements), set())
+
+
+class TheListsAffected(TempDirCase):
+    """Which curated lists a deleted genome was in, kept across runs."""
+
+    def write(self, run_started, dry_run):
+        manager = M.DatabaseManager('host', 'user', 'pw', 'db')
+        decisions = [M.Decision('GCF_000806395.1', STATUS_REMOVED, M.ACTION_DELETED,
+                                self.row('GCF_000806395.1', id=11))]
+        manager.write_lists_affected(FakeCursor([(11, 1014, 'Genomes for MS')]),
+                                     decisions, self.dir, run_started, dry_run)
+
+    def rows(self):
+        with open(os.path.join(self.dir, M.LISTS_AFFECTED_NAME)) as handle:
+            return [line.rstrip('\n').split('\t') for line in handle]
+
+    def test_each_run_appends_its_rows_with_when_it_began_and_whether_it_was_dry(self):
+        self.write('2026-10-06T09:00:00', True)
+        self.write('2026-10-07T09:00:00', False)
+
+        self.assertEqual(self.rows(), [
+            list(M.LISTS_AFFECTED_HEADER),
+            ['GCF_000806395.1', '1014', 'Genomes for MS', '2026-10-06T09:00:00', 'True'],
+            ['GCF_000806395.1', '1014', 'Genomes for MS', '2026-10-07T09:00:00', 'False']])
+
+    def test_a_file_of_other_columns_is_refused_before_anything_is_hashed(self):
+        with open(os.path.join(self.dir, M.LISTS_AFFECTED_NAME), 'w') as handle:
+            handle.write('genome_id\tlist_id\tlist_name\n')
+
+        with self.assertRaises(M.UpdateDbError):
+            M.DatabaseManager('host', 'user', 'pw', 'db').check_lists_affected(self.dir)
+
+
+class TheHashCache(TempDirCase):
+    """The hashes one run made, read back by the next."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache_file = os.path.join(self.dir, M.HASH_CACHE_NAME)
+        self.make_genome('GCA_000000001.1')
+        self.decisions = list(self.plan({'GCA_000000001.1': STATUS_NEW}).values())
+        self.manager = M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+
+    def hashes(self):
+        return self.manager.hash_files(self.decisions, self.cache_file)['GCA_000000001.1']
+
+    def cached(self, digest):
+        """Make every hash of the cache say `digest`, as if an earlier run made it."""
+        cache = M.HashCache(self.cache_file)
+        cache.load()
+        cache.entries = {path: (size, mtime, digest) for path, (size, mtime, _) in cache.entries.items()}
+        cache.rewrite()
+
+    def test_the_hashes_made_are_written_to_the_cache(self):
+        self.hashes()
+
+        cache = M.HashCache(self.cache_file)
+        self.assertFalse(cache.load())
+        self.assertEqual(len(cache.entries), 2)
+
+    def test_a_run_started_again_takes_the_hashes_of_the_last(self):
+        self.hashes()
+        self.cached('from an earlier run')
+
+        self.assertEqual(self.hashes(), ('from an earlier run', 'from an earlier run'))
+
+    def test_a_file_rewritten_since_is_hashed_again(self):
+        self.hashes()
+        self.cached('from an earlier run')
+        genomic = UG.genomic_fasta(self.genome_dir('GCA_000000001.1'))
+        with gzip.open(genomic, 'wb') as handle:
+            handle.write(b'>c1\nTTTT\n')
+        os.utime(genomic, ns=(1, 1))
+
+        self.assertEqual(self.hashes(), (content_sha1(b'>c1\nTTTT\n'), 'from an earlier run'))
+
+    def test_a_cache_a_crash_cut_short_keeps_what_was_flushed_and_is_made_whole(self):
+        # as a run reset mid-hashing leaves it: flushed, and no gzip trailer
+        with M.HashCache(self.cache_file) as cache:
+            cache.add('/a', 1, 1, 'aaa')
+            cache.flush()
+            with open(self.cache_file, 'rb') as handle:
+                cut_short = handle.read()
+        with open(self.cache_file, 'wb') as handle:
+            handle.write(cut_short)
+
+        cache = M.HashCache(self.cache_file)
+        self.assertTrue(cache.load())
+        self.assertEqual(cache.entries, {'/a': (1, 1, 'aaa')})
+        # written again whole, so what the next run appends can be read
+        self.assertFalse(M.HashCache(self.cache_file).load())
 
 
 if __name__ == '__main__':

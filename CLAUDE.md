@@ -297,7 +297,10 @@ SQLAlchemy `create_engine` directly.
 `update_db` decides every genome from `report.log` and `genome_dirs.tsv` alone
 (`plan_update()`, which reads no database and is what the tests drive), covers
 RefSeq and GenBank in one run, the source read from the accession prefix, and
-makes the whole update in one transaction after the files are hashed.
+makes the whole update in one transaction after the files are hashed. Run twice
+it does what it did once (`already updated`), and it keeps its hashes in
+`<out_dir>/update_db_hashes.tsv.gz` so a restart does not hash again; see STOPPED
+PART WAY in its docstring.
 `genomes.fasta_file_sha256` and `genes_file_sha256` hold SHA-1, despite their
 names, of the DECOMPRESSED file, as everything in the toolkit hashes its own
 gzipped files; see the module docstring. `gtdb_lite/gtdb_importer.py` relies on an
