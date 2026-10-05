@@ -15,9 +15,11 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from gtdb_migration_tk.__main__ import FALLBACK_LOG, log_candidates
-from gtdb_migration_tk.biolib_lite.logger import logger_setup
+from gtdb_migration_tk.biolib_lite.logger import (REDACTED, logger_setup,
+                                                 redacted_command_line)
 
 
 class LoggerSetupCase(unittest.TestCase):
@@ -55,6 +57,32 @@ class LoggerSetupCase(unittest.TestCase):
     def log_file(self, name='run.log'):
         with open(os.path.join(self.dir, name)) as handle:
             return handle.read()
+
+
+class TheCommandLineLogged(LoggerSetupCase):
+    """The *_db commands take the database password on the command line."""
+
+    def test_a_password_is_masked_where_it_is_its_own_argument(self):
+        argv = ['update_db', '--hostname', 'h', '-p', 's3cret', '-g', 'dirs.tsv']
+        self.assertEqual(redacted_command_line(argv, ['s3cret']),
+                         'update_db --hostname h -p {} -g dirs.tsv'.format(REDACTED))
+
+    def test_a_password_given_after_an_equals_sign_is_masked(self):
+        self.assertEqual(redacted_command_line(['--password=s3cret'], ['s3cret']),
+                         '--password=' + REDACTED)
+
+    def test_another_commands_p_is_left_as_it_is(self):
+        # -p is an output prefix or an rRNA path elsewhere, which no option
+        # names a password
+        argv = ['rna_silva', '-p', '/db/silva']
+        self.assertEqual(redacted_command_line(argv, [None]), 'rna_silva -p /db/silva')
+
+    def test_the_log_never_holds_the_password(self):
+        with mock.patch.object(sys, 'argv', ['gtdb_migration_tk', 'update_db', '-p', 's3cret']):
+            logger_setup(self.dir, 'run.log', 'GTDB Migration Tk', 'gtdb_migration_tk',
+                         '0.0.0', False, secrets=['s3cret'])
+        self.assertNotIn('s3cret', self.log_file())
+        self.assertIn('update_db -p ' + REDACTED, self.log_file())
 
 
 class WhatASecondCallDoes(LoggerSetupCase):

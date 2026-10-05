@@ -225,6 +225,29 @@ def tsv_safe(text: str) -> str:
     return ' '.join(str(text).split())
 
 
+# The to_curate reason of a genome new to NCBI that NCBI publishes without its
+# genomic FASTA: an assembly whose directory holds only its reports (r237: two
+# Streptomyces diversicolor assemblies, GCA_056491145.1 and GCF_056491165.1). It
+# is named as an exception type is in curate_status(), so that curate_reason()
+# groups these genomes as one.
+CURATE_NO_GENOMIC_FASTA = 'no genomic FASTA'
+
+
+def no_genomic_fasta_status(genome_dir: str) -> str:
+    """The outcome written for a new genome NCBI publishes no genomic FASTA for.
+
+    Parameters
+    ----------
+    genome_dir : str
+        The genome's directory in the mirror.
+
+    @return: 'to_curate;no genomic FASTA: ...'.
+    """
+
+    return '{};{}: NCBI publishes none in {}'.format(
+        STATUS_TO_CURATE, CURATE_NO_GENOMIC_FASTA, tsv_safe(genome_dir))
+
+
 def curate_status(exc: Exception) -> str:
     """The outcome written for a genome that could not be compared at all.
 
@@ -321,7 +344,22 @@ def report_accessions(report_file: str, outcomes: Collection[str]) -> Set[str]:
     @return: accessions whose outcome is one of `outcomes`.
     """
 
-    accessions = set()
+    return {accession for _, accession, outcome in report_rows(report_file)
+            if outcome in outcomes}
+
+
+def report_rows(report_file: str) -> Iterator[Tuple[int, str, str]]:
+    """Every row of a report, checked for its columns, in the order written.
+
+    Parameters
+    ----------
+    report_file : str
+        report.log of the release, as written by UpdateGenomes.
+
+    @return: (line number, accession, outcome) for each row, the outcome as
+             report_outcome() gives it.
+    """
+
     with open(report_file) as handle:
         for number, row in enumerate(handle, start=1):
             if not row.strip():
@@ -336,10 +374,37 @@ def report_accessions(report_file: str, outcomes: Collection[str]) -> Set[str]:
                     'read: {!r}'.format(report_file, number, REPORT_COLUMNS,
                                         len(columns), row.rstrip('\n')))
 
-            if report_outcome(row) in outcomes:
-                accessions.add(report_accession(row))
+            yield number, report_accession(row), report_outcome(row)
 
-    return accessions
+
+def report_outcomes(report_file: str) -> Dict[str, str]:
+    """The outcome of every genome the report names.
+
+    For the one reader that acts on every outcome rather than asking for a set of
+    them: update_db, which adds the new genomes to the database and deletes the
+    removed ones. An accession named twice is refused rather than one of its rows
+    believed, since the report is written once per genome and a second row means
+    two runs were joined.
+
+    Parameters
+    ----------
+    report_file : str
+        report.log of the release, as written by UpdateGenomes.
+
+    @return: accession -> outcome, a to_curate reason dropped as report_outcome()
+             drops it.
+    """
+
+    outcomes = {}
+    for number, accession, outcome in report_rows(report_file):
+        if accession in outcomes:
+            raise BadReport('{}, line {}: {} is named a second time ({!r}, having '
+                            'been {!r}); a report names each genome once.'.format(
+                                report_file, number, accession, outcome,
+                                outcomes[accession]))
+        outcomes[accession] = outcome
+
+    return outcomes
 
 
 def genomes_to_regenerate(report_file: str) -> Set[str]:
@@ -1179,6 +1244,14 @@ class FTPTools():
         finish: a release quietly short of a genome is worse than one that did
         not finish being built.
 
+        A genome NCBI publishes without its genomic FASTA -- a directory of
+        reports and nothing else, which the sync mirrors faithfully -- is not
+        copied: nothing can be made of it, and the database cannot record a
+        genome with no sequence. It is reported for curation instead
+        (no_genomic_fasta_status()), which every command after this one already
+        passes over, and is added in a later release once NCBI publishes it. The
+        files are looked for on the copying threads, being one NFS stat each.
+
         Parameters
         ----------
         added_genomes : dict
@@ -1191,24 +1264,38 @@ class FTPTools():
             Number of genomes copied at once.
         """
 
+        threads = max(1, cpus)
+        gids = list(added_genomes)
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            has_fasta = dict(zip(gids, pool.map(
+                lambda gid: os.path.isfile(genomic_fasta(added_genomes[gid])), gids)))
+
         targets = {}
         for gid, path_record in added_genomes.items():
+            if not has_fasta[gid]:
+                self.report.write("{0}\t{1}\n".format(gid, no_genomic_fasta_status(path_record)))
+                continue
             targets[gid] = release_genome_dir(
                 new_directory, os.path.relpath(path_record, ftp_dir), gid)
             self.report.write("{0}\t{1}\n".format(gid, STATUS_NEW))
 
+        without = len(added_genomes) - len(targets)
+        if without:
+            self.logger.warning(
+                'warning: {:,} genome(s) new to NCBI have no genomic FASTA in the mirror '
+                'and are reported for curation rather than added.'.format(without))
+
         if self.dry_run:
             return
 
-        threads = max(1, cpus)
         copying = {}
-        pbar = tqdm(total=len(added_genomes), desc='Adding new genomes', ncols=100)
+        pbar = tqdm(total=len(targets), desc='Adding new genomes', ncols=100)
         pool = ThreadPoolExecutor(max_workers=threads)
         try:
-            for gid, source in added_genomes.items():
+            for gid in targets:
                 self.record_copied(copying, targets, pbar,
                                    threads * COPY_QUEUE_DEPTH)
-                copying[pool.submit(self.copy_genome, source, targets[gid])] = gid
+                copying[pool.submit(self.copy_genome, added_genomes[gid], targets[gid])] = gid
 
             # and the copies still running when the last genome was submitted
             self.record_copied(copying, targets, pbar, 1)

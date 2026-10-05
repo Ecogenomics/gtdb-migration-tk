@@ -349,13 +349,14 @@ class OptionsParser():
                     options.all_genomes)
 
     def update_db(self, options):
-        p = DatabaseManager(options.user, options.hostname,
-                            options.db, options.password,
-                            options.ftp_download_date,
-                            options.repository,
-                            options.report_dir, options.cpus)
-        p.runUpdate(options.checkm_profile,
-                    options.gtdb_genome_path_file, options.ftp_download_date)
+        p = DatabaseManager(options.hostname, options.user,
+                            options.password, options.db, options.cpus)
+        p.run(options.gtdb_genome_path_file,
+              options.report,
+              options.ftp_download_date,
+              options.output_dir,
+              rehash_all=options.rehash_all,
+              dry_run=options.dry_run)
 
     def update_checkm_db(self, options):
         p = CheckMDatabaseManager(options.hostname, options.user, options.password, options.db)

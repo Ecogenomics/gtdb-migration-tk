@@ -254,7 +254,10 @@ not bring derived data with (`new` and `genomic FASTA file changed`), which is
 what `hmmsearch` and `checkm` work on; the second gives every genome
 the release holds a directory for, which is what `--all_genomes` asks for. A
 `removed` genome is not in the release and a `to_curate` genome was never copied
-into it, so neither is ever handed to a later command. A report written before
+into it, so neither is ever handed to a later command. A genome new to NCBI that
+NCBI publishes without its genomic FASTA -- a directory of reports alone, as
+GCA_056491145.1 and GCF_056491165.1 are -- is `to_curate;no genomic FASTA: ...`
+rather than `new`, and is added by a later release once NCBI publishes it. A report written before
 0.0.9 opens with a domain column and is refused rather than read as empty.
 
 `--fresh` starts the release from the NCBI genome data alone: every genome of the
@@ -972,6 +975,46 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 | `update_taxid_to_db` | Add the NCBI taxid for each rank of each genome |
 | `update_type_designation` | Update `type_designation` once SeqCode, NCBI and LPSN data are loaded |
 | `add_surveillance_genomes` | Add surveillance genomes to a GTDB table |
+
+`update_db` brings the NCBI genomes of the `genomes` table into line with a
+release, from the two files `update_genomes` wrote for it: `report.log` says what
+became of each genome and `genome_dirs.tsv` where the release keeps it. One run
+covers RefSeq and GenBank, each genome's source taken from its accession.
+
+```bash
+gtdb_migration_tk update_db --hostname <host> -u <user> -d <db> -p <password> \
+    -g release237/genome_dirs.tsv --report release237/report.log -f <YYYY-MM-DD> \
+    -o update_db -l update_db/update_db.log -c 32 --dry_run
+```
+
+| Outcome in `report.log` | Genome in the database | Genome not in the database |
+| --- | --- | --- |
+| `new` | | added, or, where it is a new version of a genome being removed, takes over that genome's row (keeping its id and genome-list memberships, losing its aligned markers); not added where its directory has no genomic FASTA (`no genomic FASTA`), a release built before 0.1.41 holding such genomes as `new` |
+| `genomic FASTA file changed` | paths and hashes updated, aligned markers deleted | added |
+| `genomic FASTA sequences unchanged` | genomic FASTA hash updated | added |
+| `genomic FASTA file unchanged` | paths updated if moved; hashes only with `--rehash_all` | added |
+| `removed`, `to_curate` | deleted, with its metadata, aligned markers and genome-list memberships | nothing to do |
+
+A genome already in the database whose genomic FASTA has gone from the release
+stops the run: that release has lost a file. The files hashed are those that are
+new or may have changed; `--rehash_all`
+hashes every genome of the release, which the r237 update needs once: the
+database holds SHA-256 for genomes added before 2022 and SHA-1 since, and about
+6.6% of its genomic hashes no longer match their file. The hash, in both
+`*_sha256` columns, is SHA-1 of the decompressed file. `has_changed` is set TRUE
+for the genomes added, versioned or whose sequences changed, and FALSE for every
+other NCBI genome. The files are hashed first and the update then made in one
+transaction; `--dry_run` makes it and rolls it back.
+
+| File in `--out_dir` | |
+| --- | --- |
+| `update_db_report.tsv` | `genome_id`, `report_outcome`, `action`, `detail` for every genome of the report and of the database |
+| `genome_lists_affected.tsv` | each curated genome list a deleted genome was in |
+
+`--checkm_profile`, `-r/--repository` and `--report_dir` are gone: the genomes to
+add were the rows of a CheckM profile, which left out what CheckM did not
+assess, the run was made once per database, and the report directory is
+`--out_dir`.
 
 ### Nomenclature resources
 
