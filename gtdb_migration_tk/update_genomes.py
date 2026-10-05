@@ -321,7 +321,22 @@ def report_accessions(report_file: str, outcomes: Collection[str]) -> Set[str]:
     @return: accessions whose outcome is one of `outcomes`.
     """
 
-    accessions = set()
+    return {accession for _, accession, outcome in report_rows(report_file)
+            if outcome in outcomes}
+
+
+def report_rows(report_file: str) -> Iterator[Tuple[int, str, str]]:
+    """Every row of a report, checked for its columns, in the order written.
+
+    Parameters
+    ----------
+    report_file : str
+        report.log of the release, as written by UpdateGenomes.
+
+    @return: (line number, accession, outcome) for each row, the outcome as
+             report_outcome() gives it.
+    """
+
     with open(report_file) as handle:
         for number, row in enumerate(handle, start=1):
             if not row.strip():
@@ -336,10 +351,37 @@ def report_accessions(report_file: str, outcomes: Collection[str]) -> Set[str]:
                     'read: {!r}'.format(report_file, number, REPORT_COLUMNS,
                                         len(columns), row.rstrip('\n')))
 
-            if report_outcome(row) in outcomes:
-                accessions.add(report_accession(row))
+            yield number, report_accession(row), report_outcome(row)
 
-    return accessions
+
+def report_outcomes(report_file: str) -> Dict[str, str]:
+    """The outcome of every genome the report names.
+
+    For the one reader that acts on every outcome rather than asking for a set of
+    them: update_db, which adds the new genomes to the database and deletes the
+    removed ones. An accession named twice is refused rather than one of its rows
+    believed, since the report is written once per genome and a second row means
+    two runs were joined.
+
+    Parameters
+    ----------
+    report_file : str
+        report.log of the release, as written by UpdateGenomes.
+
+    @return: accession -> outcome, a to_curate reason dropped as report_outcome()
+             drops it.
+    """
+
+    outcomes = {}
+    for number, accession, outcome in report_rows(report_file):
+        if accession in outcomes:
+            raise BadReport('{}, line {}: {} is named a second time ({!r}, having '
+                            'been {!r}); a report names each genome once.'.format(
+                                report_file, number, accession, outcome,
+                                outcomes[accession]))
+        outcomes[accession] = outcome
+
+    return outcomes
 
 
 def genomes_to_regenerate(report_file: str) -> Set[str]:

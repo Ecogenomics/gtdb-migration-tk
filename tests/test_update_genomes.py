@@ -1113,6 +1113,26 @@ class WhatTheReportIsReadFor(TempDirCase):
         path = self.report_file('GCA_000000002.1\t' + UG.STATUS_NEW, '')
         self.assertEqual(UG.genomes_to_regenerate(path), {'GCA_000000002.1'})
 
+    def test_update_db_is_given_every_genome_and_its_outcome(self):
+        # update_db acts on every outcome, the removed and uncomparable genomes
+        # among them, so it is handed the whole report and not a set from it
+        path = self.report_file('GCA_000000002.1\t' + UG.STATUS_NEW,
+                                'GCF_000000005.1\t' + UG.STATUS_REMOVED,
+                                'GCA_000000006.1\tto_curate;OSError: gone')
+        self.assertEqual(UG.report_outcomes(path),
+                         {'GCA_000000002.1': UG.STATUS_NEW,
+                          'GCF_000000005.1': UG.STATUS_REMOVED,
+                          'GCA_000000006.1': UG.STATUS_TO_CURATE})
+
+    def test_a_genome_named_twice_is_refused_rather_than_one_row_believed(self):
+        # two runs' reports joined: which row is the release's cannot be told,
+        # and update_db would add a genome another row says was removed
+        path = self.report_file('GCA_000000002.1\t' + UG.STATUS_NEW,
+                                'GCA_000000002.1\t' + UG.STATUS_REMOVED)
+        with self.assertRaises(UG.BadReport) as caught:
+            UG.report_outcomes(path)
+        self.assertIn('line 2', str(caught.exception))
+
 
 class WhatTheReportSaysAboutARealRun(ReleaseFixture, TempDirCase):
     """The report an update writes, read back by the commands that follow it."""

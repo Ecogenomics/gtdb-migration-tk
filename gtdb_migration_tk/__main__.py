@@ -111,7 +111,7 @@ def print_help():
       busco            -> Estimate quality of new fungal genomes.
       
     Access to Database:
-     update_db          -> Update the GTDB database.
+     update_db          -> Update the NCBI genomes of the GTDB database to a new release.
      update_checkm_db   -> Import CheckM estimates.
      update_metadata_db -> Update metadata in database.
      update_reps_db     -> Update species cluter representatives in database.
@@ -257,7 +257,20 @@ def __first_domain_report(group, required):
 
 def __ftp_download_date(group, required):
     group.add_argument('-f', '--ftp_download_date', type=valid_date,
-                       help='Date when data was downloaded.format YYYY-MM-DD.', required=required)
+                       help='Date the genomes of the release were downloaded from NCBI, '
+                            'YYYY-MM-DD; recorded as date_added and last_update.', required=required)
+
+
+def __rehash_all(group):
+    group.add_argument('--rehash_all', action='store_true',
+                       help='Hash the genomic and protein FASTA files of every genome of the '
+                            'release, not only those that are new or changed.')
+
+
+def __update_db_dry_run(group):
+    group.add_argument('--dry_run', action='store_true',
+                       help='Make every change to the database and roll it back, writing '
+                            'the report of what the update would do.')
 
 
 
@@ -399,11 +412,6 @@ def __marker_db(group, required):
 def __metadata_file(group, required):
     group.add_argument('-m', '--metadata', help='Metadata file generated from "gtdb metadata export".',
                        required=required)
-
-def __report_dir(group, required):
-    group.add_argument('--report_dir', required=required,
-                       help='Output directory to list reports.')
-
 
 def __release_number(group, required):
     group.add_argument('-r', '--release_number', type=int, required=required,
@@ -551,10 +559,6 @@ def __report_file(group, required):
 
 def __report_folder(group, required):
     group.add_argument('-r', '--report_folder', help='Path to report directory.', required=required)
-
-
-def __repository(group, required):
-    group.add_argument('-r', '--repository', help='NCBI repository.', choices=['refseq', 'genbank'], required=required)
 
 
 def __representative_file(group, required):
@@ -1012,16 +1016,17 @@ def get_main_parser():
             __silent(grp)
             __cpus(grp)
     with subparser(sub_parsers, 'update_db',
-                   'Update the Postgres database.') as parser:
+                   'Update the NCBI genomes of the Postgres database to a new release.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __database_setup(grp, required=True)
-            __checkm_profile(grp, required=True)
-            __ftp_download_date(grp, required=True)
             __gtdb_genome_path_file(grp, required=True)
+            __report(grp, required=True)
+            __ftp_download_date(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
-            __repository(grp, required=True)
-            __report_dir(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __rehash_all(grp)
+            __update_db_dry_run(grp)
             __silent(grp)
             __cpus(grp)
 
@@ -1482,8 +1487,11 @@ def main():
         chosen, refused = None, None
         for log_dir, log_file in candidates:
             try:
+                # a database password is never written to the log
                 logger_setup(log_dir, log_file, 'GTDB Migration Tk',
-                             software_name, __version__, silent)
+                             software_name, __version__, silent,
+                             secrets=(getattr(args, 'password', None),
+                                      getattr(args, 'pwd', None)))
                 chosen = (log_dir, log_file)
                 break
             except (OSError, SystemExit) as exc:

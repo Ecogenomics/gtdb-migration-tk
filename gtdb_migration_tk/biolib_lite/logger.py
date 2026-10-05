@@ -27,7 +27,40 @@ except ImportError:
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
 
 
-def logger_setup(log_dir, log_file, program_name,software_name, version, silent):
+# What a secret given on the command line is logged as.
+REDACTED = '********'
+
+
+def redacted_command_line(argv, secrets):
+    """The command line as the log records it, with every secret masked.
+
+    Masked by value rather than by flag: -p is the database password of the *_db
+    commands and an output prefix or an rRNA path of others, so it is the value
+    the parsed options call a password that is hidden, as its own argument or
+    after '=' in --password=<value>.
+
+    Parameters
+    ----------
+    argv : list of str
+        The arguments, sys.argv[1:].
+    secrets : iterable of str
+        Values never to be written; empty and None ones are ignored.
+
+    @return: the arguments joined by spaces, each secret replaced by REDACTED.
+    """
+
+    secrets = {secret for secret in secrets if secret}
+    shown = []
+    for arg in argv:
+        if arg in secrets:
+            arg = REDACTED
+        elif '=' in arg and arg.split('=', 1)[1] in secrets:
+            arg = arg.split('=', 1)[0] + '=' + REDACTED
+        shown.append(arg)
+    return ' '.join(shown)
+
+
+def logger_setup(log_dir, log_file, program_name,software_name, version, silent, secrets=()):
     """Setup loggers.
 
     Two logger are setup which both print to the stdout and a
@@ -51,6 +84,8 @@ def logger_setup(log_dir, log_file, program_name,software_name, version, silent)
         Program version number.
     silent : boolean
         Flag indicating if output to stdout should be suppressed.
+    secrets : iterable of str
+        Values of the command line never to be logged, e.g. a database password.
     """
 
     # setup general properties of loggers
@@ -101,4 +136,4 @@ def logger_setup(log_dir, log_file, program_name,software_name, version, silent)
         no_timestamp_logger.addHandler(no_timestamp_file_logger)
 
     timestamp_logger.info('%s v%s' % (program_name, version))
-    timestamp_logger.info(software_name + ' ' + ' '.join(sys.argv[1:]))
+    timestamp_logger.info(software_name + ' ' + redacted_command_line(sys.argv[1:], secrets))

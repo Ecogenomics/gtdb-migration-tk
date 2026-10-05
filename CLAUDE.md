@@ -233,10 +233,13 @@ constants it writes, and `report_accessions()` with the two questions built on i
 adding the two carried-across outcomes). `hmmsearch` and `checkm` call those
 rather than splitting the rows themselves; each held its own copy of the parse
 until 0.1.25, and both were left behind by a change to the report.
-`trnascan_manager.py` holds a commented-out third copy. Add an outcome and
+`trnascan_manager.py` holds a commented-out third copy. `update_db` acts on every
+outcome, so it reads the whole report with `report_outcomes()`, and refuses one
+it has no meaning for (`database_manager.KNOWN_OUTCOMES`). Add an outcome and
 `tests/test_update_genomes.WhatTheReportIsReadFor` fails until it is put in one
-set or deliberately left out of both. Nothing outside `update_genomes.py` parses
-a report row.
+set or deliberately left out of both, and `tests/test_database_manager` until
+`update_db` is told what to do with it. Nothing outside `update_genomes.py`
+parses a report row.
 
 ### Every external program's version is recorded, in the log and beside its results
 
@@ -286,8 +289,18 @@ command line, and those must match `config.py`.
 Credentials are always passed on the command line (`--hostname -u -d -p`, via the
 `__database_setup` helper), never read from a config file.
 `database_configuration/GenomeDatabaseConnectionFTPUpdate.py` is a thin psycopg2
-wrapper most `*_db` managers use; `lpsn.py` and `ncbi_tax_manager.py` use
-SQLAlchemy `create_engine` directly. `gtdb_lite/gtdb_importer.py` relies on an
+wrapper most `*_db` managers use; it writes the credentials into a connection
+string unquoted, so `update_db` (`database_manager.py`) hands them to
+`psycopg2.connect()` as keywords instead. `lpsn.py` and `ncbi_tax_manager.py` use
+SQLAlchemy `create_engine` directly.
+
+`update_db` decides every genome from `report.log` and `genome_dirs.tsv` alone
+(`plan_update()`, which reads no database and is what the tests drive), covers
+RefSeq and GenBank in one run, the source read from the accession prefix, and
+makes the whole update in one transaction after the files are hashed.
+`genomes.fasta_file_sha256` and `genes_file_sha256` hold SHA-1, despite their
+names, of the DECOMPRESSED file, as everything in the toolkit hashes its own
+gzipped files; see the module docstring. `gtdb_lite/gtdb_importer.py` relies on an
 `upsert` stored procedure that exists in the GTDB database.
 
 ### Vendored libraries
