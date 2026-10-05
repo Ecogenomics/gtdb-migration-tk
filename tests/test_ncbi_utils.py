@@ -459,3 +459,40 @@ class AssemblyTotalLengthTests(TempDirCase):
     def test_the_sync_mirrors_the_file_read(self):
         from gtdb_migration_tk import ncbi_genome_sync
         self.assertIn(U.ASSEMBLY_STATS_EXT, ncbi_genome_sync.WANTED_SUFFIXES)
+
+
+class StrainIdentifierTests(unittest.TestCase):
+    """The strain IDs ncbi_strains and strains type_table read from an infraspecific name."""
+
+    def test_a_strain_with_a_slash_is_kept_whole_and_in_its_parts(self):
+        # NCBI and LPSN write a strain differently; whichever form a repository
+        # uses has to be among them
+        self.assertEqual(U.strain_identifiers('strain=98-1261 /1', 'na'),
+                         ['1', '98-1261', '98-1261 /1'])
+
+    def test_the_strains_of_one_name_are_split_on_each_separator(self):
+        self.assertEqual(U.strain_identifiers('strain=DSM 1; ATCC 2, LMG 3=JCM 4', 'na'),
+                         ['ATCC 2', 'DSM 1', 'JCM 4', 'LMG 3'])
+
+    def test_a_substrain_is_dropped(self):
+        self.assertEqual(U.strain_identifiers('strain=K-12 substr. MG1655', 'na'), ['K-12'])
+
+    def test_the_isolate_is_a_strain_id_too(self):
+        self.assertEqual(U.strain_identifiers('strain=X1', 'UBA1234'), ['UBA1234', 'X1'])
+
+    def test_n_a_is_no_strain_rather_than_the_strains_n_and_a(self):
+        for name in ('strain=n/a', 'strain=N/A', 'strain=NA', 'strain=none', 'na'):
+            with self.subTest(name=name):
+                self.assertEqual(U.strain_identifiers(name, 'na'), [])
+
+    def test_n_a_beside_a_real_isolate_leaves_the_isolate(self):
+        self.assertEqual(U.strain_identifiers('strain=n/a', 'H082280513'), ['H082280513'])
+
+
+class NomenclaturalCodeTests(unittest.TestCase):
+    def test_a_seqcode_name_is_read_without_its_code(self):
+        self.assertEqual(U.strip_nomenclatural_code('Patescibacteriaceae (SeqCode)'),
+                         'Patescibacteriaceae')
+
+    def test_a_name_that_is_nothing_but_the_code_is_left_as_it_is(self):
+        self.assertEqual(U.strip_nomenclatural_code('(SeqCode)'), '(SeqCode)')

@@ -162,8 +162,11 @@ prefixes derived from them), `NCBI_HOST`/`NCBI_URL`, the naming of a saved
 summary file (`assembly_summary_filename()`/`assembly_summary_database()`), the
 columns every GTDB genome table opens with (`GENOME_COLUMNS`, `table_header()`),
 `NCBI_NA`, `has_ftp_path()`, the manifest (`MD5_MANIFEST`, `GENOMIC_FASTA_EXT`,
-`read_md5_manifest()`) and the block files are read and hashed in (`CHUNK`,
-`file_md5()`). It is a leaf: it imports nothing from the package, and
+`read_md5_manifest()`), the block files are read and hashed in (`CHUNK`,
+`file_md5()`), how a strain designation is split into strain IDs
+(`strain_identifiers()`, shared by `ncbi_strains` and `strains type_table`) and how
+NCBI's `(SeqCode)` is taken off a name (`strip_nomenclatural_code()`, shared by
+`ncbi_tax_manager` and `strains`). It is a leaf: it imports nothing from the package, and
 `ncbi_genome_sync.py` imports from it and from nothing else in the package. The
 command modules do not import one another; anything two of them need goes here.
 

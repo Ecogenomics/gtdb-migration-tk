@@ -95,8 +95,11 @@ class OptionsParser():
             options.gtdb_genome_path_file, options.output_dir)
 
     def generate_type_table(self, options):
+        for assembly_summary in options.new_list_genomes:
+            check_file_exists(assembly_summary)
         p = Strains(options.output_dir, options.cpus)
-        p.generate_type_strain_table(options.metadata,
+        p.generate_type_strain_table(options.gtdb_genome_path_file,
+                                     options.new_list_genomes,
                                      options.ncbi_names,
                                      options.ncbi_nodes,
                                      options.lpsn_gss_file,
