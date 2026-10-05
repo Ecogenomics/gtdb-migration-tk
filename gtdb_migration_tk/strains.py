@@ -26,6 +26,25 @@ __status__ = 'Development'
 
 """Decide which genomes are assembled from type material, from LPSN and the NCBI taxonomy.
 
+WHERE THE NCBI DATA COMES FROM
+
+Everything type_table knows of a genome it reads from the files of the release,
+so it can run once the release is built rather than once the database holds it:
+which genomes, from the release's genome_dirs.tsv; the organism name, taxID,
+strain identifiers and NCBI's type material status, from the assembly summaries;
+and the species, subspecies and every name NCBI gives a taxon, from names.dmp
+and nodes.dmp. It read the first five from a metadata table exported from the
+database, whose NCBI taxonomy was itself made from names.dmp and nodes.dmp, and
+whose strain identifiers ncbi_strains made from the same infraspecific name and
+isolate the summaries carry (ncbi_utils.strain_identifiers(), shared by both):
+over r237 the summaries give every strain identifier the database held for all
+but 51 of 1,047,596 genomes. A species is named as ncbi_tax_manager names it,
+NCBI's '(SeqCode)' removed (ncbi_utils.strip_nomenclatural_code()). A genome
+whose taxID nodes.dmp does not hold -- NCBI deleted 1,288 taxIDs of r237's
+genomes, nearly all of '<genus> sp.' placeholders, between the summaries and the
+taxonomy -- has no NCBI species, and so is not type material, as it is in the
+NCBI taxonomy of the release.
+
 A FAILURE FAILS THE COMMAND
 
 A genome the matching cannot decide is not a genome that is not type material.
@@ -50,6 +69,9 @@ from collections import defaultdict, namedtuple
 
 from tqdm import tqdm
 
+from gtdb_migration_tk.batching import read_genome_dirs
+from gtdb_migration_tk.ncbi_utils import (NCBI_NA, REFSEQ_PREFIX, read_assembly_summary,
+                                          strain_identifiers, strip_nomenclatural_code)
 from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
 
 
@@ -80,6 +102,20 @@ def _match_genome(gid):
 LPSN_TYPE_DESIGNATIONS = {'Type strain': 'type strain of species',
                           'Holotype': 'holotype of species',
                           'Nomenclatural type': 'nomenclatural type of species'}
+
+
+# The columns of an assembly summary type_table reads, in this order.
+SUMMARY_COLUMNS = ('assembly_accession', 'taxid', 'organism_name', 'infraspecific_name',
+                   'isolate', 'relation_to_type_material')
+
+
+def gtdb_accession(accession):
+    """An NCBI accession as GTDB writes it, e.g. RS_GCF_000005845.2 or GB_GCA_000005845.2.
+
+    @return: the accession prefixed with its database.
+    """
+
+    return ('RS_' if accession.startswith(REFSEQ_PREFIX) else 'GB_') + accession
 
 
 def replace_when_written(path):
@@ -167,6 +203,7 @@ class Strains(object):
 
         # determine NCBI taxIDs of species and parent<->child tree
         species_taxids = set()
+        subspecies_taxids = set()
         parent = {}
         with open(ncbi_nodes_file) as nodes:
             for line in nodes:
@@ -180,6 +217,8 @@ class Strains(object):
 
                 if rank == 'species':
                     species_taxids.add(cur_taxid)
+                elif rank == 'subspecies':
+                    subspecies_taxids.add(cur_taxid)
 
         self.logger.info(
             'Identified {:,} NCBI taxonomy species nodes.'.format(len(species_taxids)))
@@ -209,10 +248,15 @@ class Strains(object):
         category_names = {}
         type_material = defaultdict(set)
         ncbi_authority = {}
+        scientific_names = {}
         with open(ncbi_names_file) as nnf:
             for line in nnf:
                 tokens = [token.strip() for token in line.split('|')]
                 cur_taxid = int(tokens[0])
+
+                if tokens[3] == 'scientific name' and (cur_taxid in species_taxids
+                                                       or cur_taxid in subspecies_taxids):
+                    scientific_names[cur_taxid] = strip_nomenclatural_code(tokens[1])
 
                 if '<not considered type>' in tokens[2]:
                     self.logger.warning(f"Ignoring {tokens[1]} as it is not considered type material.")
@@ -245,63 +289,100 @@ class Strains(object):
                     'equivalent name: synonyms {}, scientific names {}, equivalent names {}.'.format(
                         k, v['synonym'], v.get('scientific name'), v['equivalent name']))
 
-        return category_names, type_material, species_of_taxid, ncbi_authority
+        # name the species, and any subspecies, each taxon of interest lies in:
+        # the subspecies nearest it, and the species above that
+        lineage_names = {}
+        for cur_taxid in taxids_of_interest:
+            species = subspecies = None
+            taxid = cur_taxid
+            while taxid in parent:
+                if taxid in species_taxids:
+                    species = scientific_names.get(taxid)
+                    break
+                if taxid in subspecies_taxids and subspecies is None:
+                    subspecies = scientific_names.get(taxid)
+                if parent[taxid] == taxid:
+                    break
+                taxid = parent[taxid]
+            lineage_names[cur_taxid] = (species, subspecies)
 
-    def load_metadata(self, metadata_file):
-        """Parse data from GTDB metadata file."""
+        return category_names, type_material, species_of_taxid, ncbi_authority, lineage_names
+
+    def load_genomes(self, genome_dirs_file, assembly_summary_files):
+        """The NCBI data of each genome of the release, from the assembly summaries.
+
+        See WHERE THE NCBI DATA COMES FROM. The species is added once names.dmp
+        and nodes.dmp are read (name_species()).
+
+        Parameters
+        ----------
+        genome_dirs_file : str
+            genome_dirs.tsv of the release, naming its genomes.
+        assembly_summary_files : sequence of str
+            The NCBI assembly summaries the release was selected from.
+
+        @return: (GTDB accession -> the genome's NCBI data, the genomes' taxIDs).
+
+        Raises
+        ------
+        StrainsError
+            A genome of the release is in none of the summaries.
+        """
+
+        release = {accession for accession, _ in read_genome_dirs(genome_dirs_file)}
 
         metadata = {}
-        with open(metadata_file, encoding='utf-8', newline='') as metaf:
-            # a tab-separated export is split on tabs, as it always was; a
-            # comma-separated one is read as CSV, so a quoted value holding a
-            # comma (an organism name, a strain list) stays one field
-            headers_line = metaf.readline()
-            if '\t' in headers_line:
-                headers = headers_line.rstrip('\r\n').split('\t')
-                rows = (line.rstrip('\r\n').split('\t') for line in metaf)
-            else:
-                headers = next(csv.reader([headers_line]))
-                rows = csv.reader(metaf)
-
-            gtdb_ncbi_organism_name_index = headers.index('ncbi_organism_name')
-            gtdb_ncbi_type_material_designation_index = headers.index(
-                'ncbi_type_material_designation')
-            gtdb_accession_index = headers.index('accession')
-            gtdb_strain_identifiers_index = headers.index(
-                'ncbi_strain_identifiers')
-            gtdb_ncbi_taxonomy_unfiltered_index = headers.index(
-                'ncbi_taxonomy_unfiltered')
-            gtdb_ncbi_taxid_index = headers.index('ncbi_taxid')
-
-            taxids = set()
-            for infos in rows:
-                if not infos:
+        taxids = set()
+        found = set()
+        for summary in assembly_summary_files:
+            for (accession, taxid, organism_name, infraspecific_name,
+                 isolate, type_material) in read_assembly_summary(summary, *SUMMARY_COLUMNS):
+                if accession not in release:
                     continue
+                found.add(accession)
 
-                gid = infos[gtdb_accession_index]
+                strain_ids = strain_identifiers(infraspecific_name, isolate)
+                standard_strain_ids = {self.standardize_strain_id(sid)
+                                       for sid in self.fix_common_strain_id_errors(strain_ids)} - {''}
 
-                if not gid.startswith('U_'):
-                    # standardize NCBI strain IDs
-                    standard_strain_ids = []
-                    if infos[gtdb_strain_identifiers_index] != 'none':
-                        created_list = [
-                            sid.strip() for sid in infos[gtdb_strain_identifiers_index].split(';')]
-                        created_list = self.fix_common_strain_id_errors(
-                            created_list)
-                        standard_strain_ids = [self.standardize_strain_id(sid)
-                                               for sid in created_list
-                                               if (sid != '' and sid != 'none')]
-                    metadata[gid] = {
-                        'ncbi_organism_name': infos[gtdb_ncbi_organism_name_index],
-                        'ncbi_strain_ids': infos[gtdb_strain_identifiers_index],
-                        'ncbi_standardised_strain_ids': set(standard_strain_ids),
-                        'ncbi_type_material_designation': infos[gtdb_ncbi_type_material_designation_index],
-                        'ncbi_taxonomy_unfiltered': infos[gtdb_ncbi_taxonomy_unfiltered_index],
-                        'ncbi_taxid': int(infos[gtdb_ncbi_taxid_index])}
+                metadata[gtdb_accession(accession)] = {
+                    'ncbi_organism_name': organism_name,
+                    'ncbi_strain_ids': ';'.join(strain_ids) or 'none',
+                    'ncbi_standardised_strain_ids': standard_strain_ids,
+                    'ncbi_type_material_designation': type_material,
+                    'ncbi_taxid': int(taxid)}
+                taxids.add(int(taxid))
 
-                    taxids.add(int(infos[gtdb_ncbi_taxid_index]))
+        missing = release - found
+        if missing:
+            raise StrainsError(
+                '{:,} genome(s) of {} are in none of the assembly summaries given, e.g. {}: '
+                'the release and the summaries are of different releases, or a summary is '
+                'missing.'.format(len(missing), genome_dirs_file, ', '.join(sorted(missing)[:5])))
+
+        self.logger.info('Read the NCBI data of {:,} genomes from {:,} assembly summaries.'.format(
+            len(metadata), len(assembly_summary_files)))
 
         return metadata, taxids
+
+    def name_species(self, lineage_names):
+        """Give each genome the species and subspecies of its NCBI taxID.
+
+        @return: None
+        """
+
+        unnamed = 0
+        for genome_metadata in self.metadata.values():
+            species, subspecies = lineage_names.get(genome_metadata['ncbi_taxid'], (None, None))
+            genome_metadata['ncbi_species'] = species
+            genome_metadata['ncbi_subspecies'] = subspecies
+            if species is None:
+                unnamed += 1
+
+        if unnamed:
+            self.logger.warning(
+                'warning: {:,} genome(s) have no NCBI species, their taxID absent from '
+                'nodes.dmp or below no species node, and are not type material.'.format(unnamed))
 
     def load_dsmz_strains_dictionary(self, dsmz_dir):
         # We load the dictionary of strains from DSMZ
@@ -316,7 +397,7 @@ class Strains(object):
                 else:
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
-                    dsmz_strains_dic[infos[0]] = '='.join(set(list_strains))
+                    dsmz_strains_dic[infos[0]] = '='.join(sorted(set(list_strains)))
 
         return dsmz_strains_dic
 
@@ -339,7 +420,7 @@ class Strains(object):
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
                     if len(list_strains) > 0:
-                        lpsn_strains_dic[sp] = {'strains': '='.join(set(list_strains)), 'neotypes': ''}
+                        lpsn_strains_dic[sp] = {'strains': '='.join(sorted(set(list_strains))), 'neotypes': ''}
                 elif len(infos) == 3:
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
@@ -348,7 +429,7 @@ class Strains(object):
                         if designation and designation not in LPSN_TYPE_DESIGNATIONS:
                             unknown_designations[sp] = designation
                         td = LPSN_TYPE_DESIGNATIONS.get(designation, '')
-                        lpsn_strains_dic[sp] = {'strains': '='.join(set(list_strains)), 'neotypes': '','type_designation': td}
+                        lpsn_strains_dic[sp] = {'strains': '='.join(sorted(set(list_strains))), 'neotypes': '','type_designation': td}
 
         if unknown_designations:
             raise StrainsError(
@@ -452,18 +533,11 @@ class Strains(object):
         and the species name otherwise.
         """
 
-        ncbi_unfiltered_taxa = [
-            t.strip() for t in self.metadata[gid]['ncbi_taxonomy_unfiltered'].split(';')]
-        ncbi_species = None
-        ncbi_subspecies = None
-        for taxon in ncbi_unfiltered_taxa:
-            if taxon.startswith('s__'):
-                ncbi_species = taxon[3:]
-            elif taxon.startswith('sb__'):
-                ncbi_subspecies = taxon[4:]
-
-                # fix odd designation impacting less than a dozen genomes
-                ncbi_subspecies = ncbi_subspecies.replace(' pv. ', ' subsp. ')
+        ncbi_species = self.metadata[gid]['ncbi_species']
+        ncbi_subspecies = self.metadata[gid]['ncbi_subspecies']
+        if ncbi_subspecies:
+            # fix odd designation impacting less than a dozen genomes
+            ncbi_subspecies = ncbi_subspecies.replace(' pv. ', ' subsp. ')
 
         if ncbi_subspecies:
             if 'subsp.' not in ncbi_subspecies:
@@ -633,14 +707,21 @@ class Strains(object):
         # species name to strain information at NCBI. Searching is performed on the
         # raw NCBI species designations associated with a standard name as it can be
         # challenging to parse strain information from these entries.
+        # The names are taken in sorted order, and a name replaces the match only
+        # where its status ranks higher, so that two names matching as well as
+        # each other give the same match on every run: they came from a set, in
+        # an order of Python's choosing, and the first won. Each name's status
+        # is its LPSN designation (designated_status()) before it is compared,
+        # so a type strain of a validly published name outranks the nomenclatural
+        # type of a name that is not, as they are ranked in type_priority:
+        # Clostridium ramosum over Erysipelatoclostridium ramosum, which was
+        # matched instead on some runs.
         match = None
-        gtdb_types = set()
+        official_status = None
         repository_strain_ids = []
-        for standard_name, raw_names in standard_names.items():
+        for standard_name, raw_names in sorted(standard_names.items()):
             if standard_name not in strain_dictionary:
                 continue
-
-
 
             if sourcest == 'lpsn':
                 # lpsn has information for both strains and neotype strains
@@ -688,37 +769,27 @@ class Strains(object):
                     if isneotype and gtdb_type_status == self.TYPE_SPECIES:
                         gtdb_type_status = self.TYPE_NEOTYPE
 
-            m = self.Match(category, istype, isneotype, gtdb_type_status,
-                           standard_name, matched_strain_id, year_date,False)
+            m = self.Match(category, istype, isneotype,
+                           self.designated_status(gtdb_type_status, standard_name, strain_dictionary),
+                           standard_name, matched_strain_id, year_date, False)
 
             if category == 'official_name':
-                if match:
-                    prev_gtdb_type_status = match.gtdb_type_status
-                    if prev_gtdb_type_status != gtdb_type_status:
-                        raise StrainsError('Official species name has ambiguous type status: {}, {}, {}'.format(
-                            gid,
-                            gtdb_type_status,
-                            prev_gtdb_type_status))
-                match = m
-            elif category != '':
+                # an official name has one type status, its LPSN designation aside
+                if official_status is not None and official_status != gtdb_type_status:
+                    raise StrainsError('Official species name has ambiguous type status: {}, {}, {}'.format(
+                        gid,
+                        gtdb_type_status,
+                        official_status))
+                official_status = gtdb_type_status
+
+            if category != '':
                 # it is possible for a genome to be both a 'type strain of subspecies',
                 # 'type strain of heterotypic synonym', and potentially a 'type strain of species'
                 # depending on the different synonyms, equivalent names, and
                 # misspelling
-                if match:
-                    prev_gtdb_type_status = match.gtdb_type_status
-                    if self.type_priority.index(gtdb_type_status) < self.type_priority.index(prev_gtdb_type_status):
-                        match = m
-                else:
+                if (match is None or self.type_priority.index(m.gtdb_type_status)
+                        < self.type_priority.index(match.gtdb_type_status)):
                     match = m
-
-        if match and match.gtdb_type_status==self.TYPE_SPECIES:
-            if strain_dictionary.get(match.standard_name) and strain_dictionary.get(match.standard_name).get('type_designation'):
-                td = strain_dictionary.get(match.standard_name).get('type_designation')
-                if td == 'nomenclatural type of species':
-                    match = match._replace(gtdb_type_status=self.NOMENCLATURAL_TYPE)
-                elif td == 'holotype of species':
-                    match = match._replace(gtdb_type_status=self.HOLOTYPE)
 
         if match :
             # add the is_from_standard field to the match named tuple to indicate if the match is from a standard name or a synonym/equivalent/misspelling name
@@ -727,6 +798,28 @@ class Strains(object):
                 match = match._replace(is_from_standard=True)
 
         return match
+
+    def designated_status(self, gtdb_type_status, standard_name, strain_dictionary):
+        """A type strain of species's status as LPSN designates its type.
+
+        LPSN gives the type of a name that is not validly published as its
+        nomenclatural type, and of a name under the ICN as its holotype, which
+        rank below a type strain in type_priority.
+
+        @return: NOMENCLATURAL_TYPE or HOLOTYPE where LPSN designates the name's
+                 type so, and gtdb_type_status otherwise.
+        """
+
+        if gtdb_type_status != self.TYPE_SPECIES:
+            return gtdb_type_status
+
+        entry = strain_dictionary.get(standard_name)
+        designation = entry.get('type_designation') if isinstance(entry, dict) else None
+        if designation == self.NOMENCLATURAL_TYPE:
+            return self.NOMENCLATURAL_TYPE
+        if designation == self.HOLOTYPE:
+            return self.HOLOTYPE
+        return gtdb_type_status
 
     def select_category_name(self, spe_name, misspelling_names, synonyms, equivalent_names):
         """Determine if name is a synonym, equivalent name, or misspelling."""
@@ -974,10 +1067,10 @@ class Strains(object):
             synonym = '; '.join(
                 self.ncbi_auxiliary_names[info_genomes['ncbi_taxid']]['synonym'])
 
-        expanded_ids_str = '; '.join(self.metadata[gid]['ncbi_expanded_standardised_strain_ids'])
-        intersect_ids_str = '; '.join(
-            repository_strain_ids.intersection(self.metadata[gid]['ncbi_expanded_standardised_strain_ids']))
-        repo_ids_str = '; '.join(repository_strain_ids)
+        expanded_ids_str = '; '.join(sorted(self.metadata[gid]['ncbi_expanded_standardised_strain_ids']))
+        intersect_ids_str = '; '.join(sorted(
+            repository_strain_ids.intersection(self.metadata[gid]['ncbi_expanded_standardised_strain_ids'])))
+        repo_ids_str = '; '.join(sorted(repository_strain_ids))
 
         fout.write(
             f"{gid}\t"
@@ -1054,11 +1147,11 @@ class Strains(object):
 
             fout.write(gid)
 
-            species_name = self.get_species_name(gid)
+            species_name = self.get_species_name(gid) or ''
             fout.write('\t{}\t{}\t{}\t{}'.format(species_name,
                                              metadata['ncbi_organism_name'],
                                              metadata['ncbi_strain_ids'],
-                                             '; '.join(metadata['ncbi_expanded_standardised_strain_ids'])))
+                                             '; '.join(sorted(metadata['ncbi_expanded_standardised_strain_ids']))))
 
             fout.write('\t{}\t{}'.format(ncbi_authority.get(metadata['ncbi_taxid'], '').replace('"', '~'),
                                      metadata['ncbi_type_material_designation']))
@@ -1092,7 +1185,9 @@ class Strains(object):
             fout.write('\t{}'.format(lpsn[gid].priority_year if gid in lpsn else ''))
             fout.write('\t{}\n'.format(type_species_of_genus))
 
-            if metadata['ncbi_type_material_designation'] == 'none' and highest_priority_designation == self.TYPE_SPECIES:
+            # NCBI's null, NCBI_NA, where it gives no type material status; these
+            # counts compared with 'none', which it never holds, so counted nothing
+            if metadata['ncbi_type_material_designation'] == NCBI_NA and highest_priority_designation == self.TYPE_SPECIES:
                 missing_type_at_ncbi += 1
 
             if metadata['ncbi_type_material_designation'] == 'assembly from type material' and highest_priority_designation == self.NOT_TYPE_MATERIAL:
@@ -1152,7 +1247,8 @@ class Strains(object):
             self.metadata[gid]['ncbi_expanded_standardised_strain_ids'] = strain_ids
 
     def generate_type_strain_table(self,
-                                   metadata_file,
+                                   genome_dirs_file,
+                                   assembly_summary_files,
                                    ncbi_names_file,
                                    ncbi_nodes_file,
                                    lpsn_gss_file,
@@ -1161,8 +1257,9 @@ class Strains(object):
         """Parse multiple sources to identify genomes assembled from type material."""
 
         # initialize data being parsed from file
-        self.logger.info('Parsing GTDB metadata.')
-        self.metadata, taxids_of_interest = self.load_metadata(metadata_file)
+        self.logger.info('Reading the genomes of the release and their NCBI assembly data.')
+        self.metadata, taxids_of_interest = self.load_genomes(genome_dirs_file,
+                                                              assembly_summary_files)
 
         self.logger.info('Parsing year table.')
         self.lpsn_year_table = self.load_year_dict(year_table)
@@ -1174,7 +1271,9 @@ class Strains(object):
         (self.ncbi_auxiliary_names,
             ncbi_coidentical_strain_ids,
             ncbi_species_of_taxid,
-            ncbi_authority) = rtn
+            ncbi_authority,
+            lineage_names) = rtn
+        self.name_species(lineage_names)
 
         # expand set of NCBI co-identical strain IDs associated with each
         # genome

@@ -40,17 +40,8 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
-from gtdb_migration_tk.ncbi_utils import open_summary
-
-
-# NCBI marks a name it holds under the SeqCode by appending the code to the name
-# itself in names.dmp, e.g. "Patescibacteriaceae (SeqCode)". That is an
-# annotation saying which nomenclatural code published the name, not part of the
-# name, and carrying it through would leave GTDB with an f__Patescibacteriaceae
-# (SeqCode) that matches no other spelling of the same taxon; in a species name
-# the brackets also fail the valid character check, dropping the genome from the
-# standardized taxonomy altogether.
-SEQCODE_SUFFIX = '(SeqCode)'
+from gtdb_migration_tk.ncbi_utils import (SEQCODE_SUFFIX, open_summary,
+                                          strip_nomenclatural_code)
 
 
 class TaxonomyNCBI(object):
@@ -219,14 +210,7 @@ class TaxonomyNCBI(object):
         @return: the name without a trailing code annotation.
         """
 
-        if name_txt.endswith(SEQCODE_SUFFIX):
-            stripped = name_txt[:-len(SEQCODE_SUFFIX)].strip()
-            # a name that is nothing but the annotation is not a name; leave it
-            # as it stands rather than putting an empty taxon in a lineage
-            if stripped:
-                return stripped
-
-        return name_txt
+        return strip_nomenclatural_code(name_txt)
 
     def _valid_species_name(self, species_name, require_full=True, require_prefix=True):
         """Check if species name is a valid binomial name."""

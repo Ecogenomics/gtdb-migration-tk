@@ -1040,8 +1040,25 @@ assess, the run was made once per database, and the report directory is
 | --- | --- |
 | `lpsn` | LPSN processing (`pull_html`, `parse_html`, `lpsn_wf`, `add_metadata`) |
 | `bacdive` | BacDive processing (`download_strains`) — in development |
-| `strains` | Combine LPSN/DSMZ information (`date_table`, `type_table`) |
-| `ncbi_strains` | Parse NCBI assembly reports and GenBank files for strain identifiers |
+| `strains` | Year of priority (`date_table`) and type material status (`type_table`) of each genome, from LPSN |
+| `ncbi_strains` | Parse NCBI assembly reports for strain identifiers and type material status |
+
+`strains type_table` decides which genomes of a release are assembled from type
+material, matching each genome's NCBI species and strain IDs against LPSN's type
+strains, and writes `gtdb_type_strain_summary.tsv` for `metadata_type_material`.
+It reads the genomes from the release's files rather than the database, so it can
+run once `ncbi_metadata_sync` and `update_genomes` are done: which genomes from
+`genome_dirs.tsv` (`-g`); their organism name, taxid, strain IDs and NCBI type
+material status from the assembly summaries (`-n`, as `select_genomes` takes them); their
+species, and every name NCBI gives a taxon, from `names.dmp` and `nodes.dmp`.
+
+```bash
+gtdb_migration_tk strains type_table -g release237/genome_dirs.tsv \
+    -n ncbi/assembly_summary_*.txt.gz \
+    --ncbi_names taxdump/names.dmp --ncbi_nodes taxdump/nodes.dmp \
+    --lpsn_gss_file lpsn_gss_<date>.csv --lpsn_dir lpsn/parse_html/all_ranks \
+    --year_table year_table.tsv -o strain_table -c 16
+```
 
 ### Validation
 

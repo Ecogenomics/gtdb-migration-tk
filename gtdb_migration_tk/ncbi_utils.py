@@ -397,6 +397,106 @@ def ncbi_translation_table(gff_file: str) -> Optional[int]:
 # writes in the same position of the tables it derives from one.
 NCBI_NA = 'na'
 
+# What NCBI's submitters write for a strain an assembly does not have: NCBI's
+# own null, 'n/a' (strain=n/a, 94 genomes of r237) and 'none'. Read as a strain,
+# 'n/a' was split on its '/' into the strain IDs 'n' and 'a'. Compared without
+# regard to case: strain=NA is 56 more.
+NO_STRAIN = frozenset((NCBI_NA, 'n/a', 'none'))
+
+
+def split_strain_ids(values: Iterable[str]) -> List[str]:
+    """The strain IDs a strain designation holds, split as NCBI writes them together.
+
+    NCBI and LPSN write the same strain differently, so a designation is split
+    every way it might name one: 'X (=Y)' as X and Y, any of ';', ',' and '=' as
+    a separator, and a value holding '/' both whole and in its parts -- strain
+    98-1261 /1 is '98-1261 /1', '98-1261' and '1' -- so that whichever form a
+    type strain repository uses is among them.
+
+    Parameters
+    ----------
+    values : iterable of str
+        Strain designations, e.g. the strains of an infraspecific name.
+
+    @return: the IDs, unstripped and in the order found; a NO_STRAIN value gives none.
+    """
+
+    results = []
+    for raw in values:
+        if raw.strip().lower() in NO_STRAIN:
+            continue
+        raw = raw.replace('type strain:', '')
+        if '(=' in raw and ')' in raw:
+            raw = raw.replace('(=', '=').replace(')', '=')
+
+        parts = [raw] + raw.split('/') if '/' in raw else [raw]
+        for part in parts:
+            results.extend(re.split(';|,|=', part))
+
+    return results
+
+
+def strain_identifiers(infraspecific_name: str, isolate: str) -> List[str]:
+    """The strain IDs of an assembly, from its infraspecific name and isolate.
+
+    Read from the infraspecific_name and isolate of an assembly summary, or the
+    '# Infraspecific name:' and '# Isolate:' lines of an assembly report, which
+    hold the same. A substrain is dropped ('K-12 substr. MG1655' is K-12).
+
+    Parameters
+    ----------
+    infraspecific_name : str
+        e.g. 'strain=ATCC 11775', or NCBI_NA.
+    isolate : str
+        e.g. 'UBA1234', or NCBI_NA.
+
+    @return: the distinct IDs, stripped and sorted.
+    """
+
+    strains = []
+    if infraspecific_name.strip().lower() not in NO_STRAIN:
+        strains = [x.strip() for x in re.split(';|,|=', infraspecific_name.replace('strain=', '').strip())]
+        strains = [x.split('substr.')[0].rstrip() if 'substr.' in x else x for x in strains]
+
+    ids = split_strain_ids(strains) + split_strain_ids([isolate.replace('strain=', '').strip()])
+    return sorted({x.strip() for x in ids
+                   if x.strip() and x.strip().lower() not in NO_STRAIN})
+
+
+# NCBI marks a name it holds under the SeqCode by appending the code to the name
+# itself in names.dmp, e.g. "Patescibacteriaceae (SeqCode)". That is an
+# annotation saying which nomenclatural code published the name, not part of the
+# name, and carrying it through would leave GTDB with an f__Patescibacteriaceae
+# (SeqCode) that matches no other spelling of the same taxon; in a species name
+# the brackets also fail the valid character check, dropping the genome from the
+# standardized taxonomy altogether.
+SEQCODE_SUFFIX = '(SeqCode)'
+
+
+def strip_nomenclatural_code(name_txt: str) -> str:
+    """Remove the nomenclatural code NCBI appends to a name in names.dmp.
+
+    Shared by ncbi_tax_manager, which builds the NCBI taxonomy of every genome,
+    and strains, which names a genome's species from names.dmp itself, so that
+    the two name a taxon alike.
+
+    Parameters
+    ----------
+    name_txt : str
+        Scientific name as NCBI writes it.
+
+    @return: the name without a trailing code annotation.
+    """
+
+    if name_txt.endswith(SEQCODE_SUFFIX):
+        stripped = name_txt[:-len(SEQCODE_SUFFIX)].strip()
+        # a name that is nothing but the annotation is not a name; leave it as
+        # it stands rather than putting an empty taxon in a lineage
+        if stripped:
+            return stripped
+
+    return name_txt
+
 # The columns of an assembly summary that identify a genome and say whether and
 # where NCBI serves it, in this order. They are what ncbi_genome_sync needs to
 # mirror a genome, so they open every table GTDB hands it: the selection
