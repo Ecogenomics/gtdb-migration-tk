@@ -78,10 +78,11 @@ class TempDirCase(unittest.TestCase):
                                 self.location(accession, genes=True) if genes else None,
                                 genes_hash if genes else None)
 
-    def plan(self, outcomes, database=(), rehash_all=False):
+    def plan(self, outcomes, database=(), rehash_all=False, no_genomic_fasta=frozenset()):
         dirs = {acc: self.genome_dir(acc) for acc, outcome in outcomes.items()
                 if outcome in UG.STATUS_IN_RELEASE}
-        decisions = M.plan_update(outcomes, dirs, {r.name: r for r in database}, rehash_all)
+        decisions = M.plan_update(outcomes, dirs, {r.name: r for r in database}, rehash_all,
+                                  no_genomic_fasta)
         return {d.accession: d for d in decisions}
 
 
@@ -180,6 +181,22 @@ class DecidingEachGenome(TempDirCase):
         plan = self.plan({'GCA_000000001.1': STATUS_NEW}, [self.row('GCA_000000009.1')])
 
         self.assertEqual(plan['GCA_000000009.1'].action, M.ACTION_NOT_IN_REPORT)
+
+    def test_a_new_genome_ncbi_published_without_a_genomic_fasta_is_not_added(self):
+        # GCA_056491145.1 in r237: its directory holds NCBI's reports alone
+        d = self.plan({'GCA_056491145.1': STATUS_NEW},
+                      no_genomic_fasta={'GCA_056491145.1'})['GCA_056491145.1']
+
+        self.assertEqual(d.action, M.ACTION_NO_GENOMIC_FASTA)
+        self.assertFalse(d.hash_genomic or d.hash_genes)
+
+    def test_a_new_version_without_a_genomic_fasta_does_not_take_over_its_predecessor(self):
+        plan = self.plan({'GCA_000000001.3': STATUS_NEW, 'GCA_000000001.2': STATUS_REMOVED},
+                         [self.row('GCA_000000001.2', id=7)],
+                         no_genomic_fasta={'GCA_000000001.3'})
+
+        self.assertEqual(plan['GCA_000000001.3'].action, M.ACTION_NO_GENOMIC_FASTA)
+        self.assertEqual(plan['GCA_000000001.2'].action, M.ACTION_DELETED)
 
     def test_every_outcome_update_genomes_writes_is_decided(self):
         statuses = {value for name, value in vars(UG).items()
@@ -286,10 +303,20 @@ class TheFilesRecorded(TempDirCase):
         self.assertEqual((files.genes_location, files.genes_hash), (None, None))
         self.assertIn('no protein file', d.detail)
 
-    def test_a_genome_of_the_release_with_no_genomic_fasta_is_refused(self):
+    def test_the_genomes_without_a_genomic_fasta_are_found(self):
+        self.make_genome('GCA_000000001.1')
+        os.makedirs(self.genome_dir('GCA_000000002.1'))
+        dirs = {acc: self.genome_dir(acc) for acc in ('GCA_000000001.1', 'GCA_000000002.1')}
+
+        self.assertEqual(M.missing_genomic_fasta(dirs, dirs, threads=2), {'GCA_000000002.1'})
+
+    def test_a_genome_the_database_holds_that_lost_its_genomic_fasta_is_refused(self):
+        # a release that lost a file, not a genome NCBI never published
         os.makedirs(self.genome_dir('GCA_000000001.1'))
-        with self.assertRaises(M.UpdateDbError):
-            self.finish({'GCA_000000001.1': STATUS_NEW})
+        with self.assertRaises(M.UpdateDbError) as caught:
+            self.finish({'GCA_000000001.1': STATUS_SEQUENCES_UNCHANGED},
+                        [self.row('GCA_000000001.1')])
+        self.assertIn('lost the file', str(caught.exception))
 
 
 # ------------------------------------------------------------ the statements
@@ -371,6 +398,20 @@ class WritingTheDatabase(TempDirCase):
         sql, rows = [v for v in values if 'v.has_changed' in v[0]][0]
         self.assertEqual((rows[0][0], rows[0][2], rows[0][-1]),
                          (5, content_sha1(b'>c1\nACGT\n'), False))
+
+    def test_a_genome_not_added_for_want_of_a_genomic_fasta_is_not_written(self):
+        os.makedirs(self.genome_dir('GCA_000000001.1'))
+        manager = M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+        decisions = list(self.plan({'GCA_000000001.1': STATUS_NEW},
+                                   no_genomic_fasta={'GCA_000000001.1'}).values())
+        decisions = manager.finish_decisions(decisions, manager.hash_files(decisions))
+
+        cur, values = FakeCursor(), []
+        with mock.patch.object(M, 'execute_values',
+                               lambda cur, sql, rows, **kw: values.append((sql, rows))):
+            manager.apply(cur, decisions, {}, SOURCES, self.DATE)
+        self.assertEqual(len(cur.statements), 1)
+        self.assertEqual(values, [])
 
     def test_an_unchanged_genome_is_not_written(self):
         statements, values = self.apply(

@@ -225,6 +225,29 @@ def tsv_safe(text: str) -> str:
     return ' '.join(str(text).split())
 
 
+# The to_curate reason of a genome new to NCBI that NCBI publishes without its
+# genomic FASTA: an assembly whose directory holds only its reports (r237: two
+# Streptomyces diversicolor assemblies, GCA_056491145.1 and GCF_056491165.1). It
+# is named as an exception type is in curate_status(), so that curate_reason()
+# groups these genomes as one.
+CURATE_NO_GENOMIC_FASTA = 'no genomic FASTA'
+
+
+def no_genomic_fasta_status(genome_dir: str) -> str:
+    """The outcome written for a new genome NCBI publishes no genomic FASTA for.
+
+    Parameters
+    ----------
+    genome_dir : str
+        The genome's directory in the mirror.
+
+    @return: 'to_curate;no genomic FASTA: ...'.
+    """
+
+    return '{};{}: NCBI publishes none in {}'.format(
+        STATUS_TO_CURATE, CURATE_NO_GENOMIC_FASTA, tsv_safe(genome_dir))
+
+
 def curate_status(exc: Exception) -> str:
     """The outcome written for a genome that could not be compared at all.
 
@@ -1221,6 +1244,14 @@ class FTPTools():
         finish: a release quietly short of a genome is worse than one that did
         not finish being built.
 
+        A genome NCBI publishes without its genomic FASTA -- a directory of
+        reports and nothing else, which the sync mirrors faithfully -- is not
+        copied: nothing can be made of it, and the database cannot record a
+        genome with no sequence. It is reported for curation instead
+        (no_genomic_fasta_status()), which every command after this one already
+        passes over, and is added in a later release once NCBI publishes it. The
+        files are looked for on the copying threads, being one NFS stat each.
+
         Parameters
         ----------
         added_genomes : dict
@@ -1233,24 +1264,38 @@ class FTPTools():
             Number of genomes copied at once.
         """
 
+        threads = max(1, cpus)
+        gids = list(added_genomes)
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            has_fasta = dict(zip(gids, pool.map(
+                lambda gid: os.path.isfile(genomic_fasta(added_genomes[gid])), gids)))
+
         targets = {}
         for gid, path_record in added_genomes.items():
+            if not has_fasta[gid]:
+                self.report.write("{0}\t{1}\n".format(gid, no_genomic_fasta_status(path_record)))
+                continue
             targets[gid] = release_genome_dir(
                 new_directory, os.path.relpath(path_record, ftp_dir), gid)
             self.report.write("{0}\t{1}\n".format(gid, STATUS_NEW))
 
+        without = len(added_genomes) - len(targets)
+        if without:
+            self.logger.warning(
+                'warning: {:,} genome(s) new to NCBI have no genomic FASTA in the mirror '
+                'and are reported for curation rather than added.'.format(without))
+
         if self.dry_run:
             return
 
-        threads = max(1, cpus)
         copying = {}
-        pbar = tqdm(total=len(added_genomes), desc='Adding new genomes', ncols=100)
+        pbar = tqdm(total=len(targets), desc='Adding new genomes', ncols=100)
         pool = ThreadPoolExecutor(max_workers=threads)
         try:
-            for gid, source in added_genomes.items():
+            for gid in targets:
                 self.record_copied(copying, targets, pbar,
                                    threads * COPY_QUEUE_DEPTH)
-                copying[pool.submit(self.copy_genome, source, targets[gid])] = gid
+                copying[pool.submit(self.copy_genome, added_genomes[gid], targets[gid])] = gid
 
             # and the copies still running when the last genome was submitted
             self.record_copied(copying, targets, pbar, 1)

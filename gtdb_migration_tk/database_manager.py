@@ -43,6 +43,15 @@ genome_sources.
     genomic FASTA file unchanged updated, or unchanged     added
     removed, to_curate           deleted                   nothing to do
 
+A genome the database does not hold whose directory has no genomic FASTA is
+not added (no genomic FASTA): NCBI publishes some assemblies as their reports
+alone (r237: GCA_056491145.1 and GCF_056491165.1), the database cannot record
+a genome without a file, and a release from 0.1.41 on reports such a genome for
+curation rather than holding it. A new version without one does not take over
+its predecessor's row. A genome the database DOES hold whose genomic FASTA is
+gone stops the run when its files are hashed: that is a release that lost a
+file, not a genome NCBI never published.
+
 A genome the database holds and the report does not name is left as it is and
 counted in the log: the report names every genome of the previous release, so
 such a row is one this command did not put there.
@@ -93,8 +102,10 @@ import logging
 import multiprocessing as mp
 import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
+from typing import (AbstractSet, Dict, Iterable, List, NamedTuple, Optional,
+                    Sequence, Set, Tuple)
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -124,6 +135,7 @@ ACTION_DELETED = 'deleted'
 ACTION_REPLACED = 'replaced by new version'
 ACTION_NOT_IN_DATABASE = 'not in database'
 ACTION_NOT_IN_REPORT = 'not in report'
+ACTION_NO_GENOMIC_FASTA = 'no genomic FASTA'
 
 # The actions after which a genome's sequences are new to the database: the
 # genomes has_changed is TRUE for, and whose aligned markers have to be made.
@@ -293,10 +305,35 @@ def hash_genome(task: Tuple[str, Optional[str], Optional[str]]) -> Tuple[str, Op
             content_hash(genes) if genes else None)
 
 
+def missing_genomic_fasta(accessions: Iterable[str], genome_dirs: Dict[str, str],
+                          threads: int = 1) -> Set[str]:
+    """The genomes whose release directory holds no genomic FASTA.
+
+    One stat each, on threads, being NFS round trips.
+
+    Parameters
+    ----------
+    accessions : iterable of str
+        Genomes to look at.
+    genome_dirs : dict
+        accession -> genome directory.
+    threads : int
+        Stats made at once.
+
+    @return: the accessions with no genomic FASTA.
+    """
+
+    accessions = list(accessions)
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
+        present = pool.map(lambda acc: os.path.isfile(genomic_fasta(genome_dirs[acc])), accessions)
+        return {acc for acc, there in zip(accessions, present) if not there}
+
+
 def plan_update(outcomes: Dict[str, str],
                 genome_dirs: Dict[str, str],
                 database: Dict[str, DatabaseGenome],
-                rehash_all: bool = False) -> List[Decision]:
+                rehash_all: bool = False,
+                no_genomic_fasta: AbstractSet[str] = frozenset()) -> List[Decision]:
     """Decide what becomes of every genome of the release and of the database.
 
     Nothing is read but the arguments, so the whole of what update_db decides is
@@ -312,6 +349,9 @@ def plan_update(outcomes: Dict[str, str],
         name -> the NCBI genomes the database holds.
     rehash_all : bool
         Hash the files of every genome of the release.
+    no_genomic_fasta : set
+        Genomes the database does not hold whose directory has no genomic FASTA,
+        as missing_genomic_fasta() finds them.
 
     @return: one decision per genome of the report, then one per genome of the
              database the report does not name.
@@ -358,7 +398,10 @@ def plan_update(outcomes: Dict[str, str],
         genome_dir = genome_dirs[accession]
         row = database.get(accession)
 
-        if row is None:
+        if row is None and accession in no_genomic_fasta:
+            decisions.append(Decision(accession, outcome, ACTION_NO_GENOMIC_FASTA, None,
+                                      genome_dir, detail='not added'))
+        elif row is None:
             older = [r for r in predecessors.get(versionless(accession), ())
                      if outcomes.get(r.name) not in STATUS_IN_RELEASE and r.name not in replaced]
             if outcome == STATUS_NEW and len(older) == 1:
@@ -528,9 +571,12 @@ class DatabaseManager(object):
 
         missing = [t[0] for t in tasks if t[1] and hashes[t[0]][0] is None]
         if missing:
+            # a genome to be added was looked at before planning, so this is one
+            # the database holds: the release has lost its file
             raise UpdateDbError(
-                '{:,} genome(s) of the release have no genomic FASTA in the directory '
-                'genome_dirs gives them: {}.'.format(len(missing), name_genomes(missing)))
+                '{:,} genome(s) the database holds have no genomic FASTA in the directory '
+                'genome_dirs gives them, so the release has lost the file: {}.'.format(
+                    len(missing), name_genomes(missing)))
 
         return hashes
 
@@ -577,7 +623,11 @@ class DatabaseManager(object):
         self.logger.info('The database holds {:,} NCBI genome(s) ({}).'.format(
             len(database), count_by_database(database)))
 
-        decisions = plan_update(outcomes, genome_dirs, database, rehash_all)
+        # a genome the database would gain needs a sequence to record; one it
+        # holds is checked when its files are hashed
+        unpublished = missing_genomic_fasta(
+            [acc for acc in genome_dirs if acc not in database], genome_dirs, self.cpus)
+        decisions = plan_update(outcomes, genome_dirs, database, rehash_all, unpublished)
         hashes = self.hash_files(decisions)
         decisions = self.finish_decisions(decisions, hashes)
 
@@ -612,7 +662,7 @@ class DatabaseManager(object):
 
         finished = []
         for decision in decisions:
-            if decision.genome_dir is None:
+            if decision.genome_dir is None or decision.action == ACTION_NO_GENOMIC_FASTA:
                 finished.append(decision)
                 continue
 
@@ -769,10 +819,19 @@ class DatabaseManager(object):
             'would have done' if dry_run else 'did'))
         for action in (ACTION_ADDED, ACTION_VERSIONED, ACTION_SEQUENCES_CHANGED,
                        ACTION_UPDATED, ACTION_UNCHANGED, ACTION_DELETED,
-                       ACTION_REPLACED, ACTION_NOT_IN_DATABASE, ACTION_NOT_IN_REPORT):
+                       ACTION_REPLACED, ACTION_NOT_IN_DATABASE, ACTION_NOT_IN_REPORT,
+                       ACTION_NO_GENOMIC_FASTA):
             accessions = by_action.get(action, ())
             self.logger.info('  {}: {:,} ({}).'.format(
                 action, len(accessions), count_by_database(accessions)))
+
+        unpublished = by_action.get(ACTION_NO_GENOMIC_FASTA, ())
+        if unpublished:
+            self.logger.warning(
+                'warning: {:,} genome(s) of the release have no genomic FASTA and were not '
+                'added: {}. NCBI publishes some assemblies without their sequence; such a '
+                'genome is added by a later release, once it is published.'.format(
+                    len(unpublished), name_genomes(unpublished)))
 
         missing_genes = [d.accession for d in decisions if 'no protein file' in d.detail]
         if missing_genes:

@@ -261,10 +261,16 @@ class RunComparisonTests(ReleaseFixture, TempDirCase):
                          'GCF_000000001.1\t{}\n'.format(shared_old) +           # shared, FASTA changed
                          'GCF_000000002.1\t/gtdb/GCF_000000002.1_ASM2v1\n'        # gone from NCBI
                          'GCA_000000005.1\t/gtdb/GCA_000000005.1_ASM5v1\n')       # gone, GenBank
+        # new to NCBI, and so looked at only for the genomic FASTA that says
+        # NCBI published a genome
+        added_refseq = self.genome(os.path.join(ftp, 'all', 'GCF', '000', '000', '003'),
+                                   'GCF_000000003.1_ASM3v1', 'c' * 32)
+        added_genbank = self.genome(os.path.join(ftp, 'all', 'GCA', '000', '000', '004'),
+                                    'GCA_000000004.1_ASM4v1', 'd' * 32)
         new = self.write('ftp_dirs.tsv',
                          'GCF_000000001.1\t{}\n'.format(shared_new) +
-                         'GCF_000000003.1\t{0}/all/GCF/000/000/003/GCF_000000003.1_ASM3v1\n'
-                         'GCA_000000004.1\t{0}/all/GCA/000/000/004/GCA_000000004.1_ASM4v1\n'.format(ftp))
+                         'GCF_000000003.1\t{}\n'.format(added_refseq) +
+                         'GCA_000000004.1\t{}\n'.format(added_genbank))
         out = os.path.join(self.dir, 'release')
         os.mkdir(out)
 
@@ -1537,6 +1543,55 @@ class AddingGenomes(TempDirCase):
         self.assertFalse(os.path.exists(os.path.join(self.dir, 'release')))
         self.assertEqual(self.report.getvalue(), '{}\tnew\n'.format(ACCESSION))
 
+    def reports_only(self):
+        """A genome NCBI publishes as its reports alone, with no genomic FASTA."""
+        mirror = self.genome_dir(os.path.join('mirror', MIRROR_RELDIR), MD5_A)
+        os.remove(os.path.join(mirror, FASTA))
+        return mirror
+
+    def test_a_new_genome_with_no_genomic_fasta_is_reported_for_curation_not_copied(self):
+        # as GCA_056491145.1 and GCF_056491165.1 are in r237: NCBI lists them as
+        # latest and publishes their reports and no sequence
+        mirror = self.reports_only()
+        genome_dirs = io.StringIO()
+
+        UG.FTPTools(self.report, self.review, False, genome_dirs).add_genomes(
+            {ACCESSION: mirror}, os.path.join(self.dir, 'mirror'),
+            os.path.join(self.dir, 'release'))
+
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'release')))
+        self.assertEqual(genome_dirs.getvalue(), '')
+        row = self.report.getvalue()
+        self.assertEqual(UG.report_outcome(row), UG.STATUS_TO_CURATE)
+        self.assertEqual(UG.curate_reason(row)[0], UG.CURATE_NO_GENOMIC_FASTA)
+        self.assertIn(mirror, row)
+
+    def test_a_dry_run_reports_a_genome_with_no_genomic_fasta_for_curation_too(self):
+        mirror = self.reports_only()
+
+        self.tools(dry_run=True).add_genomes({ACCESSION: mirror},
+                                             os.path.join(self.dir, 'mirror'),
+                                             os.path.join(self.dir, 'release'))
+
+        self.assertEqual(UG.report_outcome(self.report.getvalue()), UG.STATUS_TO_CURATE)
+
+    def test_the_genomes_with_a_genomic_fasta_are_added_beside_one_without(self):
+        genomes = self.several(count=3)
+        os.remove(UG.genomic_fasta(genomes['GCF_000000002.1']))
+        genome_dirs = io.StringIO()
+
+        UG.FTPTools(self.report, self.review, False, genome_dirs).add_genomes(
+            genomes, os.path.join(self.dir, 'mirror'),
+            os.path.join(self.dir, 'release'), cpus=2)
+
+        self.assertEqual(sorted(line.split('\t')[0] for line in genome_dirs.getvalue().splitlines()),
+                         ['GCF_000000001.1', 'GCF_000000003.1'])
+        outcomes = {row.split('\t')[0]: UG.report_outcome(row)
+                    for row in self.report.getvalue().splitlines()}
+        self.assertEqual(outcomes, {'GCF_000000001.1': UG.STATUS_NEW,
+                                    'GCF_000000002.1': UG.STATUS_TO_CURATE,
+                                    'GCF_000000003.1': UG.STATUS_NEW})
+
     def several(self, count=8):
         """Several genomes of the mirror, as accession to directory."""
         genomes = {}
@@ -1547,6 +1602,8 @@ class AddingGenomes(TempDirCase):
             os.makedirs(path)
             with open(os.path.join(path, 'md5checksums.txt'), 'w') as handle:
                 handle.write(accession)
+            with gzip.open(UG.genomic_fasta(path), 'wt') as handle:
+                handle.write('>contig\nACGT\n')
             genomes[accession] = path
         return genomes
 
@@ -1595,8 +1652,12 @@ class AddingGenomes(TempDirCase):
         # a release quietly short of a genome is worse than one that did not
         # finish being built, so the copy's exception is raised
         genomes = self.several(count=3)
-        genomes['GCF_000000009.1'] = os.path.join(self.dir, 'mirror', 'all', 'GCF',
-                                                  '000', '009', '000', 'gone')
+        # its directory in the release is already there, which copytree refuses
+        # outside a resumed run
+        os.makedirs(UG.release_genome_dir(
+            os.path.join(self.dir, 'release'),
+            os.path.relpath(genomes['GCF_000000002.1'], os.path.join(self.dir, 'mirror')),
+            'GCF_000000002.1'))
 
         with self.assertRaises(OSError):
             self.tools().add_genomes(genomes, os.path.join(self.dir, 'mirror'),
