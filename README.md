@@ -915,6 +915,8 @@ no genome could be assessed adds no rows.
 | `checkm.alignment_file.tsv` | the alignments of multi-copy genes that run writes |
 | `checkm2.quality_report.tsv` | CheckM2's `quality_report.tsv`, one row per genome, named by accession. Handed genes, CheckM2 writes none of the statistics it takes from calling genes itself (the table used, coding density, genome size, GC, N50 and the rest); its estimates are made from the proteins either way |
 | `checkm_not_assessed.tsv`, `checkm2_not_assessed.tsv` | `genome_id`, `reason`, `detail` of each genome left out |
+| `checkm.version`, `checkm2.version` | the version of CheckM or CheckM2 that made the release files, gathered from the `checkm.version` or `checkm2.version` each batch was given. Where the batches were made by more than one version, each is on a line of its own and the log names the batches each made |
+| `pplacer.version` | `checkm` only: the version of the pplacer CheckM placed the genomes with, gathered the same way. pplacer cannot be asked (bioconda's says `dev` to `--version`), so each batch learns it from the pplacer process CheckM starts, and the conda package that executable came from; the batch's log names the executable. It is written only where every batch that ran CheckM recorded one |
 
 | `reason` | |
 | --- | --- |

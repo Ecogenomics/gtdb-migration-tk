@@ -253,6 +253,16 @@ results were already there and skipped. How each program is asked is the one
 table `VERSION_QUERIES`; a new external program needs an entry there, and
 `tests/test_common.py` holds each pattern against what the real program prints.
 
+pplacer is the one program that cannot be asked. CheckM runs it by bare name from
+a PATH its wrapper sets where the toolkit never sees it, and bioconda's pplacer
+answers `--version` with `dev`, alpha20 and alpha22 alike. So `checkm` watches
+the processes each CheckM step starts (`checkm_manager.ProgramWatch`, from
+`/proc`), and takes the version of the pplacer it sees run from the conda package
+it was installed from (`utils.common.conda_package_version()`). `checkm` and
+`checkm2` gather the release's version files from their batches' rather than
+from the machine that writes the release files; see WHICH VERSION MADE THE
+RELEASE and PPLACER in `checkm_manager.py`.
+
 ### `config.py` is the only place a reference database version lives
 
 `PFAM_VERSION`, `TIGRFAM_VERSION`, `SILVA_VERSION` and `LTP_VERSION` each name

@@ -11,6 +11,7 @@ put first on PATH, so what is tested is what the helper does with what a
 program prints and how it exits, not any one build of it.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -132,6 +133,41 @@ class RecordingTheVersion(TempDirCase):
     def test_the_version_file_is_named_for_the_program_in_lower_case(self):
         self.assertEqual(C.version_file('/g/trna', 'tRNAscan-SE'),
                          os.path.join('/g/trna', 'trnascan-se.version'))
+
+    def conda_env(self, packages):
+        """A conda environment holding a program, with packages in conda-meta."""
+        prefix = os.path.join(self.dir, 'env')
+        os.makedirs(os.path.join(prefix, 'bin'))
+        os.makedirs(os.path.join(prefix, 'conda-meta'))
+        executable = os.path.join(prefix, 'bin', 'pplacer.exe')
+        open(executable, 'w').close()
+        os.symlink('pplacer.exe', os.path.join(prefix, 'bin', 'pplacer'))
+        for name, version in packages:
+            with open(os.path.join(prefix, 'conda-meta',
+                                   '{}-{}-h0_0.json'.format(name, version)), 'w') as handle:
+                json.dump({'name': name, 'version': version}, handle)
+        return os.path.join(prefix, 'bin', 'pplacer')
+
+    def test_a_conda_package_version_is_read_from_its_environments_conda_meta(self):
+        executable = self.conda_env([('pplacer', '1.1.alpha22')])
+
+        self.assertEqual(C.conda_package_version(executable, 'pplacer'), '1.1.alpha22')
+
+    def test_a_package_whose_name_begins_with_anothers_is_not_taken_for_it(self):
+        executable = self.conda_env([('pplacer-extra', '9.9'), ('pplacer', '1.1.alpha20')])
+
+        self.assertEqual(C.conda_package_version(executable, 'pplacer'), '1.1.alpha20')
+
+    def test_an_executable_outside_a_conda_environment_has_no_package_version(self):
+        executable = self.conda_env([])
+        shutil.rmtree(os.path.join(self.dir, 'env', 'conda-meta'))
+
+        self.assertIsNone(C.conda_package_version(executable, 'pplacer'))
+
+    def test_an_environment_without_the_package_has_no_version_of_it(self):
+        executable = self.conda_env([('guppy', '1.0')])
+
+        self.assertIsNone(C.conda_package_version(executable, 'pplacer'))
 
     def test_the_version_file_holds_the_version_on_one_line(self):
         C.write_version_file(self.dir, 'tRNAscan-SE', 'tRNAscan-SE 2.0.13 (Jul 2026)')

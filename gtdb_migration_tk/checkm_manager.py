@@ -71,14 +71,50 @@ whose completeness and contamination say nothing about any one organism. It is s
 planned, so that a limit given to a run over batches already planned applies to
 them. A batch that finishes without it is done, and a larger limit does not go
 back to it: the genome is assessed later by removing that batch's SUCCESS.
+
+WHICH VERSION MADE THE RELEASE
+
+The program's version is asked once where a run starts and logged, and written
+beside each batch it assessed (checkm.version, checkm2.version), as for every
+external program. The release files are made from batches that several machines
+ran, over days, and the machine that writes them may have run none of them, so
+the version written beside them is gathered from the batches' own files, not
+asked of the program the last machine runs. Where the batches disagree every
+version is written, one to a line, and the batches each made are named in the
+log: a release whose estimates come from two versions of CheckM says so rather
+than claiming one.
+
+PPLACER
+
+CheckM places each genome in its reference tree with pplacer, and which pplacer
+matters: 1.1.alpha20, which checkm-genome 1.2.5 pins, dies part-way through
+placing some batches, and r237 was finished with alpha22. Its version is the one
+the run cannot ask. CheckM runs pplacer by bare name, from the PATH CheckM was
+started with, which a wrapper that puts CheckM's environment on PATH sets inside
+itself where the toolkit never sees it; and bioconda's pplacer answers --version
+with 'dev' (or the git describe of whatever directory it runs in), alpha20 and
+alpha22 alike. So nothing is asked of a pplacer before the run. While each
+CheckM step runs, the processes it starts are watched, and the executable of
+any pplacer among them is read from /proc: that is the pplacer that placed the
+batch, wherever it was found. Its version is the conda package it was installed
+from (utils.common.conda_package_version()), written as pplacer.version beside
+checkm.version. A pplacer whose version cannot be told is named in the batch's
+log and given no version file, which is better than one that guesses.
+
+The release's pplacer.version is gathered from the batches as checkm.version
+is, with one more rule: a batch that ran CheckM but recorded no pplacer -- made
+before pplacer was recorded, or in which pplacer was never seen -- leaves the
+release with no pplacer.version at all, since a version claimed for the whole
+release would be a guess about that batch.
 """
 
 import logging
 import os
 import shutil
 import subprocess
+import threading
 from collections import defaultdict
-from typing import List, NamedTuple, Optional, Sequence, Set, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from tqdm import tqdm
 
@@ -98,14 +134,25 @@ from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.update_genomes import (genomes_in_release,
                                              genomes_to_regenerate)
 from gtdb_migration_tk.utils.common import (DEFAULT_MAX_GENOME_SIZE, MBP,
+                                            conda_package_version,
                                             protein_fasta,
                                             record_program_version,
-                                            write_version_file)
+                                            version_file, write_version_file)
 
 # The programs, as they are called. Each one's version goes into the log and, as
-# checkm.version or checkm2.version, into each batch it was run over.
+# checkm.version or checkm2.version, into each batch it was run over and, once
+# the release files are written, beside them.
 CHECKM = 'checkm'
 CHECKM2 = 'checkm2'
+
+# CheckM's placement program, whose version is learned from the process CheckM
+# starts rather than asked (see PPLACER), and recorded as pplacer.version. The
+# watch looks for it this often: placement takes minutes, so it is not missed.
+PPLACER = 'pplacer'
+WATCH_SECONDS = 2.0
+
+# The most batches a log line names; the rest are counted.
+NAMED_BATCHES = 20
 
 # What each command calls the files of its batches. There is no older name to
 # look for: neither command has had batches before.
@@ -284,6 +331,154 @@ def join_tables(tables: Sequence[str], path: str) -> None:
                                                for name in header]) + '\n')
 
 
+def descendant_executables(pid: int) -> Dict[int, str]:
+    """The executables of every process descended from one.
+
+    Read from /proc, so Linux alone; elsewhere there are none. A process that
+    ends while it is being read, or whose executable cannot be read, is left
+    out.
+
+    Parameters
+    ----------
+    pid : int
+        The process whose descendants are wanted.
+
+    @return: each descendant's executable, the symlinks followed, by process ID.
+    """
+
+    children = defaultdict(list)
+    try:
+        entries = os.listdir('/proc')
+    except OSError:
+        return {}
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(os.path.join('/proc', entry, 'stat')) as handle:
+                stat = handle.read()
+        except OSError:
+            continue
+        # the name between the parentheses may hold spaces and parentheses of its
+        # own; the state and the parent's ID follow the last ')'
+        try:
+            children[int(stat[stat.rindex(')') + 1:].split()[1])].append(int(entry))
+        except (ValueError, IndexError):
+            continue
+
+    executables = {}
+    pending = list(children.get(pid, ()))
+    while pending:
+        child = pending.pop()
+        pending.extend(children.get(child, ()))
+        try:
+            executables[child] = os.path.realpath(os.readlink(
+                os.path.join('/proc', str(child), 'exe')))
+        except OSError:
+            continue
+
+    return executables
+
+
+def is_program(executable: str, program: str) -> bool:
+    """Whether an executable is a program, as bioconda installs it.
+
+    bioconda's bin/pplacer is a link to bin/pplacer.exe, which is what runs.
+
+    @return: True where the executable is <program> or <program>.<ext>.
+    """
+
+    return os.path.splitext(os.path.basename(executable))[0] == program
+
+
+class ProgramWatch(object):
+    """The executables a program ran as, among the descendants of a process.
+
+    A context manager: a thread looks every WATCH_SECONDS while it is open, and
+    once more as it closes.
+    """
+
+    def __init__(self, pid: int, program: str, interval: Optional[float] = None) -> None:
+        """Initialization.
+
+        Parameters
+        ----------
+        pid : int
+            The process whose descendants are watched.
+        program : str
+            The program looked for, as it is called.
+        interval : float
+            Seconds between looks; WATCH_SECONDS by default.
+
+        @return: None
+        """
+
+        self.pid = pid
+        self.program = program
+        self.interval = WATCH_SECONDS if interval is None else interval
+        self.executables: Set[str] = set()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+
+    def look(self) -> None:
+        for executable in descendant_executables(self.pid).values():
+            if is_program(executable, self.program):
+                self.executables.add(executable)
+
+    def _watch(self) -> None:
+        while True:
+            self.look()
+            if self._stop.wait(self.interval):
+                return
+
+    def __enter__(self) -> 'ProgramWatch':
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        self._thread.join()
+
+
+def name_batches(names: Sequence[str]) -> str:
+    """Batches as a log line names them: the first NAMED_BATCHES, the rest counted.
+
+    @return: e.g. 'batch_000001, batch_000002 and 303 more'.
+    """
+
+    named = ', '.join(names[:NAMED_BATCHES])
+    if len(names) > NAMED_BATCHES:
+        named += ' and {:,} more'.format(len(names) - NAMED_BATCHES)
+    return named
+
+
+def batch_versions(batches: Sequence[str], program: str) -> Dict[str, List[str]]:
+    """The versions of a program that made a release's batches.
+
+    A batch in which no genome could be assessed never ran the program and has
+    no version file, and so is in none of them.
+
+    Parameters
+    ----------
+    batches : sequence of str
+        Batch directories, in batch order.
+    program : str
+        The program, as it is called.
+
+    @return: each version, as its batches' files state it, with the names of the
+             batches it made in batch order.
+    """
+
+    versions = defaultdict(list)
+    for batch_dir in batches:
+        path = version_file(batch_dir, program)
+        if os.path.exists(path):
+            with open(path) as handle:
+                versions[handle.read().strip()].append(os.path.basename(batch_dir))
+
+    return dict(versions)
+
+
 class BatchedQuality(object):
     """What checkm and checkm2 share: the batches, the claims, and the release files.
 
@@ -293,6 +488,8 @@ class BatchedQuality(object):
     """
 
     PROGRAM = None
+    # every program whose version is gathered for the release; PROGRAM first
+    RECORDED_PROGRAMS = ()
     LAYOUT = None
     RELEASE_TABLES = ()
     NOT_ASSESSED_RELEASE = None
@@ -417,7 +614,8 @@ class BatchedQuality(object):
             # the batch has its own log from here, since this is where anything
             # happens to it and every machine of a run writes its own --log
             with batch_log(batch_dir, self.logger, self.LAYOUT):
-                self.logger.info('{}: starting.'.format(label))
+                self.logger.info('{}: starting with {} ({}).'.format(
+                    label, self.PROGRAM, self.version))
                 try:
                     with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY),
                                    self.heartbeat):
@@ -534,6 +732,8 @@ class BatchedQuality(object):
 
         self.write_release(batches, out_dir)
         self.report_not_assessed(batches, out_dir)
+        versions = [(program, self.write_release_version(batches, out_dir, program))
+                    for program in self.RECORDED_PROGRAMS]
 
         assessed = 0
         for batch_dir in batches:
@@ -542,13 +742,79 @@ class BatchedQuality(object):
             except (KeyError, ValueError):
                 pass
         self.logger.info('Release: {:,} genome(s) assessed with {}.'.format(
-            assessed, self.PROGRAM))
+            assessed, ', '.join(
+                '{} ({})'.format(program, '; '.join(found)) if found else program
+                for program, found in versions
+                if found or program == self.PROGRAM)))
 
     def write_release(self, batches: Sequence[str], out_dir: str) -> None:
         """Write any release file that is not a table the batches' concatenate into.
 
         @return: None
         """
+
+    def write_release_version(self, batches: Sequence[str], out_dir: str,
+                              program: str) -> List[str]:
+        """Record beside the release files the version of a program that made them.
+
+        Gathered from the batches' version files rather than taken from this
+        run, since other machines ran most of the batches; see WHICH VERSION
+        MADE THE RELEASE. Where no batch ran the program, nothing made the
+        release files and no version is written, and one an earlier aggregation
+        left is removed. A program the command runs through another, as CheckM
+        runs pplacer, is written only where every batch that ran the command
+        recorded it (see PPLACER).
+
+        Parameters
+        ----------
+        batches : sequence of str
+            Every batch directory of the run, in batch order.
+        out_dir : str
+            Directory the release files are written to.
+        program : str
+            One of RECORDED_PROGRAMS.
+
+        @return: the versions written, in order; none where none was.
+        """
+
+        versions = batch_versions(batches, program)
+        path = version_file(out_dir, program)
+
+        unrecorded = []
+        if program != self.PROGRAM:
+            recorded = {name for names in versions.values() for name in names}
+            unrecorded = [name for names in batch_versions(batches, self.PROGRAM).values()
+                          for name in names if name not in recorded]
+
+        if not versions or unrecorded:
+            if os.path.exists(path):
+                os.remove(path)
+            if unrecorded:
+                self.logger.warning(
+                    'warning: {:,} batch(es) that ran {} recorded no {} version, so none '
+                    'is written for the release: {}. They were made before {} was '
+                    'recorded, or {} was not seen to run; their logs say which. A batch '
+                    'is made again by removing its SUCCESS.'.format(
+                        len(unrecorded), self.PROGRAM, program,
+                        name_batches(sorted(unrecorded)), program, program))
+            return []
+
+        ordered = sorted(versions)
+        write_version_file(out_dir, program, '\n'.join(ordered))
+        if len(ordered) == 1:
+            self.logger.info('The release was made with {} {}; wrote {}.'.format(
+                program, ordered[0], path))
+        else:
+            self.logger.warning(
+                'warning: the batches of the release were made with {:,} versions of '
+                '{}, all of them written to {}: {}. A batch is made again, with the '
+                'version this machine runs, by removing its SUCCESS.'.format(
+                    len(ordered), program, path,
+                    '; '.join('{} by {:,} batch(es): {}'.format(
+                        version, len(versions[version]), name_batches(versions[version]))
+                        for version in ordered)))
+
+        return ordered
 
     def report_not_assessed(self, batches: Sequence[str], out_dir: str) -> None:
         """Name the genomes of the release that were not assessed, and why.
@@ -591,27 +857,52 @@ class BatchedQuality(object):
                 '; '.join('{:,} {}'.format(count, reason)
                           for reason, count in sorted(by_reason.items()))))
 
-    def run_program(self, cmd: Sequence[str]) -> None:
+    def run_program(self, cmd: Sequence[str], watch: Optional[str] = None) -> Set[str]:
         """Run one step of the program, failing the batch where it fails.
 
-        @return: None
+        Parameters
+        ----------
+        cmd : sequence of str
+            The command.
+        watch : str
+            A program the step may start, whose executables are to be learned.
+
+        @return: the executables the watched program ran as; none where nothing
+                 was watched.
         """
 
         self.logger.info('Command: {}'.format(' '.join(cmd[:12])
                                               + (' ...' if len(cmd) > 12 else '')))
         silent = getattr(self.logger, 'is_silent', False)
-        proc = subprocess.run(list(cmd),
-                              stdout=subprocess.DEVNULL if silent else None,
-                              stderr=subprocess.STDOUT if silent else None)
+        proc = subprocess.Popen(list(cmd),
+                                stdout=subprocess.DEVNULL if silent else None,
+                                stderr=subprocess.STDOUT if silent else None)
+        executables = set()
+        try:
+            if watch:
+                with ProgramWatch(proc.pid, watch) as watching:
+                    proc.wait()
+                executables = watching.executables
+            else:
+                proc.wait()
+        finally:
+            # a step interrupted is not left running behind the batch it was for
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
         if proc.returncode != 0:
             raise RuntimeError('{} {} returned exit code {}.'.format(
                 cmd[0], cmd[1], proc.returncode))
+
+        return executables
 
 
 class CheckM(BatchedQuality):
     """CheckM over the Prodigal proteins of the genomes of a release."""
 
     PROGRAM = CHECKM
+    RECORDED_PROGRAMS = (CHECKM, PPLACER)
     LAYOUT = CHECKM_LAYOUT
     RELEASE_TABLES = CHECKM_RELEASE_FILES
     NOT_ASSESSED_RELEASE = CHECKM_NOT_ASSESSED
@@ -625,7 +916,8 @@ class CheckM(BatchedQuality):
         input_dir = os.path.join(batch_dir, CHECKM_INPUT_DIR)
         output_dir = os.path.join(batch_dir, CHECKM_OUTPUT_DIR)
         for path in [input_dir, output_dir] + [os.path.join(batch_dir, name) for name in (
-                CHECKM_TREE_QA, CHECKM_QA, CHECKM_PROFILE, CHECKM_QA_SH100, CHECKM_ALIGNMENT)]:
+                CHECKM_TREE_QA, CHECKM_QA, CHECKM_PROFILE, CHECKM_QA_SH100, CHECKM_ALIGNMENT)] + [
+                version_file(batch_dir, program) for program in self.RECORDED_PROGRAMS]:
             if os.path.isdir(path):
                 shutil.rmtree(path)
             elif os.path.exists(path):
@@ -646,23 +938,64 @@ class CheckM(BatchedQuality):
         lineage_ms = os.path.join(output_dir, 'lineage.ms')
         tree_qa = os.path.join(batch_dir, CHECKM_TREE_QA)
         qa = os.path.join(batch_dir, CHECKM_QA)
-        self.run_program([CHECKM, 'lineage_wf', '--pplacer_threads', pplacer_threads, '--genes',
-                          '-x', CHECKM_PROTEIN_EXT, '-t', threads, '--tmpdir', self.tmp_dir,
-                          input_dir, output_dir])
-        self.run_program([CHECKM, 'tree_qa', '-o', '2', '--tab_table', '-f', tree_qa,
-                          '--tmpdir', self.tmp_dir, output_dir])
-        self.run_program([CHECKM, 'qa', '-t', threads, '--tab_table', '-f', qa,
-                          '--tmpdir', self.tmp_dir, lineage_ms, output_dir])
+        # pplacer places the genomes in lineage_wf; every step is watched, so
+        # that a pplacer run anywhere is not missed
+        pplacers = set()
+        pplacers |= self.run_program(
+            [CHECKM, 'lineage_wf', '--pplacer_threads', pplacer_threads, '--genes',
+             '-x', CHECKM_PROTEIN_EXT, '-t', threads, '--tmpdir', self.tmp_dir,
+             input_dir, output_dir], watch=PPLACER)
+        pplacers |= self.run_program(
+            [CHECKM, 'tree_qa', '-o', '2', '--tab_table', '-f', tree_qa,
+             '--tmpdir', self.tmp_dir, output_dir], watch=PPLACER)
+        pplacers |= self.run_program(
+            [CHECKM, 'qa', '-t', threads, '--tab_table', '-f', qa,
+             '--tmpdir', self.tmp_dir, lineage_ms, output_dir], watch=PPLACER)
         join_tables([qa, tree_qa], os.path.join(batch_dir, CHECKM_PROFILE))
-        self.run_program([CHECKM, 'qa', '--aai_strain', '0.9999', '-t', threads,
-                          '-a', os.path.join(batch_dir, CHECKM_ALIGNMENT),
-                          '--tab_table', '-f', os.path.join(batch_dir, CHECKM_QA_SH100),
-                          '--tmpdir', self.tmp_dir, lineage_ms, output_dir])
+        pplacers |= self.run_program(
+            [CHECKM, 'qa', '--aai_strain', '0.9999', '-t', threads,
+             '-a', os.path.join(batch_dir, CHECKM_ALIGNMENT),
+             '--tab_table', '-f', os.path.join(batch_dir, CHECKM_QA_SH100),
+             '--tmpdir', self.tmp_dir, lineage_ms, output_dir], watch=PPLACER)
 
         shutil.rmtree(input_dir)
         write_version_file(batch_dir, CHECKM, self.version)
+        self.record_pplacer(batch_dir, pplacers)
 
         return len(rows)
+
+    def record_pplacer(self, batch_dir: str, executables: Set[str]) -> None:
+        """Write beside a batch the version of the pplacer that placed its genomes.
+
+        Parameters
+        ----------
+        batch_dir : str
+            Batch directory.
+        executables : set of str
+            The executables pplacer ran as, as the watch saw them.
+
+        @return: None
+        """
+
+        if not executables:
+            self.logger.warning(
+                'warning: pplacer was not seen to run, so no {} version is recorded '
+                'for this batch.'.format(PPLACER))
+            return
+
+        versions = set()
+        for executable in sorted(executables):
+            version = conda_package_version(executable, PPLACER)
+            if version is None:
+                self.logger.warning(
+                    'warning: pplacer ran from {}, which is not in a conda environment '
+                    'holding the {} package, so its version cannot be told and none is '
+                    'recorded for this batch.'.format(executable, PPLACER))
+                return
+            self.logger.info('Using {}: {}, run from {}.'.format(PPLACER, version, executable))
+            versions.add(version)
+
+        write_version_file(batch_dir, PPLACER, '\n'.join(sorted(versions)))
 
     def write_release(self, batches, out_dir):
         # the alignments have no header, and a blank line between genes that
@@ -681,6 +1014,7 @@ class CheckM2(BatchedQuality):
     """CheckM2 over the Prodigal proteins of the genomes of a release."""
 
     PROGRAM = CHECKM2
+    RECORDED_PROGRAMS = (CHECKM2,)
     LAYOUT = CHECKM2_LAYOUT
     RELEASE_TABLES = ((CHECKM2_BATCH_REPORT, CHECKM2_RELEASE_REPORT),)
     NOT_ASSESSED_RELEASE = CHECKM2_NOT_ASSESSED
@@ -696,8 +1030,9 @@ class CheckM2(BatchedQuality):
         for path in (input_dir, output_dir):
             if os.path.isdir(path):
                 shutil.rmtree(path)
-        if os.path.exists(batch_report):
-            os.remove(batch_report)
+        for path in (batch_report, version_file(batch_dir, CHECKM2)):
+            if os.path.exists(path):
+                os.remove(path)
 
         if not rows:
             return 0

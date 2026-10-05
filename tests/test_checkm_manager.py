@@ -17,8 +17,12 @@ import logging
 import os
 import shutil
 import stat
+import json
+import subprocess
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 from gtdb_migration_tk import checkm_manager as M
 from gtdb_migration_tk.batching import (FAILED_CANARY, SUCCESS_CANARY,
@@ -64,6 +68,8 @@ for a in "$@"; do before=$last; last=$a; done
 if [ -n "$FAIL_BATCH" ]; then case "$last" in *"/$FAIL_BATCH/"*) exit 1;; esac; fi
 case $step in
     lineage_wf)
+        # CheckM runs pplacer by bare name from its own PATH, here PPLACER
+        [ -n "$PPLACER" ] && "$PPLACER" 0.2
         mkdir -p "$last"; : > "$last/lineage.ms"
         for f in "$before"/*.faa.gz; do basename "$f" .faa.gz; done > "$last/bins.txt";;
     tree_qa)
@@ -93,10 +99,30 @@ class TempDirCase(unittest.TestCase):
                 handle.write(script)
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
+        # pplacer as bioconda installs it: bin/pplacer a link to bin/pplacer.exe,
+        # and the package named in conda-meta. It is a copy of sleep, since the
+        # executable of a running shell script is the shell
+        self.pplacer_env = os.path.join(self.dir, 'envs', 'pplacer-1.1.alpha22')
+        os.makedirs(os.path.join(self.pplacer_env, 'bin'))
+        os.makedirs(os.path.join(self.pplacer_env, 'conda-meta'))
+        self.pplacer_exe = os.path.join(self.pplacer_env, 'bin', 'pplacer.exe')
+        shutil.copy(shutil.which('sleep'), self.pplacer_exe)
+        os.symlink('pplacer.exe', os.path.join(self.pplacer_env, 'bin', 'pplacer'))
+        with open(os.path.join(self.pplacer_env, 'conda-meta',
+                               'pplacer-1.1.alpha22-hd563303_0.json'), 'w') as handle:
+            json.dump({'name': 'pplacer', 'version': '1.1.alpha22',
+                       'build': 'hd563303_0'}, handle)
+
+        # pplacer runs for 0.2 seconds, looked for every 20 ms
+        watch = mock.patch.object(M, 'WATCH_SECONDS', 0.02)
+        watch.start()
+        self.addCleanup(watch.stop)
+
         self.calls = os.path.join(self.dir, 'calls.txt')
         for name, value in (('PATH', bin_dir + os.pathsep + os.environ['PATH']),
                             ('CALLS', self.calls),
-                            ('FAIL_BATCH', '')):
+                            ('FAIL_BATCH', ''),
+                            ('PPLACER', os.path.join(self.pplacer_env, 'bin', 'pplacer'))):
             self.addCleanup(self.restore_env, name, os.environ.get(name))
             os.environ[name] = value
 
@@ -441,6 +467,219 @@ class RunningCheckM(TempDirCase):
             self.command(M.CheckM2, dirs, report)
         self.assertEqual(self.calls_of('predict'), [])
 
+
+# ------------------------------------------------------------ which version
+
+class WhichVersionMadeTheRelease(TempDirCase):
+    """The version beside the release files is the batches', not the last machine's."""
+
+    GENOMES = {'GCA_000000001.1': STATUS_NEW, 'GCA_000000002.1': STATUS_NEW}
+
+    def release_version(self, program):
+        with open(os.path.join(self.out, program + '.version')) as handle:
+            return handle.read().splitlines()
+
+    def say_batch_was_made_by(self, number, program, version):
+        with open(os.path.join(self.batch(number), program + '.version'), 'w') as handle:
+            handle.write(version + '\n')
+
+    def test_checkm_writes_its_version_beside_the_release_files(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM, dirs, report)
+
+        self.assertEqual(self.release_version('checkm'), ['CheckM v1.2.5'])
+
+    def test_checkm2_writes_its_version_beside_the_release_files(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM2, dirs, report)
+
+        self.assertEqual(self.release_version('checkm2'), ['1.1.0'])
+
+    def test_the_version_is_logged_where_the_run_starts(self):
+        with self.assertLogs('timestamp', level='INFO') as logs:
+            M.CheckM(tmp_dir=self.tmp)
+            M.CheckM2(tmp_dir=self.tmp)
+
+        self.assertIn('Using checkm: CheckM v1.2.5.', ' '.join(logs.output))
+        self.assertIn('Using checkm2: 1.1.0.', ' '.join(logs.output))
+
+    def test_each_batch_log_says_which_version_assessed_it(self):
+        dirs, report = self.release(self.GENOMES)
+        # at INFO, as a run's log is
+        with self.assertLogs('timestamp', level='INFO'):
+            self.command(M.CheckM, dirs, report, batch_size=1)
+
+        for number in (1, 2):
+            with open(os.path.join(self.batch(number), M.CHECKM_LAYOUT.log)) as handle:
+                self.assertIn('starting with checkm (CheckM v1.2.5).', handle.read())
+
+    def test_the_checkm_release_log_names_checkm_and_pplacer(self):
+        dirs, report = self.release(self.GENOMES)
+        with self.assertLogs('timestamp', level='INFO') as logs:
+            self.command(M.CheckM, dirs, report)
+
+        self.assertIn('Release: 2 genome(s) assessed with checkm (CheckM v1.2.5), '
+                      'pplacer (1.1.alpha22).', ' '.join(logs.output))
+
+    def test_the_release_log_names_the_version(self):
+        dirs, report = self.release(self.GENOMES)
+        with self.assertLogs('timestamp', level='INFO') as logs:
+            self.command(M.CheckM2, dirs, report)
+
+        self.assertIn('Release: 2 genome(s) assessed with checkm2 (1.1.0).',
+                      ' '.join(logs.output))
+
+    def test_it_is_the_version_the_batches_were_made_with_not_this_machines(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM2, dirs, report, batch_size=1)
+        for number in (1, 2):
+            self.say_batch_was_made_by(number, 'checkm2', '1.0.2')
+
+        self.command(M.CheckM2, dirs, report, batch_size=1)
+
+        self.assertEqual(self.release_version('checkm2'), ['1.0.2'])
+
+    def test_batches_made_by_two_versions_name_both_and_warn_which_made_which(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM, dirs, report, batch_size=1)
+        self.say_batch_was_made_by(1, 'checkm', 'CheckM v1.2.4')
+
+        with self.assertLogs('timestamp', level='WARNING') as logs:
+            self.command(M.CheckM, dirs, report, batch_size=1)
+
+        self.assertEqual(self.release_version('checkm'), ['CheckM v1.2.4', 'CheckM v1.2.5'])
+        warning = ' '.join(logs.output)
+        self.assertIn('CheckM v1.2.4 by 1 batch(es): batch_000001', warning)
+        self.assertIn('CheckM v1.2.5 by 1 batch(es): batch_000002', warning)
+
+    def test_a_release_no_batch_ran_the_program_over_has_no_version(self):
+        dirs, report = self.release(self.GENOMES, missing=set(self.GENOMES))
+        self.command(M.CheckM, dirs, report)
+
+        self.assertTrue(os.path.exists(os.path.join(self.out, M.CHECKM_NOT_ASSESSED)))
+        self.assertFalse(os.path.exists(os.path.join(self.out, 'checkm.version')))
+
+
+# ------------------------------------------------------------ pplacer
+
+class RecordingPplacer(TempDirCase):
+    """The pplacer CheckM ran, which no --version can name, is learned from the run."""
+
+    GENOMES = {'GCA_000000001.1': STATUS_NEW, 'GCA_000000002.1': STATUS_NEW}
+
+    def pplacer_version(self, directory):
+        with open(os.path.join(directory, 'pplacer.version')) as handle:
+            return handle.read().splitlines()
+
+    def test_the_pplacer_checkm_ran_is_recorded_beside_the_batch(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM, dirs, report, batch_size=1)
+
+        for number in (1, 2):
+            self.assertEqual(self.pplacer_version(self.batch(number)), ['1.1.alpha22'])
+
+    def test_the_batch_log_names_the_pplacer_and_where_it_ran_from(self):
+        dirs, report = self.release(self.GENOMES)
+        with self.assertLogs('timestamp', level='INFO'):
+            self.command(M.CheckM, dirs, report)
+
+        with open(os.path.join(self.batch(1), M.CHECKM_LAYOUT.log)) as handle:
+            self.assertIn('Using pplacer: 1.1.alpha22, run from {}.'.format(
+                os.path.realpath(self.pplacer_exe)), handle.read())
+
+    def test_it_is_the_pplacer_checkm_ran_not_one_on_the_toolkits_path(self):
+        # CheckM's PATH is set by a wrapper the toolkit never sees; a pplacer the
+        # toolkit could find is not the one asked about
+        self.assertIsNone(shutil.which('pplacer'))
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM, dirs, report)
+
+        self.assertEqual(self.pplacer_version(self.batch(1)), ['1.1.alpha22'])
+
+    def test_the_release_pplacer_version_is_gathered_from_the_batches(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM, dirs, report, batch_size=1)
+
+        self.assertEqual(self.pplacer_version(self.out), ['1.1.alpha22'])
+
+    def test_a_pplacer_outside_conda_is_named_and_given_no_version(self):
+        shutil.rmtree(os.path.join(self.pplacer_env, 'conda-meta'))
+        dirs, report = self.release(self.GENOMES)
+        with self.assertLogs('timestamp', level='WARNING') as logs:
+            self.assertTrue(self.command(M.CheckM, dirs, report))
+
+        self.assertFalse(os.path.exists(os.path.join(self.batch(1), 'pplacer.version')))
+        self.assertIn('pplacer ran from {}'.format(os.path.realpath(self.pplacer_exe)),
+                      ' '.join(logs.output))
+
+    def test_a_pplacer_not_seen_to_run_is_said_and_given_no_version(self):
+        os.environ['PPLACER'] = ''
+        dirs, report = self.release(self.GENOMES)
+        with self.assertLogs('timestamp', level='WARNING') as logs:
+            self.assertTrue(self.command(M.CheckM, dirs, report))
+
+        self.assertFalse(os.path.exists(os.path.join(self.batch(1), 'pplacer.version')))
+        self.assertIn('pplacer was not seen to run', ' '.join(logs.output))
+
+    def test_a_batch_that_recorded_no_pplacer_leaves_the_release_without_one(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM, dirs, report, batch_size=1)
+        self.assertTrue(os.path.exists(os.path.join(self.out, 'pplacer.version')))
+        # as every r237 batch made before pplacer was recorded
+        os.remove(os.path.join(self.batch(1), 'pplacer.version'))
+
+        with self.assertLogs('timestamp', level='WARNING') as logs:
+            self.command(M.CheckM, dirs, report, batch_size=1)
+
+        self.assertFalse(os.path.exists(os.path.join(self.out, 'pplacer.version')))
+        self.assertIn('1 batch(es) that ran checkm recorded no pplacer version, so none '
+                      'is written for the release: batch_000001.', ' '.join(logs.output))
+        with open(os.path.join(self.out, 'checkm.version')) as handle:
+            self.assertEqual(handle.read().strip(), 'CheckM v1.2.5')
+
+    def test_a_batch_made_again_does_not_keep_the_pplacer_of_the_last_attempt(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM, dirs, report)
+        os.remove(os.path.join(self.batch(1), SUCCESS_CANARY))
+        os.environ['PPLACER'] = ''
+
+        self.command(M.CheckM, dirs, report)
+
+        self.assertFalse(os.path.exists(os.path.join(self.batch(1), 'pplacer.version')))
+
+    def test_checkm2_records_no_pplacer(self):
+        dirs, report = self.release(self.GENOMES)
+        self.command(M.CheckM2, dirs, report)
+
+        self.assertFalse(os.path.exists(os.path.join(self.batch(1), 'pplacer.version')))
+        self.assertFalse(os.path.exists(os.path.join(self.out, 'pplacer.version')))
+
+
+class WatchingAProcess(TempDirCase):
+    def test_the_executables_of_every_descendant_are_found(self):
+        proc = subprocess.Popen(['sh', '-c', '"$0" 5; true', self.pplacer_exe])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        found = set()
+        for _ in range(200):
+            found = set(M.descendant_executables(proc.pid).values())
+            if os.path.realpath(self.pplacer_exe) in found:
+                break
+            time.sleep(0.01)
+
+        self.assertIn(os.path.realpath(self.pplacer_exe), found)
+
+    def test_a_process_with_no_descendants_has_none(self):
+        proc = subprocess.Popen([self.pplacer_exe, '5'])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+
+        self.assertEqual(M.descendant_executables(proc.pid), {})
+
+    def test_pplacer_is_known_by_the_name_bioconda_runs_it_under(self):
+        self.assertTrue(M.is_program('/env/bin/pplacer.exe', 'pplacer'))
+        self.assertTrue(M.is_program('/env/bin/pplacer', 'pplacer'))
+        self.assertFalse(M.is_program('/env/bin/guppy', 'pplacer'))
 
 
 # ------------------------------------------------------------ a genome too large
