@@ -137,3 +137,15 @@ def logger_setup(log_dir, log_file, program_name,software_name, version, silent,
 
     timestamp_logger.info('%s v%s' % (program_name, version))
     timestamp_logger.info(software_name + ' ' + redacted_command_line(sys.argv[1:], secrets))
+
+def log_directory():
+    """The directory the run's log is written to, for files that belong beside it.
+
+    @return: the directory of the 'timestamp' logger's log file, or the current
+             directory where the run is logged to the console alone.
+    """
+
+    for handler in logging.getLogger('timestamp').handlers:
+        if isinstance(handler, logging.FileHandler):
+            return os.path.dirname(handler.baseFilename)
+    return os.getcwd()

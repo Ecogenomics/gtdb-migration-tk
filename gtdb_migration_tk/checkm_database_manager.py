@@ -20,6 +20,7 @@ import logging
 
 from gtdb_migration_tk.ncbi_utils import assembly_accession
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
+from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 
 
@@ -41,6 +42,7 @@ class CheckMDatabaseManager(object):
         self.temp_cur = self.temp_con.cursor()
 
 
+    @one_transaction
     def add_checkm_to_db(self,checkm_profile_file, checkm_qa_sh100_file, genome_list_file):
         # get genomes to process
         genome_list = set()
@@ -115,6 +117,5 @@ class CheckMDatabaseManager(object):
         db_header = 'checkm_strain_heterogeneity_100'
         data_type = 'FLOAT'
         gtdbimporter.import_metadata_to_db('metadata_genes', db_header, data_type, data_to_commit)
-        self.temp_con.commit()
 
 

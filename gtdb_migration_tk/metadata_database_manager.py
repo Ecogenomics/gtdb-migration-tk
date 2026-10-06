@@ -19,15 +19,63 @@ import os
 import sys
 import glob
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
+from typing import Dict, Iterable, Tuple
 
-from tqdm import tqdm
+from psycopg2.extras import execute_values
 
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
-from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
+from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction
+from gtdb_migration_tk.gtdb_lite.gtdb_importer import (SKIP, UNKNOWN_EXAMPLES, GTDBImporter,
+                                                       UnknownGenomesError)
 from gtdb_migration_tk.utils.common import open_text
+
+# rows a statement of update_type_designation hands the server at a time
+PAGE_SIZE = 10000
+
+# what update_type_designation writes
+TYPE_STRAIN_OF_SPECIES = 'type strain of species'
+NOT_USED_AS_TYPE = 'not used as type'
+SEQCODE_SOURCE = 'Seqcode'
+
+
+def type_designation_changes(rows: Iterable[Tuple]) -> Tuple[Dict[int, str], Dict[int, str]]:
+    """What update_type_designation changes, decided without the database.
+
+    A genome whose species is valid under the SeqCode is the type strain of its
+    species, and 'Seqcode' is added to the sources of that designation. A genome
+    NCBI excludes from RefSeq as derived from a metagenome and not used as type
+    is not used as type, whatever the SeqCode says.
+
+    Parameters
+    ----------
+    rows : iterable of tuple
+        (id, seqcode_species_status, ncbi_excluded_from_refseq,
+        gtdb_type_designation_ncbi_taxa, gtdb_type_designation_ncbi_taxa_sources)
+        of each genome, as update_type_designation selects them.
+
+    @return: the new gtdb_type_designation_ncbi_taxa of each genome it changes,
+             and the new gtdb_type_designation_ncbi_taxa_sources, each by id. The
+             sources keep their order, 'Seqcode' added last where it is not
+             already there: they went through a set, and came out in an order
+             that differed between runs.
+    """
+
+    designations: Dict[int, str] = {}
+    sources: Dict[int, str] = {}
+    for genome_id, seqcode_status, excluded, _designation, typed_sources in rows:
+        if seqcode_status is not None and 'Valid' in seqcode_status:
+            designations[genome_id] = TYPE_STRAIN_OF_SPECIES
+            parts = [part for part in (typed_sources or '').split(';') if part]
+            sources[genome_id] = ';'.join(dict.fromkeys(parts + [SEQCODE_SOURCE]))
+
+        if (excluded is not None and 'not used as type' in excluded
+                and 'derived from metagenome' in excluded):
+            designations[genome_id] = NOT_USED_AS_TYPE
+
+    return designations, sources
 
 class MetadataDatabaseManager(object):
 
@@ -53,6 +101,7 @@ class MetadataDatabaseManager(object):
         self.temp_con.MakePostgresConnection()
         self.temp_cur = self.temp_con.cursor()
 
+    @one_transaction
     def process_metadata_files(self,genome_list_file,do_not_null_field=False,table_folder=None,table_file=None,table_file_desc=None):
         file_dir = os.path.dirname(os.path.realpath(__file__))
         desc_table_dir = os.path.join(file_dir, 'data_files', 'table_description')
@@ -96,27 +145,17 @@ class MetadataDatabaseManager(object):
             len(metadata_table)))
         self.logger.info('Fields: %s' % ', '.join(metadata_table))
 
-        # set fields to NULL if requested
+        # set fields to NULL for every genome, unless asked not to. This asked
+        # [y/n] first, which a run under nohup or with no terminal could not
+        # answer; it is in the transaction the new values are written in, so a
+        # failure leaves the values the fields held rather than NULL
         if not do_not_null_field:
-            response = ''
-            while response.lower() not in ['y', 'n']:
-                response = input(
-                    "Set fields to NULL for all genomes [y/n]: ")
-
-            if response.lower() == 'y':
-
-                for field in metadata_table:
-                    q = ("UPDATE {} SET {} = NULL".format(
-                        metadata_table[field], field))
-                    print(q)
-                    self.temp_cur.execute(q)
-                self.temp_con.commit()
-
-            elif response.lower() == 'n':
-                pass
-            else:
-                self.logger.error('Unrecognized input.')
-                sys.exit(-1)
+            for field in metadata_table:
+                self.logger.info('Setting {}.{} to NULL for every genome.'.format(
+                    metadata_table[field], field))
+                q = ("UPDATE {} SET {} = NULL".format(
+                    metadata_table[field], field))
+                self.temp_cur.execute(q)
 
         # get genomes to process
         genome_list = set()
@@ -183,17 +222,17 @@ class MetadataDatabaseManager(object):
             # print(f'Data type: {data_type}')
 
             gtdbimporter.import_metadata_to_db(table, field, data_type, data_to_commit)
-            self.temp_con.commit()
             self.logger.info(f'Finished updating {field} for {records_to_update} genomes.')
 
+    @one_transaction
     def update_reps(self, final_cluster_file):
-        """Update representative genomes of species clusters."""
+        """Update representative genomes of species clusters.
 
-        # clear representative fields
-        self.logger.info('Setting GTDB representative fields to NULL.')
-        q = ("UPDATE metadata_taxonomy SET gtdb_representative = NULL, gtdb_genome_representative = NULL")
-        self.temp_cur.execute(q)
-        self.temp_con.commit()
+        The cluster file is read whole, and every genome it names found in the
+        database, before the fields are set to NULL. The NULLs were committed
+        first, and a genome of the file the database did not hold then raised a
+        KeyError, which left the database with no representatives at all.
+        """
 
         # mark all genomes as not being representatives and get translation
         # between canonical genome IDs and NCBI accessions
@@ -209,6 +248,7 @@ class MetadataDatabaseManager(object):
 
         # determine representative assignment of genomes
         genome_rep_data = []
+        not_held = []
         num_sp_reps = 0
         with open(final_cluster_file) as f:
             headers = f.readline().strip().split('\t')
@@ -219,10 +259,17 @@ class MetadataDatabaseManager(object):
             for line in f:
                 line_split = line.strip().split('\t')
 
-                rep_accn = gid_to_ncbi_accn[line_split[rep_index]]
+                rep_gid = line_split[rep_index]
+                if rep_gid not in gid_to_ncbi_accn:
+                    not_held.append(rep_gid)
+                    continue
+                rep_accn = gid_to_ncbi_accn[rep_gid]
                 if len(line_split) > clustered_genomes_index:
                     gids = [gid.strip() for gid in line_split[clustered_genomes_index].split(',')]
                     for gid in gids:
+                        if gid not in gid_to_ncbi_accn:
+                            not_held.append(gid)
+                            continue
                         ncbi_accn = gid_to_ncbi_accn[gid]
                         genome_rep_data.append((ncbi_accn, rep_accn))
 
@@ -231,11 +278,21 @@ class MetadataDatabaseManager(object):
                 is_rep[rep_accn] = True
                 num_sp_reps += 1
 
+        if not_held:
+            raise UnknownGenomesError(
+                '{:,} genome(s) of {} are not in the database, e.g. {}; the database '
+                'holds another release, or update_db has not been run.'.format(
+                    len(not_held), final_cluster_file, ', '.join(not_held[:UNKNOWN_EXAMPLES])))
+
+        # clear representative fields
+        self.logger.info('Setting GTDB representative fields to NULL.')
+        q = ("UPDATE metadata_taxonomy SET gtdb_representative = NULL, gtdb_genome_representative = NULL")
+        self.temp_cur.execute(q)
+
         print(f'Identified {num_sp_reps:,} species clusters.')
         print('Identified {:,} genomes marked as representatives.'.format(sum([1 for rid in is_rep if is_rep[rid]])))
         gtdbimporter = GTDBImporter(self.temp_cur)
         gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_genome_representative', 'TEXT', genome_rep_data)
-        self.temp_con.commit()
 
         # mark representative genomes
         is_rep_data = []
@@ -243,83 +300,71 @@ class MetadataDatabaseManager(object):
             is_rep_data.append((rep_accn, str(rep_status)))
 
         gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', is_rep_data)
-        self.temp_con.commit()
 
-    def add_surveillance_genomes(self,genome_list):
-        data_to_commit = []
+    @one_transaction
+    def add_surveillance_genomes(self, genome_list):
+        """Replace the surveillance genomes with those of a list.
+
+        The table is emptied and filled in one transaction, so a list that cannot
+        be inserted leaves the genomes it held. It was emptied and committed
+        first, after a question that was answered 'y' in the code rather than
+        asked. Blank lines are not genomes, and a genome listed twice is inserted
+        once.
+        """
+
+        genomes = []
         with open(genome_list) as glf:
             for line in glf:
-                data_to_commit.append([line.strip()])
+                gid = line.strip()
+                if gid:
+                    genomes.append(gid)
+        unique = list(dict.fromkeys(genomes))
 
-        self.logger.info('Updating list of surveillance genome ({} genomes.)'.format(len(data_to_commit)))
-        print("This function will remove all genomes id in survey table and reupload them")
-        response = 'y'
-        while response.lower() not in ['y', 'n']:
-            response = input(
-                "Do you want to continue [y/n]: ")
-        if response.lower() == 'y':
-            q = ("TRUNCATE survey_genomes")
-            print(q)
-            self.temp_cur.execute(q)
-            self.temp_con.commit()
-        elif response.lower() == 'n':
-            pass
-        else:
-            self.logger.error('Unrecognized input.')
-            sys.exit(-1)
+        self.logger.info('Replacing the surveillance genomes with the {:,} of {}{}.'.format(
+            len(unique), genome_list,
+            ' ({:,} listed more than once)'.format(len(genomes) - len(unique))
+            if len(unique) < len(genomes) else ''))
+        self.temp_cur.execute('TRUNCATE survey_genomes')
 
         q_add = "INSERT INTO survey_genomes(canonical_gid) VALUES (%s) "
-        self.temp_cur.executemany(q_add, data_to_commit)
-        self.temp_con.commit()
+        self.temp_cur.executemany(q_add, [(gid,) for gid in unique])
 
+    @one_transaction
     def update_type_designation(self):
+        """Set the type designation of genomes from SeqCode and NCBI's exclusions.
+
+        What changes is decided first (type_designation_changes()) and written in
+        two statements. Each genome was updated, and committed, on its own, with
+        its values written into the SQL; a sources value holding a quote broke the
+        statement.
+        """
+
         self.temp_cur.execute("SELECT mn.id,seq.seqcode_species_status,mn.ncbi_excluded_from_refseq,"
                               "mtm.gtdb_type_designation_ncbi_taxa,mtm.gtdb_type_designation_ncbi_taxa_sources "
                               "from metadata_ncbi mn "
                               "LEFT JOIN metadata_seqcode seq USING (id) "
                               "LEFT JOIN metadata_type_material mtm USING (id)")
+        rows = self.temp_cur.fetchall()
+        self.logger.info('Loaded {:,} genomes.'.format(len(rows)))
 
-        dict_records = {key: {"seqcode": seqcode_status, "excluded": excluded,
-                              "typed":typed,"typedsources":typedsources}
-                        for (key, seqcode_status,excluded,typed,typedsources) in self.temp_cur}
+        designations, sources = type_designation_changes(rows)
 
-        self.logger.info('Loaded {} genomes.'.format(len(dict_records)))
+        execute_values(
+            self.temp_cur,
+            'UPDATE metadata_type_material AS m SET gtdb_type_designation_ncbi_taxa = v.designation '
+            'FROM (VALUES %s) AS v(id, designation) WHERE m.id = v.id',
+            list(designations.items()), template='(%s::integer, %s::text)', page_size=PAGE_SIZE)
+        execute_values(
+            self.temp_cur,
+            'UPDATE metadata_type_material AS m SET gtdb_type_designation_ncbi_taxa_sources = v.sources '
+            'FROM (VALUES %s) AS v(id, sources) WHERE m.id = v.id',
+            list(sources.items()), template='(%s::integer, %s::text)', page_size=PAGE_SIZE)
 
-        for key, value in tqdm(dict_records.items(),ncols=20):
-
-            if value.get('seqcode') is not None and "Valid" in value.get('seqcode'):
-                q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa = 'type strain of species' "
-                        "WHERE id = '{}'".format(key))
-                self.logger.info("Updating {} to not used as type".format(key))
-                self.temp_cur.execute(q)
-                self.temp_con.commit()
-
-                # add 'Seqcode' to gtdb_type_designation_ncbi_taxa_sources
-                if value.get('typedsources') is None:
-                    q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa_sources = 'Seqcode' "
-                         "WHERE id = '{}'".format(key))
-                else:
-                    value_to_add = value.get('typedsources').split(';')
-                    value_to_add.append('Seqcode')
-                    #remove duplicates
-                    value_to_add = list(set(value_to_add))
-                    # concatenate with ;
-                    value_to_add = ';'.join(value_to_add)
-                    q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa_sources = '{}' "
-                         "WHERE id = '{}'".format(value_to_add,key))
-                self.logger.info("Updating {} to add Seqcode to gtdb_type_designation_ncbi_taxa_sources".format(key))
-                self.temp_cur.execute(q)
-                self.temp_con.commit()
-
-            if value.get('excluded') is not None and "not used as type" in value.get('excluded') and "derived from metagenome" in value.get('excluded'):
-                # update gtdb_type_designation_ncbi_taxa to "not used as type"
-                q = ("UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa = 'not used as type' "
-                        "WHERE id = '{}'".format(key))
-                self.logger.info("Updating {} to not used as type".format(key))
-                self.temp_cur.execute(q)
-                self.temp_con.commit()
-
-
+        for designation, count in sorted(Counter(designations.values()).items()):
+            self.logger.info("Set gtdb_type_designation_ncbi_taxa to '{}' for {:,} genomes.".format(
+                designation, count))
+        self.logger.info("Added '{}' to gtdb_type_designation_ncbi_taxa_sources of {:,} genomes "
+                         "valid under the SeqCode.".format(SEQCODE_SOURCE, len(sources)))
 
 
 class NCBITaxDatabaseManager(object):
@@ -334,26 +379,15 @@ class NCBITaxDatabaseManager(object):
         self.temp_cur = self.temp_con.cursor()
 
 
-    # set fields to NULL if requested
+    # set a field to NULL for every genome, in the transaction its new values are
+    # written in; this asked [y/n] first, which a run with no terminal could not answer
     def set_field_to_null(self,metadata_table,field):
-        response = ''
-        while response.lower() not in ['y', 'n']:
-            response = input(
-                "Set fields to NULL for all genomes [y/n]: ")
+        self.logger.info('Setting {}.{} to NULL for every genome.'.format(metadata_table, field))
+        q = ("UPDATE {} SET {} = NULL".format(
+            metadata_table, field))
+        self.temp_cur.execute(q)
 
-        if response.lower() == 'y':
-            q = ("UPDATE {} SET {} = NULL".format(
-                metadata_table, field))
-            print(q)
-            self.temp_cur.execute(q)
-            self.temp_con.commit()
-
-        elif response.lower() == 'n':
-            pass
-        else:
-            self.logger.error('Unrecognized input.')
-            sys.exit(-1)
-
+    @one_transaction
     def update_ncbitax_db(self, organism_name_file,filtered_file,unfiltered_file, genome_list_file,do_not_null_field=False):
         """Add organism name to database."""
         gtdbimporter = GTDBImporter(self.temp_cur)
@@ -384,8 +418,8 @@ class NCBITaxDatabaseManager(object):
             self.set_field_to_null('metadata_ncbi', 'ncbi_organism_name')
         self.logger.info('Updating {} for {} genomes.'.format(
             'ncbi_organism_name', records_to_update))
-        gtdbimporter.import_metadata_to_db('metadata_ncbi', 'ncbi_organism_name', 'TEXT', data_to_commit)
-        self.temp_con.commit()
+        gtdbimporter.import_metadata_to_db('metadata_ncbi', 'ncbi_organism_name', 'TEXT', data_to_commit,
+                                           unknown=SKIP)
 
         taxonomy = Taxonomy().read(filtered_file)
         data_filtered_to_commit = []
@@ -406,8 +440,8 @@ class NCBITaxDatabaseManager(object):
             self.set_field_to_null('metadata_taxonomy', 'ncbi_taxonomy')
         self.logger.info('Updating {} for {} genomes.'.format(
             'ncbi_taxonomy', records_to_update))
-        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy', 'TEXT', data_filtered_to_commit)
-        self.temp_con.commit()
+        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy', 'TEXT', data_filtered_to_commit,
+                                           unknown=SKIP)
 
         # read taxonomy file
         unfiltered_taxonomy = Taxonomy().read(unfiltered_file)
@@ -431,8 +465,8 @@ class NCBITaxDatabaseManager(object):
             self.set_field_to_null('metadata_taxonomy', 'ncbi_taxonomy_unfiltered')
         self.logger.info('Updating {} for {} genomes.'.format(
             'ncbi_taxonomy_unfiltered', records_to_update))
-        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy_unfiltered', 'TEXT', data_unfiltered_to_commit)
-        self.temp_con.commit()
+        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy_unfiltered', 'TEXT', data_unfiltered_to_commit,
+                                           unknown=SKIP)
 
 
 

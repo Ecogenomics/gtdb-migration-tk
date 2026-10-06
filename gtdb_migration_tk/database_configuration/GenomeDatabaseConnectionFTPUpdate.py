@@ -15,6 +15,42 @@
 #                                                                             #
 ###############################################################################
 
+import functools
+
+
+def one_transaction(method):
+    """A manager's command, whose writes are committed together or not at all.
+
+    The metadata commands committed as they went: the fields set to NULL, then
+    each field or taxonomic rank written. A run that failed part way left the
+    database with some fields of the new release and some of the old, or a field
+    NULL for every genome, its new values never written. The method's writes are
+    now committed once, when it returns, and rolled back when it raises -- a
+    sys.exit() among them.
+
+    The manager holds its connection as temp_con, a GenomeDatabaseConnectionFTPUpdate,
+    and the method makes no commit of its own.
+
+    Parameters
+    ----------
+    method : function
+        A method of the manager.
+
+    @return: the method, wrapped.
+    """
+
+    @functools.wraps(method)
+    def in_one_transaction(self, *args, **kwargs):
+        try:
+            result = method(self, *args, **kwargs)
+        except BaseException:
+            self.temp_con.rollback()
+            raise
+        self.temp_con.commit()
+        return result
+
+    return in_one_transaction
+
 
 class GenomeDatabaseConnectionFTPUpdate(object):
 

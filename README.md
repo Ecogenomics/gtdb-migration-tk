@@ -1003,6 +1003,16 @@ password is read from `~/.pgpass`. A password on the command line is shown by
 `ps` to every user of the machine for as long as the run lasts.
 `PGSERVICE=gtdb_r237` in the environment does what `--db_service gtdb_r237` does.
 
+Each of these commands is one transaction, committed when it is done: a run that
+fails leaves the database as it was, and exits non-zero. A field is set to NULL
+for every genome before its new values are written, in that same transaction,
+unless `--do_not_null_field` is given; nothing asks first. A genome the database
+does not hold refuses the run (a metadata table, CheckM results, a taxonomy or a
+cluster file of another release, or `update_db` not yet run), except in
+`update_ncbitax_db`, whose NCBI files cover every assembly NCBI holds and whose
+other genomes are skipped. Either way each one is listed in
+`unknown_genomes.<table>.<field>.tsv` beside the log.
+
 `update_db` brings the NCBI genomes of the `genomes` table into line with a
 release, from the two files `update_genomes` wrote for it: `report.log` says what
 became of each genome and `genome_dirs.tsv` where the release keeps it. One run

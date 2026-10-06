@@ -1546,8 +1546,17 @@ def main():
                 pdb.run(parser.parse_options(args))
             else:
                 rtn_code = parser.parse_options(args)
-        except SystemExit:
+        except SystemExit as exc:
             print("\n  Controlled exit resulting from an unrecoverable error or warning.")
+            # the run exits as the command said it should: a command that ended
+            # itself with sys.exit(-1) exited 0, and whatever ran it carried on as
+            # though it had succeeded. sys.exit('message') is an error, exiting 1
+            if exc.code not in (None, 0):
+                if isinstance(exc.code, int):
+                    rtn_code = exc.code
+                else:
+                    print(exc.code, file=sys.stderr)
+                    rtn_code = 1
         except:
             print("\nUnexpected error:", sys.exc_info()[0])
             raise
