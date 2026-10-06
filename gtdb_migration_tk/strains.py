@@ -569,7 +569,7 @@ class Strains(object):
                     '; '.join('{} ({})'.format(sp, d) for sp, d in sorted(unknown_designations.items())[:10]),
                     ', '.join("'{}'".format(d) for d in LPSN_TYPE_DESIGNATIONS)))
 
-        self.logger.info(' - identified strain ids for {:,} species on LPSN website.'.format(
+        self.logger.info(' - identified strain ids for {:,} species on LPSN website'.format(
                             len(lpsn_strains_dic)))
 
         # get co-identical strain IDs in LPSN GSS file
@@ -599,15 +599,15 @@ class Strains(object):
 
 
 
-        self.logger.info(' - identified strain ids for {:,} species in LPSN GSS file; deferring to LPSN GSS data whenever possible.'.format(
+        self.logger.info(' - identified strain ids for {:,} species in LPSN GSS file; deferring to LPSN GSS data whenever possible'.format(
                             len(lpsn_gss_strain_ids)))
-        self.logger.info(' - identified {:,} species exclusive to LPSN website.'.format(
+        self.logger.info(' - identified {:,} species exclusive to LPSN website'.format(
                             len(set(lpsn_strains_dic) - set(lpsn_gss_strain_ids))))
-        self.logger.info(' - identified {:,} species exclusive to LPSN GSS file (ideally zero!).'.format(
+        self.logger.info(' - identified {:,} species exclusive to LPSN GSS file (ideally zero!)'.format(
                             len(set(lpsn_gss_strain_ids) - set(lpsn_strains_dic))))
-        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN GSS file (ideally zero!).'.format(
+        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN GSS file (ideally zero!)'.format(
                             new_strain_ids))
-        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN website. (ideally zero!)'.format(
+        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN website (ideally zero!)'.format(
                             website_strains_only))
 
 
