@@ -6,7 +6,8 @@ import re
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, canonical_gid
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
-from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
+from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction
+from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter, UNKNOWN_EXAMPLES, UnknownGenomesError
 from gtdb_migration_tk.utils.common import read_gtdb_metadata
 
 csv.field_size_limit(sys.maxsize)
@@ -90,7 +91,7 @@ class Propagate(object):
                             self.logger.info("GTDB taxonomy strings don't match in the two databases:")
                             self.logger.info(cur_gtdb_taxonomy[genome_id])
                             self.logger.info(prev_gtdb_taxonomy[genome_id])
-                            sys.exit()
+                            sys.exit(1)
 
                         fout.write('%s\t%s\n' % (genome_id, prev_gtdb_taxonomy[genome_id]))
 
@@ -202,6 +203,7 @@ class Propagate(object):
                 gtdb_taxa = [t.strip() for t in line_split[gtdb_taxonomy_index].split(';')]
                 gtdb_taxonomy[gid] = gtdb_taxa
 
+        gtdbimporter = GTDBImporter(self.temp_cur)
         for i, rank in enumerate(Taxonomy.rank_labels):
             data_to_commit = []
             for gid, taxa in gtdb_taxonomy.items():
@@ -211,10 +213,9 @@ class Propagate(object):
                 else:
                     data_to_commit.append((gid, Taxonomy.rank_prefixes[i]))
 
-            gtdbimporter = GTDBImporter(self.temp_cur)
             gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
-            self.temp_con.commit()
 
+    @one_transaction
     def add_propagated_taxonomy(self, taxonomy_file, metadata_file, genome_list_file, truncate_taxonomy,rep_id_file):
         """Add taxonomy to database."""
 
@@ -234,6 +235,7 @@ class Propagate(object):
         taxonomy = Taxonomy().read(taxonomy_file)
 
         # add each taxonomic rank to database
+        gtdbimporter = GTDBImporter(self.temp_cur)
         for i, rank in enumerate(Taxonomy.rank_labels):
             data_to_commit = []
             for genome_id, taxa in taxonomy.items():
@@ -243,20 +245,17 @@ class Propagate(object):
                 rank_str = taxa[i]
                 data_to_commit.append((genome_id, rank_str))
 
-            gtdbimporter = GTDBImporter(self.temp_cur)
             gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
-            self.temp_con.commit()
 
         rep_to_commit = []
         with open(rep_id_file) as repfile:
             for line in repfile:
                 genome_id,isrep = line.strip().split('\t')
                 rep_to_commit.append((genome_id,isrep))
-        gtdbimporter = GTDBImporter(self.temp_cur)
         gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', rep_to_commit)
-        self.temp_con.commit()
 
 
+    @one_transaction
     def set_gtdb_domain(self):
         """Set missing GTDB domain information to reflect NCBI domain."""
 
@@ -285,7 +284,7 @@ class Propagate(object):
             ncbi_domain = list(map(str.strip, ncbi_taxonomy.split(';')))[0]
             if ncbi_domain[0:3] != 'd__':
                 self.logger.error('NCBI domain has the incorrect prefix: %s' % ncbi_domain)
-                sys.exit()
+                sys.exit(1)
 
             query_al_mark = ("SELECT count(*) " +
                              "FROM aligned_markers am " +
@@ -323,9 +322,6 @@ class Propagate(object):
 
         q = "UPDATE metadata_taxonomy SET gtdb_domain = %s WHERE id = %s"
         self.temp_cur.executemany(q, missing_domain_info)
-
-        self.temp_con.commit()
-        self.temp_cur.close()
 
         self.logger.info('NCBI genomes that were missing GTDB domain info: %d' % len(missing_domain_info))
 
@@ -386,6 +382,7 @@ class Propagate(object):
         self.logger.info('Taxonomy written to: {}'.format(output_file))
 
 
+    @one_transaction
     def add_taxonomy_to_database(self,taxonomy_file,metadata_file,truncate_taxonomy):
         """
         Update the taxonomy in the database, this is usually used after propagate_taxonomy_from_reps_to_cluster function
@@ -395,28 +392,41 @@ class Propagate(object):
         @param canonical_gid_mapping: TSV file in the format (canonical_id,full_genome_id)
         @return:
         """
-        if truncate_taxonomy:
-            self.logger.info('Truncating GTDB taxonomy to domain classification.')
-            self.truncate_taxonomy(metadata_file)
-
-
         # read taxonomy file
         taxonomy = Taxonomy().read(taxonomy_file)
 
         canonical_mapping = read_gtdb_metadata(metadata_file,['formatted_accession'])
         canonical_mapping = {v.formatted_accession: k for k, v in canonical_mapping.items()}
 
+        # a canonical ID is changed to the genome's ID before anything is written;
+        # one the metadata file does not map became None, which failed the whole
+        # rank's write, and the error was passed over
+        genome_ids = {}
+        unmapped = []
+        for genome_id in taxonomy:
+            if re.match(r"G\d{9}", genome_id):
+                if genome_id not in canonical_mapping:
+                    unmapped.append(genome_id)
+                    continue
+                genome_ids[genome_id] = canonical_mapping[genome_id]
+            else:
+                genome_ids[genome_id] = genome_id
+        if unmapped:
+            raise UnknownGenomesError(
+                '{:,} canonical genome ID(s) of {} are not in {}, e.g. {}.'.format(
+                    len(unmapped), taxonomy_file, metadata_file,
+                    ', '.join(unmapped[:UNKNOWN_EXAMPLES])))
+
+        if truncate_taxonomy:
+            self.logger.info('Truncating GTDB taxonomy to domain classification.')
+            self.truncate_taxonomy(metadata_file)
+
         # add each taxonomic rank to database
+        gtdbimporter = GTDBImporter(self.temp_cur)
         for i, rank in enumerate(Taxonomy.rank_labels):
             data_to_commit = []
             for genome_id, taxa in taxonomy.items():
-                if re.match(r"G\d{9}", genome_id):
-                    # This is a canonical id, need to be changed to normal id
-                    genome_id = canonical_mapping.get(genome_id)
-
                 rank_str = taxa[i]
-                data_to_commit.append((genome_id, rank_str))
+                data_to_commit.append((genome_ids[genome_id], rank_str))
 
-            gtdbimporter = GTDBImporter(self.temp_cur)
             gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_' + rank, 'TEXT', data_to_commit)
-            self.temp_con.commit()

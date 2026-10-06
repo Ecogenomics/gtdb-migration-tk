@@ -86,7 +86,12 @@ goes. `logger_setup()` clears the handlers of an earlier call before adding its
 own; it did not, and the second call __main__ makes on a failed `--log` printed
 every line of the run twice. `parse_options()` returns an exit code, and `main()`
 only calls `sys.exit()` when it is non-zero. Today only `ncbi_genome_sync` returns a
-meaningful code (see README for the table); every other command returns 0.
+meaningful code (see README for the table); every other command returns 0. A
+command that ends itself with `sys.exit(code)` exits with that code: `main()`
+catches the `SystemExit` to print its closing line and passes a non-zero code on
+(a message exits 1). It exited 0 whatever the code until 0.1.47, so a step that
+failed was taken by a shell's `&&` for one that succeeded. End an error with a
+non-zero code, never a bare `sys.exit()`.
 
 ### `batching.py` is the coordination both long commands share
 
@@ -302,6 +307,25 @@ keywords as they are, never written into a connection string or a URL:
 wrapper most `*_db` managers use; `update_db`'s own `connect()`
 (`database_manager.py`); and `utils.common.database_engine()`, the SQLAlchemy
 engine `lpsn.py` and `ncbi_tax_manager.py` write through with pandas.
+
+Each metadata command is ONE transaction: the manager method `main.py` calls is
+decorated `@one_transaction` (in `GenomeDatabaseConnectionFTPUpdate.py`), which
+commits when it returns and rolls back when it raises, `sys.exit()` included, and
+nothing inside it commits. Fields are set to NULL in the transaction their new
+values are written in, so a failed run leaves the old values rather than NULL;
+nothing asks `[y/n]`, `--do_not_null_field` being how a run keeps the old values.
+Every metadata write goes through `gtdb_lite/gtdb_importer.py`
+`GTDBImporter.import_metadata_to_db()`, which calls the database's `upsert()`
+stored procedure. It raises on any error: it printed them until 0.1.47, and
+PostgreSQL rolls back on `commit()` a transaction with a failed statement without
+raising, so a failed write finished as a successful one. `upsert()` fails a whole
+field for one genome not in `genomes.id_at_source`, so the importer checks the
+genomes first and the caller says what to do with those the database does not
+hold: `REFUSE` (the default; input meant to be the release's genomes) or `SKIP`
+(input that covers all of NCBI, as `update_ncbitax_db`'s does). Either way they
+are listed beside the log (`biolib_lite.logger.log_directory()`). A genome may be
+named `GB_GCA_...`/`RS_GCF_...` or `GCA_...`/`GCF_...`: a leading `GB_` or `RS_` is
+taken off (`gtdb_importer.id_at_source()`), giving `genomes.id_at_source`.
 
 `update_db` decides every genome from `report.log` and `genome_dirs.tsv` alone
 (`plan_update()`, which reads no database and is what the tests drive), covers
