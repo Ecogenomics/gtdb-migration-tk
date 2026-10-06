@@ -11,6 +11,7 @@ put first on PATH, so what is tested is what the helper does with what a
 program prints and how it exits, not any one build of it.
 """
 
+import argparse
 import json
 import logging
 import os
@@ -18,7 +19,12 @@ import shutil
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
+import psycopg2
+
+from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import \
+    GenomeDatabaseConnectionFTPUpdate
 from gtdb_migration_tk.utils import common as C
 
 
@@ -174,6 +180,73 @@ class RecordingTheVersion(TempDirCase):
 
         with open(os.path.join(self.dir, 'trnascan-se.version')) as handle:
             self.assertEqual(handle.read(), 'tRNAscan-SE 2.0.13 (Jul 2026)\n')
+
+
+def database_options(**given):
+    """The options __database_setup() gives a command, as argparse sets them."""
+    options = dict(db_service=None, hostname=None, user=None, db=None, password=None)
+    options.update(given)
+    return argparse.Namespace(**options)
+
+
+class NamingTheDatabase(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop('PGSERVICE', None)
+
+    def test_a_service_alone_names_the_database(self):
+        self.assertEqual(C.database_keywords(database_options(db_service='gtdb_r237')),
+                         {'service': 'gtdb_r237'})
+
+    def test_host_user_and_database_name_it_with_no_password(self):
+        # the password is then read from ~/.pgpass
+        keywords = C.database_keywords(database_options(hostname='h', user='u', db='d'))
+        self.assertEqual(keywords, {'host': 'h', 'user': 'u', 'dbname': 'd'})
+
+    def test_options_given_with_a_service_are_handed_over_beside_it(self):
+        # libpq takes a keyword given over the service's value for it
+        keywords = C.database_keywords(database_options(db_service='gtdb_r237', db='gtdb_r237_test'))
+        self.assertEqual(keywords, {'service': 'gtdb_r237', 'dbname': 'gtdb_r237_test'})
+
+    def test_pgservice_in_the_environment_names_the_database(self):
+        os.environ['PGSERVICE'] = 'gtdb_r237'
+        self.assertEqual(C.database_keywords(database_options()), {})
+
+    def test_nothing_given_is_refused(self):
+        # libpq's defaults are a socket on this machine and a user named for
+        # whoever runs the command, which is no database the toolkit is used on
+        with self.assertRaises(C.DatabaseOptionsError):
+            C.database_keywords(database_options())
+
+    def test_a_host_without_a_user_and_database_is_refused(self):
+        with self.assertRaises(C.DatabaseOptionsError):
+            C.database_keywords(database_options(hostname='h', password='pw'))
+
+
+class HandingTheKeywordsOver(unittest.TestCase):
+    PASSWORD = 'a pass@word/with \'quotes\''
+
+    def connect_with(self, opener):
+        """The keywords psycopg2.connect() is called with, nothing being reached."""
+        with mock.patch.object(psycopg2, 'connect', side_effect=ConnectionRefusedError) as connect:
+            with self.assertRaises(ConnectionRefusedError):
+                opener()
+        return connect.call_args.kwargs
+
+    def test_the_connection_wrapper_hands_a_password_over_unchanged(self):
+        # it was written into a connection string unquoted, where a space ended it
+        database = {'host': 'h', 'user': 'u', 'dbname': 'd', 'password': self.PASSWORD}
+        kwargs = self.connect_with(GenomeDatabaseConnectionFTPUpdate(database).MakePostgresConnection)
+        self.assertEqual(kwargs, database)
+
+    def test_the_sqlalchemy_engine_hands_psycopg2_the_keywords(self):
+        # it was given a URL, which held no service, fixed the port at 5432, and
+        # read a password holding '@' or '/' as part of the host
+        database = {'service': 'gtdb_r237', 'password': self.PASSWORD}
+        kwargs = self.connect_with(C.database_engine(database).connect)
+        self.assertEqual(kwargs, database)
 
 
 if __name__ == '__main__':

@@ -18,25 +18,30 @@
 
 class GenomeDatabaseConnectionFTPUpdate(object):
 
-    def __init__(self, hostname, user, password, db_name):
-        self.conn = None
-        self.hostname = hostname
-        self.user = user
-        self.password = password
-        self.db_name = db_name
+    def __init__(self, database):
+        """Initialization.
 
-    # Opens a connection to the PostgreSQL database
+        Parameters
+        ----------
+        database : dict
+            How to reach the database, as utils.common.database_keywords() gives it.
+
+        @return: None
+        """
+
+        self.conn = None
+        self.database = database
+
+    # Opens a connection to the PostgreSQL database. The libpq keywords are
+    # handed over as they are rather than written into a connection string,
+    # where a password holding a space or a quote was mangled.
     #
     # Returns:
     #   No return value.
     def MakePostgresConnection(self):
         import psycopg2 as pg
-        
-        conn_string = "dbname=%s user=%s host=%s password=%s" % (
-            self.db_name, self.user,
-            self.hostname, self.password
-        )
-        self.conn = pg.connect(conn_string)
+
+        self.conn = pg.connect(**self.database)
 
     # Function: ClosePostgresConnection
     # Closes an open connection to the PostgreSQL database.

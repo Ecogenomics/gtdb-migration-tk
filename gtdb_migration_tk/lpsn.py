@@ -38,10 +38,10 @@ import urllib.request
 import pandas as pd
 from bs4 import BeautifulSoup
 from requests import get  # to make GET request
-from sqlalchemy import create_engine
 
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, clean_html
 from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
+from gtdb_migration_tk.utils.common import database_engine
 
 
 class LPSN(object):
@@ -591,13 +591,9 @@ class LPSN(object):
         parsed_file.close()
         return parsed_file
 
-    def add_lpsn_metadata(self, hostname, user, password, db, lpsn_file):
+    def add_lpsn_metadata(self, database, lpsn_file):
 
-        engine_current = create_engine(f'postgresql://{user}:{password}@{hostname}:5432/{db}',
-                                       convert_unicode=True,
-                                       pool_size=5,
-                                       max_overflow=20,
-                                       pool_recycle=3600)
+        engine_current = database_engine(database)
         df = pd.read_csv(lpsn_file, sep='\t')
         df.columns = [x.lower() for x in df.columns]
         df.columns = df.columns.str.replace(' ', '_')

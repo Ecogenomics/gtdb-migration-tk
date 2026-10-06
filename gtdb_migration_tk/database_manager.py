@@ -659,22 +659,23 @@ def changed_columns(row: DatabaseGenome, files: GenomeFiles) -> List[str]:
 class DatabaseManager(object):
     """Bring the NCBI genomes of the GTDB database into line with a release."""
 
-    def __init__(self, hostname: str, user: str, password: str, db: str, cpus: int = 1) -> None:
+    def __init__(self, database: Dict[str, str], cpus: int = 1) -> None:
         """Initialization.
 
         Parameters
         ----------
-        hostname, user, password, db : str
-            How to reach the database. They are handed to psycopg2 as they are
-            rather than written into a connection string, so a password holding a
-            space or a quote is not mangled.
+        database : dict
+            How to reach the database, as utils.common.database_keywords() gives
+            it. The keywords are handed to psycopg2 as they are rather than
+            written into a connection string, so a password holding a space or a
+            quote is not mangled.
         cpus : int
             Processes the files are hashed on.
 
         @return: None
         """
 
-        self.connection = dict(host=hostname, user=user, password=password, dbname=db)
+        self.connection = dict(database)
         self.cpus = cpus
         self.logger = logging.getLogger('timestamp')
 

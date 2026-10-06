@@ -38,6 +38,7 @@ from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.main import OptionsParser
 from gtdb_migration_tk.ncbi_metadata_sync import NCBI_GROUPS
 from gtdb_migration_tk.ncbi_genome_sync import add_sync_arguments
+from gtdb_migration_tk.utils.common import DatabaseOptionsError, database_keywords
 
 # Where a run's log goes when --log cannot be opened: beside the command's own
 # results rather than nowhere, and said so in the log itself.
@@ -206,11 +207,18 @@ def __cpus(group, default=1):
     group.add_argument('-c', '--cpus', type=int ,default=default, help='Number of threads.')
 
 
-def __database_setup(group, required):
-    group.add_argument('--hostname', help='Hostname.', required=required)
-    group.add_argument('-u', '--user', help='PostgreSQL username.', required=required)
-    group.add_argument('-d', '--db', help='Database name.', required=required)
-    group.add_argument('-p', '--password', help='Password for psql user.', required=required)
+def __database_setup(group):
+    # none of them is required alone: a run names its database by --db_service or
+    # by --hostname, -u and -d, which main() checks (utils.common.database_keywords())
+    group.add_argument('--db_service',
+                       help='PostgreSQL connection service naming the database, from '
+                            '~/.pg_service.conf; its password is read from ~/.pgpass. '
+                            'Required unless --hostname, -u and -d are given.')
+    group.add_argument('--hostname', help='Hostname; overrides --db_service.')
+    group.add_argument('-u', '--user', help='PostgreSQL username; overrides --db_service.')
+    group.add_argument('-d', '--db', help='Database name; overrides --db_service.')
+    group.add_argument('-p', '--password',
+                       help='Password for psql user; read from ~/.pgpass where not given.')
 
 
 def __do_not_null_field(group):
@@ -1018,7 +1026,7 @@ def get_main_parser():
     with subparser(sub_parsers, 'update_db',
                    'Update the NCBI genomes of the Postgres database to a new release.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __gtdb_genome_path_file(grp, required=True)
             __report(grp, required=True)
             __ftp_download_date(grp, required=True)
@@ -1033,7 +1041,7 @@ def get_main_parser():
     # Commands to Update CheckM value in DB
     with subparser(sub_parsers, 'update_checkm_db', 'Update the CheckM value in Postgres database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __checkm_profile(grp, required=True)
             __checkm_qa(grp, required=True)
             __metadata_file(grp, required=True)
@@ -1044,7 +1052,7 @@ def get_main_parser():
     # Commands to Update CheckM value in DB
     with subparser(sub_parsers, 'update_metadata_db', 'Update metadata information in the database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __metadata_input_folder(grp)
@@ -1056,14 +1064,14 @@ def get_main_parser():
 
     with subparser(sub_parsers,'update_reps_db', 'Update the species cluster representatives in database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __final_cluster_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 
     with subparser(sub_parsers, 'update_type_designation', 'Update type_designation columns when all Seqcode,NCBI and LPSN infos are in the db.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
@@ -1071,7 +1079,7 @@ def get_main_parser():
 
     with subparser(sub_parsers, 'update_ncbitax_db', 'Update Organism name in the database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __organism_names(grp, required=True)
             __filtered_taxonomy(grp, required=True)
             __unfiltered_taxonomy(grp, required=True)
@@ -1195,7 +1203,7 @@ def get_main_parser():
                                                             'used after propagate_taxonomy_from_reps_to_cluster '
                                                             'function.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __taxonomy_file(grp, required=True)
             __metadata_file(grp,required=True)
         with arg_group(parser, 'options arguments') as grp:
@@ -1206,7 +1214,7 @@ def get_main_parser():
     # # Update surveillance genome list
     with subparser(sub_parsers, 'add_surveillance_genomes', 'Add surveillance genome to a table in GTDB.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __surveillance_list(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
@@ -1224,7 +1232,7 @@ def get_main_parser():
 
     with subparser(sub_parsers, 'update_taxid_to_db', 'add taxid for each rank of each genomes to generate link to ncbi.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __input_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
@@ -1246,7 +1254,7 @@ def get_main_parser():
     with subparser(sub_parsers, 'update_propagated_tax',
                    'Push changed from propagated taxonomy to new database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __taxonomy_file(grp, required=True)
             __metadata_file(grp, required=True)
             __genome_list(grp, required=True)
@@ -1259,7 +1267,7 @@ def get_main_parser():
     with subparser(sub_parsers, 'set_gtdb_domain',
                    'Set missing GTDB domain information to reflect NCBI domain.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp, required=True)
+            __database_setup(grp)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
@@ -1313,7 +1321,7 @@ def get_main_parser():
 
         with subparser(lpsn_sub_parsers, 'add_metadata', 'Add a lot of LPSN metadata to Database as a separate table.') as parser:
             with arg_group(parser, 'required named arguments') as grp:
-                __database_setup(grp, required=True)
+                __database_setup(grp)
                 __lpsn_metadata_file(grp, required=True)
             with arg_group(parser, 'options arguments') as grp:
                 __silent(grp)
@@ -1470,7 +1478,17 @@ def main():
         print_help()
         sys.exit(0)
     else:
-        args = get_main_parser().parse_args()
+        parser = get_main_parser()
+        args = parser.parse_args()
+
+        if hasattr(args, 'db_service'):
+            # asked now rather than where the command connects: update_db connects
+            # only once it has hashed the release, and an error raised from inside
+            # the command ends it with a traceback
+            try:
+                database_keywords(args)
+            except DatabaseOptionsError as exc:
+                parser.error('{}: {}'.format(args.subparser_name, exc))
 
         silent = False
         if hasattr(args, 'silent'):

@@ -25,7 +25,7 @@ from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
 
 class CheckMDatabaseManager(object):
 
-    def __init__(self,hostname,user,password,db):
+    def __init__(self, database):
         """Initialization."""
         self.logger = logging.getLogger('timestamp')
         self.metadata = {'Completeness': ['checkm_completeness', 'FLOAT'],
@@ -36,13 +36,7 @@ class CheckMDatabaseManager(object):
                          '# markers': ['checkm_marker_count', 'INT'],
                          '# marker sets': ['checkm_marker_set_count', 'INT']}
 
-        self.password = password
-        self.hostname = hostname
-        self.user = user
-        self.db = db
-
-        self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            hostname, user, password, db)
+        self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(database)
         self.temp_con.MakePostgresConnection()
         self.temp_cur = self.temp_con.cursor()
 

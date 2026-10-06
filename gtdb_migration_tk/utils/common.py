@@ -8,6 +8,7 @@ import subprocess
 from collections import namedtuple
 from typing import Dict, Optional, Tuple
 
+from sqlalchemy import create_engine
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
@@ -555,3 +556,77 @@ def domain_of(domains: Dict[str, str], accession: str) -> Optional[str]:
         domain = domains.get(canonical_gid(accession))
 
     return domain
+
+
+# How the *_db commands reach the GTDB database. It is named once, as a libpq
+# connection service (~/.pg_service.conf: host, port, dbname and user), whose
+# password libpq reads from ~/.pgpass, and a command is handed --db_service; or
+# a command is handed --hostname, -u, -d and -p, which also override what the
+# service says. A password given on the command line is shown to every user of
+# the machine by ps for as long as the run lasts, which is days for update_db's
+# hashing; libpq will not read a ~/.pgpass that anyone else can. Each option is
+# handed to libpq as a keyword, and one not given is left out so that libpq
+# takes it from the service file or ~/.pgpass.
+DATABASE_OPTIONS = (('db_service', 'service'), ('hostname', 'host'),
+                    ('user', 'user'), ('db', 'dbname'), ('password', 'password'))
+
+
+class DatabaseOptionsError(ValueError):
+    """The options of a *_db command do not say which database to use."""
+
+
+def database_keywords(options) -> Dict[str, str]:
+    """How a *_db command reaches the database, as the libpq keywords psycopg2 takes.
+
+    A run names its database by a service (--db_service, or PGSERVICE in the
+    environment, which libpq reads itself) or by --hostname, -u and -d. Left to
+    its defaults, libpq tries a server on this machine's socket as a user named
+    for whoever runs the command, and says only that the socket is not there:
+    __main__ asks this before the command starts, since update_db connects only
+    once it has hashed the release.
+
+    Parameters
+    ----------
+    options : argparse.Namespace
+        The parsed options of a command given its database by __database_setup().
+
+    @return: e.g. {'service': 'gtdb_r237'}, or {'host': ..., 'user': ..., 'dbname': ...,
+             'password': ...}; an option not given is not a key.
+
+    Raises
+    ------
+    DatabaseOptionsError
+        The options name no database.
+    """
+
+    keywords = {keyword: getattr(options, option)
+                for option, keyword in DATABASE_OPTIONS
+                if getattr(options, option, None)}
+
+    if not ('service' in keywords or os.environ.get('PGSERVICE')
+            or {'host', 'user', 'dbname'} <= keywords.keys()):
+        raise DatabaseOptionsError(
+            'no database named: give --db_service, naming a connection service of '
+            '~/.pg_service.conf, or --hostname, -u and -d.')
+
+    return keywords
+
+
+def database_engine(database: Dict[str, str]):
+    """A SQLAlchemy engine over psycopg2, for the commands that write with pandas.
+
+    Its URL names nothing and the keywords are handed to psycopg2 as they are,
+    as psycopg2.connect() is handed them everywhere else. Written into a URL, as
+    they were, the service and ~/.pgpass could not be used, the port was fixed at
+    5432, and a password holding '@' or '/' was read as part of the host.
+
+    Parameters
+    ----------
+    database : dict
+        What database_keywords() returned.
+
+    @return: sqlalchemy.engine.Engine.
+    """
+
+    return create_engine('postgresql+psycopg2://', connect_args=database,
+                         pool_size=5, max_overflow=20, pool_recycle=3600)
