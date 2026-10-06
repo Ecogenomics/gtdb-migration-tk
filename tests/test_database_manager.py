@@ -39,6 +39,8 @@ from gtdb_migration_tk.update_genomes import (STATUS_FASTA_CHANGED,
                                              STATUS_TO_CURATE)
 
 SOURCES = {'GCF': 2, 'GCA': 3}
+# how the managers below reach a database, as utils.common.database_keywords() gives it
+DATABASE = {'host': 'host', 'user': 'user', 'password': 'pw', 'dbname': 'db'}
 
 
 class TempDirCase(unittest.TestCase):
@@ -261,7 +263,7 @@ class TheFilesRecorded(TempDirCase):
     """What a genome's row says once its files are hashed."""
 
     def manager(self):
-        return M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+        return M.DatabaseManager(DATABASE, cpus=1)
 
     def finish(self, outcomes, database=(), rehash_all=False):
         decisions = list(self.plan(outcomes, database, rehash_all).values())
@@ -342,7 +344,7 @@ class WritingTheDatabase(TempDirCase):
         for accession, outcome in outcomes.items():
             if outcome in UG.STATUS_IN_RELEASE:
                 self.make_genome(accession)
-        manager = M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+        manager = M.DatabaseManager(DATABASE, cpus=1)
         decisions = list(self.plan(outcomes, database).values())
         hashes = manager.hash_files(decisions)
         decisions = manager.finish_decisions(decisions, hashes)
@@ -405,7 +407,7 @@ class WritingTheDatabase(TempDirCase):
 
     def test_a_genome_not_added_for_want_of_a_genomic_fasta_is_not_written(self):
         os.makedirs(self.genome_dir('GCA_000000001.1'))
-        manager = M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+        manager = M.DatabaseManager(DATABASE, cpus=1)
         decisions = list(self.plan({'GCA_000000001.1': STATUS_NEW},
                                    no_genomic_fasta={'GCA_000000001.1'}).values())
         decisions = manager.finish_decisions(decisions, manager.hash_files(decisions))
@@ -433,13 +435,24 @@ class ConnectingToTheDatabase(unittest.TestCase):
         # a machine reset mid-transaction leaves it idle; without the timeout the
         # server keeps its locks until TCP gives up, and a run started again waits
         with mock.patch.object(M.psycopg2, 'connect') as connect:
-            M.DatabaseManager('host', 'user', 'pw', 'db').connect()
+            M.DatabaseManager(DATABASE).connect()
 
         kwargs = connect.call_args.kwargs
         self.assertIn('idle_in_transaction_session_timeout=' + M.IDLE_IN_TRANSACTION_TIMEOUT,
                       kwargs['options'])
         self.assertEqual(kwargs['keepalives'], 1)
         self.assertEqual(kwargs['password'], 'pw')
+
+    def test_a_service_alone_leaves_the_rest_to_libpq(self):
+        # a host, user or password handed over as None would override what the
+        # service file and ~/.pgpass say
+        with mock.patch.object(M.psycopg2, 'connect') as connect:
+            M.DatabaseManager({'service': 'gtdb_r237'}).connect()
+
+        kwargs = connect.call_args.kwargs
+        self.assertEqual(kwargs['service'], 'gtdb_r237')
+        for keyword in ('host', 'user', 'password', 'dbname'):
+            self.assertNotIn(keyword, kwargs)
 
 
 class RunningTheUpdateAgain(TempDirCase):
@@ -457,7 +470,7 @@ class RunningTheUpdateAgain(TempDirCase):
         for accession, outcome in outcomes.items():
             if outcome in UG.STATUS_IN_RELEASE:
                 self.make_genome(accession, self.GENOMIC, self.PROTEINS)
-        manager = M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+        manager = M.DatabaseManager(DATABASE, cpus=1)
         decisions = list(self.plan(outcomes, database).values())
         hashes = manager.hash_files(decisions)
         decisions = manager.finish_decisions(decisions, hashes)
@@ -515,7 +528,7 @@ class TheListsAffected(TempDirCase):
     """Which curated lists a deleted genome was in, kept across runs."""
 
     def write(self, run_started, dry_run):
-        manager = M.DatabaseManager('host', 'user', 'pw', 'db')
+        manager = M.DatabaseManager(DATABASE)
         decisions = [M.Decision('GCF_000806395.1', STATUS_REMOVED, M.ACTION_DELETED,
                                 self.row('GCF_000806395.1', id=11))]
         manager.write_lists_affected(FakeCursor([(11, 1014, 'Genomes for MS')]),
@@ -539,7 +552,7 @@ class TheListsAffected(TempDirCase):
             handle.write('genome_id\tlist_id\tlist_name\n')
 
         with self.assertRaises(M.UpdateDbError):
-            M.DatabaseManager('host', 'user', 'pw', 'db').check_lists_affected(self.dir)
+            M.DatabaseManager(DATABASE).check_lists_affected(self.dir)
 
 
 class TheHashCache(TempDirCase):
@@ -550,7 +563,7 @@ class TheHashCache(TempDirCase):
         self.cache_file = os.path.join(self.dir, M.HASH_CACHE_NAME)
         self.make_genome('GCA_000000001.1')
         self.decisions = list(self.plan({'GCA_000000001.1': STATUS_NEW}).values())
-        self.manager = M.DatabaseManager('host', 'user', 'pw', 'db', cpus=1)
+        self.manager = M.DatabaseManager(DATABASE, cpus=1)
 
     def hashes(self):
         return self.manager.hash_files(self.decisions, self.cache_file)['GCA_000000001.1']

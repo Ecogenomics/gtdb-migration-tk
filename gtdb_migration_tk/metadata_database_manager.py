@@ -31,7 +31,7 @@ from gtdb_migration_tk.utils.common import open_text
 
 class MetadataDatabaseManager(object):
 
-    def __init__(self,hostname,user,password,db):
+    def __init__(self, database):
         """Initialization."""
         self.logger = logging.getLogger('timestamp')
         self.description_table = {'metadata_gene.tsv':['metadata_gene.desc.tsv'],
@@ -49,13 +49,7 @@ class MetadataDatabaseManager(object):
                                   'ncbi_assembly_metadata.tsv':['metadata_ncbi_assembly.desc.tsv']
                                   }
 
-        self.password = password
-        self.hostname = hostname
-        self.user = user
-        self.db = db
-
-        self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            hostname, user, password, db)
+        self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(database)
         self.temp_con.MakePostgresConnection()
         self.temp_cur = self.temp_con.cursor()
 
@@ -331,17 +325,11 @@ class MetadataDatabaseManager(object):
 class NCBITaxDatabaseManager(object):
     """Add organism name to GTDB."""
 
-    def __init__(self,hostname,user,password,db):
+    def __init__(self, database):
         """Initialization."""
         self.logger = logging.getLogger('timestamp')
 
-        self.password = password
-        self.hostname = hostname
-        self.user = user
-        self.db = db
-
-        self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-            hostname, user, password, db)
+        self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(database)
         self.temp_con.MakePostgresConnection()
         self.temp_cur = self.temp_con.cursor()
 

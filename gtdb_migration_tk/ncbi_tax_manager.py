@@ -37,11 +37,11 @@ import traceback
 from collections import namedtuple
 
 import pandas as pd
-from sqlalchemy import create_engine
 
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.ncbi_utils import (SEQCODE_SUFFIX, open_summary,
                                           strip_nomenclatural_code)
+from gtdb_migration_tk.utils.common import database_engine
 
 
 class TaxonomyNCBI(object):
@@ -673,13 +673,9 @@ class TaxonomyNCBI(object):
             for k,v in d.items():
                 outfile.write(f"{k}\t{json.dumps(v)}\n")
 
-    def update_taxid_to_db(self,hostname,user,password,db,lpsn_file):
+    def update_taxid_to_db(self, database, lpsn_file):
 
-        engine_current = create_engine(f'postgresql://{user}:{password}@{hostname}:5432/{db}',
-                                       convert_unicode=True,
-                                       pool_size=5,
-                                       max_overflow=20,
-                                       pool_recycle=3600)
+        engine_current = database_engine(database)
         df = pd.read_csv(lpsn_file, sep='\t')
         df.to_sql('genome_taxid',engine_current, index=False , if_exists='append')
 

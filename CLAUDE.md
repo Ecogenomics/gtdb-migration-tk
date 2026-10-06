@@ -289,13 +289,19 @@ command line, and those must match `config.py`.
 
 ### Database access
 
-Credentials are always passed on the command line (`--hostname -u -d -p`, via the
-`__database_setup` helper), never read from a config file.
-`database_configuration/GenomeDatabaseConnectionFTPUpdate.py` is a thin psycopg2
-wrapper most `*_db` managers use; it writes the credentials into a connection
-string unquoted, so `update_db` (`database_manager.py`) hands them to
-`psycopg2.connect()` as keywords instead. `lpsn.py` and `ncbi_tax_manager.py` use
-SQLAlchemy `create_engine` directly.
+A command is told which database to use by `__database_setup`: `--db_service`, a
+libpq connection service of `~/.pg_service.conf` whose password libpq reads from
+`~/.pgpass`, or `--hostname -u -d -p`, which override the service. The toolkit
+reads neither file itself, and has no config file of its own. `main()` in
+`__main__.py` refuses a run naming no database before the command starts
+(`utils.common.database_keywords()`). `main.py` hands each manager what that
+returns: a dict of libpq keywords, holding only the options given, so that libpq
+fills the rest from the files. Every path to the database hands psycopg2 those
+keywords as they are, never written into a connection string or a URL:
+`database_configuration/GenomeDatabaseConnectionFTPUpdate.py`, the thin psycopg2
+wrapper most `*_db` managers use; `update_db`'s own `connect()`
+(`database_manager.py`); and `utils.common.database_engine()`, the SQLAlchemy
+engine `lpsn.py` and `ncbi_tax_manager.py` write through with pandas.
 
 `update_db` decides every genome from `report.log` and `genome_dirs.tsv` alone
 (`plan_update()`, which reads no database and is what the tests drive), covers

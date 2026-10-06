@@ -45,6 +45,7 @@ from gtdb_migration_tk.select_genomes import SelectGenomes
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.trnascan_manager import tRNAScan
 from gtdb_migration_tk.update_genomes import UpdateGenomes
+from gtdb_migration_tk.utils.common import database_keywords
 from gtdb_migration_tk.utils.tools import Tools
 
 
@@ -62,11 +63,11 @@ class OptionsParser():
 
     def add_lpsn_metadata(self, options):
         p = LPSN(False, None)
-        p.add_lpsn_metadata(options.hostname, options.user, options.password, options.db, options.lpsn_metadata_file)
+        p.add_lpsn_metadata(database_keywords(options), options.lpsn_metadata_file)
 
     def update_taxid_to_db(self, options):
         p = TaxonomyNCBI()
-        p.update_taxid_to_db(options.hostname, options.user, options.password, options.db, options.input_file)
+        p.update_taxid_to_db(database_keywords(options), options.input_file)
 
     def pull_html(self, options):
         """Pull all genus.html files."""
@@ -352,8 +353,7 @@ class OptionsParser():
                     options.all_genomes)
 
     def update_db(self, options):
-        p = DatabaseManager(options.hostname, options.user,
-                            options.password, options.db, options.cpus)
+        p = DatabaseManager(database_keywords(options), options.cpus)
         p.run(options.gtdb_genome_path_file,
               options.report,
               options.ftp_download_date,
@@ -362,27 +362,27 @@ class OptionsParser():
               dry_run=options.dry_run)
 
     def update_checkm_db(self, options):
-        p = CheckMDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p = CheckMDatabaseManager(database_keywords(options))
         p.add_checkm_to_db(options.checkm_profile, options.check_qa, options.metadata)
 
     def update_metadata_db(self, options):
-        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p = MetadataDatabaseManager(database_keywords(options))
         p.process_metadata_files(options.genome_list, do_not_null_field=options.do_not_null_field,
                                  table_folder=options.input_folder, table_file=options.metadata_table,
                                  table_file_desc=options.metadata_table_desc)
         self.logger.info('Update metadata Done.')
 
     def update_reps_db(self, options):
-        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p = MetadataDatabaseManager(database_keywords(options))
         p.update_reps(options.final_cluster_file)
 
     def update_ncbitax_db(self, options):
-        p = NCBITaxDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p = NCBITaxDatabaseManager(database_keywords(options))
         p.update_ncbitax_db(options.organism_names, options.filtered, options.unfiltered, options.genome_list,
                             options.do_not_null_field)
 
     def add_surveillance_genomes(self, options):
-        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p = MetadataDatabaseManager(database_keywords(options))
         p.add_surveillance_genomes(options.genome_list)
 
     def add_names_dmp(self, options):
@@ -401,20 +401,20 @@ class OptionsParser():
         p.propagate_taxonomy_from_reps_to_cluster(options.taxonomy_file, options.metadata, options.output_file)
 
     def add_taxonomy_to_database(self, options):
-        p = Propagate(options.hostname, options.user, options.password, options.db)
+        p = Propagate(database_keywords(options))
         p.add_taxonomy_to_database(options.taxonomy_file, options.metadata, options.truncate_taxonomy)
 
     def update_type_designation(self, options):
-        p = MetadataDatabaseManager(options.hostname, options.user, options.password, options.db)
+        p = MetadataDatabaseManager(database_keywords(options))
         p.update_type_designation()
 
     def update_propagated_tax(self, options):
-        p = Propagate(options.hostname, options.user, options.password, options.db)
+        p = Propagate(database_keywords(options))
         p.add_propagated_taxonomy(options.taxonomy_file, options.metadata, options.genome_list,
                                   options.truncate_taxonomy, options.rep_file)
 
     def set_gtdb_domain(self, options):
-        p = Propagate(options.hostname, options.user, options.password, options.db)
+        p = Propagate(database_keywords(options))
         p.set_gtdb_domain()
 
     def ncbi_genome_category(self, options):

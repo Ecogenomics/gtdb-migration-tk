@@ -976,13 +976,40 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 | `update_type_designation` | Update `type_designation` once SeqCode, NCBI and LPSN data are loaded |
 | `add_surveillance_genomes` | Add surveillance genomes to a GTDB table |
 
+Every command here, and `add_taxonomy_to_database`, `update_propagated_tax`,
+`set_gtdb_domain` and `lpsn add_metadata`, is told which database to use by a
+PostgreSQL connection service, one for each GTDB release, named in
+`~/.pg_service.conf`, with its password in `~/.pgpass`:
+
+```ini
+# ~/.pg_service.conf
+[gtdb_r237]
+host=<host>
+port=5432
+dbname=<db>
+user=<user>
+```
+
+```
+# ~/.pgpass -- chmod 600, or libpq will not read it
+<host>:5432:<db>:<user>:<password>
+```
+
+and given `--db_service gtdb_r237`, which `psql service=gtdb_r237` checks. A new
+release is a new section, `[gtdb_r<release>]`, and its own line in `~/.pgpass`,
+so a command names the release it is working on. `--hostname`, `-u`, `-d` and
+`-p` still work, without a service or overriding what it says; without `-p` the
+password is read from `~/.pgpass`. A password on the command line is shown by
+`ps` to every user of the machine for as long as the run lasts.
+`PGSERVICE=gtdb_r237` in the environment does what `--db_service gtdb_r237` does.
+
 `update_db` brings the NCBI genomes of the `genomes` table into line with a
 release, from the two files `update_genomes` wrote for it: `report.log` says what
 became of each genome and `genome_dirs.tsv` where the release keeps it. One run
 covers RefSeq and GenBank, each genome's source taken from its accession.
 
 ```bash
-gtdb_migration_tk update_db --hostname <host> -u <user> -d <db> -p <password> \
+gtdb_migration_tk update_db --db_service gtdb_r237 \
     -g release237/genome_dirs.tsv --report release237/report.log -f <YYYY-MM-DD> \
     -o update_db -l update_db/update_db.log -c 32 --dry_run
 ```

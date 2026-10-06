@@ -15,20 +15,14 @@ csv.field_size_limit(sys.maxsize)
 class Propagate(object):
     """Propagate GTDB taxonomy between NCBI releases."""
 
-    def __init__(self,hostname=None,user=None,password=None,db=None):
-        self.password = password
-        self.hostname = hostname
-        self.user = user
-        self.db = db
-
+    def __init__(self, database=None):
         self.logger = logging.getLogger('timestamp')
 
         self.DEFAULT_DOMAIN_THRESHOLD = 10.0
 
 
-        if db is not None:
-            self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(
-                hostname, user, password, db)
+        if database is not None:
+            self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(database)
             self.temp_con.MakePostgresConnection()
             self.temp_cur = self.temp_con.cursor()
 
