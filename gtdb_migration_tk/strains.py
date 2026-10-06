@@ -73,6 +73,8 @@ and the data that bears on it.
 import os
 import csv
 import datetime
+import gzip
+import io
 import logging
 import multiprocessing as mp
 import re
@@ -162,6 +164,10 @@ WARNING_KINDS = OrderedDict((
       "to match a genome to.")),
 ))
 WARNINGS_NAME = 'type_table_warnings.tsv'
+
+# The table of each genome's type material status, gzipped: a quarter of a
+# gigabyte of text for r237. update_metadata_db reads it either way.
+TYPE_STRAIN_SUMMARY_NAME = 'gtdb_type_strain_summary.tsv.gz'
 WARNINGS_HEADER = ('warning_type', 'description', 'warning', 'extra_data')
 WARNING_EXAMPLES = 3
 
@@ -1269,7 +1275,11 @@ class Strains(object):
 
         # write out type strain information for each genome, moved into place
         # once every genome is written
-        fout = open(replace_when_written(summary_table_file), 'w')
+        # no time or file name in the gzip header, so that a run over the same
+        # inputs writes the same bytes
+        raw = open(replace_when_written(summary_table_file), 'wb')
+        fout = io.TextIOWrapper(gzip.GzipFile(filename='', fileobj=raw, mode='wb', mtime=0),
+                                encoding='utf-8')
         fout.write(
             "accession\tncbi_species\tncbi_organism_name\tncbi_strain_ids\tncbi_canonical_strain_ids")
         fout.write("\tncbi_taxon_authority\tncbi_type_designation")
@@ -1354,6 +1364,7 @@ class Strains(object):
             'Genomes where GTDB and NCBI both designate type strain of subspecies: {:,}'.format(agreed_type_of_subspecies))
 
         fout.close()
+        raw.close()
         os.replace(replace_when_written(summary_table_file), summary_table_file)
 
     def expand_ncbi_strain_ids(self, ncbi_coidentical_strain_ids, ncbi_species_of_taxid):
@@ -1470,7 +1481,7 @@ class Strains(object):
         self.logger.info(
             'Generating summary type information table across all strain repositories.')
         summary_table_file = os.path.join(
-            self.output_dir, 'gtdb_type_strain_summary.tsv')
+            self.output_dir, TYPE_STRAIN_SUMMARY_NAME)
         self.type_summary_table(ncbi_authority,
                                 lpsn_summary_file,
                                 lpsn_type_species_of_genus,

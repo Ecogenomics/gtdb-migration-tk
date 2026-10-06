@@ -1045,7 +1045,8 @@ assess, the run was made once per database, and the report directory is
 
 `strains type_table` decides which genomes of a release are assembled from type
 material, matching each genome's NCBI species and strain IDs against LPSN's type
-strains, and writes `gtdb_type_strain_summary.tsv` for `metadata_type_material`.
+strains, and writes `gtdb_type_strain_summary.tsv.gz` for `metadata_type_material`,
+which `update_metadata_db` loads gzipped as it is.
 It reads the genomes from the release's files rather than the database, so it can
 run once `ncbi_metadata_sync` and `update_genomes` are done: which genomes from
 `genome_dirs.tsv` (`-g`); their organism name, taxid, strain IDs and NCBI type

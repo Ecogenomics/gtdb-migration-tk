@@ -112,7 +112,7 @@ class StrainsCase(unittest.TestCase):
             genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years)
 
     def summary(self):
-        with open(os.path.join(self.out, 'gtdb_type_strain_summary.tsv')) as handle:
+        with gzip.open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rt') as handle:
             header = handle.readline().rstrip('\n').split('\t')
             return {row[0]: dict(zip(header, row)) for row in
                     (line.rstrip('\n').split('\t') for line in handle)}
@@ -142,6 +142,25 @@ class DecidingTypeMaterial(StrainsCase):
             genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years)
 
         self.assertEqual(sorted(self.summary()), sorted([TYPE_GENOME, OTHER_GENOME]))
+
+    def test_the_summary_is_gzipped(self):
+        self.run_type_table()
+
+        self.assertIn(S.TYPE_STRAIN_SUMMARY_NAME, os.listdir(self.out))
+        self.assertNotIn('gtdb_type_strain_summary.tsv', os.listdir(self.out))
+        with open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+
+    def test_the_same_inputs_write_the_same_bytes(self):
+        # the gzip header records no time and no file name
+        self.run_type_table()
+        with open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rb') as handle:
+            first = handle.read()
+        self.out = os.path.join(self.dir, 'again')
+        os.makedirs(self.out)
+        self.run_type_table()
+        with open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rb') as handle:
+            self.assertEqual(handle.read(), first)
 
     def test_nothing_is_printed_to_the_console(self):
         # what the run has to say goes to the log, where --silent governs it
