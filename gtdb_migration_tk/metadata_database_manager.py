@@ -27,6 +27,7 @@ from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
+from gtdb_migration_tk.utils.common import open_text
 
 class MetadataDatabaseManager(object):
 
@@ -81,7 +82,7 @@ class MetadataDatabaseManager(object):
         # get fields in metadata file
         gtdbimporter = GTDBImporter(self.temp_cur)
         self.logger.info('Parsing metadata file: %s' % metadata_file)
-        with open(metadata_file) as f:
+        with open_text(metadata_file) as f:
             metadata_fields = f.readline().strip().split('\t')[1:]
         self.logger.info(
             'Metadata file contains {} fields.'.format(len(metadata_fields)))
@@ -135,7 +136,7 @@ class MetadataDatabaseManager(object):
 
         # read metadata file
         metadata = defaultdict(lambda: defaultdict(str))
-        with open(metadata_file) as f:
+        with open_text(metadata_file) as f:
             fields = [x.strip() for x in f.readline().split('\t')]
 
             for line in f:

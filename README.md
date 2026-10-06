@@ -1045,12 +1045,17 @@ assess, the run was made once per database, and the report directory is
 
 `strains type_table` decides which genomes of a release are assembled from type
 material, matching each genome's NCBI species and strain IDs against LPSN's type
-strains, and writes `gtdb_type_strain_summary.tsv` for `metadata_type_material`.
+strains, and writes `gtdb_type_strain_summary.tsv.gz` for `metadata_type_material`,
+which `update_metadata_db` loads gzipped as it is.
 It reads the genomes from the release's files rather than the database, so it can
 run once `ncbi_metadata_sync` and `update_genomes` are done: which genomes from
 `genome_dirs.tsv` (`-g`); their organism name, taxid, strain IDs and NCBI type
 material status from the assembly summaries (`-n`, as `select_genomes` takes them); their
 species, and every name NCBI gives a taxon, from `names.dmp` and `nodes.dmp`.
+
+It ends with one WARNING per kind of warning, its count and up to three examples;
+every warning is in `type_table_warnings.tsv`, with its kind, what that kind
+means, the warning, and the data that bears on it (a taxid, a genome, a genus).
 
 ```bash
 gtdb_migration_tk strains type_table -g release237/genome_dirs.tsv \

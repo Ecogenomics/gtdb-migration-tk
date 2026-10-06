@@ -1282,7 +1282,7 @@ class FTPTools():
         without = len(added_genomes) - len(targets)
         if without:
             self.logger.warning(
-                'warning: {:,} genome(s) new to NCBI have no genomic FASTA in the mirror '
+                '{:,} genome(s) new to NCBI have no genomic FASTA in the mirror '
                 'and are reported for curation rather than added.'.format(without))
 
         if self.dry_run:
@@ -1532,7 +1532,7 @@ class FTPTools():
             return
 
         self.logger.warning(
-            'warning: {:,} genome(s) could not be compared at all and carry no data '
+            '{:,} genome(s) could not be compared at all and carry no data '
             'into the release; they are the {} rows of {}.'.format(
                 curate, STATUS_TO_CURATE, self.report.name
                 if hasattr(self.report, 'name') else 'the report'))

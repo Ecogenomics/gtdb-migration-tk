@@ -395,7 +395,7 @@ class MarkerManager(object):
 
         if all_genomes:
             self.logger.warning(
-                'warning: --all discards the marker table of every genome and '
+                '--all discards the marker table of every genome and '
                 'searches it again, so batches already finished are done again '
                 'too. Without it a finished batch is skipped.')
 
@@ -533,7 +533,7 @@ class MarkerManager(object):
 
         if not_searched:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch have no marker table: '
+                '{:,} genome(s) of this batch have no marker table: '
                 '{}.'.format(len(not_searched),
                              '; '.join('{:,} {}'.format(count, reason)
                                        for reason, count
@@ -674,7 +674,7 @@ class MarkerManager(object):
 
         if written:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release have no marker table and '
+                '{:,} genome(s) of the release have no marker table and '
                 'are named in {}.'.format(written, path))
         else:
             self.logger.info(

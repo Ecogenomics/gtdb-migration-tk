@@ -57,15 +57,29 @@ were processes of their own, and a worker that raised or exited took its genome
 with it while the command went on and succeeded. Each table is written beside
 its final name and moved into place once whole, so a failed run leaves none
 that reads as finished.
+
+WARNINGS
+
+What type_table has to warn of is mostly the data rather than the run: a
+strain ID NCBI marks '<not considered type>' (545 in r237's names.dmp, a strain
+under each spelling NCBI gives it), a genome without an NCBI species. Logged a
+line apiece, they buried what else the log had to say. Each is recorded as it is
+met (Strains.notice()) -- in the workers too, which hand theirs back with the
+genome -- and the run ends with one WARNING per kind, its count and up to three
+examples, every one written to type_table_warnings.tsv with what its kind means
+and the data that bears on it.
 """
 
 import os
 import csv
 import datetime
+import gzip
+import io
 import logging
 import multiprocessing as mp
 import re
-from collections import defaultdict, namedtuple
+from collections import OrderedDict, defaultdict, namedtuple
+from typing import NamedTuple
 
 from tqdm import tqdm
 
@@ -107,6 +121,64 @@ LPSN_TYPE_DESIGNATIONS = {'Type strain': 'type strain of species',
 # The columns of an assembly summary type_table reads, in this order.
 SUMMARY_COLUMNS = ('assembly_accession', 'taxid', 'organism_name', 'infraspecific_name',
                    'isolate', 'relation_to_type_material')
+
+
+# The kinds of warning type_table gathers, in the order they are reported: what
+# the WARNING line counts them as, and what the warnings TSV says one means.
+NOT_CONSIDERED_TYPE = 'not_considered_type'
+NO_NCBI_SPECIES = 'no_ncbi_species'
+SUBSPECIES_WITHOUT_SUBSP = 'subspecies_without_subsp'
+MULTIPLE_TYPE_SPECIES = 'multiple_type_species'
+MULTIPLE_PRIORITY_YEARS = 'multiple_priority_years'
+LPSN_STRAIN_LINE_WITHOUT_IDS = 'lpsn_strain_line_without_ids'
+WARNING_KINDS = OrderedDict((
+    (NOT_CONSIDERED_TYPE,
+     ("strain IDs names.dmp lists as type material but marks '<not considered type>', "
+      "left out of their taxa's type material",
+      "NCBI's names.dmp lists the strain ID as type material of the taxon but marks it "
+      "'<not considered type>'. It is not added to the taxon's type material strain IDs, so "
+      "it cannot make a genome type material. NCBI lists a strain under each spelling it "
+      "gives it, so one strain can give several of these.")),
+    (NO_NCBI_SPECIES,
+     ('genomes with no NCBI species, and so not type material',
+      "The genome's NCBI taxID is not in nodes.dmp -- NCBI deleted or merged it after the "
+      "assembly summaries were written -- or lies below no species node, so the genome has "
+      "no NCBI species name to match against LPSN and is not type material.")),
+    (SUBSPECIES_WITHOUT_SUBSP,
+     ("genomes whose NCBI subspecies-rank name holds no 'subsp.', matched under their species",
+      "NCBI places the genome's taxon at subspecies rank under a name with no 'subsp.', "
+      "usually a strain name. Its species name is taken from that name, and it is matched "
+      "against LPSN under the binomial it begins with.")),
+    (MULTIPLE_TYPE_SPECIES,
+     ('genera LPSN gives more than one type species, given none',
+      "lpsn_species.tsv names more than one type species for the genus. None is taken as its "
+      "type species, so no genome of it is flagged gtdb_type_species_of_genus.")),
+    (MULTIPLE_PRIORITY_YEARS,
+     ('genomes whose names have different LPSN years of priority, the first reported',
+      "The names a genome's species is matched under -- its species and its own subspecies, "
+      "for one -- have different years of priority in the year table. The first is "
+      "reported as its priority_year.")),
+    (LPSN_STRAIN_LINE_WITHOUT_IDS,
+     ('lines of lpsn_strains.tsv with no strain IDs, ignored',
+      "A line of lpsn_strains.tsv names a species and no strain IDs; there is nothing of it "
+      "to match a genome to.")),
+))
+WARNINGS_NAME = 'type_table_warnings.tsv'
+
+# The table of each genome's type material status, gzipped: a quarter of a
+# gigabyte of text for r237. update_metadata_db reads it either way.
+TYPE_STRAIN_SUMMARY_NAME = 'gtdb_type_strain_summary.tsv.gz'
+WARNINGS_HEADER = ('warning_type', 'description', 'warning', 'extra_data')
+WARNING_EXAMPLES = 3
+
+
+class Notice(NamedTuple):
+    """A warning type_table gathers, rather than logs, until the run ends."""
+
+    kind: str           # a key of WARNING_KINDS
+    message: str        # the warning as a log line would put it
+    example: str        # how the WARNING line names it among its examples
+    extra_data: str     # 'key=value; ...' of what bears on it
 
 
 def gtdb_accession(accession):
@@ -158,6 +230,51 @@ class Strains(object):
         self.logger = logging.getLogger('timestamp')
         self.cpus = cpus
         self.output_dir = output_dir
+        self.notices = []
+
+    def notice(self, kind, message, example, **extra):
+        """Record a warning, reported with the others of its kind when the run ends.
+
+        @return: None
+        """
+
+        self.notices.append(Notice(kind, message, example,
+                                   '; '.join('{}={}'.format(k, v) for k, v in extra.items())))
+
+    def report_notices(self, out_dir):
+        """One WARNING per kind of warning met, and every one of them in a TSV.
+
+        The TSV is written whether or not there are any, so a run with nothing to
+        warn of says so rather than leaving the question open.
+
+        @return: None
+        """
+
+        path = os.path.join(out_dir, WARNINGS_NAME)
+        by_kind = OrderedDict((kind, []) for kind in WARNING_KINDS)
+        for notice in self.notices:
+            by_kind[notice.kind].append(notice)
+
+        temporary = replace_when_written(path)
+        with open(temporary, 'w', encoding='utf-8') as handle:
+            handle.write('\t'.join(WARNINGS_HEADER) + '\n')
+            for kind, notices in by_kind.items():
+                for notice in notices:
+                    handle.write('\t'.join((kind, WARNING_KINDS[kind][1], notice.message,
+                                            notice.extra_data)) + '\n')
+        os.replace(temporary, path)
+
+        for kind, notices in by_kind.items():
+            if not notices:
+                continue
+            examples = []
+            for notice in notices:
+                if notice.example not in examples:
+                    examples.append(notice.example)
+                if len(examples) == WARNING_EXAMPLES:
+                    break
+            self.logger.warning('{:,} {} (e.g. {}); every one is in {}.'.format(
+                len(notices), WARNING_KINDS[kind][0], '; '.join(examples), path))
 
     def load_year_dict(self, year_table):
         """Load year of priority for species as identified at LPSN."""
@@ -259,7 +376,10 @@ class Strains(object):
                     scientific_names[cur_taxid] = strip_nomenclatural_code(tokens[1])
 
                 if '<not considered type>' in tokens[2]:
-                    self.logger.warning(f"Ignoring {tokens[1]} as it is not considered type material.")
+                    self.notice(NOT_CONSIDERED_TYPE,
+                                f"Ignoring {tokens[1]} as it is not considered type material.",
+                                '{} (taxid {})'.format(tokens[1], cur_taxid),
+                                taxid=cur_taxid, unique_name=tokens[2])
                 elif tokens[3] == 'type material':
                     for sid in self.fix_common_strain_id_errors([tokens[1]]):
                         type_material[cur_taxid].add(
@@ -293,6 +413,9 @@ class Strains(object):
         # the subspecies nearest it, and the species above that
         lineage_names = {}
         for cur_taxid in taxids_of_interest:
+            if cur_taxid not in parent:
+                lineage_names[cur_taxid] = None
+                continue
             species = subspecies = None
             taxid = cur_taxid
             while taxid in parent:
@@ -371,18 +494,28 @@ class Strains(object):
         @return: None
         """
 
-        unnamed = 0
-        for genome_metadata in self.metadata.values():
-            species, subspecies = lineage_names.get(genome_metadata['ncbi_taxid'], (None, None))
+        for gid, genome_metadata in self.metadata.items():
+            taxid = genome_metadata['ncbi_taxid']
+            lineage = lineage_names.get(taxid)
+            species, subspecies = lineage if lineage else (None, None)
             genome_metadata['ncbi_species'] = species
             genome_metadata['ncbi_subspecies'] = subspecies
-            if species is None:
-                unnamed += 1
 
-        if unnamed:
-            self.logger.warning(
-                'warning: {:,} genome(s) have no NCBI species, their taxID absent from '
-                'nodes.dmp or below no species node, and are not type material.'.format(unnamed))
+            if species is None:
+                where = ('is not in nodes.dmp' if lineage is None
+                         else 'lies below no species node in nodes.dmp')
+                self.notice(NO_NCBI_SPECIES,
+                            '{} has no NCBI species: its taxID {} {}.'.format(gid, taxid, where),
+                            '{} (taxid {})'.format(gid, taxid),
+                            genome=gid, taxid=taxid, in_nodes_dmp='no' if lineage is None else 'yes',
+                            ncbi_organism_name=genome_metadata['ncbi_organism_name'])
+
+            # checked here, once a genome, rather than wherever its name is asked for
+            if subspecies and 'subsp.' not in subspecies.replace(' pv. ', ' subsp. '):
+                self.notice(SUBSPECIES_WITHOUT_SUBSP,
+                            "NCBI subspecies name without 'subsp.' definition: {}".format(subspecies),
+                            '{} ({})'.format(subspecies, gid),
+                            genome=gid, taxid=taxid, ncbi_species=species or '')
 
     def load_dsmz_strains_dictionary(self, dsmz_dir):
         # We load the dictionary of strains from DSMZ
@@ -415,7 +548,9 @@ class Strains(object):
                 sp = infos[0]
 
                 if len(infos) == 1:
-                    self.logger.warning('Ignoring a line of lpsn_strains.tsv with no strain IDs: {}'.format(infos))
+                    self.notice(LPSN_STRAIN_LINE_WITHOUT_IDS,
+                                'Ignoring a line of lpsn_strains.tsv with no strain IDs: {}'.format(infos),
+                                sp, species=sp)
                 elif len(infos) == 2:
                     list_strains = [pattern.sub('', a.strip()).upper(
                     ) for a in infos[1].split('=') if (a != '' and a != 'none')]
@@ -440,7 +575,7 @@ class Strains(object):
                     '; '.join('{} ({})'.format(sp, d) for sp, d in sorted(unknown_designations.items())[:10]),
                     ', '.join("'{}'".format(d) for d in LPSN_TYPE_DESIGNATIONS)))
 
-        self.logger.info(' - identified strain ids for {:,} species on LPSN website.'.format(
+        self.logger.info(' - identified strain ids for {:,} species on LPSN website'.format(
                             len(lpsn_strains_dic)))
 
         # get co-identical strain IDs in LPSN GSS file
@@ -470,15 +605,15 @@ class Strains(object):
 
 
 
-        self.logger.info(' - identified strain ids for {:,} species in LPSN GSS file; deferring to LPSN GSS data whenever possible.'.format(
+        self.logger.info(' - identified strain ids for {:,} species in LPSN GSS file; deferring to LPSN GSS data whenever possible'.format(
                             len(lpsn_gss_strain_ids)))
-        self.logger.info(' - identified {:,} species exclusive to LPSN website.'.format(
+        self.logger.info(' - identified {:,} species exclusive to LPSN website'.format(
                             len(set(lpsn_strains_dic) - set(lpsn_gss_strain_ids))))
-        self.logger.info(' - identified {:,} species exclusive to LPSN GSS file (ideally zero!).'.format(
+        self.logger.info(' - identified {:,} species exclusive to LPSN GSS file (ideally zero!)'.format(
                             len(set(lpsn_gss_strain_ids) - set(lpsn_strains_dic))))
-        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN GSS file (ideally zero!).'.format(
+        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN GSS file (ideally zero!)'.format(
                             new_strain_ids))
-        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN website. (ideally zero!)'.format(
+        self.logger.info(' - identified {:,} strain IDs exclusive to LPSN website (ideally zero!)'.format(
                             website_strains_only))
 
 
@@ -489,7 +624,7 @@ class Strains(object):
 
         type_species_of_genus = {}
         genus_type_species = {}
-        multiple_types = set()
+        type_species_named = defaultdict(list)
         with open(species_file, encoding='utf-8') as lpstr:
             lpstr.readline()
 
@@ -505,14 +640,18 @@ class Strains(object):
                     sp = sp.replace('s__', '')
                     type_species_of_genus[sp] = genus
 
-                    if genus in genus_type_species and genus_type_species[genus] != sp:
-                        self.logger.warning('Identified multiple type species for {} in {}. Type species for this genus will be ignored.'.format(genus, species_file))
-                        multiple_types.add(genus)
-                    else:
-                        genus_type_species[genus] = sp
-                        
-        for genus in multiple_types:
-            del genus_type_species[genus]
+                    if sp not in type_species_named[genus]:
+                        type_species_named[genus].append(sp)
+                    genus_type_species.setdefault(genus, sp)
+
+        for genus, species in type_species_named.items():
+            if len(species) > 1:
+                del genus_type_species[genus]
+                self.notice(MULTIPLE_TYPE_SPECIES,
+                            'Identified multiple type species for {} in {}. Type species for this '
+                            'genus will be ignored.'.format(genus, species_file),
+                            genus.replace('g__', ''),
+                            genus=genus, type_species=', '.join(species))
 
         return type_species_of_genus, genus_type_species
 
@@ -540,9 +679,6 @@ class Strains(object):
             ncbi_subspecies = ncbi_subspecies.replace(' pv. ', ' subsp. ')
 
         if ncbi_subspecies:
-            if 'subsp.' not in ncbi_subspecies:
-                self.logger.warning(f"NCBI subspecies name without 'subsp.' definition: {ncbi_subspecies}")
-
             return self.remove_brackets(ncbi_subspecies)
 
         if ncbi_species:
@@ -910,16 +1046,18 @@ class Strains(object):
                     # forked, so the workers inherit this instance from _MATCHER
                     _MATCHER = self
                     with mp.get_context('fork').Pool(self.cpus) as pool:
-                        for data in tqdm(pool.imap(_match_genome, gids, chunksize=256),
-                                         total=len(gids), ncols=100, leave=False,
-                                         desc='Matching genomes to {}'.format(sourcest)):
+                        for data, notices in tqdm(pool.imap(_match_genome, gids, chunksize=256),
+                                                  total=len(gids), ncols=100, leave=False,
+                                                  desc='Matching genomes to {}'.format(sourcest)):
+                            self.notices.extend(notices)
                             if data is not None:
                                 self._write_strain_row(fout, data)
                                 matched += 1
                 else:
                     for gid in tqdm(gids, ncols=100, leave=False,
                                     desc='Matching genomes to {}'.format(sourcest)):
-                        data = self.match_genome(gid)
+                        data, notices = self.match_genome(gid)
+                        self.notices.extend(notices)
                         if data is not None:
                             self._write_strain_row(fout, data)
                             matched += 1
@@ -936,15 +1074,18 @@ class Strains(object):
     def match_genome(self, gid):
         """Determine if a genome is assembled from type material.
 
-        @return: the row of the strain summary for the genome, or None where it
-                 has no species name or matches no name at the strain repository.
+        @return: (the row of the strain summary for the genome, or None where it
+                 has no species name or matches no name at the strain repository;
+                 the warnings met, as Notices).
         """
 
         genome_metadata = self.metadata[gid]
+        # handed back with the genome: a notice recorded in a worker would stay there
+        notices = []
 
         species_name = self.get_species_name(gid)
         if species_name is None:
-            return None
+            return None, notices
 
         standardized_sp_names = self.standardise_names([species_name])
 
@@ -989,8 +1130,13 @@ class Strains(object):
         # remove empty entries
         list_year_tables = [y for y in list_year_tables if y != '']
         if len(set(list_year_tables)) > 1:
-            self.logger.warning('Identified multiple different years of priority for {}: {}'.format(
-                dict(standardized_sp_names), list_year_tables))
+            names = sorted(standardized_sp_names)
+            notices.append(Notice(
+                MULTIPLE_PRIORITY_YEARS,
+                'Identified multiple different years of priority for {}: {}'.format(names, list_year_tables),
+                '{} ({})'.format(gid, ', '.join(str(y) for y in list_year_tables)),
+                'genome={}; names={}; years={}'.format(gid, ', '.join(names),
+                                                       ', '.join(str(y) for y in list_year_tables))))
 
         year_date = list_year_tables[0] if len(list_year_tables) > 0 else ''
 
@@ -1025,9 +1171,9 @@ class Strains(object):
                     match.standard_name,
                     match.strain_id,
                     set(repository_strain_ids.split('=')),
-                    match.is_from_standard)
+                    match.is_from_standard), notices
 
-        return None
+        return None, notices
 
     def _write_strain_header(self, fout, sourcest):
         """Write the header of the strain summary of one repository."""
@@ -1129,7 +1275,11 @@ class Strains(object):
 
         # write out type strain information for each genome, moved into place
         # once every genome is written
-        fout = open(replace_when_written(summary_table_file), 'w')
+        # no time or file name in the gzip header, so that a run over the same
+        # inputs writes the same bytes
+        raw = open(replace_when_written(summary_table_file), 'wb')
+        fout = io.TextIOWrapper(gzip.GzipFile(filename='', fileobj=raw, mode='wb', mtime=0),
+                                encoding='utf-8')
         fout.write(
             "accession\tncbi_species\tncbi_organism_name\tncbi_strain_ids\tncbi_canonical_strain_ids")
         fout.write("\tncbi_taxon_authority\tncbi_type_designation")
@@ -1214,6 +1364,7 @@ class Strains(object):
             'Genomes where GTDB and NCBI both designate type strain of subspecies: {:,}'.format(agreed_type_of_subspecies))
 
         fout.close()
+        raw.close()
         os.replace(replace_when_written(summary_table_file), summary_table_file)
 
     def expand_ncbi_strain_ids(self, ncbi_coidentical_strain_ids, ncbi_species_of_taxid):
@@ -1330,12 +1481,13 @@ class Strains(object):
         self.logger.info(
             'Generating summary type information table across all strain repositories.')
         summary_table_file = os.path.join(
-            self.output_dir, 'gtdb_type_strain_summary.tsv')
+            self.output_dir, TYPE_STRAIN_SUMMARY_NAME)
         self.type_summary_table(ncbi_authority,
                                 lpsn_summary_file,
                                 lpsn_type_species_of_genus,
                                 summary_table_file)
 
+        self.report_notices(self.output_dir)
         self.logger.info('Done.')
         
     def parse_lpsn_scraped_priorities(self, lpsn_scraped_species_info):

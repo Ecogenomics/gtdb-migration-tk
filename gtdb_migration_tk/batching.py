@@ -366,7 +366,7 @@ def split_by_genome_size(items: Sequence[T],
                 pbar.update()
 
     for item, size in too_large:
-        logger.warning('warning: {} is {:,.1f} Mbp, larger than the {:,.1f} Mbp '
+        logger.warning('{} is {:,.1f} Mbp, larger than the {:,.1f} Mbp '
                        'maximum genome size, and is not processed.'.format(
                            os.path.basename(genome_dir_of(item)),
                            size / MBP, max_bases / MBP))
@@ -1051,7 +1051,7 @@ def plan_batches(gtdb_genome_path_file: str,
     existing = batch_dir_names(out_dir, layout)
     if existing:
         logger.warning(
-            'warning: {:,} batch(es) are already planned under {}; using them '
+            '{:,} batch(es) are already planned under {}; using them '
             'and not regenerating the batchfiles. Remove the batch directories '
             'to partition the release again.'.format(len(existing), out_dir))
         return existing

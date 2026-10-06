@@ -748,7 +748,7 @@ class DatabaseManager(object):
         if cache is not None:
             if cache.load():
                 self.logger.warning(
-                    'warning: {} ends part way through, as a run stopped hard leaves it; '
+                    '{} ends part way through, as a run stopped hard leaves it; '
                     'the {:,} hash(es) before that are used.'.format(cache_file, len(cache.entries)))
             if cache.entries:
                 # one stat a file, on threads, to tell a file hashed before from one
@@ -958,7 +958,7 @@ class DatabaseManager(object):
 
         if rows:
             self.logger.warning(
-                'warning: {:,} genome(s) to be deleted are in {:,} curated genome list(s), '
+                '{:,} genome(s) to be deleted are in {:,} curated genome list(s), '
                 'which lose them; each is named in {}.'.format(
                     len({r[0] for r in rows}), len({r[1] for r in rows}), path))
 
@@ -1077,18 +1077,23 @@ class DatabaseManager(object):
 
         self.logger.info('What the update {} to each genome:'.format(
             'would have done' if dry_run else 'did'))
+        # ACTION_REPLACED is not a line of its own: each new version takes over the
+        # row of exactly one predecessor, so the two counts are always the same,
+        # and the report names both
         for action in (ACTION_ADDED, ACTION_VERSIONED, ACTION_SEQUENCES_CHANGED,
                        ACTION_UPDATED, ACTION_UNCHANGED, ACTION_DELETED,
-                       ACTION_REPLACED, ACTION_NOT_IN_DATABASE, ACTION_NOT_IN_REPORT,
+                       ACTION_NOT_IN_DATABASE, ACTION_NOT_IN_REPORT,
                        ACTION_NO_GENOMIC_FASTA, ACTION_ALREADY_UPDATED):
             accessions = by_action.get(action, ())
-            self.logger.info('  {}: {:,} ({}).'.format(
-                action, len(accessions), count_by_database(accessions)))
+            note = (', each taking over the row of the version it replaces'
+                    if action == ACTION_VERSIONED else '')
+            self.logger.info('  {}: {:,} ({}){}.'.format(
+                action, len(accessions), count_by_database(accessions), note))
 
         unpublished = by_action.get(ACTION_NO_GENOMIC_FASTA, ())
         if unpublished:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release have no genomic FASTA and were not '
+                '{:,} genome(s) of the release have no genomic FASTA and were not '
                 'added: {}. NCBI publishes some assemblies without their sequence; such a '
                 'genome is added by a later release, once it is published.'.format(
                     len(unpublished), name_genomes(unpublished)))
@@ -1096,11 +1101,11 @@ class DatabaseManager(object):
         missing_genes = [d.accession for d in decisions if 'no protein file' in d.detail]
         if missing_genes:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release have no protein file and are '
+                '{:,} genome(s) of the release have no protein file and are '
                 'recorded with none: {}.'.format(len(missing_genes), name_genomes(missing_genes)))
 
         not_in_report = by_action.get(ACTION_NOT_IN_REPORT, ())
         if not_in_report:
             self.logger.warning(
-                'warning: {:,} genome(s) of the database are not named by the report and '
+                '{:,} genome(s) of the database are not named by the report and '
                 'were left as they are: {}.'.format(len(not_in_report), name_genomes(not_in_report)))

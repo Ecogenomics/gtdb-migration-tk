@@ -112,7 +112,7 @@ class StrainsCase(unittest.TestCase):
             genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years)
 
     def summary(self):
-        with open(os.path.join(self.out, 'gtdb_type_strain_summary.tsv')) as handle:
+        with gzip.open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rt') as handle:
             header = handle.readline().rstrip('\n').split('\t')
             return {row[0]: dict(zip(header, row)) for row in
                     (line.rstrip('\n').split('\t') for line in handle)}
@@ -142,6 +142,25 @@ class DecidingTypeMaterial(StrainsCase):
             genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years)
 
         self.assertEqual(sorted(self.summary()), sorted([TYPE_GENOME, OTHER_GENOME]))
+
+    def test_the_summary_is_gzipped(self):
+        self.run_type_table()
+
+        self.assertIn(S.TYPE_STRAIN_SUMMARY_NAME, os.listdir(self.out))
+        self.assertNotIn('gtdb_type_strain_summary.tsv', os.listdir(self.out))
+        with open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+
+    def test_the_same_inputs_write_the_same_bytes(self):
+        # the gzip header records no time and no file name
+        self.run_type_table()
+        with open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rb') as handle:
+            first = handle.read()
+        self.out = os.path.join(self.dir, 'again')
+        os.makedirs(self.out)
+        self.run_type_table()
+        with open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rb') as handle:
+            self.assertEqual(handle.read(), first)
 
     def test_nothing_is_printed_to_the_console(self):
         # what the run has to say goes to the log, where --silent governs it
@@ -345,6 +364,86 @@ class ChoosingBetweenNames(StrainsCase):
         self.run_type_table(cpus=2)
 
         self.assertEqual(self.lpsn_match(), ('Aclostridium ramosum', 'type strain of species'))
+
+
+class TheWarnings(StrainsCase):
+    """One WARNING per kind at the end, and every warning in type_table_warnings.tsv."""
+
+    def setUp(self):
+        super().setUp()
+        self.records = []
+        handler = logging.Handler(logging.WARNING)
+        handler.emit = self.records.append
+        logging.getLogger('timestamp').addHandler(handler)
+        self.addCleanup(logging.getLogger('timestamp').removeHandler, handler)
+
+    def warn_of_everything(self):
+        # a strain under four spellings NCBI does not consider type
+        self.names_rows += ['562\t|\t{0}\t|\t{0} <not considered type>\t|\ttype material\t|'.format(s)
+                            for s in ('ATCC 23581', 'ATCC-23581', 'ATCC:23581', 'ATCC23581')]
+        # a genome whose taxid NCBI deleted
+        self.genomes['GCA_000000007.1'] = ('gb', '999999', 'Escherichia sp.', 'na', 'na', 'na')
+        # a genome under a subspecies-rank strain name
+        self.genomes['GCA_000000008.1'] = ('gb', '600', 'Escherichia coli X1', 'na', 'na', 'na')
+        self.names_rows.append('600\t|\tEscherichia coli X1\t|\t\t|\tscientific name\t|')
+        self.nodes_rows.append('600\t|\t562\t|\tsubspecies\t|')
+        # a genus LPSN gives two type species
+        self.write(os.path.join('lpsn', 'lpsn_species.tsv'),
+                   'lpsn_species\tlpsn_type_species\tlpsn_species_authority\tsource\n'
+                   's__Escherichia coli\tg__Escherichia\tCastellani and Chalmers 1919\tGSS\n'
+                   's__Escherichia albertii\tg__Escherichia\tHuys et al. 2003\tGSS\n')
+
+    def warnings_tsv(self):
+        with open(os.path.join(self.out, S.WARNINGS_NAME)) as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+            return header, [dict(zip(header, line.rstrip('\n').split('\t'))) for line in handle]
+
+    def test_each_kind_of_warning_is_one_line_with_its_count_and_three_examples(self):
+        self.warn_of_everything()
+        self.run_type_table(cpus=2)
+
+        lines = [r.getMessage() for r in self.records]
+        self.assertEqual(len(lines), 4, lines)
+        not_type = [l for l in lines if 'not considered type' in l][0]
+        self.assertTrue(not_type.startswith('4 strain IDs names.dmp lists'), not_type)
+        self.assertEqual(not_type.count('ATCC'), 3)
+        self.assertIn(S.WARNINGS_NAME, not_type)
+        self.assertTrue([l for l in lines if l.startswith('1 genomes with no NCBI species')])
+        self.assertTrue([l for l in lines if 'Escherichia coli X1' in l])
+        self.assertTrue([l for l in lines if l.startswith('1 genera LPSN gives')])
+
+    def test_every_warning_is_in_the_tsv_with_its_meaning_and_its_data(self):
+        self.warn_of_everything()
+        self.run_type_table()
+
+        header, rows = self.warnings_tsv()
+        self.assertEqual(header, list(S.WARNINGS_HEADER))
+        kinds = [row['warning_type'] for row in rows]
+        self.assertEqual(kinds.count(S.NOT_CONSIDERED_TYPE), 4)
+        for row in rows:
+            self.assertEqual(row['description'], S.WARNING_KINDS[row['warning_type']][1])
+
+        not_type = [r for r in rows if r['warning_type'] == S.NOT_CONSIDERED_TYPE][0]
+        self.assertEqual(not_type['warning'], 'Ignoring ATCC 23581 as it is not considered type material.')
+        self.assertEqual(not_type['extra_data'], 'taxid=562; unique_name=ATCC 23581 <not considered type>')
+        unnamed = [r for r in rows if r['warning_type'] == S.NO_NCBI_SPECIES][0]
+        self.assertIn('taxid=999999; in_nodes_dmp=no', unnamed['extra_data'])
+        genus = [r for r in rows if r['warning_type'] == S.MULTIPLE_TYPE_SPECIES][0]
+        self.assertIn('type_species=Escherichia coli, Escherichia albertii', genus['extra_data'])
+
+    def test_a_subspecies_name_is_warned_of_once_a_genome(self):
+        # it was logged wherever the genome's species name was asked for
+        self.warn_of_everything()
+        self.run_type_table()
+
+        _, rows = self.warnings_tsv()
+        self.assertEqual([r['warning_type'] for r in rows].count(S.SUBSPECIES_WITHOUT_SUBSP), 1)
+
+    def test_a_run_with_nothing_to_warn_of_says_so(self):
+        self.run_type_table()
+
+        self.assertEqual(self.records, [])
+        self.assertEqual(self.warnings_tsv(), (list(S.WARNINGS_HEADER), []))
 
 
 if __name__ == '__main__':

@@ -228,7 +228,7 @@ def trnascan_parser(job: TrnaJob) -> Optional[TrnaJob]:
         return None
 
     LOGGER.warning(
-        'warning: {} has tRNAs called with an invalid checksum ({} against '
+        '{} has tRNAs called with an invalid checksum ({} against '
         '{} in {}); the genome is scanned again.'.format(
             job.accession, checksum, recorded, checksum_file))
 
@@ -281,7 +281,7 @@ def trnascan_worker(job: TrnaJob, tmp_dir: str, version: str) -> Optional[str]:
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
             LOGGER.warning(
-                'warning: tRNAscan-SE failed on {} with status {}: {}'.format(
+                'tRNAscan-SE failed on {} with status {}: {}'.format(
                     job.accession, proc.returncode,
                     (stderr or stdout).decode('utf-8', 'replace').strip()[:200]))
             return job.accession
@@ -293,7 +293,7 @@ def trnascan_worker(job: TrnaJob, tmp_dir: str, version: str) -> Optional[str]:
             handle.write('{}\n'.format(sha256(output_file)))
     except Exception as error:
         LOGGER.warning(
-            'warning: {} could not be scanned: {}'.format(job.accession, error))
+            '{} could not be scanned: {}'.format(job.accession, error))
         return job.accession
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -409,7 +409,7 @@ class tRNAScan(object):
 
         if all_genomes:
             self.logger.warning(
-                'warning: --all discards the tRNAs of every genome and scans it '
+                '--all discards the tRNAs of every genome and scans it '
                 'again, so batches already finished are done again too. Without '
                 'it a finished batch is skipped.')
 
@@ -514,7 +514,7 @@ class tRNAScan(object):
                    if domain_of(self.domains, job.accession) is None]
         if unknown:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch have no domain in either '
+                '{:,} genome(s) of this batch have no domain in either '
                 'the GTDB domain file or the NCBI taxonomy and are scanned as '
                 'bacteria, e.g. {}.'.format(
                     len(unknown), ', '.join(sorted(unknown)[:3])))
@@ -547,7 +547,7 @@ class tRNAScan(object):
 
         if not_scanned:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch have no tRNAs: {}.'.format(
+                '{:,} genome(s) of this batch have no tRNAs: {}.'.format(
                     len(not_scanned),
                     '; '.join('{:,} {}'.format(count, reason)
                               for reason, count
@@ -649,7 +649,7 @@ class tRNAScan(object):
 
         if written:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release have no tRNAs and are '
+                '{:,} genome(s) of the release have no tRNAs and are '
                 'named in {}.'.format(written, path))
         else:
             self.logger.info(
