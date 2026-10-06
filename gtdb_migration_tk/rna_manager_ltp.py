@@ -284,7 +284,7 @@ def ltp_worker(job: LtpJob, settings: LtpSettings) -> Optional[str]:
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception as error:
-        LOGGER.warning('warning: the 16S rRNA genes of {} could not be classified '
+        LOGGER.warning('The 16S rRNA genes of {} could not be classified '
                        'against the LTP: {}'.format(job.accession, error))
         return job.accession
 
@@ -458,7 +458,7 @@ class RnaManagerLTP(object):
 
         if all_genomes:
             self.logger.warning(
-                'warning: --all classifies every genome again, so batches already '
+                '--all classifies every genome again, so batches already '
                 'finished are done again too. Without it a finished batch is '
                 'skipped.')
 
@@ -600,7 +600,7 @@ class RnaManagerLTP(object):
 
         if not_classified:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch were not classified: {}.'.format(
+                '{:,} genome(s) of this batch were not classified: {}.'.format(
                     len(not_classified),
                     '; '.join('{:,} {}'.format(count, reason)
                               for reason, count
@@ -697,7 +697,7 @@ class RnaManagerLTP(object):
 
         if written:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release were not classified and '
+                '{:,} genome(s) of the release were not classified and '
                 'are named in {}.'.format(written, path))
         else:
             self.logger.info(

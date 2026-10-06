@@ -1430,7 +1430,7 @@ class GTranslate(object):
         batchfile, present, missing = check_batch_fastas(batch_dir)
         if missing:
             self.logger.warning(
-                'warning: {:,} genome(s) of {} have no genomic FASTA and were left '
+                '{:,} genome(s) of {} have no genomic FASTA and were left '
                 'out; the first is {}. They are named in {}.'.format(
                     len(missing), os.path.basename(batch_dir), missing[0],
                     MISSING_NAME))
@@ -1492,7 +1492,7 @@ class GTranslate(object):
             batch_dir, [accession for _, accession in present], list(predicted))
         if no_prediction:
             self.logger.warning(
-                'warning: gTranslate returned no prediction for {:,} genome(s) of '
+                'gTranslate returned no prediction for {:,} genome(s) of '
                 '{}; the first is {}. They are named in {}.'.format(
                     len(no_prediction), os.path.basename(batch_dir),
                     no_prediction[0], NO_PREDICTION_NAME))
@@ -1582,7 +1582,7 @@ class GTranslate(object):
 
         by_reason = tally_reasons(rows)
         self.logger.warning(
-            'warning: {:,} genome(s) of the release have no translation table and '
+            '{:,} genome(s) of the release have no translation table and '
             'are named in {}: {}. prodigal needs a table for every genome of the '
             'release.'.format(
                 len(rows), path,
@@ -1733,7 +1733,7 @@ class GTranslate(object):
 
         if len(staged) != len(accessions):
             self.logger.warning(
-                'warning: {:,} of {:,} genome(s) disputing table {} have no '
+                '{:,} of {:,} genome(s) disputing table {} have no '
                 'genomic FASTA to estimate the quality of; they keep their row '
                 'and are reported as {}.'.format(
                     len(accessions) - len(staged), len(accessions), table, NCBI_NA))

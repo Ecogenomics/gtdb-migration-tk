@@ -686,7 +686,7 @@ class BatchedQuality(object):
                     header=NOT_ASSESSED_HEADER)
         if not_assessed:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch were not assessed: {}.'.format(
+                '{:,} genome(s) of this batch were not assessed: {}.'.format(
                     len(not_assessed),
                     '; '.join('{:,} {}'.format(count, reason)
                               for reason, count in sorted(tally_reasons(
@@ -791,7 +791,7 @@ class BatchedQuality(object):
                 os.remove(path)
             if unrecorded:
                 self.logger.warning(
-                    'warning: {:,} batch(es) that ran {} recorded no {} version, so none '
+                    '{:,} batch(es) that ran {} recorded no {} version, so none '
                     'is written for the release: {}. They were made before {} was '
                     'recorded, or {} was not seen to run; their logs say which. A batch '
                     'is made again by removing its SUCCESS.'.format(
@@ -806,7 +806,7 @@ class BatchedQuality(object):
                 program, ordered[0], path))
         else:
             self.logger.warning(
-                'warning: the batches of the release were made with {:,} versions of '
+                'The batches of the release were made with {:,} versions of '
                 '{}, all of them written to {}: {}. A batch is made again, with the '
                 'version this machine runs, by removing its SUCCESS.'.format(
                     len(ordered), program, path,
@@ -851,7 +851,7 @@ class BatchedQuality(object):
 
         by_reason = tally_reasons([(row[0], row[1]) for row in rows])
         self.logger.warning(
-            'warning: {:,} genome(s) of the release were not assessed and are named '
+            '{:,} genome(s) of the release were not assessed and are named '
             'in {}: {}.'.format(
                 len(rows), path,
                 '; '.join('{:,} {}'.format(count, reason)
@@ -979,7 +979,7 @@ class CheckM(BatchedQuality):
 
         if not executables:
             self.logger.warning(
-                'warning: pplacer was not seen to run, so no {} version is recorded '
+                'pplacer was not seen to run, so no {} version is recorded '
                 'for this batch.'.format(PPLACER))
             return
 
@@ -988,7 +988,7 @@ class CheckM(BatchedQuality):
             version = conda_package_version(executable, PPLACER)
             if version is None:
                 self.logger.warning(
-                    'warning: pplacer ran from {}, which is not in a conda environment '
+                    'pplacer ran from {}, which is not in a conda environment '
                     'holding the {} package, so its version cannot be told and none is '
                     'recorded for this batch.'.format(executable, PPLACER))
                 return

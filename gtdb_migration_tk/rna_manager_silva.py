@@ -282,7 +282,7 @@ def rna_worker(job: RnaJob, settings: RnaSettings) -> Optional[str]:
 
         search_genome(job, settings, output_dir)
     except Exception as error:
-        LOGGER.warning('warning: the {} gene of {} could not be searched for: '
+        LOGGER.warning('The {} gene of {} could not be searched for: '
                        '{}'.format(settings.rna_gene, job.accession, error))
         return job.accession
 
@@ -558,7 +558,7 @@ class RnaManagerSILVA(object):
 
         if all_genomes:
             self.logger.warning(
-                'warning: --all searches every genome again, so batches already '
+                '--all searches every genome again, so batches already '
                 'finished are done again too. Without it a finished batch is '
                 'skipped.')
 
@@ -672,7 +672,7 @@ class RnaManagerSILVA(object):
                    if domain_of(self.domains, job.accession) is None]
         if unknown:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch have no domain in either '
+                '{:,} genome(s) of this batch have no domain in either '
                 'the GTDB domain file or the NCBI taxonomy and are searched as '
                 'bacteria, e.g. {}.'.format(
                     len(unknown), ', '.join(sorted(unknown)[:3])))
@@ -707,7 +707,7 @@ class RnaManagerSILVA(object):
 
         if not_searched:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch were not searched: {}.'.format(
+                '{:,} genome(s) of this batch were not searched: {}.'.format(
                     len(not_searched),
                     '; '.join('{:,} {}'.format(count, reason)
                               for reason, count
@@ -809,7 +809,7 @@ class RnaManagerSILVA(object):
 
         if written:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release were not searched and are '
+                '{:,} genome(s) of the release were not searched and are '
                 'named in {}.'.format(written, path))
         else:
             self.logger.info(

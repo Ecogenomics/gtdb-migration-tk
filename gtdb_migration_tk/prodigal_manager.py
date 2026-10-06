@@ -293,7 +293,7 @@ class ProdigalManager(object):
 
         if all_genomes:
             self.logger.warning(
-                'warning: --all_genomes discards the results of every genome and '
+                '--all_genomes discards the results of every genome and '
                 'calls its genes again, so batches already finished are done again '
                 'too. Without it a finished batch is skipped.')
 
@@ -488,7 +488,7 @@ class ProdigalManager(object):
 
         if not_called:
             self.logger.warning(
-                'warning: {:,} genome(s) of this batch have no called genes: '
+                '{:,} genome(s) of this batch have no called genes: '
                 '{}.'.format(len(not_called),
                              '; '.join('{:,} {}'.format(count, reason)
                                        for reason, count
@@ -546,7 +546,7 @@ class ProdigalManager(object):
 
         if written:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release have no called genes and '
+                '{:,} genome(s) of the release have no called genes and '
                 'are named in {}.'.format(written, path))
         else:
             self.logger.info(
@@ -560,7 +560,7 @@ class ProdigalManager(object):
 
         if fell_back:
             self.logger.warning(
-                'warning: {:,} genome(s) of the release were called in Prodigal\'s '
+                '{:,} genome(s) of the release were called in Prodigal\'s '
                 'meta mode, single mode having refused them, and are named in '
                 '{}.'.format(fell_back, fallback_path))
         else:
@@ -769,7 +769,7 @@ class ProdigalManager(object):
 
         if fell_back:
             self.logger.warning(
-                'warning: {:,} genome(s) were called in Prodigal\'s meta mode, '
+                '{:,} genome(s) were called in Prodigal\'s meta mode, '
                 'single mode having refused them.'.format(len(fell_back)))
 
         return called, fell_back

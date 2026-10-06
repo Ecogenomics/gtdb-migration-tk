@@ -1052,6 +1052,10 @@ run once `ncbi_metadata_sync` and `update_genomes` are done: which genomes from
 material status from the assembly summaries (`-n`, as `select_genomes` takes them); their
 species, and every name NCBI gives a taxon, from `names.dmp` and `nodes.dmp`.
 
+It ends with one WARNING per kind of warning, its count and up to three examples;
+every warning is in `type_table_warnings.tsv`, with its kind, what that kind
+means, the warning, and the data that bears on it (a taxid, a genome, a genus).
+
 ```bash
 gtdb_migration_tk strains type_table -g release237/genome_dirs.tsv \
     -n ncbi/assembly_summary_*.txt.gz \

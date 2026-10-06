@@ -1509,7 +1509,7 @@ def main():
         # as though it had been given the log it asked for
         if refused:
             logging.getLogger('timestamp').warning(
-                'warning: --log {} could not be opened ({}); this run is logged '
+                '--log {} could not be opened ({}); this run is logged '
                 'to {} instead.'.format(
                     refused[0], str(refused[1]) or refused[1].__class__.__name__,
                     os.path.join(*chosen) if chosen[0] else 'the console only'))

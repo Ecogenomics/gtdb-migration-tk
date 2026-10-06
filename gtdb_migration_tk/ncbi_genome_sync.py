@@ -1347,7 +1347,7 @@ class ChecksumFallback(object):
             with _warned_uncompressed:
                 if not _warned_uncompressed_done:
                     _warned_uncompressed_done = True
-                    LOG.warning("warning: %s at NCBI has no '#%s ... %s' header; it cannot "
+                    LOG.warning("%s at NCBI has no '#%s ... %s' header; it cannot "
                                 "be read, so files md5checksums.txt rejects will fail as "
                                 "they did before it existed (first seen %s)",
                                 UNCOMPRESSED_MANIFEST, UNCOMPRESSED_NAME_COLUMN,
@@ -2448,10 +2448,10 @@ def validate_args(args):
         return ("--delete only acts on --retry (rebuild the listed genomes) or during "
                 "verification; add --retry, --verify or --verify-only")
     if args.rate <= 0 and args.jobs > 6:
-        LOG.warning("warning: -j%d with --rate 0: nothing bounds the request rate. A warm "
+        LOG.warning("-j%d with --rate 0: nothing bounds the request rate. A warm "
                     "re-sync at -j9 lost 36 of the first 1,000 genomes to 503s.", args.jobs)
     if args.jobs > 9:
-        LOG.warning("warning: -j%d: cold downloads at -j10 throttled even before rate "
+        LOG.warning("-j%d: cold downloads at -j10 throttled even before rate "
                     "limiting existed; above 9 buys nothing measured.", args.jobs)
     return None
 
@@ -2952,7 +2952,7 @@ class NCBIGenomeSync(object):
                 % (format_count(len(skipped)), self.args.summary),
                 ["no ftp_path %s (%s:%d): ftp_path=%s" % (acc, self.args.summary, lineno, raw)
                  for lineno, acc, raw in skipped],
-                "warning: %s genome(s) in %s have no ftp_path (na or empty) and were "
+                "%s genome(s) in %s have no ftp_path (na or empty) and were "
                 "skipped: %s" % (format_count(len(skipped)), self.args.summary,
                                  first_names(acc for _, acc, _ in skipped)))
         if stale:
