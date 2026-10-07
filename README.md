@@ -989,11 +989,28 @@ Rows written for 2 genomes:
 ```
 
 That is where a release finds that `genomic_metadata`, `rna_silva` or `trnascan`
-did not get to every genome. The log goes to `-l/--log`, or without it to
-`gtdb_migration_tk.log` in `--out_dir`. A genome_dirs file naming no genomes is
+did not get to every genome. The log goes to `-l/--log`, which is required, so
+that the run's account of what is missing is where it was asked to be. A
+genome_dirs file naming no genomes is
 refused, exiting 1, before anything is written, rather than replacing the tables
 in `--out_dir` with ten of no rows. The table names are the ones
 `update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
+
+`create_tables` reads `--cpus` genomes at once on threads (default 8) and writes
+them in the order of the genome_dirs file, so the tables are the same whatever
+`--cpus` is. The work is opening a dozen small files in each genome directory,
+NFS round trips with nothing computed between them. Measured on r237's genome
+directories, nothing cached:
+
+| `--cpus` | per genome | 1.35M genomes |
+| --- | --- | --- |
+| 1 | 75 ms | ~28 h |
+| 4 | 22 ms | ~8 h |
+| 8 | 9-10 ms | ~3.5 h |
+| 16, 32, 64 | 9-11 ms | no faster |
+
+Past 8 the file server is what is waited on, so more threads only add load to a
+server others are using.
 
 `parse_assemblies` takes the NCBI assembly summaries the release was selected
 from (`-n`), as `select_genomes` and `strains type_table` do, rather than

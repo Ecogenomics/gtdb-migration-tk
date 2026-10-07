@@ -266,7 +266,7 @@ class OptionsParser():
         p = MetadataTable(options.silva_version)
         try:
             p.create_metadata_tables(
-                options.gtdb_genome_path_file, options.output_dir)
+                options.gtdb_genome_path_file, options.output_dir, options.cpus)
         except EmptyGenomeDirs as exc:
             # the wrong file, or one an earlier step left empty: the user's to
             # fix, said in one line rather than as a traceback

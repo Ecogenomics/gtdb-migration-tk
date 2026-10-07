@@ -17,11 +17,12 @@
 
 import os
 import datetime
-from collections import Counter
+from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import multiprocessing as mp
 import ntpath
-from typing import Dict, List, Optional, Sequence, Set, TextIO, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Set, TextIO, Tuple, TypeVar
 
 from tqdm import tqdm
 
@@ -90,12 +91,97 @@ TRNA_TABLE = 'metadata_trna_count.tsv'
 EVERY_GENOME_TABLES = frozenset({NT_TABLE})
 
 
+# How many genomes create_tables reads at once unless told otherwise (--cpus).
+# Its work is opening a dozen small files in each genome directory, one NFS
+# round trip after another with nothing computed between them, so read one
+# genome at a time it waits on the file server for nearly all of a run. Threads
+# overlap the round trips. Measured over r237's genome directories, on fresh
+# samples so that nothing was cached: 75 ms a genome on one thread (a day and
+# more for 1.35M genomes), 22 ms on 4, and 9-10 ms on 8, where it levels off --
+# 16, 32 and 64 threads were no faster, the file server being what is waited on
+# by then. Hence 8, as for ncbi_genome_sync --nfs-jobs and list_genomes: past
+# the knee, and no more load on a server others are using than buys anything.
+CREATE_TABLES_THREADS = 8
+
+# How many genomes are queued for each thread at once: enough that none sits
+# idle between one genome and the next, and few enough that a release is not
+# held in memory as futures before the first genome is written.
+QUEUE_DEPTH = 4
+
+T = TypeVar('T')
+R = TypeVar('R')
+
+
+def ordered_map(func: Callable[[T], R], items: Iterable[T], threads: int,
+                depth: int = QUEUE_DEPTH) -> Iterator[R]:
+    """func over items on threads, the results yielded in the order of items.
+
+    At most threads * depth items are in hand at once, the next submitted as
+    the oldest is yielded. An exception raised by func is raised here, for the
+    item it was raised on, and the items queued behind it are cancelled.
+
+    Parameters
+    ----------
+    func : callable
+        Applied to each item, on a worker thread.
+    items : iterable
+        Read as the work is queued, so it may be a generator over a file.
+    threads : int
+        Worker threads; fewer than one is taken as one.
+    depth : int
+        Items queued per thread.
+
+    @return: iterator over func(item), in the order of items.
+    """
+
+    threads = max(1, threads)
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        pending = deque()
+        try:
+            for item in items:
+                pending.append(pool.submit(func, item))
+                if len(pending) >= threads * depth:
+                    yield pending.popleft().result()
+            while pending:
+                yield pending.popleft().result()
+        finally:
+            for future in pending:
+                future.cancel()
+
+
+class TableRow(NamedTuple):
+    """One table's part of one genome, as a reader hands it back.
+
+    The header is what the table opens with were this the first genome to
+    have the file it is read from; row is the genome's line, None where the
+    file named nothing to report. Both end in a newline.
+    """
+
+    header: str
+    row: Optional[str]
+
+
+class GenomeTables(NamedTuple):
+    """Everything create_tables writes for one genome, read on a worker thread.
+
+    tables maps each table of MetadataTable.table_sources to the genome's
+    TableRow, or to None where the genome has no file that table is read
+    from; the three counts are its rows of the *_count.tsv tables.
+    """
+
+    gid: str
+    tables: Dict[str, Optional[TableRow]]
+    ssu_count: int
+    lsu_23s_count: int
+    lsu_5S_count: int
+
+
 class EmptyGenomeDirs(ValueError):
     """The genome_dirs file create_tables was given names no genomes."""
 
 
 def taxonomy_table(prefix: str) -> str:
-    """The table of one of the rRNA genes _parse_taxonomy_file() reads.
+    """The table of one of the rRNA genes _read_taxonomy_file() reads.
 
     Parameters
     ----------
@@ -153,17 +239,6 @@ class MetadataTable(object):
         self.lsu_5S_summary_file: str = os.path.join(
             silva_folder, 'lsu_5S.hmm_summary.tsv')
 
-        # each output table is headed by the first genome that has anything to
-        # put in it, so these say whether that genome has been seen yet
-        self.write_nt_header: bool = True
-        self.write_gene_header: bool = True
-        self.write_trna_header: bool = True
-        self.write_lsu_5S_header: bool = True
-
-        # the rRNA tables share one method over three prefixes, so which of them
-        # have been headed is kept by prefix rather than by a flag each
-        self.taxonomy_headers: Set[str] = set()
-
         # the file in a genome's directory each table's rows are read from, in
         # the order the closing summary names them
         self.table_sources: Dict[str, str] = {
@@ -182,92 +257,43 @@ class MetadataTable(object):
 
         self.logger: logging.Logger = logging.getLogger('timestamp')
 
-    def _parse_nt(self, genome_id: str, metadata_nt_file: str, fout: TextIO) -> None:
-        """Parse metadata file with information derived from nucleotide sequences.
+    @staticmethod
+    def _read_field_table(genome_id: str, path: str) -> Optional[TableRow]:
+        """Read a two column field/value table generate_metadata wrote for one genome.
 
-        The file is the two column field/value table generate_metadata wrote for
-        one genome. The output table is headed from the first genome that has
-        one, and every genome contributes one row of values thereafter.
-
-        Parameters
-        ----------
-        genome_id : str
-            Unique identifier of genome.
-        metadata_nt_file : str
-            Full path to the genome's nucleotide metadata file.
-        fout : TextIO
-            Output stream to populate with metadata.
-
-        @return: nothing; a row is written to fout, and a genome without the
-                 file contributes none.
-        """
-
-        if not os.path.exists(metadata_nt_file):
-            self.absent[NT_TABLE] += 1
-            return
-
-        if self.write_nt_header:
-            self.write_nt_header = False
-
-            fout.write('genome_id')
-            for line in open(metadata_nt_file):
-                line_split = line.split('\t')
-                fout.write('\t' + line_split[0].strip())
-            fout.write('\n')
-
-        fout.write(genome_id)
-        for line in open(metadata_nt_file):
-            line_split = line.split('\t')
-            fout.write('\t' + line_split[1].strip())
-        fout.write('\n')
-        self.rows[NT_TABLE] += 1
-
-    def _parse_gene(self, genome_id: str, metadata_gene_file: str, fout: TextIO) -> None:
-        """Parse metadata file with information derived from called genes.
-
-        As _parse_nt, over the table generate_metadata wrote from the genes
-        Prodigal called.
+        metadata.genome_nt.tsv and metadata.genome_gene.tsv are both of this
+        shape. The table they are gathered into is headed by the fields of the
+        first genome that has one, and every genome contributes one row of
+        values.
 
         Parameters
         ----------
         genome_id : str
             Unique identifier of genome.
-        metadata_gene_file : str
-            Full path to the genome's gene metadata file.
-        fout : TextIO
-            Output stream to populate with metadata.
+        path : str
+            Full path to the genome's field/value table.
 
-        @return: nothing; a row is written to fout, and a genome without the
-                 file contributes none.
+        @return: the header and the genome's row, or None where the genome has
+                 no such file.
         """
 
-        if not os.path.exists(metadata_gene_file):
-            self.absent[GENE_TABLE] += 1
-            return
+        try:
+            with open(path) as handle:
+                lines = handle.readlines()
+        except FileNotFoundError:
+            return None
 
-        if self.write_gene_header:
-            self.write_gene_header = False
+        header = 'genome_id' + ''.join('\t' + line.split('\t')[0].strip() for line in lines) + '\n'
+        row = genome_id + ''.join('\t' + line.split('\t')[1].strip() for line in lines) + '\n'
+        return TableRow(header, row)
 
-            fout.write('genome_id')
-            for line in open(metadata_gene_file):
-                line_split = line.split('\t')
-                fout.write('\t' + line_split[0].strip())
-            fout.write('\n')
-        fout.write(genome_id)
-        for line in open(metadata_gene_file):
-            line_split = line.split('\t')
-            fout.write('\t' + line_split[1].strip())
-        fout.write('\n')
-        self.rows[GENE_TABLE] += 1
-
-    def _parse_taxonomy_file(self,
-                             genome_id: str,
-                             metadata_taxonomy_file: str,
-                             fout: TextIO,
-                             prefix: str,
-                             fna_file: str,
-                             summary_file: Optional[str] = None) -> int:
-        """Parse metadata file with taxonomic information for rRNA genes.
+    @staticmethod
+    def _read_taxonomy_file(genome_id: str,
+                            metadata_taxonomy_file: str,
+                            prefix: str,
+                            fna_file: str,
+                            summary_file: Optional[str] = None) -> Tuple[Optional[TableRow], int]:
+        """Read the taxonomic information of one genome's rRNA genes.
 
         One method over the three rRNA tables -- ssu_gg, ssu_silva and
         lsu_silva_23s -- which differ in the prefix their fields carry and in
@@ -279,8 +305,6 @@ class MetadataTable(object):
             Unique identifier of genome.
         metadata_taxonomy_file : str
             Full path to file containing rRNA metadata.
-        fout : TextIO
-            Output stream to populate with metadata.
         prefix : str
             Prefix to append to metadata fields.
         fna_file : str
@@ -290,53 +314,51 @@ class MetadataTable(object):
             HMM summary of the same genes, read for the length of the contig
             the hit sits on. The greengenes table has none.
 
-        @return: number of rRNA genes identified in the genome, which is zero
-                 where the genome has no such table.
+        @return: the header and the genome's row, its row None where no hit
+                 was reported, or None where the genome has no such table;
+                 and the number of rRNA genes identified in the genome, which
+                 is zero where it has no such table.
         """
 
-        if not os.path.exists(metadata_taxonomy_file):
-            self.absent[taxonomy_table(prefix)] += 1
-            return 0
+        try:
+            f = open(metadata_taxonomy_file)
+        except FileNotFoundError:
+            return None, 0
 
-        with open(metadata_taxonomy_file) as f:
+        with f:
             header_line = f.readline()  # consume header line
-            if prefix not in self.taxonomy_headers:
-                self.taxonomy_headers.add(prefix)
+            headers = [prefix + '_' + x.strip().replace('ssu_', '')
+                       for x in header_line.split('\t')]
+            headers.append("{0}_sequence".format(prefix))
+            headers.append("{0}_contig_len".format(prefix))
 
-                fout.write('genome_id')
-                headers = [prefix + '_' + x.strip().replace('ssu_', '')
-                           for x in header_line.split('\t')]
-                headers.append("{0}_sequence".format(prefix))
-                headers.append("{0}_contig_len".format(prefix))
+            if prefix == 'lsu_silva_23s':
+                for n, i in enumerate(headers):
+                    if i == 'lsu_silva_23s_sequence':
+                        headers[n] = 'lsu_23s_sequence'
+                    elif i == 'lsu_silva_23s_query_id':
+                        headers[n] = 'lsu_23s_query_id'
+                    elif i == 'lsu_silva_23s_length':
+                        headers[n] = 'lsu_23s_length'
+                    elif i == 'lsu_silva_23s_contig_len':
+                        headers[n] = 'lsu_23s_contig_len'
+            elif prefix == 'ssu_silva':
+                for n, i in enumerate(headers):
+                    if i == 'ssu_silva_sequence':
+                        headers[n] = 'ssu_sequence'
+                    elif i == 'ssu_silva_query_id':
+                        headers[n] = 'ssu_query_id'
+                    elif i == 'ssu_silva_length':
+                        headers[n] = 'ssu_length'
+                    elif i == 'ssu_silva_contig_len':
+                        headers[n] = 'ssu_contig_len'
 
-                if prefix == 'lsu_silva_23s':
-                    for n, i in enumerate(headers):
-                        if i == 'lsu_silva_23s_sequence':
-                            headers[n] = 'lsu_23s_sequence'
-                        elif i == 'lsu_silva_23s_query_id':
-                            headers[n] = 'lsu_23s_query_id'
-                        elif i == 'lsu_silva_23s_length':
-                            headers[n] = 'lsu_23s_length'
-                        elif i == 'lsu_silva_23s_contig_len':
-                            headers[n] = 'lsu_23s_contig_len'
-                elif prefix == 'ssu_silva':
-                    for n, i in enumerate(headers):
-                        if i == 'ssu_silva_sequence':
-                            headers[n] = 'ssu_sequence'
-                        elif i == 'ssu_silva_query_id':
-                            headers[n] = 'ssu_query_id'
-                        elif i == 'ssu_silva_length':
-                            headers[n] = 'ssu_length'
-                        elif i == 'ssu_silva_contig_len':
-                            headers[n] = 'ssu_contig_len'
-
-                fout.write('\t' + '\t'.join(headers) + "\n")
+            header = 'genome_id' + '\t' + '\t'.join(headers) + "\n"
 
             # Check the CheckM headers are consistent
             split_headers = header_line.rstrip().split("\t")
             for pos in range(0, len(split_headers)):
-                header = split_headers[pos]
-                if header == 'query_id':
+                if split_headers[pos] == 'query_id':
                     query_id_pos = pos
                     break
 
@@ -354,35 +376,30 @@ class MetadataTable(object):
                     longest_ssu_hit_info = line_split
                     ssu_query_id = line_split[query_id_pos]
 
-            if longest_ssu_hit_info:
-                fout.write(genome_id)
-                fout.write('\t' + '\t'.join(longest_ssu_hit_info))
-                all_genes_dict = read_fasta(fna_file, False)
-                sequence = all_genes_dict[ssu_query_id]
-                fout.write('\t{0}'.format(sequence))
-                if summary_file is not None and os.path.exists(summary_file):
-                    with open(summary_file) as fsum:
-                        header_line = fsum.readline()  # consume header line
-                        header_list = [x.strip()
-                                       for x in header_line.split('\t')]
-                        idx_seq = header_list.index("Sequence length")
-                        for line in fsum:
-                            identified_ssu_genes += 1
-                            sum_list = [x.strip() for x in line.split('\t')]
-                            if sum_list[0] == ssu_query_id:
-                                fout.write("\t{0}".format(sum_list[idx_seq]))
+        if not longest_ssu_hit_info:
+            return TableRow(header, None), identified_ssu_genes
 
-                fout.write('\n')
-                self.rows[taxonomy_table(prefix)] += 1
+        row = [genome_id, '\t' + '\t'.join(longest_ssu_hit_info)]
+        all_genes_dict = read_fasta(fna_file, False)
+        row.append('\t{0}'.format(all_genes_dict[ssu_query_id]))
+        if summary_file is not None and os.path.exists(summary_file):
+            with open(summary_file) as fsum:
+                header_list = [x.strip() for x in fsum.readline().split('\t')]
+                idx_seq = header_list.index("Sequence length")
+                for line in fsum:
+                    identified_ssu_genes += 1
+                    sum_list = [x.strip() for x in line.split('\t')]
+                    if sum_list[0] == ssu_query_id:
+                        row.append("\t{0}".format(sum_list[idx_seq]))
+        row.append('\n')
 
-            return identified_ssu_genes
+        return TableRow(header, ''.join(row)), identified_ssu_genes
 
-    def _parse_lsu_5S_files(self,
-                            accession: str,
-                            fout: TextIO,
-                            fna_file: str,
-                            summary_file: str) -> int:
-        """Parse information from 5S LSU files.
+    @staticmethod
+    def _read_lsu_5S_files(accession: str,
+                           fna_file: str,
+                           summary_file: str) -> Tuple[Optional[TableRow], int]:
+        """Read one genome's 5S LSU genes.
 
         The 5S genes are not classified, so there is no taxonomy table to read
         as the other rRNA genes have: the longest sequence found is reported
@@ -392,29 +409,23 @@ class MetadataTable(object):
         ----------
         accession : str
             Unique identifier of genome.
-        fout : TextIO
-            Output stream to populate with metadata.
         fna_file : str
             FASTA of the identified 5S genes.
         summary_file : str
             HMM summary of the same genes, read for the length of the contig
             each sits on.
 
-        @return: number of 5S genes identified in the genome, which is zero
-                 where none were.
+        @return: the header and the genome's row, its row None where no gene
+                 was reported, or None where no 5S sequence was identified;
+                 and the number of 5S genes identified, which is zero where
+                 none were.
         """
 
         # check if a 5S sequence was identified
         if not os.path.exists(fna_file):
-            self.absent[LSU_5S_TABLE] += 1
-            return 0
+            return None, 0
 
-        # write header
-        if self.write_lsu_5S_header:
-            fout.write(
-                'genome_id\tlsu_5s_query_id\tlsu_5s_length\tlsu_5s_contig_len\tlsu_5s_sequence\n')
-            self.write_lsu_5S_header = False
-
+        header = 'genome_id\tlsu_5s_query_id\tlsu_5s_length\tlsu_5s_contig_len\tlsu_5s_sequence\n'
         seqs = read_fasta(fna_file)
 
         identified_genes = 0
@@ -439,15 +450,16 @@ class MetadataTable(object):
                         longest_seq = seq_len
                         longest_contig_len = contig_len
 
+        row = None
         if longest_seq_id:
-            fout.write('%s\t%s\t%d\t%d\t%s\n' % (accession, longest_seq_id,
-                                                 longest_seq, longest_contig_len, seqs[longest_seq_id]))
-            self.rows[LSU_5S_TABLE] += 1
+            row = '%s\t%s\t%d\t%d\t%s\n' % (accession, longest_seq_id,
+                                              longest_seq, longest_contig_len, seqs[longest_seq_id])
 
-        return identified_genes
+        return TableRow(header, row), identified_genes
 
-    def _parse_trna_file(self, genome_id: str, trna_file: str, fout_trna_count: TextIO) -> None:
-        """Parse tRNA information.
+    @staticmethod
+    def _read_trna_file(genome_id: str, trna_file: str) -> Optional[TableRow]:
+        """Read tRNA information.
 
         Reads the statistics tRNAscan-SE wrote for one genome, counting the
         tRNAs, the amino acids they decode and the selenocysteine tRNAs among
@@ -459,29 +471,23 @@ class MetadataTable(object):
             Unique identifier of genome.
         trna_file : str
             Full path to the genome's tRNA statistics file.
-        fout_trna_count : TextIO
-            Output stream to populate with the counts.
 
-        @return: nothing; a row is written to fout_trna_count, and a genome
-                 without the file contributes none.
+        @return: the header and the genome's row of counts, or None where the
+                 genome has no such file.
         """
 
-        if not os.path.exists(trna_file):
-            self.absent[TRNA_TABLE] += 1
-            return
-
-        # write header
-        if self.write_trna_header:
-            fout_trna_count.write(
-                'genome_id\ttrna_count\ttrna_aa_count\ttrna_selenocysteine_count\n')
-            self.write_trna_header = False
+        try:
+            with open(trna_file) as handle:
+                lines = handle.readlines()
+        except FileNotFoundError:
+            return None
 
         # parse tRNA summary file
         trna_count = 0
         trna_selenocysteine_count = 0
         trna_aa_count = 0
         read_aa = False
-        for line in open(trna_file):
+        for line in lines:
             if line.startswith('tRNAs decoding Standard 20 AA'):
                 trna_count = int(line.split(':')[1])
             elif line.startswith('Selenocysteine tRNAs (TCA)'):
@@ -500,16 +506,62 @@ class MetadataTable(object):
                         if int(line_split[1]) > 0:
                             trna_aa_count += 1
 
-        fout_trna_count.write('%s\t%d\t%d\t%d\n' % (
-            genome_id, trna_count, trna_aa_count, trna_selenocysteine_count))
-        self.rows[TRNA_TABLE] += 1
+        return TableRow('genome_id\ttrna_count\ttrna_aa_count\ttrna_selenocysteine_count\n',
+                        '%s\t%d\t%d\t%d\n' % (genome_id, trna_count, trna_aa_count,
+                                              trna_selenocysteine_count))
 
-    def create_metadata_tables(self, gtdb_genome_path_file: str, output_dir: str) -> None:
+    def _read_genome(self, genome: Tuple[str, str]) -> GenomeTables:
+        """Read everything create_tables writes for one genome.
+
+        Run on a worker thread: it reads the genome's files and nothing else,
+        holding no state of the run, so that the order the tables are written
+        in, and the genome each is headed by, are decided where they are
+        written (create_metadata_tables()).
+
+        Parameters
+        ----------
+        genome : (str, str)
+            The genome's accession and directory.
+
+        @return: the genome's part of every table.
+        """
+
+        gid, gpath = genome
+        ssu_silva, ssu_count = self._read_taxonomy_file(
+            gid, os.path.join(gpath, self.ssu_silva_taxonomy_file), 'ssu_silva',
+            os.path.join(gpath, self.ssu_silva_fna_file),
+            os.path.join(gpath, self.ssu_silva_summary_file))
+        lsu_23s, lsu_23s_count = self._read_taxonomy_file(
+            gid, os.path.join(gpath, self.lsu_silva_23s_taxonomy_file), 'lsu_silva_23s',
+            os.path.join(gpath, self.lsu_silva_23s_fna_file),
+            os.path.join(gpath, self.lsu_silva_23s_summary_file))
+        lsu_5S, lsu_5S_count = self._read_lsu_5S_files(
+            gid, os.path.join(gpath, self.lsu_5S_fna_file),
+            os.path.join(gpath, self.lsu_5S_summary_file))
+        ssu_gg, _ = self._read_taxonomy_file(
+            gid, os.path.join(gpath, self.ssu_gg_taxonomy_file), 'ssu_gg',
+            os.path.join(gpath, self.ssu_gg_fna_file))
+
+        tables = {
+            NT_TABLE: self._read_field_table(gid, os.path.join(gpath, self.metadata_nt_file)),
+            GENE_TABLE: self._read_field_table(gid, os.path.join(gpath, self.metadata_gene_file)),
+            taxonomy_table('ssu_gg'): ssu_gg,
+            taxonomy_table('ssu_silva'): ssu_silva,
+            taxonomy_table('lsu_silva_23s'): lsu_23s,
+            LSU_5S_TABLE: lsu_5S,
+            TRNA_TABLE: self._read_trna_file(gid, os.path.join(gpath, 'trna', gid + '_trna_stats.tsv'))}
+
+        return GenomeTables(gid, tables, ssu_count, lsu_23s_count, lsu_5S_count)
+
+    def create_metadata_tables(self, gtdb_genome_path_file: str, output_dir: str,
+                               cpus: int = CREATE_TABLES_THREADS) -> None:
         """Create metadata tables.
 
         One pass over the release, gathering what every earlier command wrote
         into each genome directory into the ten tables the database is loaded
-        from.
+        from. The genomes are read cpus at a time on threads (_read_genome()),
+        and written here in the order of the genome_dirs file, so the tables
+        are the same whatever cpus is.
 
         Parameters
         ----------
@@ -518,6 +570,8 @@ class MetadataTable(object):
             accession, one genome per line.
         output_dir : str
             Directory the tables are written to, made if it does not exist.
+        cpus : int
+            Genomes read at once.
 
         @return: nothing; the tables are written under output_dir.
 
@@ -537,111 +591,60 @@ class MetadataTable(object):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        fout_nt = open(os.path.join(output_dir, NT_TABLE), 'w')
-        fout_gene = open(os.path.join(output_dir, GENE_TABLE), 'w')
-        fout_gg_taxonomy = open(os.path.join(
-            output_dir, taxonomy_table('ssu_gg')), 'w')
-        fout_ssu_silva_taxonomy = open(os.path.join(
-            output_dir, taxonomy_table('ssu_silva')), 'w')
-        fout_lsu_silva_23s_taxonomy = open(os.path.join(
-            output_dir, taxonomy_table('lsu_silva_23s')), 'w')
-        fout_lsu_5S = open(os.path.join(
-            output_dir, LSU_5S_TABLE), 'w')
+        fouts: Dict[str, TextIO] = {table: open(os.path.join(output_dir, table), 'w')
+                                    for table in self.table_sources}
         fout_ssu_silva_count = open(os.path.join(
             output_dir, 'metadata_ssu_silva_count.tsv'), 'w')
         fout_lsu_silva_23s_count = open(os.path.join(
             output_dir, 'metadata_lsu_silva_23s_count.tsv'), 'w')
         fout_lsu_5S_count = open(os.path.join(
             output_dir, 'metadata_lsu_5S_count.tsv'), 'w')
-        fout_trna_count = open(os.path.join(
-            output_dir, TRNA_TABLE), 'w')
 
         fout_ssu_silva_count.write('%s\t%s\n' % ('genome_id', 'ssu_count'))
         fout_lsu_silva_23s_count.write(
             '%s\t%s\n' % ('genome_id', 'lsu_23s_count'))
         fout_lsu_5S_count.write('%s\t%s\n' % ('genome_id', 'lsu_5s_count'))
 
-        # generate metadata for NCBI assemblies
-        self.logger.info('Gathering the metadata of {:,} genomes into {}.'.format(
-            numlines, output_dir))
+        def genomes(handle: TextIO) -> Iterator[Tuple[str, str]]:
+            for line in handle:
+                line_split = line.strip().split('\t')
+                yield line_split[0], line_split[1]
+
+        # each table is headed by the first genome, in the order of the
+        # genome_dirs file, that has the file it is read from
+        headed: Set[str] = set()
+
+        self.logger.info('Gathering the metadata of {:,} genomes into {}, reading {:,} at once.'.format(
+            numlines, output_dir, max(1, cpus)))
         genome_count = 0
         with open(gtdb_genome_path_file) as ggpf:
-            for line in tqdm(ggpf,ncols=100,total=numlines,smoothing=50/numlines):
+            for genome in tqdm(ordered_map(self._read_genome, genomes(ggpf), cpus),
+                               ncols=100, total=numlines, smoothing=50/numlines):
                 genome_count += 1
 
-                line_split = line.strip().split('\t')
-
-                gid = line_split[0]
-                gpath = line_split[1]
-                assembly_id = os.path.basename(os.path.normpath(gpath))
-                metadata_nt_file = os.path.join(
-                    gpath, self.metadata_nt_file)
-                self._parse_nt(
-                    gid, metadata_nt_file, fout_nt)
-
-                metadata_gene_file = os.path.join(
-                    gpath, self.metadata_gene_file)
-                self._parse_gene(
-                    gid, metadata_gene_file, fout_gene)
-
-                ssu_gg_taxonomy_file = os.path.join(
-                    gpath, self.ssu_gg_taxonomy_file)
-                ssu_gg_fna_file = os.path.join(
-                    gpath, self.ssu_gg_fna_file)
-                self._parse_taxonomy_file(
-                    gid, ssu_gg_taxonomy_file, fout_gg_taxonomy, 'ssu_gg', ssu_gg_fna_file)
-
-                ssu_silva_taxonomy_file = os.path.join(
-                    gpath, self.ssu_silva_taxonomy_file)
-                ssu_silva_fna_file = os.path.join(
-                    gpath, self.ssu_silva_fna_file)
-                ssu_silva_summary_file = os.path.join(
-                    gpath, self.ssu_silva_summary_file)
-                ssu_count = self._parse_taxonomy_file(gid,
-                                                      ssu_silva_taxonomy_file,
-                                                      fout_ssu_silva_taxonomy,
-                                                      'ssu_silva',
-                                                      ssu_silva_fna_file,
-                                                      ssu_silva_summary_file)
-
-                lsu_silva_23s_taxonomy_file = os.path.join(
-                    gpath, self.lsu_silva_23s_taxonomy_file)
-                lsu_silva_23s_fna_file = os.path.join(
-                    gpath, self.lsu_silva_23s_fna_file)
-                lsu_silva_23s_summary_file = os.path.join(
-                    gpath, self.lsu_silva_23s_summary_file)
-                lsu_23s_count = self._parse_taxonomy_file(
-                    gid, lsu_silva_23s_taxonomy_file, fout_lsu_silva_23s_taxonomy, 'lsu_silva_23s', lsu_silva_23s_fna_file, lsu_silva_23s_summary_file)
-
-                lsu_5S_fna_file = os.path.join(
-                    gpath, self.lsu_5S_fna_file)
-                lsu_5S_summary_file = os.path.join(
-                    gpath, self.lsu_5S_summary_file)
-                lsu_5S_count = self._parse_lsu_5S_files(
-                    gid, fout_lsu_5S, lsu_5S_fna_file, lsu_5S_summary_file)
+                for table, part in genome.tables.items():
+                    if part is None:
+                        self.absent[table] += 1
+                        continue
+                    if table not in headed:
+                        headed.add(table)
+                        fouts[table].write(part.header)
+                    if part.row is not None:
+                        fouts[table].write(part.row)
+                        self.rows[table] += 1
 
                 fout_ssu_silva_count.write(
-                    '%s\t%d\n' % (gid, ssu_count))
+                    '%s\t%d\n' % (genome.gid, genome.ssu_count))
                 fout_lsu_silva_23s_count.write(
-                    '%s\t%d\n' % (gid, lsu_23s_count))
+                    '%s\t%d\n' % (genome.gid, genome.lsu_23s_count))
                 fout_lsu_5S_count.write(
-                    '%s\t%d\n' % (gid, lsu_5S_count))
+                    '%s\t%d\n' % (genome.gid, genome.lsu_5S_count))
 
-                trna_file = os.path.join(
-                    gpath, 'trna', gid + '_trna_stats.tsv')
-                self._parse_trna_file(
-                    gid, trna_file, fout_trna_count)
-
-        fout_nt.close()
-        fout_gene.close()
-        fout_gg_taxonomy.close()
-        fout_ssu_silva_taxonomy.close()
-        fout_lsu_silva_23s_taxonomy.close()
-        fout_lsu_5S.close()
+        for fout in fouts.values():
+            fout.close()
         fout_ssu_silva_count.close()
         fout_lsu_silva_23s_count.close()
         fout_lsu_5S_count.close()
-        fout_trna_count.close()
 
         self.log_summary(genome_count)
 
