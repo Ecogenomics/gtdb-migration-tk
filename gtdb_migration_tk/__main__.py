@@ -1053,6 +1053,7 @@ def get_main_parser():
             __checkm_profile(grp, required=True)
             __checkm_qa(grp, required=True)
             __checkm_not_assessed(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)

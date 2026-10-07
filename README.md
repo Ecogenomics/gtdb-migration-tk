@@ -662,7 +662,8 @@ table in a worker.
 gene statistics (protein count, coding bases, coding density) and writes them into
 the genome's own directory as `metadata.genome_nt.tsv` and
 `metadata.genome_gene.tsv`, with a `.desc.tsv` beside each naming the fields.
-`create_tables` is what gathers them afterwards. It reads two files per genome:
+`create_tables` is what gathers them afterwards (see [Metadata](#metadata)).
+`genomic_metadata` itself reads two files per genome:
 
 | File | Written by |
 | --- | --- |
@@ -948,12 +949,33 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 
 | Command | Description |
 | --- | --- |
-| `create_tables` | Create metadata tables for all NCBI genomes |
+| `create_tables` | Gather the metadata written into each genome directory into the tables `update_metadata_db` loads |
 | `parse_assemblies` | Parse NCBI assembly summary files to generate metadata |
 | `parse_ncbi_dir` | Parse the GTDB directory for extra NCBI metadata |
 | `add_names_dmp` | Parse an NCBI `names.dmp` file into a table |
 | `ncbi_genome_category` | Identify genomes marked by NCBI as a MAG or SAG |
 | `generate_seqcode_table` | Generate a metadata table for genomes in SeqCode |
+
+`create_tables` calculates nothing. It walks the genomes of the genome_dirs file
+it is given (`--gtdb_genome_path_file`), which may be any release's and not only
+NCBI's, and gathers what earlier commands wrote into each genome directory into
+ten tables in `--out_dir`:
+
+| Read from the genome directory | Written by | Table |
+| --- | --- | --- |
+| `metadata.genome_nt.tsv` | `genomic_metadata` | `metadata_nt.tsv` |
+| `metadata.genome_gene.tsv` | `genomic_metadata` | `metadata_gene.tsv` |
+| `ssu_gg/ssu.taxonomy.tsv`, `ssu.fna` | nothing in the toolkit today | `metadata_ssu_gg.tsv` |
+| `rna_silva_<ver>/ssu.*` | `rna_silva -r ssu` | `metadata_ssu_silva.tsv`, `metadata_ssu_silva_count.tsv` |
+| `rna_silva_<ver>/lsu_23S.*` | `rna_silva -r lsu_23S` | `metadata_lsu_silva_23s.tsv`, `metadata_lsu_silva_23s_count.tsv` |
+| `rna_silva_<ver>/lsu_5S.*` | `rna_silva -r lsu_5S` | `metadata_lsu_5S.tsv`, `metadata_lsu_5S_count.tsv` |
+| `trna/<gid>_trna_stats.tsv` | `trnascan` | `metadata_trna_count.tsv` |
+
+`--silva_version` only names the `rna_silva_<ver>` directory, and must match
+`config.SILVA_VERSION`. A genome without a file is given no row in that table,
+and nothing says so; the three `*_count.tsv` tables are the exception, giving
+every genome a row, 0 where nothing was found. The table names are the ones
+`update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
 
 ### Taxonomy
 
@@ -1081,7 +1103,7 @@ genomes:
 ```bash
 gtdb_migration_tk update_checkm_db --db_service gtdb_r237 \
     -c checkm/checkm.profiles.tsv.gz -q checkm/checkm.qa_sh100.tsv.gz \
-    -n checkm/checkm_not_assessed.tsv -l update_checkm_db.log
+    -n checkm/checkm_not_assessed.tsv -o update_checkm_db -l update_checkm_db.log
 ```
 
 | Field of `metadata_genes` | From |
@@ -1106,6 +1128,17 @@ alone, where none was cleared. A genome the not-assessed file names that this
 update did not change is warned of and kept. Only the genomes that file names
 are cleared, so CheckM tables of a few genomes loaded on their own clear nothing
 of the rest.
+
+Once the estimates are written and cleared, every RefSeq and GenBank genome in
+the database with no completeness that the not-assessed file does not name is
+warned of and written to `checkm_estimates_missing.tsv` in `-o/--out_dir`
+(`genome_id`, `status`). The file is written, header alone, when there are none.
+These are genomes `checkm` never planned, such as one `update_db` added that
+`report.log` calls unchanged. `status` is read from the genome's row of `genomes`:
+`new` (`has_changed`, and `date_added` on the day of `last_update`: added, or a
+new version that took over its predecessor's row, as `report.log` calls it new),
+`updated` (`has_changed`, added earlier: its sequences changed under its
+accession) or `unchanged`.
 
 ### Nomenclature resources
 

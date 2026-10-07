@@ -72,6 +72,25 @@ its tables loaded on their own, would then have cleared the estimates of every
 other genome of the release. A genome named in checkm_not_assessed.tsv that this
 update did not change is not cleared but warned of, since the file is then not
 of this release; and one named both there and in the tables is refused.
+
+GENOMES WITH NO ESTIMATES
+
+checkm assesses the genomes report.log says need it, and a genome the database
+holds that it never planned is in neither its tables nor checkm_not_assessed.tsv:
+it is written nothing, and nothing says so. In r237, 15 genomes Prodigal had
+never called were in the release but not the database; update_db added them,
+report.log called them unchanged, and checkm never saw them. A patch run
+assessed the 12 called since; the 3 with no proteins still have no estimates and
+are named nowhere checkm writes. Once every field is
+written and cleared, every NCBI genome of the database with no completeness that
+checkm_not_assessed.tsv does not name is warned of and written to
+checkm_estimates_missing.tsv in --out_dir, with whether this update made it new,
+updated it or left it unchanged. That is read from the database rather than from
+report.log, since it is the database that is missing the estimates: has_changed
+and a date_added of the day of its last_update is a genome new to the database,
+a new version that took over its predecessor's row included, as report.log calls
+it new; has_changed and an earlier date_added, one whose sequences changed under
+its accession. The file is written whether or not there are any.
 """
 
 import logging
@@ -82,7 +101,7 @@ from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTP
 from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction
 from gtdb_migration_tk.biolib_lite.logger import log_directory
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter
-from gtdb_migration_tk.ncbi_utils import assembly_accession
+from gtdb_migration_tk.ncbi_utils import NCBI_DATABASES, assembly_accession
 from gtdb_migration_tk.utils.common import open_text
 
 # the table every field is written to
@@ -108,6 +127,15 @@ NOT_ASSESSED_GENOME = 'genome_id'
 
 # beside the log: each genome whose estimates were cleared, and what it held
 CLEARED_NAME = 'checkm_estimates_cleared.tsv'
+
+# in --out_dir: each genome with no estimates that checkm did not say it left out
+MISSING_NAME = 'checkm_estimates_missing.tsv'
+MISSING_HEADER = ('genome_id', 'status')
+
+# what this update made of a genome with no estimates
+STATUS_NEW = 'new'
+STATUS_UPDATED = 'updated'
+STATUS_UNCHANGED = 'unchanged'
 
 # how many genomes an error names
 EXAMPLES = 10
@@ -272,6 +300,25 @@ def plan_checkm_import(checkm_profile_file: str, checkm_qa_sh100_file: str,
     return CheckMPlan(profile_genomes, profile_fields + sh100_fields, not_assessed)
 
 
+def release_status(has_changed: bool, added_on_last_update: bool) -> str:
+    """What this update made of a genome, as its row of genomes says.
+
+    Parameters
+    ----------
+    has_changed : bool
+        genomes.has_changed: this update brought the genome's sequences.
+    added_on_last_update : bool
+        Whether genomes.date_added is the day of genomes.last_update, as it is
+        for a genome update_db added or that took over its predecessor's row.
+
+    @return: STATUS_NEW, STATUS_UPDATED or STATUS_UNCHANGED.
+    """
+
+    if not has_changed:
+        return STATUS_UNCHANGED
+    return STATUS_NEW if added_on_last_update else STATUS_UPDATED
+
+
 class CheckMDatabaseManager(object):
 
     def __init__(self, database: Dict[str, str]):
@@ -293,11 +340,13 @@ class CheckMDatabaseManager(object):
 
     @one_transaction
     def add_checkm_to_db(self, checkm_profile_file: str, checkm_qa_sh100_file: str,
-                         checkm_not_assessed_file: str) -> None:
+                         checkm_not_assessed_file: str, out_dir: str) -> None:
         """Write the CheckM estimates of a release to metadata_genes, in one transaction.
 
         The estimates a genome checkm left out holds of an earlier genome are
-        cleared (clear_earlier_estimates()).
+        cleared (clear_earlier_estimates()), and every genome then left with no
+        estimates that checkm did not say it left out is warned of
+        (report_missing_estimates()).
 
         Parameters
         ----------
@@ -307,6 +356,8 @@ class CheckMDatabaseManager(object):
             checkm.qa_sh100.tsv.gz, as checkm writes it for the release.
         checkm_not_assessed_file : str
             checkm_not_assessed.tsv, as checkm writes it for the release.
+        out_dir : str
+            Directory checkm_estimates_missing.tsv is written to.
 
         @return: None
 
@@ -328,6 +379,7 @@ class CheckMDatabaseManager(object):
             self.logger.info('Wrote {}.{} for {:,} genome(s).'.format(CHECKM_TABLE, field, len(rows)))
 
         self.clear_earlier_estimates(plan.not_assessed)
+        self.report_missing_estimates(plan.not_assessed, out_dir)
 
     def clear_earlier_estimates(self, not_assessed: Sequence[str]) -> List[str]:
         """Clear the CheckM estimates a genome checkm left out holds of an earlier genome.
@@ -390,3 +442,57 @@ class CheckMDatabaseManager(object):
             self.logger.info('No genome checkm left out held CheckM estimates of an earlier genome.')
 
         return genomes
+
+    def report_missing_estimates(self, not_assessed: Sequence[str], out_dir: str) -> List[Tuple[str, str]]:
+        """Warn of every NCBI genome with no CheckM estimates that checkm did not say it left out.
+
+        Read inside the caller's transaction, once every field is written and
+        cleared, so it is what the database will hold. Each genome is written
+        with its release_status() to checkm_estimates_missing.tsv in out_dir,
+        which is written whether or not there are any.
+
+        Parameters
+        ----------
+        not_assessed : sequence of str
+            The genomes checkm left out, e.g. ['GCA_977065575.1', ...].
+        out_dir : str
+            Directory checkm_estimates_missing.tsv is written to.
+
+        @return: (genome, status) of each genome, sorted by genome.
+        """
+
+        self.temp_cur.execute(
+            'SELECT g.id_at_source, g.has_changed, g.date_added::date = g.last_update '
+            'FROM genomes g JOIN genome_sources s ON s.id = g.genome_source_id '
+            'LEFT JOIN {} m ON m.id = g.id '
+            'WHERE s.name = ANY(%s) AND m.checkm_completeness IS NULL '
+            'ORDER BY g.id_at_source'.format(CHECKM_TABLE),
+            ([db.label for db in NCBI_DATABASES],))
+        left_out = set(not_assessed)
+        missing = [(genome, release_status(has_changed, bool(added_on_last_update)))
+                   for genome, has_changed, added_on_last_update in self.temp_cur.fetchall()
+                   if genome not in left_out]
+
+        path = os.path.join(out_dir, MISSING_NAME)
+        with open(path, 'w') as handle:
+            handle.write('\t'.join(MISSING_HEADER) + '\n')
+            for row in missing:
+                handle.write('\t'.join(row) + '\n')
+
+        if missing:
+            counts = {}
+            for _genome, status in missing:
+                counts[status] = counts.get(status, 0) + 1
+            self.logger.warning(
+                '{:,} genome(s) have no CheckM estimates and are not named in the not-assessed '
+                'file ({}), e.g. {}; checkm did not assess them. Each is in {}, with whether '
+                'this update made it new or updated it.'.format(
+                    len(missing),
+                    ', '.join('{:,} {}'.format(counts[status], status)
+                              for status in (STATUS_NEW, STATUS_UPDATED, STATUS_UNCHANGED)
+                              if status in counts),
+                    ', '.join(genome for genome, _status in missing[:EXAMPLES]), path))
+        else:
+            self.logger.info('Every genome with no CheckM estimates is named in the not-assessed file.')
+
+        return missing

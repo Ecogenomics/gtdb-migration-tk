@@ -362,8 +362,10 @@ class OptionsParser():
               dry_run=options.dry_run)
 
     def update_checkm_db(self, options):
+        make_sure_path_exists(options.output_dir)
         p = CheckMDatabaseManager(database_keywords(options))
-        p.add_checkm_to_db(options.checkm_profile, options.check_qa, options.not_assessed)
+        p.add_checkm_to_db(options.checkm_profile, options.check_qa, options.not_assessed,
+                           options.output_dir)
 
     def update_metadata_db(self, options):
         p = MetadataDatabaseManager(database_keywords(options))
