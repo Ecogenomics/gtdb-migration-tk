@@ -23,7 +23,13 @@ And each metadata command is one transaction: committed once, when it is done,
 or rolled back. They committed as they went, so a run that failed part way left
 some fields of the new release and some of the old, or a field set to NULL for
 every genome with its new values never written. None of them asks a question
-on the terminal, which a run under nohup could not answer."""
+on the terminal, which a run under nohup could not answer, but update_metadata_db
+given --genome_list without --do_not_null_field: it then removes the metadata of
+every genome and writes it again only for those listed.
+
+update_metadata_db loads only genomes the database holds unless given a list,
+reads a table once, in chunks, and refuses a table with a malformed row, a
+genome named twice or an INT field that is not a whole number."""
 
 import gzip
 import logging
@@ -31,6 +37,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from collections import defaultdict
 from unittest import mock
 
 from gtdb_migration_tk import metadata_database_manager as M
@@ -57,7 +64,9 @@ class LoadingATable(unittest.TestCase):
         manager.logger = logging.getLogger('timestamp')
         manager.temp_cur, manager.temp_con = mock.Mock(), mock.Mock()
         with mock.patch.object(M, 'GTDBImporter') as importer:
-            manager.update_metadata_db(metadata_file, self.description, None, True)
+            importer.return_value.genomes.return_value = {'GCF_000000001.1', 'GCA_000000002.1'}
+            manager.process_metadata_files(None, do_not_null_field=True, table_file=metadata_file,
+                                           table_file_desc=self.description)
         return {call.args[1]: sorted(call.args[3])
                 for call in importer.return_value.import_metadata_to_db.call_args_list}
 
@@ -72,18 +81,27 @@ class LoadingATable(unittest.TestCase):
         loaded = self.load(gzipped)
         self.assertEqual(loaded, self.load(plain))
         self.assertEqual(loaded['gtdb_type_designation_ncbi_taxa'],
-                         [('GB_GCA_000000002.1', 'not type material'),
-                          ('RS_GCF_000000001.1', 'type strain of species')])
+                         [('GCA_000000002.1', 'not type material'),
+                          ('GCF_000000001.1', 'type strain of species')])
 
 
 class FakeCursor(object):
     """A cursor recording each statement, over the rows of metadata_view."""
 
-    def __init__(self, accessions=(), fail_on=None):
+    def __init__(self, accessions=(), fail_on=None, genomes=()):
         self.accessions = list(accessions)
         self.fail_on = fail_on
+        self.genomes = list(genomes)
         self.statements = []
+        self.upserts = []
         self.result = []
+
+    def written(self):
+        """(table, field) -> sorted [(genome, value), ...], every chunk of each joined."""
+        fields = defaultdict(list)
+        for table, field, _type, genomes, values in self.upserts:
+            fields[(table, field)].extend(zip(genomes, values))
+        return {key: sorted(rows) for key, rows in fields.items()}
 
     def execute(self, sql, params=None):
         self.statements.append(sql)
@@ -91,6 +109,13 @@ class FakeCursor(object):
             raise RuntimeError('the server refused ' + self.fail_on)
         if 'FROM metadata_view' in sql:
             self.result = [(accession,) for accession in self.accessions]
+        elif sql == 'SELECT id_at_source FROM genomes':
+            self.result = [(genome,) for genome in self.genomes]
+        elif sql.startswith('SELECT upsert('):
+            self.upserts.append(params)
+
+    def fetchall(self):
+        return list(self.result)
 
     def executemany(self, sql, rows):
         self.statements.append(sql)
@@ -144,10 +169,18 @@ class LoadingMetadataInOneTransaction(OneTransaction):
         description = self.write('desc.tsv', DESCRIPTION)
         manager.process_metadata_files(None, table_file=table, table_file_desc=description, **kwargs)
 
+    @staticmethod
+    def importer():
+        patcher = mock.patch.object(M, 'GTDBImporter')
+        importer = patcher.start()
+        importer.return_value.genomes.return_value = {'GCF_000000001.1', 'GCA_000000002.1'}
+        return patcher, importer
+
     def test_fields_are_set_to_null_and_written_in_one_commit(self):
         manager = self.manager()
-        with mock.patch.object(M, 'GTDBImporter'):
-            self.load(manager)
+        patcher, _ = self.importer()
+        self.addCleanup(patcher.stop)
+        self.load(manager)
 
         nulls = [sql for sql in manager.temp_cur.statements if 'NULL' in sql]
         self.assertEqual(sorted(nulls),
@@ -157,18 +190,20 @@ class LoadingMetadataInOneTransaction(OneTransaction):
 
     def test_do_not_null_field_sets_nothing_to_null(self):
         manager = self.manager()
-        with mock.patch.object(M, 'GTDBImporter'):
-            self.load(manager, do_not_null_field=True)
+        patcher, _ = self.importer()
+        self.addCleanup(patcher.stop)
+        self.load(manager, do_not_null_field=True)
 
         self.assertFalse([sql for sql in manager.temp_cur.statements if 'NULL' in sql])
 
     def test_a_field_that_cannot_be_written_rolls_back_the_nulls_before_it(self):
         # the NULLs were committed first, leaving the field NULL for every genome
         manager = self.manager()
-        with mock.patch.object(M, 'GTDBImporter') as importer:
-            importer.return_value.import_metadata_to_db.side_effect = [None, RuntimeError('refused')]
-            with self.assertRaises(RuntimeError):
-                self.load(manager)
+        patcher, importer = self.importer()
+        self.addCleanup(patcher.stop)
+        importer.return_value.import_metadata_to_db.side_effect = [None, RuntimeError('refused')]
+        with self.assertRaises(RuntimeError):
+            self.load(manager)
 
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
 
@@ -179,11 +214,210 @@ class LoadingMetadataInOneTransaction(OneTransaction):
             handle.write('accession\tx\n')
         manager = self.manager()
         manager.description_table = {'metadata_gene.tsv': ['metadata_gene.desc.tsv']}
-        with self.assertRaises(SystemExit) as raised:
+        with self.assertRaisesRegex(M.MetadataTableError, 'not_a_standard_table.tsv'):
             manager.process_metadata_files(None, table_folder=folder)
 
-        self.assertNotEqual(raised.exception.code, 0)
+        self.assertEqual(manager.temp_cur.statements, [])
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+
+NCBI_TABLE = ('genome_id\tncbi_taxid\tncbi_organism_name\tncbi_contig_l50\n'
+              'RS_GCF_000000001.1\t562\tEscherichia coli\t3\n'
+              'GB_GCA_000000002.1\t1280.0\tStaphylococcus aureus\t1\n'
+              'GB_GCA_999999999.1\t9606\tnot in the database\t2\n')
+NCBI_DESCRIPTION = ('ncbi_taxid\tNCBI taxonomy identifier.\tINT\tmetadata_ncbi\n'
+                    'ncbi_organism_name\tName of organism.\tTEXT\tmetadata_ncbi\n')
+HELD = ('GCF_000000001.1', 'GCA_000000002.1')
+
+
+class LoadingOnlyWhatTheDatabaseHolds(OneTransaction):
+    """A table loaded through the real importer, the database a cursor holding HELD."""
+
+    def setUp(self):
+        super().setUp()
+        # the importer lists genomes it refuses beside the log
+        handler = logging.FileHandler(os.path.join(self.dir, 'run.log'))
+        logging.getLogger('timestamp').addHandler(handler)
+        self.addCleanup(logging.getLogger('timestamp').removeHandler, handler)
+        self.addCleanup(handler.close)
+
+    def load(self, table=NCBI_TABLE, description=NCBI_DESCRIPTION, genome_list=None, genomes=HELD, **kwargs):
+        manager = self.manager(cursor=FakeCursor(genomes=genomes))
+        table_file = self.write('ncbi_assembly_metadata.tsv', table)
+        description_file = self.write('desc.tsv', description)
+        with self.assertLogs('timestamp', level='INFO') as logged:
+            manager.process_metadata_files(genome_list, table_file=table_file, table_file_desc=description_file,
+                                           **kwargs)
+        return manager, [record.getMessage() for record in logged.records]
+
+    def test_without_a_genome_list_genomes_the_database_does_not_hold_are_skipped_not_refused(self):
+        # parse_ncbi_assemblies writes every genome of NCBI's summaries
+        manager, messages = self.load()
+
+        self.assertEqual(manager.temp_cur.written(), {
+            ('metadata_ncbi', 'ncbi_taxid'): [('GCA_000000002.1', '1280'), ('GCF_000000001.1', '562')],
+            ('metadata_ncbi', 'ncbi_organism_name'): [('GCA_000000002.1', 'Staphylococcus aureus'),
+                                                      ('GCF_000000001.1', 'Escherichia coli')]})
+        self.assertIn('2 loaded, 1 not in the genomes table and skipped', '\n'.join(messages))
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+
+    def test_with_a_genome_list_only_its_genomes_are_loaded(self):
+        genome_list = self.write('genomes.tsv', 'accession\tx\nGB_GCA_000000002.1\tx\n')
+        manager, _ = self.load(genome_list=genome_list, do_not_null_field=True)
+
+        self.assertEqual(manager.temp_cur.written()[('metadata_ncbi', 'ncbi_taxid')],
+                         [('GCA_000000002.1', '1280')])
+
+    def test_a_listed_genome_the_database_does_not_hold_is_still_refused(self):
+        genome_list = self.write('genomes.tsv', 'GCA_999999999.1\nGCF_000000001.1\n')
+        manager = self.manager(cursor=FakeCursor(genomes=HELD))
+        table = self.write('ncbi_assembly_metadata.tsv', NCBI_TABLE)
+        description = self.write('desc.tsv', NCBI_DESCRIPTION)
+        with self.assertRaisesRegex(UnknownGenomesError, 'GCA_999999999.1'):
+            manager.process_metadata_files(genome_list, do_not_null_field=True, table_file=table,
+                                           table_file_desc=description)
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+    def test_columns_in_no_description_are_named_in_the_log(self):
+        _, messages = self.load()
+        self.assertIn('1 column(s) of', '\n'.join(messages))
+        self.assertIn('are in no description and are not loaded: ncbi_contig_l50.', '\n'.join(messages))
+
+    def test_a_whole_number_written_as_a_float_is_written_as_an_integer(self):
+        # '0.0' passed float(value)'s truth test as false and went to the INT field as it was
+        table = 'genome_id\tncbi_taxid\nGCF_000000001.1\t0.0\nGCA_000000002.1\t-7\n'
+        manager, _ = self.load(table=table)
+
+        self.assertEqual(manager.temp_cur.written()[('metadata_ncbi', 'ncbi_taxid')],
+                         [('GCA_000000002.1', '-7'), ('GCF_000000001.1', '0')])
+
+    def refused(self, table, pattern, description=NCBI_DESCRIPTION):
+        manager = self.manager(cursor=FakeCursor(genomes=HELD))
+        table_file = self.write('ncbi_assembly_metadata.tsv', table)
+        description_file = self.write('desc.tsv', description)
+        with self.assertRaisesRegex(M.MetadataTableError, pattern):
+            manager.process_metadata_files(None, table_file=table_file, table_file_desc=description_file)
+        self.assertEqual(manager.temp_cur.upserts, [])
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+    def test_an_int_field_that_is_not_a_whole_number_refuses_the_table(self):
+        # 12.5 was written as 12
+        self.refused('genome_id\tncbi_taxid\nGCF_000000001.1\t12.5\n', "line 2 gives GCF_000000001.1 ncbi_taxid the value '12.5'")
+        self.refused('genome_id\tncbi_taxid\nGCF_000000001.1\tna\n', "'na', which is not a whole number")
+
+    def test_a_short_or_long_row_refuses_the_table_naming_its_line(self):
+        # a short row left its last fields unset; a long one raised an IndexError
+        self.refused('genome_id\tncbi_taxid\tncbi_organism_name\nGCF_000000001.1\t562\n',
+                     r'line 2 \(GCF_000000001.1\) has 2 column\(s\) where its header has 3')
+        self.refused('genome_id\tncbi_taxid\nGCF_000000001.1\t562\tx\n',
+                     r'line 2 \(GCF_000000001.1\) has 3 column\(s\) where its header has 2')
+
+    def test_a_genome_named_twice_refuses_the_table(self):
+        # the last row was kept, whichever run it was of
+        self.refused('genome_id\tncbi_taxid\nGCF_000000001.1\t562\nRS_GCF_000000001.1\t563\n',
+                     'names GCF_000000001.1 more than once, again on line 3')
+
+    def test_a_description_line_short_of_a_table_refuses_the_run(self):
+        self.refused('genome_id\tncbi_taxid\nGCF_000000001.1\t562\n', 'line 1 has 3 column',
+                     description='ncbi_taxid\tNCBI taxonomy identifier.\tINT\n')
+
+    def test_a_table_is_written_in_chunks_and_the_chunks_are_the_whole_table(self):
+        genomes = ['GCF_{:09d}.1'.format(i) for i in range(25)]
+        table = 'genome_id\tncbi_taxid\n' + ''.join('{}\t{}\n'.format(gid, i) for i, gid in enumerate(genomes))
+        with mock.patch.object(M, 'CHUNK_GENOMES', 10):
+            chunked, _ = self.load(table=table, genomes=genomes)
+        whole, _ = self.load(table=table, genomes=genomes)
+
+        self.assertEqual(len(chunked.temp_cur.upserts), 3)
+        self.assertEqual(len(whole.temp_cur.upserts), 1)
+        self.assertEqual(chunked.temp_cur.written(), whole.temp_cur.written())
+        self.assertEqual((chunked.temp_con.commits, chunked.temp_con.rollbacks), (1, 0))
+
+
+class ChoosingTheTables(OneTransaction):
+    def test_neither_both_or_a_table_without_its_description_is_refused_before_anything(self):
+        manager = self.manager()
+        table = self.write('t.tsv', 'genome_id\tx\n')
+        for kwargs, pattern in (({}, 'not neither'),
+                                ({'table_folder': self.dir, 'table_file': table}, 'not both'),
+                                ({'table_file': table}, 'without --metadata_table_desc')):
+            with self.assertRaisesRegex(M.MetadataTableError, pattern):
+                manager.process_metadata_files(None, **kwargs)
+        self.assertEqual(manager.temp_cur.statements, [])
+
+    def test_every_table_of_a_folder_this_command_does_not_know_is_named(self):
+        folder = os.path.join(self.dir, 'tables')
+        os.makedirs(folder)
+        for name in ('metadata_gene.tsv', 'one.tsv', 'two.tsv'):
+            open(os.path.join(folder, name), 'w').close()
+        manager = self.manager()
+        manager.description_table = {'metadata_gene.tsv': ['metadata_gene.desc.tsv']}
+
+        with self.assertRaisesRegex(M.MetadataTableError, 'holds 2 table.*: one.tsv, two.tsv'):
+            manager.process_metadata_files(None, table_folder=folder)
+
+    def test_the_strain_summary_is_read_once_against_both_its_descriptions(self):
+        # it was read, and its fields set to NULL, once for each description
+        folder = os.path.join(self.dir, 'tables')
+        os.makedirs(folder)
+        with open(os.path.join(folder, 'strain_summary_file.tsv'), 'w') as handle:
+            handle.write('genome_id\tOrganism name\tncbi_strain_identifiers\tncbi_type_material_designation\n'
+                         'GCF_000000001.1\tEscherichia coli\tK-12\tassembly from type material\n')
+        manager = self.manager(cursor=FakeCursor(genomes=HELD))
+        with mock.patch.object(M.GenomeDatabaseConnectionFTPUpdate, 'GenomeDatabaseConnectionFTPUpdate'):
+            manager.description_table = M.MetadataDatabaseManager({}).description_table
+        opened = []
+        real_open_text = M.open_text
+        with mock.patch.object(M, 'open_text', side_effect=lambda path: opened.append(path) or real_open_text(path)):
+            manager.process_metadata_files(None, table_folder=folder)
+
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(sorted(manager.temp_cur.written()), [('metadata_ncbi', 'ncbi_strain_identifiers'),
+                                                             ('metadata_taxonomy', 'ncbi_type_material_designation')])
+        nulls = [sql for sql in manager.temp_cur.statements if 'NULL' in sql]
+        self.assertEqual(len(nulls), 2)
+
+
+class AskingBeforeAPartialLoad(unittest.TestCase):
+    """--genome_list without --do_not_null_field removes every genome's metadata and writes the list's."""
+
+    def test_yes_proceeds(self):
+        for answer in ('y', 'Yes', ' YES '):
+            with mock.patch('builtins.input', return_value=answer) as asked:
+                M.confirm_partial_load('genomes.tsv')
+            self.assertIn('genomes.tsv', asked.call_args.args[0])
+            self.assertIn('every genome in the database', asked.call_args.args[0])
+
+    def test_anything_else_ends_the_run_with_nothing_changed(self):
+        for answer in ('n', '', 'maybe'):
+            with mock.patch('builtins.input', return_value=answer), self.assertRaises(SystemExit) as ended:
+                M.confirm_partial_load('genomes.tsv')
+            self.assertIn('nothing was changed', str(ended.exception.code))
+
+    def test_no_terminal_to_answer_ends_the_run_rather_than_waiting(self):
+        with mock.patch('builtins.input', side_effect=EOFError), self.assertRaises(SystemExit) as ended:
+            M.confirm_partial_load('genomes.tsv')
+        self.assertIn('no answer', str(ended.exception.code))
+
+    def test_the_command_asks_only_for_a_genome_list_without_do_not_null_field(self):
+        from gtdb_migration_tk import __main__ as main_module
+        from gtdb_migration_tk import main as main_py
+        base = ['update_metadata_db', '--db_service', 'gtdb_r237', '-l', 'run.log', '-i', 'tables']
+        for extra, asks in (([], False), (['--genome_list', 'g.tsv'], True),
+                            (['--genome_list', 'g.tsv', '--do_not_null_field'], False)):
+            options = main_module.get_main_parser().parse_args(base + extra)
+            with mock.patch.object(main_py, 'confirm_partial_load') as confirm, \
+                    mock.patch.object(main_py, 'MetadataDatabaseManager'):
+                main_py.OptionsParser().parse_options(options)
+            self.assertEqual(confirm.called, asks, extra)
+
+    def test_the_genome_list_help_says_what_the_list_is(self):
+        from gtdb_migration_tk import __main__ as main_module
+        parser = main_module.get_main_parser()
+        sub = [action for action in parser._actions if hasattr(action, 'choices') and action.choices
+               and 'update_metadata_db' in action.choices][0].choices['update_metadata_db']
+        helps = {action.dest: action.help for action in sub._actions}
+        self.assertEqual(helps['genome_list'], 'Only process genomes in this list (e.g. metadata file exported from GTDB)')
 
 
 class UpdatingRepresentatives(OneTransaction):

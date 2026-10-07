@@ -1031,10 +1031,9 @@ genome is written once, from the first summary holding it. The log says where
 the table is written, how many of each summary's genomes are written, and the
 total, and warns of a genome in more than one summary. Over r237's four
 summaries that is 3,874,314 genomes, a 598 MB table, in under a minute: every
-genome NCBI holds, not only the release's. `update_metadata_db` loads every row
-of a table unless given a genome list, and refuses a table naming a genome the
-database does not hold, so until it decides which genomes to load itself, it
-is given one for this table.
+genome NCBI holds, not only the release's. `update_metadata_db` loads only the
+genomes the database holds (every one of r237's 1,346,116 is in the
+summaries), skipping and counting the rest.
 
 `parse_ncbi_dir` reads what NCBI's own files in each genome directory of a
 genome_dirs file (`-g`) say -- `_assembly_stats.txt`, `_genomic.gff.gz` and
@@ -1116,12 +1115,43 @@ password is read from `~/.pgpass`. A password on the command line is shown by
 Each of these commands is one transaction, committed when it is done: a run that
 fails leaves the database as it was, and exits non-zero. A field is set to NULL
 for every genome before its new values are written, in that same transaction,
-unless `--do_not_null_field` is given; nothing asks first. A genome the database
+unless `--do_not_null_field` is given; nothing asks first, but
+`update_metadata_db` given `--genome_list` (below). A genome the database
 does not hold refuses the run (a metadata table, CheckM results, a taxonomy or a
 cluster file of another release, or `update_db` not yet run), except in
 `update_ncbitax_db`, whose NCBI files cover every assembly NCBI holds and whose
 other genomes are skipped. Either way each one is listed in
 `unknown_genomes.<table>.<field>.tsv` beside the log.
+
+`update_metadata_db` loads the tables other commands write: every `.tsv` of
+`-i/--input_folder`, each a table it knows (`metadata_*.tsv` from
+`create_tables`, `ncbi_assembly_summary.tsv` from `parse_ncbi_assemblies`,
+`ncbi_assembly_metadata.tsv` from `parse_ncbi_dir`, `strain_summary_file.tsv`
+from `ncbi_strains`) and loads against its descriptions in
+`data_files/table_description/`, or one table given as `--metadata_table` with
+`--metadata_table_desc`. A folder holding a table it does not know, or a table
+without its description, is refused, every one named, before anything is
+written. A column no description names is not loaded, and the log says which.
+
+It loads the genomes the database holds, `genomes.id_at_source`, skipping and
+counting the rest, since a table may cover more (`parse_ncbi_assemblies`' covers
+every genome of NCBI's summaries). `--genome_list` loads only the genomes in the
+first column of a file instead, and a genome of it the database does not hold
+refuses the run. Given `--genome_list` without `--do_not_null_field`, it asks
+`[y/n]` before reaching the database: every field loaded is set to NULL for every
+genome and written again only for those listed, removing the metadata of every
+other genome. A run with no terminal to answer ends there, having changed
+nothing.
+
+A table is read once, in chunks of 100,000 genomes, each field of a chunk
+written before the next is read, so what is held does not grow with the table:
+r237's 3.87M-genome `ncbi_assembly_summary.tsv` reads in 14 seconds at a peak of
+600 MB, most of it the database's genomes, where it was read whole into 8.5 GB.
+Every chunk is in the run's one transaction, so a run stopped part way leaves
+the database as it was and can be run again. A table is refused, and nothing
+written, where a row has more or fewer columns than the header, a genome is
+named twice, or an INT field holds anything but a whole number (`12.0` is
+written as 12, `12.5` refused).
 
 `update_db` brings the NCBI genomes of the `genomes` table into line with a
 release, from the two files `update_genomes` wrote for it: `report.log` says what

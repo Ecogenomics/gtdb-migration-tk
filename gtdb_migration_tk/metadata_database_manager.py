@@ -16,11 +16,12 @@
 ###############################################################################
 
 import os
+import re
 import sys
 import glob
 import logging
 from collections import Counter, defaultdict
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from psycopg2.extras import execute_values
 
@@ -29,11 +30,150 @@ from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import (SKIP, UNKNOWN_EXAMPLES, GTDBImporter,
-                                                       UnknownGenomesError)
+                                                       UnknownGenomesError, id_at_source)
 from gtdb_migration_tk.utils.common import open_text
 
 # rows a statement of update_type_designation hands the server at a time
 PAGE_SIZE = 10000
+
+# How many genomes of a metadata table update_metadata_db holds at once. A table
+# is read as it is written, each field of this many genomes handed to the
+# importer before the next are read, so what is held is bounded by this rather
+# than by the release: r237's NCBI metadata is 1.35M genomes of 37 fields, and
+# releases only grow. Every chunk is written in the command's one transaction,
+# so a run stopped part way still leaves the database as it was.
+CHUNK_GENOMES = 100000
+
+# the types a description gives a field that only a whole number can be written to
+INTEGER_TYPES = ('INT', 'INTEGER')
+WHOLE_NUMBER = re.compile(r'^[+-]?[0-9]+$')
+
+# how many lines or genomes an error names
+EXAMPLES = 10
+
+
+class MetadataTableError(ValueError):
+    """A metadata table, or its description, that update_metadata_db will not load."""
+
+
+def read_descriptions(paths: Sequence[str]) -> Dict[str, Tuple[str, str]]:
+    """The type and database table of each field the description files name.
+
+    A table update_metadata_db knows may be described by more than one file
+    (strain_summary_file.tsv by two); their fields are merged so that the table
+    is read once.
+
+    Parameters
+    ----------
+    paths : sequence of str
+        Description files: field, description, type, table, tab-separated.
+
+    @return: field -> (type, table), e.g. {'ncbi_taxid': ('INT', 'metadata_ncbi')}.
+
+    Raises
+    ------
+    MetadataTableError
+        A line has fewer than four columns, or two lines give one field a
+        different type or table.
+    """
+
+    described: Dict[str, Tuple[str, str]] = {}
+    for path in paths:
+        with open(path) as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                columns = line.rstrip('\n').split('\t')
+                if len(columns) < 4:
+                    raise MetadataTableError('{} line {:,} has {} column(s); a description gives a '
+                                             'field, its description, its type and its table.'.format(
+                                                 path, line_number, len(columns)))
+                field, data_type, table = columns[0].strip(), columns[2].strip(), columns[3].strip()
+                if field in described and described[field] != (data_type, table):
+                    raise MetadataTableError('{} describes {} as {} in {}, and an earlier description '
+                                             'as {} in {}.'.format(path, field, data_type, table,
+                                                                   *described[field]))
+                described[field] = (data_type, table)
+    return described
+
+
+def whole_number(value: str) -> Optional[str]:
+    """The value of an INT field as a whole number, or None if it is not one.
+
+    Parameters
+    ----------
+    value : str
+        e.g. '12', '12.0' or '0.0'; '12.5', 'na' and '' are not whole numbers.
+
+    @return: e.g. '12', or None.
+    """
+
+    value = value.strip()
+    if WHOLE_NUMBER.match(value):
+        return value
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return str(int(number)) if number.is_integer() else None
+
+
+def read_genome_list(path: str) -> Set[str]:
+    """The genomes of a --genome_list file, as genomes.id_at_source names them.
+
+    Parameters
+    ----------
+    path : str
+        A table whose first column, tab or comma separated, names the genomes,
+        e.g. a metadata file exported from GTDB; GB_GCA_000003645.1 and
+        GCA_000003645.1 are the same genome.
+
+    @return: e.g. {'GCA_000003645.1', ...}.
+    """
+
+    genomes = set()
+    with open(path) as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            separator = '\t' if len(line.split('\t')) >= len(line.split(',')) else ','
+            genomes.add(id_at_source(line.rstrip().split(separator)[0].strip()))
+    genomes.discard(None)
+    return genomes
+
+
+def confirm_partial_load(genome_list: str) -> None:
+    """Ask before loading a genome list's genomes after setting the fields to NULL for every genome.
+
+    Asked on the terminal whatever runs it: with no one to answer (nohup, a
+    script) the answer is end of file, and the run ends there, having changed
+    nothing.
+
+    Parameters
+    ----------
+    genome_list : str
+        The --genome_list file.
+
+    @return: None, where the answer is yes.
+
+    Raises
+    ------
+    SystemExit
+        The answer is anything but yes, or there is none; the run exits 1.
+    """
+
+    question = ('--genome_list is given without --do_not_null_field: every field loaded will be '
+                'set to NULL for every genome in the database, and written again only for the '
+                'genomes in {}. The metadata of every other genome will be removed. '
+                'Proceed? [y/n] '.format(genome_list))
+    try:
+        answer = input(question)
+    except EOFError:
+        sys.exit('update_metadata_db: no answer to whether to proceed (is there no terminal?); '
+                 'nothing was changed. Give --do_not_null_field to keep the other genomes\' '
+                 'metadata.')
+    if answer.strip().lower() not in ('y', 'yes'):
+        sys.exit('update_metadata_db: not proceeding; nothing was changed.')
 
 # what update_type_designation writes
 TYPE_STRAIN_OF_SPECIES = 'type strain of species'
@@ -101,128 +241,210 @@ class MetadataDatabaseManager(object):
         self.temp_con.MakePostgresConnection()
         self.temp_cur = self.temp_con.cursor()
 
+    def tables_to_load(self, table_folder: Optional[str], table_file: Optional[str],
+                       table_file_desc: Optional[str]) -> List[Tuple[str, List[str]]]:
+        """The tables a run loads, each with its description files; nothing is read but names.
+
+        Parameters
+        ----------
+        table_folder : str or None
+            --input_folder: every .tsv in it, each a table this command knows.
+        table_file, table_file_desc : str or None
+            --metadata_table and --metadata_table_desc.
+
+        @return: [(table, [description file, ...]), ...], the folder's in name order.
+
+        Raises
+        ------
+        MetadataTableError
+            Neither or both of a folder and a table are given, a table without
+            its description, an empty folder, or a folder holding a table this
+            command does not know -- every one named, before anything is written.
+        """
+
+        if (table_folder is None) == (table_file is None):
+            raise MetadataTableError('Give --input_folder, or --metadata_table and --metadata_table_desc; '
+                                     'not both, and not neither.')
+        if table_file is not None:
+            if table_file_desc is None:
+                raise MetadataTableError('--metadata_table {} is given without --metadata_table_desc, '
+                                         'which says what each of its fields is.'.format(table_file))
+            return [(table_file, [table_file_desc])]
+
+        desc_table_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                      'data_files', 'table_description')
+        tables = sorted(glob.glob(os.path.join(table_folder, '*.tsv')))
+        if not tables:
+            raise MetadataTableError('{} holds no .tsv table.'.format(table_folder))
+        unknown = [os.path.basename(table) for table in tables
+                   if os.path.basename(table) not in self.description_table]
+        if unknown:
+            raise MetadataTableError('{} holds {:,} table(s) this command does not know: {}. It knows {}.'.format(
+                table_folder, len(unknown), ', '.join(unknown), ', '.join(sorted(self.description_table))))
+        return [(table, [os.path.join(desc_table_dir, desc)
+                         for desc in self.description_table[os.path.basename(table)]])
+                for table in tables]
+
     @one_transaction
-    def process_metadata_files(self,genome_list_file,do_not_null_field=False,table_folder=None,table_file=None,table_file_desc=None):
-        file_dir = os.path.dirname(os.path.realpath(__file__))
-        desc_table_dir = os.path.join(file_dir, 'data_files', 'table_description')
-        if table_folder is not None:
-            list_tsv_files = glob.glob(os.path.join(table_folder, '*.tsv'))
-            #list_tsv_files = ['metadata_trna_count.tsv']
-            for tsv_file in list_tsv_files:
-                if os.path.basename(tsv_file) not in self.description_table:
-                    print(f'{os.path.basename(tsv_file)} is not a standard table')
-                    sys.exit(-1)
-            for tsv_idx,tsv_file in enumerate(list_tsv_files):
-                self.logger.info(f'Processing file {tsv_idx+1}/{len(list_tsv_files)}: {os.path.basename(tsv_file)}')
-                for desc_file in self.description_table.get(os.path.basename(tsv_file)):
-                    metadata_desc_file = os.path.join(desc_table_dir,desc_file)
-                    self.update_metadata_db(tsv_file,metadata_desc_file,genome_list_file,do_not_null_field)
-        elif table_file is not None:
-            self.logger.info("Processing specific file")
-            self.update_metadata_db(table_file, table_file_desc, genome_list_file, do_not_null_field)
+    def process_metadata_files(self, genome_list_file, do_not_null_field=False, table_folder=None,
+                               table_file=None, table_file_desc=None):
+        """Load metadata tables into the database, in one transaction.
 
-    def update_metadata_db(self,metadata_file,metadata_desc_file,genome_list_file,do_not_null_field):
-        # get fields in metadata file
-        gtdbimporter = GTDBImporter(self.temp_cur)
-        self.logger.info('Parsing metadata file: %s' % metadata_file)
-        with open_text(metadata_file) as f:
-            metadata_fields = f.readline().strip().split('\t')[1:]
-        self.logger.info(
-            'Metadata file contains {} fields.'.format(len(metadata_fields)))
-        self.logger.info('Fields: %s' % ', '.join(metadata_fields))
+        A genome is loaded where it is in --genome_list, or, without one, in the
+        genomes table: a table may cover more genomes than the database holds
+        (parse_ncbi_assemblies' covers every genome of NCBI's summaries), and
+        the importer refuses a field naming a genome it does not hold. A genome
+        of --genome_list the database does not hold is still refused.
 
-        # get database table and data type of each metadata field
-        metadata_type = {}
-        metadata_table = {}
-        with open(metadata_desc_file) as f:
-            for line in f:
-                line_split = line.strip('\n').split('\t')
-                field = line_split[0]
-                if field in metadata_fields:
-                    metadata_type[field] = line_split[2]
-                    metadata_table[field] = line_split[3]
-        self.logger.info('Identified {} matching fields in metadata description file.'.format(
-            len(metadata_table)))
-        self.logger.info('Fields: %s' % ', '.join(metadata_table))
+        Parameters
+        ----------
+        genome_list_file : str or None
+            --genome_list.
+        do_not_null_field : bool
+            Keep what the fields hold for genomes the tables do not write.
+        table_folder, table_file, table_file_desc : str or None
+            As tables_to_load() takes them.
 
-        # set fields to NULL for every genome, unless asked not to. This asked
-        # [y/n] first, which a run under nohup or with no terminal could not
-        # answer; it is in the transaction the new values are written in, so a
-        # failure leaves the values the fields held rather than NULL
-        if not do_not_null_field:
-            for field in metadata_table:
-                self.logger.info('Setting {}.{} to NULL for every genome.'.format(
-                    metadata_table[field], field))
-                q = ("UPDATE {} SET {} = NULL".format(
-                    metadata_table[field], field))
-                self.temp_cur.execute(q)
+        @return: None
 
-        # get genomes to process
-        genome_list = set()
+        Raises
+        ------
+        MetadataTableError
+            A table or description that cannot be loaded as it is; nothing is written.
+        UnknownGenomesError
+            A genome of --genome_list is not in the database; nothing is written.
+        """
+
+        tables = self.tables_to_load(table_folder, table_file, table_file_desc)
+        importer = GTDBImporter(self.temp_cur)
         if genome_list_file:
-            for line in open(genome_list_file):
-                if len(line.split('\t')) >= len(line.split(',')):
-                    genome_list.add(line.rstrip().split('\t')[0])
-                else:
-                    genome_list.add(line.rstrip().split(',')[0])
-        self.logger.info('Processing {} genomes.'.format(len(genome_list)))
+            keep = read_genome_list(genome_list_file)
+            keep_source = genome_list_file
+        else:
+            keep = importer.genomes()
+            keep_source = 'the genomes table'
+        self.logger.info('Loading {:,} table(s) for the {:,} genomes of {}.'.format(
+            len(tables), len(keep), keep_source))
 
-        # read metadata file
-        metadata = defaultdict(lambda: defaultdict(str))
+        for table_idx, (metadata_file, description_files) in enumerate(tables, start=1):
+            self.logger.info('Processing file {}/{}: {}'.format(table_idx, len(tables), metadata_file))
+            self.update_metadata_db(metadata_file, description_files, keep, keep_source,
+                                    importer, do_not_null_field)
+
+    def update_metadata_db(self, metadata_file: str, description_files: Sequence[str], keep: Set[str],
+                           keep_source: str, importer: GTDBImporter, do_not_null_field: bool) -> None:
+        """Load one metadata table, inside the caller's transaction.
+
+        The table is read once, as it is written, CHUNK_GENOMES genomes at a
+        time, each field of a chunk handed to the importer before the next
+        chunk is read. A table is refused -- the transaction rolled back, so
+        nothing of the run is written -- where a row has more or fewer columns
+        than the header, a genome is named twice, or an INT field holds a value
+        that is not a whole number: each was passed over, the row's fields left
+        unset, the last row kept, or 12.5 written as 12.
+
+        Parameters
+        ----------
+        metadata_file : str
+            Tab-separated, gzipped or not: the genome, then a column per field.
+        description_files : sequence of str
+            The descriptions of its fields (read_descriptions()).
+        keep : set of str
+            The genomes to load, as genomes.id_at_source names them.
+        keep_source : str
+            Where keep came from, for the log.
+        importer : GTDBImporter
+            The importer of the caller's transaction.
+        do_not_null_field : bool
+            Keep what the fields hold for genomes the table does not write.
+
+        @return: None
+
+        Raises
+        ------
+        MetadataTableError
+            The table cannot be loaded as it is.
+        """
+
+        descriptions = read_descriptions(description_files)
         with open_text(metadata_file) as f:
-            fields = [x.strip() for x in f.readline().split('\t')]
+            header = [column.strip() for column in f.readline().rstrip('\n').split('\t')]
+            loaded = [(index, field) for index, field in enumerate(header)
+                      if index > 0 and field in descriptions]
+            undescribed = [field for field in header[1:] if field not in descriptions]
+            self.logger.info('{} holds {:,} field(s) to load: {}.'.format(
+                metadata_file, len(loaded), ', '.join(field for _, field in loaded)))
+            if undescribed:
+                self.logger.info('{:,} column(s) of {} are in no description and are not loaded: {}.'.format(
+                    len(undescribed), metadata_file, ', '.join(undescribed)))
 
-            for line in f:
-                line_split = line.rstrip('\n').split('\t')
+            # set fields to NULL for every genome, unless asked not to. It is in
+            # the transaction the new values are written in, so a failure
+            # leaves the values the fields held rather than NULL
+            if not do_not_null_field:
+                for _, field in loaded:
+                    self.logger.info('Setting {}.{} to NULL for every genome.'.format(
+                        descriptions[field][1], field))
+                    self.temp_cur.execute('UPDATE {} SET {} = NULL'.format(descriptions[field][1], field))
 
-                genome_id = line_split[0]
-                # print line_split
-                for i, value in enumerate(line_split[1:]):
-                    metadata[fields[i + 1]][genome_id] = value
+            written = Counter()
+            chunk: Dict[str, List[Tuple[str, str]]] = {field: [] for _, field in loaded}
+            in_chunk = 0
+            seen: Set[str] = set()
+            rows = 0
+            skipped = 0
 
-        # add each field to the database
-        for field in metadata:
-            data_to_commit = []
+            def flush():
+                for _, field in loaded:
+                    if chunk[field]:
+                        data_type, table = descriptions[field]
+                        importer.import_metadata_to_db(table, field, data_type, chunk[field])
+                        written[field] += len(chunk[field])
+                        chunk[field] = []
 
-            if field not in metadata_type:
-                continue
+            for line_number, line in enumerate(f, start=2):
+                if not line.strip():
+                    continue
+                row = line.rstrip('\n').split('\t')
+                if len(row) != len(header):
+                    raise MetadataTableError('{} line {:,} ({}) has {} column(s) where its header has {}; '
+                                             'nothing was written.'.format(
+                                                 metadata_file, line_number, row[0], len(row), len(header)))
+                rows += 1
+                genome_id = id_at_source(row[0].strip())
+                if genome_id not in keep:
+                    skipped += 1
+                    continue
+                if genome_id in seen:
+                    raise MetadataTableError('{} names {} more than once, again on line {:,}; the table holds '
+                                             'more than one run. Nothing was written.'.format(
+                                                 metadata_file, genome_id, line_number))
+                seen.add(genome_id)
 
-            data_type = metadata_type[field]
-            table = metadata_table[field]
+                for index, field in loaded:
+                    value = row[index]
+                    if not value.strip():
+                        continue
+                    if descriptions[field][0].upper() in INTEGER_TYPES:
+                        number = whole_number(value)
+                        if number is None:
+                            raise MetadataTableError('{} line {:,} gives {} {} the value {!r}, which is not a '
+                                                     'whole number, and {} is {}; nothing was written.'.format(
+                                                         metadata_file, line_number, genome_id, field, value,
+                                                         field, descriptions[field][0]))
+                        value = number
+                    chunk[field].append((genome_id, value))
 
-            records_to_update = 0
-            for orig_genome_id, value in metadata[field].items():
+                in_chunk += 1
+                if in_chunk >= CHUNK_GENOMES:
+                    flush()
+                    in_chunk = 0
+            flush()
 
-                try:
-                    if float(value) and data_type in ['INT', 'INTEGER']:
-                        # assume specified data type is correct and that we may need
-                        # to cast floats to integers
-                        value = str(int(float(value)))
-                except:
-                    pass
-
-                if value.strip():
-                    genome_id = str(orig_genome_id)
-                    if genome_id.startswith('GCA_'):
-                        genome_id = 'GB_' + genome_id
-                    elif genome_id.startswith('GCF_'):
-                        genome_id = 'RS_' + genome_id
-
-                    if (not genome_list
-                            or genome_id in genome_list
-                            or orig_genome_id in genome_list):
-                        data_to_commit.append((genome_id, value))
-                        records_to_update += 1
-
-            self.logger.info('Updating {} for {} genomes.'.format(
-                field, records_to_update))
-
-            # print(f'Committing {len(data_to_commit)} records to database for field {field} in table {table}.')
-            # print(f'Example record: {data_to_commit[0]}')
-            # print(f'Data type: {data_type}')
-
-            gtdbimporter.import_metadata_to_db(table, field, data_type, data_to_commit)
-            self.logger.info(f'Finished updating {field} for {records_to_update} genomes.')
+        self.logger.info('Read {:,} genomes of {}: {:,} loaded, {:,} not in {} and skipped.'.format(
+            rows, metadata_file, rows - skipped, skipped, keep_source))
+        for _, field in loaded:
+            self.logger.info('Wrote {}.{} for {:,} genomes.'.format(descriptions[field][1], field, written[field]))
 
     @one_transaction
     def update_reps(self, final_cluster_file):
