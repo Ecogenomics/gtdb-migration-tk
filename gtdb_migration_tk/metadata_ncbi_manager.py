@@ -29,6 +29,7 @@ __maintainer__ = 'Donovan Parks'
 __email__ = 'donovan.parks@gmail.com'
 __status__ = 'Development'
 
+import logging
 import os
 import sys
 import multiprocessing as mp
@@ -40,7 +41,7 @@ from collections import defaultdict
 from numpy import (zeros as np_zeros,sum as np_sum)
 from tqdm import tqdm
 
-from gtdb_migration_tk.ncbi_utils import open_summary
+from gtdb_migration_tk.ncbi_utils import read_assembly_summary
 from gtdb_migration_tk.utils.tools import openfile
 
 
@@ -387,9 +388,16 @@ class NCBIMetaDir(object):
 class NCBIMeta(object):
     """Create metadata file from the assembly stats file of each NCBI assembly."""
 
+    # the columns of an assembly summary read, in the order their fields are written
+    COLUMNS = ('bioproject', 'wgs_master', 'refseq_category', 'species_taxid', 'isolate',
+               'version_status', 'seq_rel_date', 'asm_name', 'gbrs_paired_asm',
+               'paired_asm_comp', 'excluded_from_refseq', 'relation_to_type_material')
+
     def __init__(self):
+        self.logger = logging.getLogger('timestamp')
+
         self.fields = {'bioproject': ['ncbi_bioproject'],
-                       'wgs_master': ['ncbi_wgs_master'],
+                       'wgs_master': ['ncbi_wgs_master', 'ncbi_wgs_formatted'],
                        'refseq_category': ['ncbi_refseq_category'],
                        'species_taxid': ['ncbi_species_taxid'],
                        'isolate': ['ncbi_isolate'],
@@ -401,89 +409,96 @@ class NCBIMeta(object):
                        'relation_to_type_material': ['ncbi_type_material_designation'],
                        'excluded_from_refseq': ['ncbi_excluded_from_refseq','ncbi_not_used_as_type']}
 
-    def parse_assemblies(self, refseq_bacteria_assembly_summary_file,
-            refseq_archaea_assembly_summary_file,
-            genbank_bacteria_assembly_summary_file,
-            genbank_archaea_assembly_summary_file, genome_id_file, output_file):
-        """Create metadata by parsing NCBI assembly metadata file."""
+    def field_values(self, column, value):
+        """The values of the fields written from one column of an assembly summary.
+
+        Parameters
+        ----------
+        column : str
+            Column of the assembly summary, e.g. 'wgs_master'.
+        value : str
+            The genome's value of the column.
+
+        @return: one value for each of self.fields[column].
+        """
+
+        if column == 'wgs_master':
+            return [value, self.format_wgs(value)]
+        if column == 'excluded_from_refseq':
+            return ['' if value == 'na' else value, str('not used as type' in value)]
+        return [value]
+
+    def parse_assemblies(self, assembly_summary_files, genome_id_file, output_file):
+        """Create metadata by parsing NCBI assembly metadata files.
+
+        Parameters
+        ----------
+        assembly_summary_files : sequence of str
+            The NCBI assembly summaries the release was selected from, gzipped or
+            not, read by column name (ncbi_utils.read_assembly_summary()).
+        genome_id_file : str
+            Table whose first column names the genomes to write.
+        output_file : str
+            Metadata table written, a row per genome.
+
+        @return: None
+        """
 
         # get identifier of genomes in GTDB
         genome_ids = set()
-        for line in open(genome_id_file):
-            if line[0] == '#':
-                continue
+        with open(genome_id_file) as handle:
+            for line in handle:
+                if line[0] == '#':
+                    continue
 
-            if '\t' in line:
-                genome_id = line.strip().split('\t')[0]
-            else:
-                genome_id = line.strip().split(',')[0]
+                if '\t' in line:
+                    genome_id = line.strip().split('\t')[0]
+                else:
+                    genome_id = line.strip().split(',')[0]
 
-            if genome_id.startswith('GCA_'):
-                genome_id = 'GB_' + genome_id
-            elif genome_id.startswith('GCF_'):
-                genome_id = 'RS_' + genome_id
+                if genome_id.startswith('GCA_'):
+                    genome_id = 'GB_' + genome_id
+                elif genome_id.startswith('GCF_'):
+                    genome_id = 'RS_' + genome_id
 
-            genome_ids.add(genome_id)
+                genome_ids.add(genome_id)
+        ncbi_ids = {gid for gid in genome_ids if gid.startswith(('GB_', 'RS_'))}
+        self.logger.info('Read {:,} RefSeq and GenBank genome(s) from {}.'.format(
+            len(ncbi_ids), genome_id_file))
 
         # write out metadata
-        fout = open(output_file, 'w')
-        fout.write('genome_id')
-
-        write_header = True
-        indice_wgs = None
-        for assembly_file in [refseq_bacteria_assembly_summary_file,
-                              refseq_archaea_assembly_summary_file,
-                              genbank_bacteria_assembly_summary_file,
-                              genbank_archaea_assembly_summary_file]:
-            with open_summary(assembly_file) as f:
-                f.readline()  # first comment line
-                headers = f.readline().rstrip().split('\t')
-
-                indices = []
-                for i, header in enumerate(headers):
-                    if header in self.fields:
-                        if write_header:
-                            fout.write('\t' + '\t'.join(self.fields[header]))
-                        indices.append(i)
-                        if write_header and header == 'excluded_from_refseq':
-                            indice_excluded_from_refseq = i
-                        if write_header and header == 'wgs_master':
-                            fout.write('\t' + 'ncbi_wgs_formatted')
-                            indice_wgs = i
-
-                if write_header:
-                    fout.write('\n')
-                    write_header = False
-                for line in f:
-                    line_split = line.rstrip('\n').split('\t')
-
-                    genome_id = line_split[0]
+        written = set()
+        with open(output_file, 'w') as fout:
+            fout.write('\t'.join(['genome_id'] + [field for column in self.COLUMNS
+                                                  for field in self.fields[column]]) + '\n')
+            for assembly_file in assembly_summary_files:
+                self.logger.info('Reading {}.'.format(assembly_file))
+                rows = 0
+                before = len(written)
+                for row in read_assembly_summary(assembly_file, 'assembly_accession', *self.COLUMNS):
+                    rows += 1
+                    genome_id = row[0]
                     if genome_id.startswith('GCA_'):
                         genome_id = 'GB_' + genome_id
                     elif genome_id.startswith('GCF_'):
                         genome_id = 'RS_' + genome_id
 
                     if genome_id in genome_ids:
-                        fout.write(genome_id)
-                        for i in indices:
-                            if indice_wgs == i:
-                                fout.write('\t' + line_split[i])
-                                fout.write(
-                                    '\t' + self.format_wgs(line_split[i]))
-                            elif indice_excluded_from_refseq == i:
-                                donttrust = False
-                                excluded_from_refseq_value = line_split[i]
-                                if "not used as type" in line_split[i]:
-                                    donttrust = True
-                                elif line_split[i] == "na":
-                                    excluded_from_refseq_value = ""
-                                fout.write('\t' + excluded_from_refseq_value) #ncbi_excluded_from_refseq
-                                fout.write('\t' + str(donttrust)) #ncbi_not_used_as_type
-                            else:
-                                fout.write('\t' + line_split[i])
-                        fout.write('\n')
+                        values = [genome_id]
+                        for column, value in zip(self.COLUMNS, row[1:]):
+                            values.extend(self.field_values(column, value))
+                        fout.write('\t'.join(values) + '\n')
+                        written.add(genome_id)
+                self.logger.info('  {:,} of its {:,} genome(s) are listed and written.'.format(
+                    len(written) - before, rows))
 
-        fout.close()
+        self.logger.info('Wrote the NCBI metadata of {:,} genome(s) from {:,} assembly summaries '
+                         'to {}.'.format(len(written), len(assembly_summary_files), output_file))
+        missing = sorted(ncbi_ids - written)
+        if missing:
+            self.logger.warning('{:,} NCBI genome(s) of {} are in none of the assembly summaries '
+                                'given, e.g. {}; they have no row.'.format(
+                                    len(missing), genome_id_file, ', '.join(missing[:10])))
 
     def format_wgs(self, wgs_accession):
         if not wgs_accession or wgs_accession == "na":

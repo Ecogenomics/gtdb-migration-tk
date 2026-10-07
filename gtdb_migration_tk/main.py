@@ -268,11 +268,10 @@ class OptionsParser():
             options.gtdb_genome_path_file, options.output_dir)
 
     def parse_assemblies(self, options):
+        for assembly_summary in options.new_list_genomes:
+            check_file_exists(assembly_summary)
         p = NCBIMeta()
-        p.parse_assemblies(options.rb,
-                           options.ra,
-                           options.gb,
-                           options.ga, options.metadata, options.output_file)
+        p.parse_assemblies(options.new_list_genomes, options.metadata, options.output_file)
 
     def generate_rna_silva(self, options):
         check_file_exists(options.gtdb_genome_path_file)

@@ -1130,13 +1130,11 @@ def get_main_parser():
     with subparser(sub_parsers, 'parse_assemblies',
                    'Parse NCBI assembly summary files to generate metadata.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __rfq_bac_assembly_file(grp, required=True)
-            __rfq_arc_assembly_file(grp, required=True)
-            __gbk_bac_assembly_file(grp, required=True)
-            __gbk_arc_assembly_file(grp, required=True)
+            __new_list_genomes(grp, required=True)
             __metadata_file(grp, required=True)
             __output_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __log_file(grp, required=False)
             __silent(grp)
 
     # Parse GTDB directory to generate extra NCBI metadata

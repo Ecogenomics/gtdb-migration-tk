@@ -977,6 +977,22 @@ and nothing says so; the three `*_count.tsv` tables are the exception, giving
 every genome a row, 0 where nothing was found. The table names are the ones
 `update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
 
+`parse_assemblies` takes the NCBI assembly summaries the release was selected
+from (`-n`), as `select_genomes` and `strains type_table` do, rather than
+`--rb`, `--ra`, `--gb` and `--ga`. It writes one row for each genome named in
+the first column of `-m`:
+
+```bash
+gtdb_migration_tk parse_assemblies \
+    -n ncbi/assembly_summary_{archaea,bacteria}_{refseq,genbank}.txt.gz \
+    -m metadata.tsv -o ncbi_assembly_metadata.tsv -l parse_assemblies.log
+```
+
+Columns are found by name in each summary, and a summary may be gzipped. The
+log (`-l`, else `gtdb_migration_tk.log` in the current directory) says how many
+genomes `-m` lists, how many of each summary's are written, and the total. A
+RefSeq or GenBank genome of `-m` that no summary holds is warned of.
+
 ### Taxonomy
 
 | Command | Description |
