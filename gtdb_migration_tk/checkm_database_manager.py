@@ -15,7 +15,7 @@
 #                                                                             #
 ###############################################################################
 
-"""Writing the CheckM v1 estimates of a release to metadata_genes.
+"""Writing the CheckM and CheckM2 estimates of a release to metadata_genes.
 
 update_checkm_db reads two of the release files checkm writes, checkm.profiles.tsv.gz
 and checkm.qa_sh100.tsv.gz, and writes eight fields of metadata_genes from them, in
@@ -91,11 +91,28 @@ and a date_added of the day of its last_update is a genome new to the database,
 a new version that took over its predecessor's row included, as report.log calls
 it new; has_changed and an earlier date_added, one whose sequences changed under
 its accession. The file is written whether or not there are any.
+
+CHECKM2
+
+update_checkm2_db does for checkm2's checkm2.quality_report.tsv.gz what
+update_checkm_db does for checkm's tables, and the two share everything but what
+is read: the clearing of a changed genome's earlier estimates, from
+checkm2_not_assessed.tsv, and the report of genomes with none, to
+checkm2_estimates_cleared.tsv and checkm2_estimates_missing.tsv. What differs is
+held in a CheckMProgram, CHECKM or CHECKM2. It writes three fields:
+checkm2_completeness, checkm2_contamination and checkm2_model. The model is the
+one CheckM2 estimated completeness with, which it reports as e.g. 'Neural
+Network (Specific Model)' and the database holds as Specific or General, as
+join_checkm2 wrote it until 0.1.54. A model naming neither is refused rather
+than written as it is: a CheckM2 that reports a model of a new kind is then
+noticed before the database holds a value nothing reading it expects.
+join_checkm2 and prepare_checkm2, which ran CheckM2 by hand before checkm2 did,
+are gone.
 """
 
 import logging
 import os
-from typing import Dict, List, NamedTuple, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction
@@ -122,14 +139,29 @@ QA_SH100_FIELDS = (('Strain heterogeneity', 'checkm_strain_heterogeneity_100', '
 # every field update_checkm_db writes, and clears for a genome checkm left out
 CHECKM_FIELDS = tuple(field for _column, field, _type in PROFILE_FIELDS + QA_SH100_FIELDS)
 
+# (column of checkm2.quality_report.tsv.gz, field of metadata_genes, type of the field)
+QUALITY_REPORT_FIELDS = (('Completeness', 'checkm2_completeness', 'FLOAT'),
+                         ('Contamination', 'checkm2_contamination', 'FLOAT'),
+                         ('Completeness_Model_Used', 'checkm2_model', 'TEXT'))
+
+# every field update_checkm2_db writes, and clears for a genome checkm2 left out
+CHECKM2_FIELDS = tuple(field for _column, field, _type in QUALITY_REPORT_FIELDS)
+
+# the field holding the model CheckM2 estimated completeness with, and what it
+# holds of a model as CheckM2 names it: (text in CheckM2's name, value)
+CHECKM2_MODEL_FIELD = 'checkm2_model'
+CHECKM2_MODELS = (('General Model', 'General'), ('Specific Model', 'Specific'))
+
 # the column of checkm_not_assessed.tsv naming each genome checkm left out
 NOT_ASSESSED_GENOME = 'genome_id'
 
 # beside the log: each genome whose estimates were cleared, and what it held
 CLEARED_NAME = 'checkm_estimates_cleared.tsv'
+CHECKM2_CLEARED_NAME = 'checkm2_estimates_cleared.tsv'
 
 # in --out_dir: each genome with no estimates that checkm did not say it left out
 MISSING_NAME = 'checkm_estimates_missing.tsv'
+CHECKM2_MISSING_NAME = 'checkm2_estimates_missing.tsv'
 MISSING_HEADER = ('genome_id', 'status')
 
 # what this update made of a genome with no estimates
@@ -142,6 +174,29 @@ EXAMPLES = 10
 
 # a field to write: (field, type, [(genome, value), ...])
 FieldRows = Tuple[str, str, List[Tuple[str, str]]]
+
+
+class CheckMProgram(NamedTuple):
+    """What differs between update_checkm_db and update_checkm2_db once the plan is made."""
+
+    # the program, as the log names it, and as the command that ran it is named
+    label: str
+    command: str
+    # every field written, and cleared for a genome left out of an update that changed it
+    fields: Tuple[str, ...]
+    # the field a genome without estimates has none of
+    completeness: str
+    # the release file naming the genomes the command left out
+    not_assessed_name: str
+    # beside the log, and in --out_dir
+    cleared_name: str
+    missing_name: str
+
+
+CHECKM = CheckMProgram('CheckM', 'checkm', CHECKM_FIELDS, 'checkm_completeness',
+                       'checkm_not_assessed.tsv', CLEARED_NAME, MISSING_NAME)
+CHECKM2 = CheckMProgram('CheckM2', 'checkm2', CHECKM2_FIELDS, 'checkm2_completeness',
+                        'checkm2_not_assessed.tsv', CHECKM2_CLEARED_NAME, CHECKM2_MISSING_NAME)
 
 
 class CheckMTableError(ValueError):
@@ -290,14 +345,107 @@ def plan_checkm_import(checkm_profile_file: str, checkm_qa_sh100_file: str,
         raise CheckMTableError('The CheckM tables are not of the same genomes: {}. Both are '
                                'written by one checkm run.'.format('; '.join(differences)))
 
-    not_assessed = read_not_assessed(checkm_not_assessed_file)
-    both = sorted(set(not_assessed) & set(profile_genomes))
-    if both:
-        raise CheckMTableError('{} names {:,} genome(s) the CheckM tables hold estimates of, e.g. {}; '
-                               'the files are of different checkm runs.'.format(
-                                   checkm_not_assessed_file, len(both), ', '.join(both[:EXAMPLES])))
+    not_assessed = read_left_out(checkm_not_assessed_file, profile_genomes, CHECKM)
 
     return CheckMPlan(profile_genomes, profile_fields + sh100_fields, not_assessed)
+
+
+def read_left_out(not_assessed_file: str, genomes: Sequence[str], program: CheckMProgram) -> List[str]:
+    """The genomes a command left out, none of them a genome its tables hold estimates of.
+
+    Parameters
+    ----------
+    not_assessed_file : str
+        checkm_not_assessed.tsv or checkm2_not_assessed.tsv.
+    genomes : sequence of str
+        The genomes the command's tables hold estimates of.
+    program : CheckMProgram
+        CHECKM or CHECKM2.
+
+    @return: the genomes left out, in the order of the file.
+
+    Raises
+    ------
+    CheckMTableError
+        A genome is named both as left out and in the tables.
+    """
+
+    not_assessed = read_not_assessed(not_assessed_file)
+    both = sorted(set(not_assessed) & set(genomes))
+    if both:
+        raise CheckMTableError('{} names {:,} genome(s) the {} tables hold estimates of, e.g. {}; '
+                               'the files are of different {} runs.'.format(
+                                   not_assessed_file, len(both), program.label,
+                                   ', '.join(both[:EXAMPLES]), program.command))
+    return not_assessed
+
+
+def checkm2_model(model: str) -> Optional[str]:
+    """What checkm2_model holds of the model CheckM2 names.
+
+    Parameters
+    ----------
+    model : str
+        Completeness_Model_Used, e.g. 'Neural Network (Specific Model)'.
+
+    @return: 'General' or 'Specific', or None for a model naming neither.
+    """
+
+    for text, value in CHECKM2_MODELS:
+        if text in model:
+            return value
+    return None
+
+
+def plan_checkm2_import(quality_report_file: str, checkm2_not_assessed_file: str) -> CheckMPlan:
+    """Every field update_checkm2_db writes and the value of each genome; no database is read.
+
+    Parameters
+    ----------
+    quality_report_file : str
+        checkm2.quality_report.tsv.gz: CheckM2's quality_report.tsv of every batch.
+    checkm2_not_assessed_file : str
+        checkm2_not_assessed.tsv: the genomes checkm2 left out.
+
+    @return: the genomes of the report, for each field of metadata_genes
+             (field, type, [(genome, value), ...]), the model as General or
+             Specific, and the genomes checkm2 left out.
+
+    Raises
+    ------
+    CheckMTableError
+        The report cannot be read as read_checkm_table() says, names a model
+        that is neither General nor Specific, or a genome is named both in it
+        and as not assessed.
+    """
+
+    genomes, fields = read_checkm_table(quality_report_file, QUALITY_REPORT_FIELDS)
+
+    planned = []
+    for field, data_type, rows in fields:
+        if field == CHECKM2_MODEL_FIELD:
+            unknown: Dict[str, List[str]] = {}
+            shortened = []
+            for genome, model in rows:
+                value = checkm2_model(model)
+                if value is None:
+                    unknown.setdefault(model, []).append(genome)
+                shortened.append((genome, value))
+            if unknown:
+                raise CheckMTableError(
+                    '{} names a model that is neither General nor Specific: {}. {} holds '
+                    'only those two; nothing was written.'.format(
+                        quality_report_file,
+                        '; '.join('{!r} for {:,} genome(s), e.g. {}'.format(
+                            model, len(named), ', '.join(named[:EXAMPLES]))
+                                  for model, named in sorted(unknown.items())),
+                        CHECKM2_MODEL_FIELD))
+            rows = shortened
+        planned.append((field, data_type, rows))
+
+    not_assessed = read_left_out(checkm2_not_assessed_file, genomes, CHECKM2)
+
+    return CheckMPlan(genomes, planned, not_assessed)
 
 
 def release_status(has_changed: bool, added_on_last_update: bool) -> str:
@@ -320,6 +468,9 @@ def release_status(has_changed: bool, added_on_last_update: bool) -> str:
 
 
 class CheckMDatabaseManager(object):
+    """update_checkm_db, and with CHECKM2 update_checkm2_db (CheckM2DatabaseManager)."""
+
+    program: CheckMProgram = CHECKM
 
     def __init__(self, database: Dict[str, str]):
         """Initialization.
@@ -369,9 +520,24 @@ class CheckMDatabaseManager(object):
             A genome of the tables is not in the database; nothing is written.
         """
 
-        plan = plan_checkm_import(checkm_profile_file, checkm_qa_sh100_file, checkm_not_assessed_file)
-        self.logger.info('Read the CheckM estimates of {:,} genome(s); checkm left out {:,}.'.format(
-            len(plan.genomes), len(plan.not_assessed)))
+        self.write_plan(plan_checkm_import(checkm_profile_file, checkm_qa_sh100_file,
+                                           checkm_not_assessed_file), out_dir)
+
+    def write_plan(self, plan: CheckMPlan, out_dir: str) -> None:
+        """Write a plan's fields, then clear and report, inside the caller's transaction.
+
+        Parameters
+        ----------
+        plan : CheckMPlan
+            What plan_checkm_import() or plan_checkm2_import() decided.
+        out_dir : str
+            Directory the genomes with no estimates are written to.
+
+        @return: None
+        """
+
+        self.logger.info('Read the {} estimates of {:,} genome(s); {} left out {:,}.'.format(
+            self.program.label, len(plan.genomes), self.program.command, len(plan.not_assessed)))
 
         importer = GTDBImporter(self.temp_cur)
         for field, data_type, rows in plan.fields:
@@ -382,15 +548,16 @@ class CheckMDatabaseManager(object):
         self.report_missing_estimates(plan.not_assessed, out_dir)
 
     def clear_earlier_estimates(self, not_assessed: Sequence[str]) -> List[str]:
-        """Clear the CheckM estimates a genome checkm left out holds of an earlier genome.
+        """Clear the estimates a genome the command left out holds of an earlier genome.
 
-        A genome named in checkm_not_assessed.tsv that this update changed
-        (has_changed) and that holds CheckM estimates holds those of the
-        sequences it had before, its row having been kept by update_db. Every
-        field update_checkm_db writes is set to NULL for it, inside the caller's
-        transaction, and each such genome is written with what it held to
-        checkm_estimates_cleared.tsv beside the log, which is written whether or
-        not there are any.
+        A genome named in the not-assessed file (checkm_not_assessed.tsv or
+        checkm2_not_assessed.tsv) that this update changed (has_changed) and
+        that holds estimates holds those of the sequences it had before, its
+        row having been kept by update_db. Every field of self.program is set
+        to NULL for it, inside the caller's transaction, and each such genome is
+        written with what it held to the program's cleared file beside the log
+        (checkm_estimates_cleared.tsv, checkm2_estimates_cleared.tsv), which is
+        written whether or not there are any.
 
         Parameters
         ----------
@@ -400,6 +567,7 @@ class CheckMDatabaseManager(object):
         @return: the genomes whose estimates were cleared, sorted.
         """
 
+        program = self.program
         held = []
         if not_assessed:
             self.temp_cur.execute(
@@ -407,56 +575,60 @@ class CheckMDatabaseManager(object):
                 'FROM genomes g JOIN {} m ON m.id = g.id '
                 'WHERE g.id_at_source = ANY(%s) AND ({}) '
                 'ORDER BY g.id_at_source'.format(
-                    ', '.join('m.' + field for field in CHECKM_FIELDS), CHECKM_TABLE,
-                    ' OR '.join('m.{} IS NOT NULL'.format(field) for field in CHECKM_FIELDS)),
+                    ', '.join('m.' + field for field in program.fields), CHECKM_TABLE,
+                    ' OR '.join('m.{} IS NOT NULL'.format(field) for field in program.fields)),
                 (list(not_assessed),))
             held = self.temp_cur.fetchall()
 
         unchanged = [row[1] for row in held if not row[2]]
         if unchanged:
             self.logger.warning(
-                '{:,} genome(s) checkm_not_assessed.tsv names were not changed by this update, '
-                'e.g. {}; their CheckM estimates are kept. The file is not of this release, or '
-                'update_db has not been run.'.format(len(unchanged), ', '.join(unchanged[:EXAMPLES])))
+                '{:,} genome(s) {} names were not changed by this update, '
+                'e.g. {}; their {} estimates are kept. The file is not of this release, or '
+                'update_db has not been run.'.format(len(unchanged), program.not_assessed_name,
+                                                     ', '.join(unchanged[:EXAMPLES]), program.label))
 
         cleared = [row for row in held if row[2]]
         if cleared:
             self.temp_cur.execute(
                 'UPDATE {} SET {} WHERE id = ANY(%s)'.format(
-                    CHECKM_TABLE, ', '.join('{} = NULL'.format(field) for field in CHECKM_FIELDS)),
+                    CHECKM_TABLE, ', '.join('{} = NULL'.format(field) for field in program.fields)),
                 ([row[0] for row in cleared],))
 
-        path = os.path.join(log_directory(), CLEARED_NAME)
+        path = os.path.join(log_directory(), program.cleared_name)
         with open(path, 'w') as handle:
-            handle.write('\t'.join(('genome_id',) + CHECKM_FIELDS) + '\n')
+            handle.write('\t'.join(('genome_id',) + program.fields) + '\n')
             for row in cleared:
                 handle.write('\t'.join('' if value is None else str(value) for value in row[1:2] + row[3:]) + '\n')
 
         genomes = [row[1] for row in cleared]
         if genomes:
             self.logger.warning(
-                'Cleared the CheckM estimates of {:,} genome(s) checkm left out, which held '
+                'Cleared the {} estimates of {:,} genome(s) {} left out, which held '
                 'those of the sequences they had before this update, e.g. {}. Each is in {}, '
-                'with the estimates it held.'.format(len(genomes), ', '.join(genomes[:EXAMPLES]), path))
+                'with the estimates it held.'.format(program.label, len(genomes), program.command,
+                                                     ', '.join(genomes[:EXAMPLES]), path))
         else:
-            self.logger.info('No genome checkm left out held CheckM estimates of an earlier genome.')
+            self.logger.info('No genome {} left out held {} estimates of an earlier genome.'.format(
+                program.command, program.label))
 
         return genomes
 
     def report_missing_estimates(self, not_assessed: Sequence[str], out_dir: str) -> List[Tuple[str, str]]:
-        """Warn of every NCBI genome with no CheckM estimates that checkm did not say it left out.
+        """Warn of every NCBI genome with no estimates that the command did not say it left out.
 
         Read inside the caller's transaction, once every field is written and
         cleared, so it is what the database will hold. Each genome is written
-        with its release_status() to checkm_estimates_missing.tsv in out_dir,
-        which is written whether or not there are any.
+        with its release_status() to the program's missing file in out_dir
+        (checkm_estimates_missing.tsv, checkm2_estimates_missing.tsv), which is
+        written whether or not there are any.
 
         Parameters
         ----------
         not_assessed : sequence of str
             The genomes checkm left out, e.g. ['GCA_977065575.1', ...].
         out_dir : str
-            Directory checkm_estimates_missing.tsv is written to.
+            Directory the missing file is written to.
 
         @return: (genome, status) of each genome, sorted by genome.
         """
@@ -465,15 +637,15 @@ class CheckMDatabaseManager(object):
             'SELECT g.id_at_source, g.has_changed, g.date_added::date = g.last_update '
             'FROM genomes g JOIN genome_sources s ON s.id = g.genome_source_id '
             'LEFT JOIN {} m ON m.id = g.id '
-            'WHERE s.name = ANY(%s) AND m.checkm_completeness IS NULL '
-            'ORDER BY g.id_at_source'.format(CHECKM_TABLE),
+            'WHERE s.name = ANY(%s) AND m.{} IS NULL '
+            'ORDER BY g.id_at_source'.format(CHECKM_TABLE, self.program.completeness),
             ([db.label for db in NCBI_DATABASES],))
         left_out = set(not_assessed)
         missing = [(genome, release_status(has_changed, bool(added_on_last_update)))
                    for genome, has_changed, added_on_last_update in self.temp_cur.fetchall()
                    if genome not in left_out]
 
-        path = os.path.join(out_dir, MISSING_NAME)
+        path = os.path.join(out_dir, self.program.missing_name)
         with open(path, 'w') as handle:
             handle.write('\t'.join(MISSING_HEADER) + '\n')
             for row in missing:
@@ -484,15 +656,54 @@ class CheckMDatabaseManager(object):
             for _genome, status in missing:
                 counts[status] = counts.get(status, 0) + 1
             self.logger.warning(
-                '{:,} genome(s) have no CheckM estimates and are not named in the not-assessed '
-                'file ({}), e.g. {}; checkm did not assess them. Each is in {}, with whether '
+                '{:,} genome(s) have no {} estimates and are not named in the not-assessed '
+                'file ({}), e.g. {}; {} did not assess them. Each is in {}, with whether '
                 'this update made it new or updated it.'.format(
-                    len(missing),
+                    len(missing), self.program.label,
                     ', '.join('{:,} {}'.format(counts[status], status)
                               for status in (STATUS_NEW, STATUS_UPDATED, STATUS_UNCHANGED)
                               if status in counts),
-                    ', '.join(genome for genome, _status in missing[:EXAMPLES]), path))
+                    ', '.join(genome for genome, _status in missing[:EXAMPLES]),
+                    self.program.command, path))
         else:
-            self.logger.info('Every genome with no CheckM estimates is named in the not-assessed file.')
+            self.logger.info('Every genome with no {} estimates is named in the not-assessed file.'.format(
+                self.program.label))
 
         return missing
+
+
+class CheckM2DatabaseManager(CheckMDatabaseManager):
+    """update_checkm2_db: the CheckM2 estimates of a release, as update_checkm_db writes CheckM's."""
+
+    program: CheckMProgram = CHECKM2
+
+    @one_transaction
+    def add_checkm2_to_db(self, quality_report_file: str, checkm2_not_assessed_file: str,
+                          out_dir: str) -> None:
+        """Write the CheckM2 estimates of a release to metadata_genes, in one transaction.
+
+        The estimates a genome checkm2 left out holds of an earlier genome are
+        cleared (clear_earlier_estimates()), and every genome then left with no
+        estimates that checkm2 did not say it left out is warned of
+        (report_missing_estimates()).
+
+        Parameters
+        ----------
+        quality_report_file : str
+            checkm2.quality_report.tsv.gz, as checkm2 writes it for the release.
+        checkm2_not_assessed_file : str
+            checkm2_not_assessed.tsv, as checkm2 writes it for the release.
+        out_dir : str
+            Directory checkm2_estimates_missing.tsv is written to.
+
+        @return: None
+
+        Raises
+        ------
+        CheckMTableError
+            The report cannot be written as it is; nothing is written.
+        UnknownGenomesError
+            A genome of the report is not in the database; nothing is written.
+        """
+
+        self.write_plan(plan_checkm2_import(quality_report_file, checkm2_not_assessed_file), out_dir)
