@@ -194,13 +194,21 @@ def __checkm_files(group, required):
 
 
 def __checkm_profile(group, required):
-    group.add_argument('-c', '--checkm_profile', help='CheckM profile for new genomes.', required=required)
+    group.add_argument('-c', '--checkm_profile', required=required,
+                       help='checkm.profiles.tsv.gz, as checkm writes it for the release.')
 
 
 def __checkm_qa(group, required):
-    group.add_argument('-q', '--check_qa',
-                       help='CheckM QA file for 100%% strain heterogeneity for all genomes of interest.',
-                       required=required)
+    group.add_argument('-q', '--check_qa', required=required,
+                       help='checkm.qa_sh100.tsv.gz, as checkm writes it for the release '
+                            '(strain heterogeneity at 100%% AAI).')
+
+
+def __checkm_not_assessed(group, required):
+    group.add_argument('-n', '--not_assessed', required=required,
+                       help='checkm_not_assessed.tsv, as checkm writes it for the release; '
+                            'the CheckM estimates a genome it names held of its sequences '
+                            'before this update are cleared.')
 
 
 def __cpus(group, default=1):
@@ -1044,7 +1052,7 @@ def get_main_parser():
             __database_setup(grp)
             __checkm_profile(grp, required=True)
             __checkm_qa(grp, required=True)
-            __metadata_file(grp, required=True)
+            __checkm_not_assessed(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)

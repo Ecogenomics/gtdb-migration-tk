@@ -909,16 +909,19 @@ release files beside the batches, as `trans_table` does: each table is the
 batches' own concatenated in batch order under a single header, the genomes left
 out are gathered into one file written even when it has no rows, and the count
 of genomes assessed is added up from every batch's `SUCCESS`. A batch in which
-no genome could be assessed adds no rows.
+no genome could be assessed adds no rows. The tables, a row per genome, are
+gzipped; the genomes left out and the versions are not. A table an earlier run
+left uncompressed, and the `checkm.alignment_file.tsv` it joined from the
+batches, are removed once the gzipped tables are written.
 
 | File | |
 | --- | --- |
-| `checkm.profiles.tsv` | CheckM `qa` joined with `tree_qa -o 2`, one row per genome, the bin named `<accession>_protein` |
-| `checkm.qa_sh100.tsv` | CheckM `qa --aai_strain 0.9999` |
-| `checkm.alignment_file.tsv` | the alignments of multi-copy genes that run writes |
-| `checkm2.quality_report.tsv` | CheckM2's `quality_report.tsv`, one row per genome, named by accession. Handed genes, CheckM2 writes none of the statistics it takes from calling genes itself (the table used, coding density, genome size, GC, N50 and the rest); its estimates are made from the proteins either way |
+| `checkm.profiles.tsv.gz` | CheckM `qa` joined with `tree_qa -o 2`, one row per genome, the bin named `<accession>_protein` |
+| `checkm.qa_sh100.tsv.gz` | CheckM `qa --aai_strain 0.9999` |
+| `checkm2.quality_report.tsv.gz` | CheckM2's `quality_report.tsv`, one row per genome, named by accession. Handed genes, CheckM2 writes none of the statistics it takes from calling genes itself (the table used, coding density, genome size, GC, N50 and the rest); its estimates are made from the proteins either way |
 | `checkm_not_assessed.tsv`, `checkm2_not_assessed.tsv` | `genome_id`, `reason`, `detail` of each genome left out |
 | `checkm.version`, `checkm2.version` | the version of CheckM or CheckM2 that made the release files, gathered from the `checkm.version` or `checkm2.version` each batch was given. Where the batches were made by more than one version, each is on a line of its own and the log names the batches each made |
+| `batch_*/alignment_file.tsv` | `checkm` only: the alignments of multi-copy genes `qa --aai_strain 0.9999 -a` writes, kept in each batch and not gathered for the release. Nothing reads them, and joined for r237 they were 142 GB, 137 GB of it from one batch, copied again by every run that wrote the release files |
 | `pplacer.version` | `checkm` only: the version of the pplacer CheckM placed the genomes with, gathered the same way. pplacer cannot be asked (bioconda's says `dev` to `--version`), so each batch learns it from the pplacer process CheckM starts, and the conda package that executable came from; the batch's log names the executable. It is written only where every batch that ran CheckM recorded one |
 
 | `reason` | |
@@ -1070,6 +1073,39 @@ updated, and is restarted by running the same command again:
 add were the rows of a CheckM profile, which left out what CheckM did not
 assess, the run was made once per database, and the report directory is
 `--out_dir`.
+
+`update_checkm_db` writes the estimates `checkm` made for the release to
+`metadata_genes`, from its release files, once `update_db` has added the
+genomes:
+
+```bash
+gtdb_migration_tk update_checkm_db --db_service gtdb_r237 \
+    -c checkm/checkm.profiles.tsv.gz -q checkm/checkm.qa_sh100.tsv.gz \
+    -n checkm/checkm_not_assessed.tsv -l update_checkm_db.log
+```
+
+| Field of `metadata_genes` | From |
+| --- | --- |
+| `checkm_completeness`, `checkm_contamination`, `checkm_strain_heterogeneity`, `checkm_marker_lineage`, `checkm_genome_count`, `checkm_marker_count`, `checkm_marker_set_count` | `checkm.profiles.tsv.gz`: Completeness, Contamination, Strain heterogeneity, Marker lineage, # genomes, # markers, # marker sets |
+| `checkm_strain_heterogeneity_100` | `checkm.qa_sh100.tsv.gz`: Strain heterogeneity |
+
+Columns are found by name, and each genome is written as the accession of its
+bin. Tables that are not of the same genomes, or that name a genome twice or
+lack a column, are refused before the database is asked. `-m/--metadata` is
+gone: it wrote only the genomes of a table exported from the database, dropping
+any other with a line on the console, where a genome the database does not hold
+now refuses the run.
+
+`update_db` keeps the row of a genome whose sequences changed or that a new
+version took over, and with it the CheckM estimates of what the genome was. A
+genome `checkm` left out (`-n`) that this update changed (`has_changed`) and that
+holds estimates has the eight fields above set to NULL in the same transaction,
+with a warning; each is written, with the estimates it held, to
+`checkm_estimates_cleared.tsv` beside the log, which is written, its header
+alone, where none was cleared. A genome the not-assessed file names that this
+update did not change is warned of and kept. Only the genomes that file names
+are cleared, so CheckM tables of a few genomes loaded on their own clear nothing
+of the rest.
 
 ### Nomenclature resources
 

@@ -44,6 +44,24 @@ given an --out_dir of their own: one that holds batch directories another
 command planned is refused, since that command's SUCCESS would tell this one
 it had nothing to do.
 
+THE RELEASE FILES
+
+The release tables are gzipped (checkm.profiles.tsv.gz, checkm.qa_sh100.tsv.gz,
+checkm2.quality_report.tsv.gz), being a row per genome of the release; what says
+which genomes were left out, and the version files, are a few lines meant to be
+read, and are not. A table an earlier run left uncompressed is removed once the
+gzipped one is written (SUPERSEDED_RELEASE_FILES), as trans_table removes its
+own: two tables a few genomes apart, one of them stale, is how the stale one
+gets read.
+
+The alignments of multi-copy genes CheckM writes (qa -a) stay in their batches
+and are not gathered for the release. Nothing reads them: they were joined into
+checkm.alignment_file.tsv until 0.1.48, and for r237 that was 142 GB, 137 GB of
+it from one batch, copied again by every run that wrote the release files. They
+are the record of the genes behind each contamination estimate, so CheckM is
+still asked for them; checkm.alignment_file.tsv is removed as superseded, since
+one an earlier run left would not hold the batches made since.
+
 THE PROTEINS
 
 Both commands are handed the proteins the prodigal command called (--genes),
@@ -179,8 +197,9 @@ REASON_NO_PROTEINS = 'no_protein_file'
 REASON_GENOME_TOO_LARGE = 'genome_too_large'
 
 # Within a checkm batch: the proteins linked in for CheckM, what it writes, and
-# the three tables made from that, with the release file each is gathered into.
-# The alignment file has no header, so it is joined rather than concatenated.
+# the tables made from that, with the release file each is gathered into,
+# gzipped. The alignment of multi-copy genes stays in its batch (see THE RELEASE
+# FILES).
 CHECKM_INPUT_DIR = 'input'
 CHECKM_OUTPUT_DIR = 'checkm'
 CHECKM_PROTEIN_EXT = 'faa.gz'
@@ -189,9 +208,15 @@ CHECKM_QA = 'qa.tsv'
 CHECKM_PROFILE = 'profile.tsv'
 CHECKM_QA_SH100 = 'qa_sh100.tsv'
 CHECKM_ALIGNMENT = 'alignment_file.tsv'
-CHECKM_RELEASE_FILES = ((CHECKM_PROFILE, 'checkm.profiles.tsv'),
-                        (CHECKM_QA_SH100, 'checkm.qa_sh100.tsv'))
-CHECKM_RELEASE_ALIGNMENT = 'checkm.alignment_file.tsv'
+CHECKM_RELEASE_PROFILE = 'checkm.profiles.tsv.gz'
+CHECKM_RELEASE_QA_SH100 = 'checkm.qa_sh100.tsv.gz'
+CHECKM_RELEASE_FILES = ((CHECKM_PROFILE, CHECKM_RELEASE_PROFILE),
+                        (CHECKM_QA_SH100, CHECKM_RELEASE_QA_SH100))
+
+# What an earlier run wrote for the release that the files above replace: the
+# tables uncompressed, and the batches' alignments joined
+CHECKM_SUPERSEDED_FILES = ('checkm.profiles.tsv', 'checkm.qa_sh100.tsv',
+                           'checkm.alignment_file.tsv')
 
 # Within a checkm2 batch: the proteins linked in, what CheckM2 wrote, and a
 # copy of its report beside the batch's other files. The input is beside the output rather than in
@@ -204,7 +229,8 @@ CHECKM2_OUTPUT_DIR = 'checkm2'
 CHECKM2_LINK_EXT = '.faa.gz'
 CHECKM2_REPORT = 'quality_report.tsv'
 CHECKM2_BATCH_REPORT = 'checkm2.quality_report.tsv'
-CHECKM2_RELEASE_REPORT = 'checkm2.quality_report.tsv'
+CHECKM2_RELEASE_REPORT = 'checkm2.quality_report.tsv.gz'
+CHECKM2_SUPERSEDED_FILES = ('checkm2.quality_report.tsv',)
 
 
 class BatchCounts(NamedTuple):
@@ -483,8 +509,10 @@ class BatchedQuality(object):
     """What checkm and checkm2 share: the batches, the claims, and the release files.
 
     A subclass names its program and layout, the file a batch is planned
-    around, how a batch is assessed, and the batch tables concatenated into the
-    release's (RELEASE_TABLES, as (batch file, release file)).
+    around, how a batch is assessed, the batch tables concatenated into the
+    release's (RELEASE_TABLES, as (batch file, release file), the release file
+    gzipped), and what an earlier run wrote that those replace
+    (SUPERSEDED_RELEASE_FILES).
     """
 
     PROGRAM = None
@@ -492,6 +520,7 @@ class BatchedQuality(object):
     RECORDED_PROGRAMS = ()
     LAYOUT = None
     RELEASE_TABLES = ()
+    SUPERSEDED_RELEASE_FILES = ()
     NOT_ASSESSED_RELEASE = None
 
     def __init__(self,
@@ -727,10 +756,10 @@ class BatchedQuality(object):
             path = os.path.join(out_dir, release_name)
             written = concatenate([os.path.join(batch, batch_name) for batch in batches
                                    if os.path.exists(os.path.join(batch, batch_name))],
-                                  path)
+                                  path, compress=True)
             self.logger.info('Wrote {:,} rows to {}.'.format(written, path))
 
-        self.write_release(batches, out_dir)
+        self.remove_superseded(out_dir)
         self.report_not_assessed(batches, out_dir)
         versions = [(program, self.write_release_version(batches, out_dir, program))
                     for program in self.RECORDED_PROGRAMS]
@@ -747,11 +776,26 @@ class BatchedQuality(object):
                 for program, found in versions
                 if found or program == self.PROGRAM)))
 
-    def write_release(self, batches: Sequence[str], out_dir: str) -> None:
-        """Write any release file that is not a table the batches' concatenate into.
+    def remove_superseded(self, out_dir: str) -> None:
+        """Remove what an earlier run wrote for the release that this run's files replace.
+
+        Called once the release tables are written, so that a run that fails
+        before then leaves the earlier files as they were. See THE RELEASE FILES.
+
+        Parameters
+        ----------
+        out_dir : str
+            Directory the release files are written to.
 
         @return: None
         """
+
+        for name in self.SUPERSEDED_RELEASE_FILES:
+            path = os.path.join(out_dir, name)
+            if os.path.exists(path):
+                os.remove(path)
+                self.logger.info('Removed {}, which an earlier run wrote and this '
+                                 'run\'s release files replace.'.format(path))
 
     def write_release_version(self, batches: Sequence[str], out_dir: str,
                               program: str) -> List[str]:
@@ -905,6 +949,7 @@ class CheckM(BatchedQuality):
     RECORDED_PROGRAMS = (CHECKM, PPLACER)
     LAYOUT = CHECKM_LAYOUT
     RELEASE_TABLES = CHECKM_RELEASE_FILES
+    SUPERSEDED_RELEASE_FILES = CHECKM_SUPERSEDED_FILES
     NOT_ASSESSED_RELEASE = CHECKM_NOT_ASSESSED
 
     def genome_file(self, accession: str, genome_dir: str) -> str:
@@ -997,18 +1042,6 @@ class CheckM(BatchedQuality):
 
         write_version_file(batch_dir, PPLACER, '\n'.join(sorted(versions)))
 
-    def write_release(self, batches, out_dir):
-        # the alignments have no header, and a blank line between genes that
-        # concatenate() would drop, so they are joined as they are
-        path = os.path.join(out_dir, CHECKM_RELEASE_ALIGNMENT)
-        with open(path, 'w') as out:
-            for batch in batches:
-                alignment = os.path.join(batch, CHECKM_ALIGNMENT)
-                if os.path.exists(alignment):
-                    with open(alignment) as handle:
-                        shutil.copyfileobj(handle, out)
-        self.logger.info('Wrote the alignments of multi-copy genes to {}.'.format(path))
-
 
 class CheckM2(BatchedQuality):
     """CheckM2 over the Prodigal proteins of the genomes of a release."""
@@ -1017,6 +1050,7 @@ class CheckM2(BatchedQuality):
     RECORDED_PROGRAMS = (CHECKM2,)
     LAYOUT = CHECKM2_LAYOUT
     RELEASE_TABLES = ((CHECKM2_BATCH_REPORT, CHECKM2_RELEASE_REPORT),)
+    SUPERSEDED_RELEASE_FILES = CHECKM2_SUPERSEDED_FILES
     NOT_ASSESSED_RELEASE = CHECKM2_NOT_ASSESSED
 
     def genome_file(self, accession: str, genome_dir: str) -> str:
