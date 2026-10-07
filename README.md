@@ -972,9 +972,27 @@ ten tables in `--out_dir`:
 | `trna/<gid>_trna_stats.tsv` | `trnascan` | `metadata_trna_count.tsv` |
 
 `--silva_version` only names the `rna_silva_<ver>` directory, and must match
-`config.SILVA_VERSION`. A genome without a file is given no row in that table,
-and nothing says so; the three `*_count.tsv` tables are the exception, giving
-every genome a row, 0 where nothing was found. The table names are the ones
+`config.SILVA_VERSION`. A genome without a file is given no row in that table;
+the three `*_count.tsv` tables are the exception, giving every genome a row, 0
+where nothing was found. The run ends by logging, for every other table, how many
+genomes have a row, how many had no file to read it from, and how many had one
+with nothing to report (an rRNA table of no hits). A genome with no
+`metadata.genome_nt.tsv` is a WARNING, since every genome has a genomic FASTA to
+calculate it from; the rest are INFO, being rightly missing for some genomes:
+
+```
+Rows written for 2 genomes:
+  metadata_nt.tsv: 2 with a row.
+  metadata_gene.tsv: 1 with a row; 1 had no metadata.genome_gene.tsv.
+  ...
+  metadata_trna_count.tsv: 1 with a row; 1 had no trna/<gid>_trna_stats.tsv.
+```
+
+That is where a release finds that `genomic_metadata`, `rna_silva` or `trnascan`
+did not get to every genome. The log goes to `-l/--log`, or without it to
+`gtdb_migration_tk.log` in `--out_dir`. A genome_dirs file naming no genomes is
+refused, exiting 1, before anything is written, rather than replacing the tables
+in `--out_dir` with ten of no rows. The table names are the ones
 `update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
 
 `parse_assemblies` takes the NCBI assembly summaries the release was selected

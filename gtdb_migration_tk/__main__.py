@@ -118,7 +118,7 @@ def print_help():
      update_reps_db     -> Update species cluter representatives in database.
 
     Metadata:
-      create_tables     -> Create tables with metadata for all genomes (currently only NCBI).
+      create_tables     -> Gather the metadata in each genome directory into tables.
       parse_assemblies  -> Create tables with metadata for all NCBI genomes from assembly summaries.
       parse_ncbi_dir    -> Create tables with metadata for all NCBI genomes from directories.
 
@@ -1118,12 +1118,14 @@ def get_main_parser():
             __silent(grp)
 
     # Create metadata tables
-    with subparser(sub_parsers, 'create_tables', 'Create tables with metadata for all NCBI genomes.') as parser:
+    with subparser(sub_parsers, 'create_tables',
+                   'Gather the metadata in each genome directory into tables.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
             __output_dir(grp, required=True)
             __silva_version(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __log_file(grp, required=False)
             __silent(grp)
 
     # Create metadata tables from NCBI assemblies
