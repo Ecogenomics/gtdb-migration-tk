@@ -26,6 +26,7 @@ import unittest
 from unittest import mock
 
 from gtdb_migration_tk import metadata_manager as M
+from gtdb_migration_tk.utils.common import open_text
 
 
 class TempDirCase(unittest.TestCase):
@@ -392,7 +393,7 @@ class WhatCreateTablesLogs(TempDirCase):
                          'metadata_gene.tsv: 1 with a row; 1 had no metadata.genome_gene.tsv.')
 
         # and the count is of the rows the table holds, header aside
-        with open(os.path.join(out_dir, M.GENE_TABLE)) as handle:
+        with open_text(os.path.join(out_dir, M.GENE_TABLE + '.gz')) as handle:
             self.assertEqual(len(handle.readlines()) - 1, 1)
 
     def test_a_genome_missing_a_file_is_counted_against_the_table_read_from_it(self):
@@ -407,10 +408,43 @@ class WhatCreateTablesLogs(TempDirCase):
     def test_every_table_with_rows_only_for_some_genomes_is_named(self):
         _, messages = self.create_tables([('GCA_000001.1', self.gathered_genome('GCA_000001.1'))])
 
-        for table in (M.NT_TABLE, M.GENE_TABLE, M.taxonomy_table('ssu_gg'),
+        for table in (M.NT_TABLE, M.GENE_TABLE,
                       M.taxonomy_table('ssu_silva'), M.taxonomy_table('lsu_silva_23s'),
                       M.LSU_5S_TABLE, M.TRNA_TABLE):
             self.line_for(messages, table)
+
+    def test_no_greengenes_table_is_written_and_one_an_earlier_run_left_is_removed(self):
+        # nothing writes ssu_gg/ any more, and update_metadata_db -i refuses a
+        # table it does not know, which the empty one left would have been
+        out_dir = os.path.join(self.dir, 'tables')
+        os.makedirs(out_dir)
+        open(os.path.join(out_dir, 'metadata_ssu_gg.tsv'), 'w').close()
+        gpath = self.gathered_genome('GCA_000001.1')
+        os.makedirs(os.path.join(gpath, 'ssu_gg'))
+        with open(os.path.join(gpath, 'ssu_gg', 'ssu.taxonomy.tsv'), 'w') as handle:
+            handle.write('query_id\ttaxonomy\tlength\nq1\tk__Bacteria\t1500\n')
+
+        _, messages = self.create_tables([('GCA_000001.1', gpath)])
+
+        self.assertNotIn('metadata_ssu_gg.tsv', os.listdir(out_dir))
+        self.assertEqual(len(os.listdir(out_dir)), 9)
+        self.assertFalse([m for m in messages if m.strip().startswith('metadata_ssu_gg.tsv:')])
+        self.assertTrue([m for m in messages if m.startswith('Removed ') and 'metadata_ssu_gg.tsv' in m])
+
+    def test_every_table_is_gzipped_and_one_an_earlier_run_left_uncompressed_is_removed(self):
+        out_dir = os.path.join(self.dir, 'tables')
+        os.makedirs(out_dir)
+        open(os.path.join(out_dir, M.NT_TABLE), 'w').close()
+
+        _, messages = self.create_tables([('GCA_000001.1', self.gathered_genome('GCA_000001.1'))])
+
+        names = sorted(os.listdir(out_dir))
+        self.assertEqual(len(names), 9)
+        for name in names:
+            self.assertTrue(name.endswith('.tsv.gz'), name)
+            with open(os.path.join(out_dir, name), 'rb') as handle:
+                self.assertEqual(handle.read(2), b'\x1f\x8b')
+        self.assertTrue([m for m in messages if m.startswith('Removed ') and m.endswith('uncompressed.')])
 
     def test_a_file_with_nothing_to_report_is_not_called_missing(self):
         gpath = self.gathered_genome('GCA_000004.1')
@@ -567,8 +601,9 @@ class ReadingOnThreads(TempDirCase):
             M.MetadataTable('138.2').create_metadata_tables(genome_dirs, out_dir, cpus)
         written = {}
         for name in sorted(os.listdir(out_dir)):
-            with open(os.path.join(out_dir, name)) as handle:
-                written[name] = handle.read()
+            self.assertTrue(name.endswith('.tsv.gz'), name)
+            with open_text(os.path.join(out_dir, name)) as handle:
+                written[name[:-len('.gz')]] = handle.read()
         return written
 
     def test_the_tables_are_the_same_whatever_cpus_is(self):

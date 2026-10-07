@@ -42,6 +42,7 @@ from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
 from gtdb_migration_tk.ncbi_utils import read_assembly_summary
+from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_gzip_text, remove_uncompressed
 from gtdb_migration_tk.utils.tools import openfile
 
 
@@ -358,19 +359,19 @@ class NCBIMetaDir(object):
         gtdb_genome_path_file : str
             genome_dirs file: accession, directory, canonical accession.
         output_dir : str
-            Directory NCBI_DIR_TABLE is written to.
+            Directory NCBI_DIR_TABLE is written to, gzipped (with GZIP_SUFFIX).
 
         @return: the path of the table written.
         """
 
-        output_file = os.path.join(output_dir, NCBI_DIR_TABLE)
+        output_file = os.path.join(output_dir, NCBI_DIR_TABLE + GZIP_SUFFIX)
         genome_count = get_num_lines(gtdb_genome_path_file)
         self.logger.info('Reading the NCBI files of {:,} genomes on {:,} processes into {}.'.format(
             genome_count, self.cpus, output_file))
 
         missing = defaultdict(list)
         written = 0
-        with open(output_file, 'w') as fout, open(gtdb_genome_path_file) as genomes:
+        with open_gzip_text(output_file) as fout, open(gtdb_genome_path_file) as genomes:
             fout.write(self.header())
             with mp.Pool(processes=self.cpus) as pool:
                 for gid, line_to_write, absent in tqdm(
@@ -392,6 +393,7 @@ class NCBIMetaDir(object):
                     self.logger.warning(message)
         self.logger.info('Wrote the NCBI metadata of {:,} genomes to {}.'.format(written, output_file))
 
+        remove_uncompressed(output_file, self.logger)
         return output_file
 
     def ncbi_parser_worker(self, line):
@@ -505,19 +507,20 @@ class NCBIMeta(object):
             The NCBI assembly summaries the release was selected from, gzipped or
             not, read by column name (ncbi_utils.read_assembly_summary()).
         output_dir : str
-            Directory NCBI_ASSEMBLY_TABLE is written to, a row per genome.
+            Directory NCBI_ASSEMBLY_TABLE is written to, gzipped (with GZIP_SUFFIX), a row
+            per genome.
 
         @return: the path of the table written.
         """
 
-        output_file = os.path.join(output_dir, NCBI_ASSEMBLY_TABLE)
+        output_file = os.path.join(output_dir, NCBI_ASSEMBLY_TABLE + GZIP_SUFFIX)
         self.logger.info('Writing the NCBI metadata of every genome of {:,} assembly '
                          'summaries to {}.'.format(len(assembly_summary_files), output_file))
 
         # write out metadata
         written = set()
         again = []
-        with open(output_file, 'w') as fout:
+        with open_gzip_text(output_file) as fout:
             fout.write('\t'.join(['genome_id'] + [field for column in self.COLUMNS
                                                   for field in self.fields[column]]) + '\n')
             for assembly_file in assembly_summary_files:
@@ -551,6 +554,7 @@ class NCBIMeta(object):
         self.logger.info('Wrote the NCBI metadata of {:,} genome(s) from {:,} assembly summaries '
                          'to {}.'.format(len(written), len(assembly_summary_files), output_file))
 
+        remove_uncompressed(output_file, self.logger)
         return output_file
 
     def format_wgs(self, wgs_accession):

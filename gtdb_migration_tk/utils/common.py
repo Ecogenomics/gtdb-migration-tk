@@ -1,4 +1,5 @@
 import csv
+import io
 import os
 import gzip
 import logging
@@ -247,6 +248,77 @@ def conda_package_version(executable: str, package: str) -> Optional[str]:
             return str(meta['version'])
 
     return None
+
+
+# The suffix a gzipped table is written under, after its own name.
+GZIP_SUFFIX = '.gz'
+
+# How hard a table is compressed: gzip's own default, close to its best for a
+# fraction of the time of level 9 on tables of a million and more genomes.
+TABLE_COMPRESSLEVEL = 6
+
+
+class _GzipTextWriter(io.TextIOWrapper):
+    """A text stream gzipping to a file, which closes the file when it is closed."""
+
+    def __init__(self, raw, compressed):
+        super().__init__(compressed, encoding='utf-8', newline='\n')
+        self._raw = raw
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            self._raw.close()
+
+
+def open_gzip_text(path: str):
+    """Open a file to write text to, gzipped, the same text giving the same bytes.
+
+    The gzip header records no time and no file name, as strains type_table's
+    summary does, so a table written twice from the same genomes is the same
+    file, and a checksum of it says whether anything changed.
+
+    Parameters
+    ----------
+    path : str
+        File to write, e.g. metadata_nt.tsv.gz.
+
+    @return: a text stream, to be used as a context manager.
+    """
+
+    raw = open(path, 'wb')
+    try:
+        compressed = gzip.GzipFile(filename='', fileobj=raw, mode='wb', mtime=0,
+                                   compresslevel=TABLE_COMPRESSLEVEL)
+    except BaseException:
+        raw.close()
+        raise
+    return _GzipTextWriter(raw, compressed)
+
+
+def remove_uncompressed(path: str, logger=None) -> bool:
+    """Remove the uncompressed table an earlier run wrote where a gzipped one now is.
+
+    Parameters
+    ----------
+    path : str
+        The gzipped table just written, e.g. out/metadata_nt.tsv.gz.
+    logger : logging.Logger, optional
+        Told of a table removed.
+
+    @return: whether one was removed.
+    """
+
+    if not path.endswith(GZIP_SUFFIX):
+        return False
+    uncompressed = path[:-len(GZIP_SUFFIX)]
+    if not os.path.exists(uncompressed):
+        return False
+    os.remove(uncompressed)
+    if logger is not None:
+        logger.info('Removed {}, which an earlier run wrote uncompressed.'.format(uncompressed))
+    return True
 
 
 def open_text(path: str):

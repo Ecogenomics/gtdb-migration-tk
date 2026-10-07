@@ -38,6 +38,7 @@ from gtdb_migration_tk import main as main_py
 from gtdb_migration_tk import metadata_database_manager
 from gtdb_migration_tk import metadata_ncbi_manager as N
 from gtdb_migration_tk.metadata_ncbi_manager import NCBI_ASSEMBLY_TABLE, NCBIMeta
+from gtdb_migration_tk.utils.common import open_text
 
 # the columns of an assembly summary as NCBI publishes it today
 SUMMARY_HEADER = ['assembly_accession', 'bioproject', 'biosample', 'wgs_master', 'refseq_category',
@@ -89,8 +90,8 @@ class TempDirCase(unittest.TestCase):
 
     def parse(self, summaries):
         output = NCBIMeta().parse_assemblies(summaries, self.dir)
-        self.assertEqual(output, os.path.join(self.dir, NCBI_ASSEMBLY_TABLE))
-        with open(output) as handle:
+        self.assertEqual(output, os.path.join(self.dir, NCBI_ASSEMBLY_TABLE + '.gz'))
+        with open_text(output) as handle:
             return [line.split('\t') for line in handle.read().splitlines()]
 
 
@@ -283,6 +284,27 @@ FEATURES             Location/Qualifiers
 """
 
 
+class WritingGzippedTables(TempDirCase):
+    def test_parse_ncbi_assemblies_writes_its_table_gzipped_removing_an_uncompressed_one(self):
+        open(os.path.join(self.dir, NCBI_ASSEMBLY_TABLE), 'w').close()
+        summary = self.summary('assembly_summary_bacteria_refseq.txt', [summary_row('GCF_000000001.1')])
+        output = NCBIMeta().parse_assemblies([summary], self.dir)
+
+        with open(output, 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+        self.assertFalse(os.path.exists(os.path.join(self.dir, NCBI_ASSEMBLY_TABLE)))
+
+    def test_parse_ncbi_dir_writes_its_table_gzipped_removing_an_uncompressed_one(self):
+        open(os.path.join(self.dir, N.NCBI_DIR_TABLE), 'w').close()
+        genome_dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        open(genome_dirs, 'w').close()
+        output = N.NCBIMetaDir(1).parse_ncbi_dir(genome_dirs, self.dir)
+
+        with open(output, 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+        self.assertFalse(os.path.exists(os.path.join(self.dir, N.NCBI_DIR_TABLE)))
+
+
 class ParsingTheNcbiDirectories(TempDirCase):
     """parse_ncbi_dir gives every genome a row, empty where an NCBI file is missing."""
 
@@ -312,8 +334,8 @@ class ParsingTheNcbiDirectories(TempDirCase):
                 handle.write('{}\t{}\tG{}\n'.format(gid, gpath, gid[4:-2]))
         with self.assertLogs('timestamp', level='INFO') as logged:
             output = N.NCBIMetaDir(cpus).parse_ncbi_dir(genome_dirs, self.dir)
-        self.assertEqual(output, os.path.join(self.dir, N.NCBI_DIR_TABLE))
-        with open(output) as handle:
+        self.assertEqual(output, os.path.join(self.dir, N.NCBI_DIR_TABLE + '.gz'))
+        with open_text(output) as handle:
             lines = handle.read().splitlines()
         header = lines[0].split('\t')
         rows = {line.split('\t')[0]: dict(zip(header, line.split('\t'))) for line in lines[1:]}

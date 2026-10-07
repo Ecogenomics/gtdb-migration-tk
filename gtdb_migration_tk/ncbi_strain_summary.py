@@ -56,6 +56,7 @@ from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
 from gtdb_migration_tk.ncbi_utils import NCBI_NA, read_assembly_summary, strain_identifiers
+from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_gzip_text, remove_uncompressed
 
 # the table written in --out_dir, which update_metadata_db loads under this name
 STRAIN_SUMMARY_NAME = 'strain_summary_file.tsv'
@@ -180,12 +181,12 @@ class NCBIStrainParser(object):
         genome_dir_file : str
             genome_dirs file: accession, directory, canonical accession.
         out_dir : str
-            Directory STRAIN_SUMMARY_NAME is written to.
+            Directory STRAIN_SUMMARY_NAME is written to, gzipped (with GZIP_SUFFIX).
 
         @return: the path of the table written.
         """
 
-        output_file = os.path.join(out_dir, STRAIN_SUMMARY_NAME)
+        output_file = os.path.join(out_dir, STRAIN_SUMMARY_NAME + GZIP_SUFFIX)
         genome_count = get_num_lines(genome_dir_file)
         self.logger.info('Reading the assembly reports of {:,} genomes on {:,} processes into {}.'.format(
             genome_count, self.cpus, output_file))
@@ -196,7 +197,7 @@ class NCBIStrainParser(object):
         written = 0
         partial = output_file + '.partial'
         try:
-            with open(partial, 'w') as outf, open(genome_dir_file) as genomes:
+            with open_gzip_text(partial) as outf, open(genome_dir_file) as genomes:
                 outf.write('\t'.join(STRAIN_SUMMARY_HEADER) + '\n')
                 with mp.Pool(processes=max(1, self.cpus)) as pool:
                     for genome_id, species, strain_ids, substrain, has_report in tqdm(
@@ -217,6 +218,7 @@ class NCBIStrainParser(object):
                 os.remove(partial)
             raise
         os.replace(partial, output_file)
+        remove_uncompressed(output_file, self.logger)
 
         self.logger.info("Substrains of interest:")
         for substr in sorted(substrains):

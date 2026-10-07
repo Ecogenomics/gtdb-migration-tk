@@ -15,6 +15,7 @@
 #                                                                             #
 ###############################################################################
 
+import io
 import os
 import re
 import sys
@@ -31,7 +32,7 @@ from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTP
 from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import (SKIP, UNKNOWN_EXAMPLES, GTDBImporter,
                                                        UnknownGenomesError, id_at_source)
-from gtdb_migration_tk.utils.common import open_text
+from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_text
 
 # rows a statement of update_type_designation hands the server at a time
 PAGE_SIZE = 10000
@@ -50,6 +51,80 @@ WHOLE_NUMBER = re.compile(r'^[+-]?[0-9]+$')
 
 # how many lines or genomes an error names
 EXAMPLES = 10
+
+
+# update_ncbi_tax_db: what each of its three files is written to, in the order
+# they are loaded and the error file names them
+NCBI_TAX_FIELDS = (('metadata_ncbi', 'ncbi_organism_name'),
+                   ('metadata_taxonomy', 'ncbi_taxonomy'),
+                   ('metadata_taxonomy', 'ncbi_taxonomy_unfiltered'))
+
+# update_ncbi_tax_db: in --out_dir, each genome without one of the three, and
+# what a missing value is marked with there
+NCBI_TAX_MISSING_NAME = 'ncbi_tax_missing.tsv'
+MISSING = 'missing'
+
+
+# The temporary table reset_unwritten() puts the genomes just written in.
+WRITTEN_TABLE = 'gtdb_written_genomes'
+
+# What reset_unwritten() sets to NULL: a genome holding a value that this run gave
+# none. A genome given a value is rewritten by upsert() whatever it held, so
+# setting it to NULL first only rewrote the row once more.
+RESET_UNWRITTEN = ('UPDATE {table} AS m SET {field} = NULL FROM genomes g '
+                   'WHERE g.id = m.id AND m.{field} IS NOT NULL '
+                   'AND NOT EXISTS (SELECT 1 FROM ' + WRITTEN_TABLE + ' w WHERE w.id_at_source = g.id_at_source)')
+
+
+def reset_unwritten(cur, table: str, field: str, written: Iterable[str]) -> int:
+    """Set a field to NULL for every genome holding a value this run did not write.
+
+    Done once the field is written, in the same transaction, which leaves what
+    setting it to NULL for every genome first did -- the new values, and NULL
+    for every other genome -- without rewriting the rows of the genomes given a
+    value. PostgreSQL writes a new version of every row an UPDATE touches: the
+    NULLs alone rewrote metadata_ncbi, 1.3 GB, for each field, and upsert()
+    then rewrote it again, each version kept to the end of the transaction.
+
+    Parameters
+    ----------
+    cur : cursor
+        The cursor of the caller's transaction.
+    table, field : str
+        e.g. metadata_ncbi, ncbi_organism_name.
+    written : iterable of str
+        The genomes given a value, as genomes.id_at_source names them.
+
+    @return: the number of genomes set to NULL.
+    """
+
+    cur.execute('CREATE TEMPORARY TABLE IF NOT EXISTS {} (id_at_source TEXT) ON COMMIT DROP'.format(WRITTEN_TABLE))
+    cur.execute('TRUNCATE {}'.format(WRITTEN_TABLE))
+    cur.copy_expert('COPY {} (id_at_source) FROM STDIN'.format(WRITTEN_TABLE),
+                    io.StringIO(''.join(genome + '\n' for genome in written)))
+    cur.execute('ANALYZE {}'.format(WRITTEN_TABLE))
+    cur.execute(RESET_UNWRITTEN.format(table=table, field=field))
+    return cur.rowcount
+
+
+def taxonomy_string(value: str) -> str:
+    """A taxonomy as update_ncbi_tax_db writes it: no trailing ';', no space around a rank.
+
+    The same string biolib_lite's Taxonomy().read() gave, joined again with ';',
+    without its failing on an empty one.
+
+    Parameters
+    ----------
+    value : str
+        e.g. 'd__Bacteria; p__Pseudomonadota;'.
+
+    @return: e.g. 'd__Bacteria;p__Pseudomonadota', or '' for an empty value.
+    """
+
+    value = value.strip()
+    if value.endswith(';'):
+        value = value[:-1]
+    return ';'.join(rank.strip() for rank in value.split(';')) if value else ''
 
 
 class MetadataTableError(ValueError):
@@ -142,7 +217,7 @@ def read_genome_list(path: str) -> Set[str]:
     return genomes
 
 
-def confirm_partial_load(genome_list: str) -> None:
+def confirm_partial_load(genome_list: str, command: str = 'update_metadata_db') -> None:
     """Ask before loading a genome list's genomes after setting the fields to NULL for every genome.
 
     Asked on the terminal whatever runs it: with no one to answer (nohup, a
@@ -153,6 +228,8 @@ def confirm_partial_load(genome_list: str) -> None:
     ----------
     genome_list : str
         The --genome_list file.
+    command : str
+        The command asking, as its messages name it.
 
     @return: None, where the answer is yes.
 
@@ -169,11 +246,11 @@ def confirm_partial_load(genome_list: str) -> None:
     try:
         answer = input(question)
     except EOFError:
-        sys.exit('update_metadata_db: no answer to whether to proceed (is there no terminal?); '
+        sys.exit('{}: no answer to whether to proceed (is there no terminal?); '
                  'nothing was changed. Give --do_not_null_field to keep the other genomes\' '
-                 'metadata.')
+                 'metadata.'.format(command))
     if answer.strip().lower() not in ('y', 'yes'):
-        sys.exit('update_metadata_db: not proceeding; nothing was changed.')
+        sys.exit('{}: not proceeding; nothing was changed.'.format(command))
 
 # what update_type_designation writes
 TYPE_STRAIN_OF_SPECIES = 'type strain of species'
@@ -224,7 +301,6 @@ class MetadataDatabaseManager(object):
         self.logger = logging.getLogger('timestamp')
         self.description_table = {'metadata_gene.tsv':['metadata_gene.desc.tsv'],
                                   'metadata_nt.tsv':['metadata_nt.desc.tsv'],
-                                  'metadata_ssu_gg.tsv':['metadata_rna.table.desc.tsv'],
                                   'metadata_ssu_silva.tsv':['metadata_rna.table.desc.tsv','metadata_sequence.desc.tsv'],
                                   'metadata_lsu_silva_23s.tsv':['metadata_rna.table.desc.tsv','metadata_sequence.desc.tsv'],
                                   'metadata_lsu_5S.tsv':['metadata_rna.table.desc.tsv','metadata_sequence.desc.tsv'],
@@ -273,16 +349,29 @@ class MetadataDatabaseManager(object):
 
         desc_table_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                       'data_files', 'table_description')
-        tables = sorted(glob.glob(os.path.join(table_folder, '*.tsv')))
+        # a table is known by its name without GZIP_SUFFIX: create_tables,
+        # parse_ncbi_assemblies, parse_ncbi_dir and ncbi_strains write them gzipped
+        tables = sorted(glob.glob(os.path.join(table_folder, '*.tsv'))
+                        + glob.glob(os.path.join(table_folder, '*.tsv' + GZIP_SUFFIX)))
         if not tables:
-            raise MetadataTableError('{} holds no .tsv table.'.format(table_folder))
-        unknown = [os.path.basename(table) for table in tables
-                   if os.path.basename(table) not in self.description_table]
+            raise MetadataTableError('{} holds no .tsv or .tsv.gz table.'.format(table_folder))
+
+        def name(table):
+            base = os.path.basename(table)
+            return base[:-len(GZIP_SUFFIX)] if base.endswith(GZIP_SUFFIX) else base
+
+        unknown = [os.path.basename(table) for table in tables if name(table) not in self.description_table]
         if unknown:
-            raise MetadataTableError('{} holds {:,} table(s) this command does not know: {}. It knows {}.'.format(
-                table_folder, len(unknown), ', '.join(unknown), ', '.join(sorted(self.description_table))))
-        return [(table, [os.path.join(desc_table_dir, desc)
-                         for desc in self.description_table[os.path.basename(table)]])
+            raise MetadataTableError('{} holds {:,} table(s) this command does not know: {}. It knows {}, '
+                                     'gzipped or not.'.format(table_folder, len(unknown), ', '.join(unknown),
+                                                             ', '.join(sorted(self.description_table))))
+        both = sorted(name(table) for table in tables if table.endswith(GZIP_SUFFIX)
+                      and table[:-len(GZIP_SUFFIX)] in tables)
+        if both:
+            raise MetadataTableError('{} holds {:,} table(s) both gzipped and not: {}. Each would be loaded '
+                                     'twice; remove the one that is not of this release.'.format(
+                                         table_folder, len(both), ', '.join(both)))
+        return [(table, [os.path.join(desc_table_dir, desc) for desc in self.description_table[name(table)]])
                 for table in tables]
 
     @one_transaction
@@ -378,16 +467,10 @@ class MetadataDatabaseManager(object):
                 self.logger.info('{:,} column(s) of {} are in no description and are not loaded: {}.'.format(
                     len(undescribed), metadata_file, ', '.join(undescribed)))
 
-            # set fields to NULL for every genome, unless asked not to. It is in
-            # the transaction the new values are written in, so a failure
-            # leaves the values the fields held rather than NULL
-            if not do_not_null_field:
-                for _, field in loaded:
-                    self.logger.info('Setting {}.{} to NULL for every genome.'.format(
-                        descriptions[field][1], field))
-                    self.temp_cur.execute('UPDATE {} SET {} = NULL'.format(descriptions[field][1], field))
-
             written = Counter()
+            # the genomes of a field left without a value, which with seen
+            # say whom the field was written for (reset_unwritten())
+            empty: Dict[str, Set[str]] = {field: set() for _, field in loaded}
             chunk: Dict[str, List[Tuple[str, str]]] = {field: [] for _, field in loaded}
             in_chunk = 0
             seen: Set[str] = set()
@@ -424,6 +507,7 @@ class MetadataDatabaseManager(object):
                 for index, field in loaded:
                     value = row[index]
                     if not value.strip():
+                        empty[field].add(genome_id)
                         continue
                     if descriptions[field][0].upper() in INTEGER_TYPES:
                         number = whole_number(value)
@@ -445,6 +529,16 @@ class MetadataDatabaseManager(object):
             rows, metadata_file, rows - skipped, skipped, keep_source))
         for _, field in loaded:
             self.logger.info('Wrote {}.{} for {:,} genomes.'.format(descriptions[field][1], field, written[field]))
+
+        # the field set to NULL for every genome holding a value this table did
+        # not write, unless asked not to. It is in the transaction the new
+        # values are written in, so a failure leaves the values the fields held
+        if not do_not_null_field:
+            for _, field in loaded:
+                cleared = reset_unwritten(self.temp_cur, descriptions[field][1], field,
+                                          (gid for gid in seen if gid not in empty[field]))
+                self.logger.info('Set {}.{} to NULL for {:,} genome(s) holding a value this table did '
+                                 'not give them.'.format(descriptions[field][1], field, cleared))
 
     @one_transaction
     def update_reps(self, final_cluster_file):
@@ -601,94 +695,147 @@ class NCBITaxDatabaseManager(object):
         self.temp_cur = self.temp_con.cursor()
 
 
-    # set a field to NULL for every genome, in the transaction its new values are
-    # written in; this asked [y/n] first, which a run with no terminal could not answer
-    def set_field_to_null(self,metadata_table,field):
-        self.logger.info('Setting {}.{} to NULL for every genome.'.format(metadata_table, field))
-        q = ("UPDATE {} SET {} = NULL".format(
-            metadata_table, field))
-        self.temp_cur.execute(q)
+    def load_two_column_file(self, path: str, table: str, field: str, keep: Set[str],
+                             importer: GTDBImporter, normalise=str.strip) -> Set[str]:
+        """Write one field from a file of genome and value, in chunks, inside the caller's transaction.
+
+        Parameters
+        ----------
+        path : str
+            Tab-separated, no header: the genome (GB_GCA_... or GCA_...) and its value.
+        table, field : str
+            Where the value is written, e.g. metadata_ncbi, ncbi_organism_name.
+        keep : set of str
+            The genomes to write, as genomes.id_at_source names them.
+        importer : GTDBImporter
+            The importer of the caller's transaction.
+        normalise : callable
+            What is made of a value before it is written, e.g. taxonomy_string.
+
+        @return: the genomes of keep given a value; one with no line, or an
+                 empty value, is not.
+
+        Raises
+        ------
+        MetadataTableError
+            The file names a genome of keep twice; nothing is written.
+        """
+
+        written: Set[str] = set()
+        chunk: List[Tuple[str, str]] = []
+        rows = 0
+        with open_text(path) as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                rows += 1
+                genome, _, value = line.rstrip('\n').partition('\t')
+                genome_id = id_at_source(genome.strip())
+                if genome_id not in keep:
+                    continue
+                if genome_id in written:
+                    raise MetadataTableError('{} names {} more than once, again on line {:,}; nothing was '
+                                             'written.'.format(path, genome_id, line_number))
+                value = normalise(value)
+                if not value:
+                    continue
+                written.add(genome_id)
+                chunk.append((genome_id, value))
+                if len(chunk) >= CHUNK_GENOMES:
+                    importer.import_metadata_to_db(table, field, 'TEXT', chunk, unknown=SKIP)
+                    chunk = []
+        if chunk:
+            importer.import_metadata_to_db(table, field, 'TEXT', chunk, unknown=SKIP)
+
+        self.logger.info('Wrote {}.{} for {:,} of the {:,} genomes of {}.'.format(
+            table, field, len(written), rows, path))
+        return written
 
     @one_transaction
-    def update_ncbitax_db(self, organism_name_file,filtered_file,unfiltered_file, genome_list_file,do_not_null_field=False):
-        """Add organism name to database."""
-        gtdbimporter = GTDBImporter(self.temp_cur)
+    def update_ncbi_tax_db(self, organism_name_file: str, filtered_file: str, unfiltered_file: str,
+                           genome_list_file: Optional[str], out_dir: str, do_not_null_field: bool = False) -> None:
+        """Write the NCBI organism name, taxonomy and unfiltered taxonomy of each genome, in one transaction.
 
-        genome_list = set()
-        data_to_commit = []
+        A genome is written where it is in --genome_list, or, without one, in the
+        genomes table: the files cover every assembly NCBI holds. Each genome so
+        chosen without one of the three -- no line in its file, or an empty
+        value -- is written to NCBI_TAX_MISSING_NAME in out_dir, which is written
+        whether or not there are any, and counted in a WARNING for each field.
+
+        Parameters
+        ----------
+        organism_name_file : str
+            Genome and organism name, as parse_ncbi_taxonomy writes them.
+        filtered_file, unfiltered_file : str
+            Genome and standardised taxonomy, and genome and taxonomy as NCBI gives it.
+        genome_list_file : str or None
+            --genome_list: a table whose first column names the genomes.
+        out_dir : str
+            Directory the error file is written to.
+        do_not_null_field : bool
+            Keep what the fields hold for genomes the files do not write.
+
+        @return: None
+
+        Raises
+        ------
+        MetadataTableError
+            A file names a genome twice; nothing is written.
+        """
+
+        importer = GTDBImporter(self.temp_cur)
         if genome_list_file:
-            for line in open(genome_list_file):
-                if '\t' in line:
-                    genome_list.add(line.rstrip().split('\t')[0])
-                else:
-                    genome_list.add(line.rstrip().split(',')[0])
+            keep = read_genome_list(genome_list_file)
+            keep_source = genome_list_file
+        else:
+            keep = importer.genomes()
+            keep_source = 'the genomes table'
+        self.logger.info('Writing the NCBI organism names and taxonomies of the {:,} genomes of {}.'.format(
+            len(keep), keep_source))
 
-        # add full taxonomy string to database
-        records_to_update =0
-        for line in open(organism_name_file):
-            line_split = line.strip().split('\t')
+        present = []
+        for (table, field), path, normalise in zip(NCBI_TAX_FIELDS,
+                                                   (organism_name_file, filtered_file, unfiltered_file),
+                                                   (str.strip, taxonomy_string, taxonomy_string)):
+            given = self.load_two_column_file(path, table, field, keep, importer, normalise)
+            if not do_not_null_field:
+                cleared = reset_unwritten(self.temp_cur, table, field, given)
+                self.logger.info('Set {}.{} to NULL for {:,} genome(s) holding a value {} did not give '
+                                 'them.'.format(table, field, cleared, path))
+            present.append(given)
 
-            gid = line_split[0]
-            org_name = line_split[1]
-            if genome_list_file and gid not in genome_list:
-                continue
+        self.write_missing(keep, present, keep_source, out_dir)
 
-            data_to_commit.append((gid, org_name))
-            records_to_update += 1
+    def write_missing(self, keep: Set[str], present: Sequence[Set[str]], keep_source: str, out_dir: str) -> str:
+        """Write each genome without an organism name, taxonomy or unfiltered taxonomy.
 
-        if not do_not_null_field:
-            self.set_field_to_null('metadata_ncbi', 'ncbi_organism_name')
-        self.logger.info('Updating {} for {} genomes.'.format(
-            'ncbi_organism_name', records_to_update))
-        gtdbimporter.import_metadata_to_db('metadata_ncbi', 'ncbi_organism_name', 'TEXT', data_to_commit,
-                                           unknown=SKIP)
+        Parameters
+        ----------
+        keep : set of str
+            The genomes that should have all three.
+        present : sequence of set of str
+            For each of NCBI_TAX_FIELDS, the genomes given a value.
+        keep_source : str
+            Where keep came from, for the log.
+        out_dir : str
+            Directory NCBI_TAX_MISSING_NAME is written to.
 
-        taxonomy = Taxonomy().read(filtered_file)
-        data_filtered_to_commit = []
-        records_to_update =0
-        # add full taxonomy string to database
-        for genome_id, taxa in taxonomy.items():
-            if genome_id.startswith('GCA_'):
-                genome_id = 'GB_' + genome_id
-            elif genome_id.startswith('GCF_'):
-                genome_id = 'RS_' + genome_id
+        @return: the path of the file written.
+        """
 
-            if genome_list_file and genome_id not in genome_list:
-                continue
-            taxa_str = ';'.join(taxa)
-            data_filtered_to_commit.append((genome_id, taxa_str))
-            records_to_update += 1
-        if not do_not_null_field:
-            self.set_field_to_null('metadata_taxonomy', 'ncbi_taxonomy')
-        self.logger.info('Updating {} for {} genomes.'.format(
-            'ncbi_taxonomy', records_to_update))
-        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy', 'TEXT', data_filtered_to_commit,
-                                           unknown=SKIP)
+        path = os.path.join(out_dir, NCBI_TAX_MISSING_NAME)
+        missing = sorted(gid for gid in keep if any(gid not in given for given in present))
+        with open(path, 'w') as handle:
+            handle.write('\t'.join(['genome_id'] + [field for _table, field in NCBI_TAX_FIELDS]) + '\n')
+            for gid in missing:
+                handle.write('\t'.join([gid] + [MISSING if gid not in given else '' for given in present]) + '\n')
 
-        # read taxonomy file
-        unfiltered_taxonomy = Taxonomy().read(unfiltered_file)
-        data_unfiltered_to_commit = []
-
-        # add full taxonomy string to database
-        records_to_update =0
-        for genome_id, taxa in unfiltered_taxonomy.items():
-            if genome_id.startswith('GCA_'):
-                genome_id = 'GB_' + genome_id
-            elif genome_id.startswith('GCF_'):
-                genome_id = 'RS_' + genome_id
-
-            if genome_list_file and genome_id not in genome_list:
-                continue
-
-            taxa_str = ';'.join(taxa)
-            data_unfiltered_to_commit.append((genome_id, taxa_str))
-            records_to_update += 1
-        if not do_not_null_field:
-            self.set_field_to_null('metadata_taxonomy', 'ncbi_taxonomy_unfiltered')
-        self.logger.info('Updating {} for {} genomes.'.format(
-            'ncbi_taxonomy_unfiltered', records_to_update))
-        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'ncbi_taxonomy_unfiltered', 'TEXT', data_unfiltered_to_commit,
-                                           unknown=SKIP)
-
-
-
+        for (_table, field), given in zip(NCBI_TAX_FIELDS, present):
+            without = sorted(keep - given)
+            if without:
+                self.logger.warning('{:,} genome(s) of {} have no {}, e.g. {}; each is in {}.'.format(
+                    len(without), keep_source, field, ', '.join(without[:EXAMPLES]), path))
+        if not missing:
+            self.logger.info('Every genome of {} has an organism name, a taxonomy and an unfiltered '
+                             'taxonomy.'.format(keep_source))
+        return path
