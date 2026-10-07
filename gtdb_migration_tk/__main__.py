@@ -119,9 +119,9 @@ def print_help():
      update_reps_db     -> Update species cluter representatives in database.
 
     Metadata:
-      create_tables     -> Gather the metadata in each genome directory into tables.
-      parse_assemblies  -> Create tables with metadata for all NCBI genomes from assembly summaries.
-      parse_ncbi_dir    -> Create tables with metadata for all NCBI genomes from directories.
+      create_tables         -> Gather the metadata in each genome directory into tables.
+      parse_ncbi_assemblies -> Create tables with metadata for all NCBI genomes from assembly summaries.
+      parse_ncbi_dir        -> Create tables with metadata for all NCBI genomes from directories.
 
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release.
@@ -131,7 +131,7 @@ def print_help():
       lpsn         -> Process steps for LPSN.
       bacdive      -> Process steps for BacDive [In Dev].
       strains      -> Set of tools to combined information from LPSN and DSMZ.
-      ncbi_strains -> Parse the assembly report file, the genomic.gbff file and the wgsmaster.gbff to find all strain ids.
+      ncbi_strains -> Strain IDs from each genome's assembly report, and NCBI type material status from the assembly summaries.
 
     Curation files
       curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names.
@@ -224,8 +224,10 @@ def __checkm2_not_assessed(group, required):
                             'before this update are cleared.')
 
 
-def __cpus(group, default=1):
-    group.add_argument('-c', '--cpus', type=int ,default=default, help='Number of threads.')
+def __cpus(group):
+    # 1 for every command: a run is told how much of the machine, and of the file
+    # server, it may take, rather than taking what a default decided
+    group.add_argument('-c', '--cpus', type=int, default=1, help='Number of threads.')
 
 
 def __database_setup(group):
@@ -1119,25 +1121,25 @@ def get_main_parser():
             __silva_version(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
-            __cpus(grp, default=8)
+            __cpus(grp)
             __silent(grp)
 
     # Create metadata tables from NCBI assemblies
-    with subparser(sub_parsers, 'parse_assemblies',
+    with subparser(sub_parsers, 'parse_ncbi_assemblies',
                    'Parse NCBI assembly summary files to generate metadata.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __new_list_genomes(grp, required=True)
-            __metadata_file(grp, required=True)
-            __output_file(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
-            __log_file(grp, required=False)
             __silent(grp)
 
     # Parse GTDB directory to generate extra NCBI metadata
     with subparser(sub_parsers, 'parse_ncbi_dir', 'Parse GTDB directory to generate extra NCBI metadata.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
-            __output_file(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
             __cpus(grp)
@@ -1151,7 +1153,7 @@ def get_main_parser():
         with arg_group(parser, 'options arguments') as grp:
             # the mirror is on NFS, so the walk is bound by round trip latency
             # rather than by CPU; a handful of threads saturates the client
-            __cpus(grp, default=8)
+            __cpus(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'ncbi_genome_sync', 'Sync NCBI data to local directory.') as parser:
@@ -1181,7 +1183,7 @@ def get_main_parser():
             # 46.0s against 4.3s. Past 16 the copying is bound by the link and the
             # hashing turns back down -- 64 was slower than 32 -- so it does not
             # follow the core count
-            __cpus(grp, default=16)
+            __cpus(grp)
 
     # # Steps to propagate GTDB Taxonomy
     with subparser(sub_parsers, 'propagate_gtdb_taxonomy', 'Propagating GTDB taxonomy to new release.') as parser:
@@ -1346,10 +1348,7 @@ def get_main_parser():
     with subparser(sub_parsers, 'ncbi_strains', 'NCBI Strain Parser.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __gtdb_genome_path_file(grp, required=True)
-            __gbk_bac_assembly_file(grp, required=True)
-            __gbk_arc_assembly_file(grp, required=True)
-            __rfq_bac_assembly_file(grp, required=True)
-            __rfq_arc_assembly_file(grp, required=True)
+            __new_list_genomes(grp, required=True)
             __log_file(grp, required=True)
             __output_dir(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:

@@ -283,8 +283,9 @@ the inputs of the run it continues: a genome the mirror has stopped offering
 since keeps the directory and the report row the interrupted run gave it.
 
 `--cpus` is the number of genomes compared, and copied, at once. It defaults to
-16. Neither half of the work is bound by the CPU: copying a genome is round trips to the file server, and the comparison only
-reads a FASTA where NCBI has reissued one. Measured against a mirror on NFS, 200
+1, as it does for every command; give it 16. Neither half of the work is bound by
+the CPU: copying a genome is round trips to the file server, and the comparison
+only reads a FASTA where NCBI has reissued one. Measured against a mirror on NFS, 200
 genomes of the size NCBI serves:
 
 | `--cpus` | copying (`--fresh`) | comparing, MD5s agree | comparing, every FASTA reissued |
@@ -295,7 +296,7 @@ genomes of the size NCBI serves:
 | 32 | 4.2s | 3.4s | 3.9s |
 | 64 | 4.0s | -- | 4.2s |
 
-Hence the default of 16. Raise it to 32 for a release NCBI has reissued heavily;
+Hence 16. Raise it to 32 for a release NCBI has reissued heavily;
 past that the copying is bound by the link rather than by how many genomes are in
 flight, and the hashing turns back down. There is no reason to scale with the
 core count: 64 was slower than 32 on the one part of this that is CPU work. Lower
@@ -948,7 +949,7 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 | Command | Description |
 | --- | --- |
 | `create_tables` | Gather the metadata written into each genome directory into the tables `update_metadata_db` loads |
-| `parse_assemblies` | Parse NCBI assembly summary files to generate metadata |
+| `parse_ncbi_assemblies` | Parse NCBI assembly summary files to generate metadata |
 | `parse_ncbi_dir` | Parse the GTDB directory for extra NCBI metadata |
 | `add_names_dmp` | Parse an NCBI `names.dmp` file into a table |
 | `ncbi_genome_category` | Identify genomes marked by NCBI as a MAG or SAG |
@@ -994,9 +995,9 @@ refused, exiting 1, before anything is written, rather than replacing the tables
 in `--out_dir` with ten of no rows. The table names are the ones
 `update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
 
-`create_tables` reads `--cpus` genomes at once on threads (default 8) and writes
-them in the order of the genome_dirs file, so the tables are the same whatever
-`--cpus` is. The work is opening a dozen small files in each genome directory,
+`create_tables` reads `--cpus` genomes at once on threads (default 1; give it
+8) and writes them in the order of the genome_dirs file, so the tables are the
+same whatever `--cpus` is. The work is opening a dozen small files in each genome directory,
 NFS round trips with nothing computed between them. Measured on r237's genome
 directories, nothing cached:
 
@@ -1010,21 +1011,55 @@ directories, nothing cached:
 Past 8 the file server is what is waited on, so more threads only add load to a
 server others are using.
 
-`parse_assemblies` takes the NCBI assembly summaries the release was selected
-from (`-n`), as `select_genomes` and `strains type_table` do, rather than
-`--rb`, `--ra`, `--gb` and `--ga`. It writes one row for each genome named in
-the first column of `-m`:
+`parse_ncbi_assemblies` (`parse_assemblies` until 0.1.55) takes the NCBI
+assembly summaries the release was selected from (`-n`), as `select_genomes`
+and `strains type_table` do, rather than `--rb`, `--ra`, `--gb` and `--ga`. It
+writes `ncbi_assembly_summary.tsv` in `-o/--out_dir`, one row for every genome of
+the summaries, and requires a log (`-l`). It takes no list of genomes: which of
+them the database loads is for `update_metadata_db` to decide.
 
 ```bash
-gtdb_migration_tk parse_assemblies \
+gtdb_migration_tk parse_ncbi_assemblies \
     -n ncbi/assembly_summary_{archaea,bacteria}_{refseq,genbank}.txt.gz \
-    -m metadata.tsv -o ncbi_assembly_metadata.tsv -l parse_assemblies.log
+    -o parse_ncbi_assemblies -l parse_ncbi_assemblies/parse_ncbi_assemblies.log
 ```
 
-Columns are found by name in each summary, and a summary may be gzipped. The
-log (`-l`, else `gtdb_migration_tk.log` in the current directory) says how many
-genomes `-m` lists, how many of each summary's are written, and the total. A
-RefSeq or GenBank genome of `-m` that no summary holds is warned of.
+The table is named as `update_metadata_db --input_folder` loads it, against
+`metadata_ncbi_assembly_file.desc.tsv`, whose fields are the ones written.
+Columns are found by name in each summary, and a summary may be gzipped. A
+genome is written once, from the first summary holding it. The log says where
+the table is written, how many of each summary's genomes are written, and the
+total, and warns of a genome in more than one summary. Over r237's four
+summaries that is 3,874,314 genomes, a 598 MB table, in under a minute: every
+genome NCBI holds, not only the release's. `update_metadata_db` loads every row
+of a table unless given a genome list, and refuses a table naming a genome the
+database does not hold, so until it decides which genomes to load itself, it
+is given one for this table.
+
+`parse_ncbi_dir` reads what NCBI's own files in each genome directory of a
+genome_dirs file (`-g`) say -- `_assembly_stats.txt`, `_genomic.gff.gz` and
+`_genomic.gbff.gz` -- on `--cpus` processes, and writes
+`ncbi_assembly_metadata.tsv` in `-o/--out_dir`, the name `update_metadata_db
+--input_folder` loads against `metadata_ncbi_assembly.desc.tsv`. It requires a
+log (`-l`).
+
+```bash
+gtdb_migration_tk parse_ncbi_dir -g genome_dirs.tsv \
+    -o parse_ncbi_dir -l parse_ncbi_dir/parse_ncbi_dir.log --cpus 8
+```
+
+Every genome is given a row, written as soon as it is read, in no particular
+order. A genome missing one of the three files is empty in the fields read from
+it, which `update_metadata_db` loads as NULL, and the log ends with a line for
+each file, `Identified <n> genomes with a missing <file> file, e.g.: ...`: a
+WARNING for the statistics and the GenBank file, which every assembly has, and
+INFO for the GFF, which NCBI publishes only for the assemblies it annotated (121
+of 300 r237 genomes drawn at random had none). Four of its columns are not
+loaded, the database having no field for them: `ncbi_contig_l50`,
+`ncbi_component_count`, `ncbi_geo_loc_name` and `ncbi_metagenome_source`.
+`ncbi_isolation_source` and `ncbi_lat_lon` are, since 0.1.55; loading the table
+sets them, as every field it loads, to NULL for every genome first unless
+`--do_not_null_field` is given.
 
 ### Taxonomy
 
@@ -1225,6 +1260,28 @@ did and wrote the table this command's fields were loaded from, are gone.
 | `bacdive` | BacDive processing (`download_strains`) — in development |
 | `strains` | Year of priority (`date_table`) and type material status (`type_table`) of each genome, from LPSN |
 | `ncbi_strains` | Parse NCBI assembly reports for strain identifiers and type material status |
+
+`ncbi_strains` writes `strain_summary_file.tsv` in `--out_dir`: each genome of a
+genome_dirs file (`-g`) with its organism name and strain IDs, read from its
+`_assembly_report.txt` on `--cpus` processes, and its NCBI type material status,
+the `relation_to_type_material` of the assembly summaries (`-n`, as
+`select_genomes` takes them; `--gb`, `--ga`, `--rb` and `--ra` until 0.1.55).
+`update_metadata_db` loads it into `ncbi_strain_identifiers` and
+`ncbi_type_material_designation`.
+
+```bash
+gtdb_migration_tk ncbi_strains -g genome_dirs.tsv \
+    -n ncbi/assembly_summary_{archaea,bacteria}_{refseq,genbank}.txt.gz \
+    -o ncbi_strains -l ncbi_strains/ncbi_strains.log -c 8
+```
+
+Rows are written as the workers finish them, in no particular order. A genome in
+none of the summaries has an empty type material status, which
+`update_metadata_db` loads as NULL, and one with no assembly report an empty
+organism name and strain IDs; the log ends with a WARNING counting each. A
+genome that cannot be read stops the run. The table is written as
+`strain_summary_file.tsv.partial` and renamed only once every genome is in it,
+so a failed run leaves no table, or the one an earlier run wrote.
 
 `strains type_table` decides which genomes of a release are assembled from type
 material, matching each genome's NCBI species and strain IDs against LPSN's type

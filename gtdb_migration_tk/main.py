@@ -90,8 +90,10 @@ class OptionsParser():
                               options.output_file)
 
     def generate_ncbi_strains_summary(self, options):
-        p = NCBIStrainParser(options.gb, options.ga,
-                             options.rb, options.ra,options.cpus)
+        for assembly_summary in options.new_list_genomes:
+            check_file_exists(assembly_summary)
+        make_sure_path_exists(options.output_dir)
+        p = NCBIStrainParser(options.new_list_genomes, options.cpus)
         p.generate_ncbi_strains_summary(
             options.gtdb_genome_path_file, options.output_dir)
 
@@ -273,11 +275,12 @@ class OptionsParser():
             self.logger.error(str(exc))
             sys.exit(1)
 
-    def parse_assemblies(self, options):
+    def parse_ncbi_assemblies(self, options):
         for assembly_summary in options.new_list_genomes:
             check_file_exists(assembly_summary)
+        make_sure_path_exists(options.output_dir)
         p = NCBIMeta()
-        p.parse_assemblies(options.new_list_genomes, options.metadata, options.output_file)
+        p.parse_assemblies(options.new_list_genomes, options.output_dir)
 
     def generate_rna_silva(self, options):
         check_file_exists(options.gtdb_genome_path_file)
@@ -446,8 +449,10 @@ class OptionsParser():
               options.all_genomes)
 
     def parse_ncbi_dir(self, options):
+        check_file_exists(options.gtdb_genome_path_file)
+        make_sure_path_exists(options.output_dir)
         p = NCBIMetaDir(options.cpus)
-        p.parse_ncbi_dir(options.gtdb_genome_path_file, options.output_file)
+        p.parse_ncbi_dir(options.gtdb_genome_path_file, options.output_dir)
 
     def curation_lists(self, options):
         check_file_exists(options.gtdb_init_taxonomy)
@@ -525,8 +530,8 @@ class OptionsParser():
             self.create_metadata_tables(options)
         elif options.subparser_name == 'generate_seqcode_table':
             self.generate_seqcode_table(options)
-        elif options.subparser_name == 'parse_assemblies':
-            self.parse_assemblies(options)
+        elif options.subparser_name == 'parse_ncbi_assemblies':
+            self.parse_ncbi_assemblies(options)
         elif options.subparser_name == "parse_ncbi_dir":
             self.parse_ncbi_dir(options)
         elif options.subparser_name == 'update_taxid_to_db':

@@ -46,7 +46,7 @@ The mirror is held on NFS, where the cost of the walk is one network round trip
 per directory read rather than any computation, so the walk is spread over
 threads (--cpus): the round trips then overlap instead of being paid one after
 another. Measured on release220 that is worth roughly 8x, and it saturates by
-about four threads, so raising --cpus far beyond its default buys nothing.
+about four threads, so --cpus 8 is plenty and raising it further buys nothing.
 
 Pruning the mirror of genomes a release has dropped used to be a second
 command here (clean_ftp). It is now the first step of ncbi_genome_sync, which
@@ -158,7 +158,7 @@ class DirectoryManager(object):
                                  database_dir: str,
                                  output_file: str,
                                  gtdb_selected_genomes: str,
-                                 cpus: int = 8) -> None:
+                                 cpus: int = 1) -> None:
         """Create file indicating directory of each genome.
 
         Walks the four levels of the layout described in the module docstring and

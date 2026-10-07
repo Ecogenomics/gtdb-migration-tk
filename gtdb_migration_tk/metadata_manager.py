@@ -91,17 +91,17 @@ TRNA_TABLE = 'metadata_trna_count.tsv'
 EVERY_GENOME_TABLES = frozenset({NT_TABLE})
 
 
-# How many genomes create_tables reads at once unless told otherwise (--cpus).
-# Its work is opening a dozen small files in each genome directory, one NFS
-# round trip after another with nothing computed between them, so read one
-# genome at a time it waits on the file server for nearly all of a run. Threads
-# overlap the round trips. Measured over r237's genome directories, on fresh
-# samples so that nothing was cached: 75 ms a genome on one thread (a day and
-# more for 1.35M genomes), 22 ms on 4, and 9-10 ms on 8, where it levels off --
-# 16, 32 and 64 threads were no faster, the file server being what is waited on
-# by then. Hence 8, as for ncbi_genome_sync --nfs-jobs and list_genomes: past
-# the knee, and no more load on a server others are using than buys anything.
-CREATE_TABLES_THREADS = 8
+# How many genomes create_tables reads at once is --cpus, which defaults to 1 as
+# it does for every command. Its work is opening a dozen small files in each
+# genome directory, one NFS round trip after another with nothing computed
+# between them, so read one genome at a time it waits on the file server for
+# nearly all of a run. Threads overlap the round trips. Measured over r237's
+# genome directories, on fresh samples so that nothing was cached: 75 ms a
+# genome on one thread (a day and more for 1.35M genomes), 22 ms on 4, and
+# 9-10 ms on 8, where it levels off -- 16, 32 and 64 threads were no faster, the
+# file server being what is waited on by then. So --cpus 8, as for
+# ncbi_genome_sync --nfs-jobs and list_genomes: past the knee, and no more load
+# on a server others are using than buys anything.
 
 # How many genomes are queued for each thread at once: enough that none sits
 # idle between one genome and the next, and few enough that a release is not
@@ -554,7 +554,7 @@ class MetadataTable(object):
         return GenomeTables(gid, tables, ssu_count, lsu_23s_count, lsu_5S_count)
 
     def create_metadata_tables(self, gtdb_genome_path_file: str, output_dir: str,
-                               cpus: int = CREATE_TABLES_THREADS) -> None:
+                               cpus: int = 1) -> None:
         """Create metadata tables.
 
         One pass over the release, gathering what every earlier command wrote
