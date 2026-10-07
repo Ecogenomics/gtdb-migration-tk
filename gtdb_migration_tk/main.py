@@ -29,7 +29,7 @@ from gtdb_migration_tk.directory_manager import DirectoryManager
 from gtdb_migration_tk.trans_table import GTranslate
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_manager import BadHmmDatabase, MarkerManager
-from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
+from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager, MetadataTableError, confirm_partial_load
 from gtdb_migration_tk.metadata_manager import EmptyGenomeDirs, MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeType
@@ -373,10 +373,18 @@ class OptionsParser():
         p.add_checkm2_to_db(options.checkm2_profile_file, options.not_assessed, options.output_dir)
 
     def update_metadata_db(self, options):
+        if options.genome_list and not options.do_not_null_field:
+            # asked before the database is reached, so no transaction waits on the answer
+            confirm_partial_load(options.genome_list)
         p = MetadataDatabaseManager(database_keywords(options))
-        p.process_metadata_files(options.genome_list, do_not_null_field=options.do_not_null_field,
-                                 table_folder=options.input_folder, table_file=options.metadata_table,
-                                 table_file_desc=options.metadata_table_desc)
+        try:
+            p.process_metadata_files(options.genome_list, do_not_null_field=options.do_not_null_field,
+                                     table_folder=options.input_folder, table_file=options.metadata_table,
+                                     table_file_desc=options.metadata_table_desc)
+        except MetadataTableError as exc:
+            # a table or description to put right, said in one line; nothing was written
+            self.logger.error(str(exc))
+            sys.exit(1)
         self.logger.info('Update metadata Done.')
 
     def update_reps_db(self, options):

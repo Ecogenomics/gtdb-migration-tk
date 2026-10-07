@@ -313,7 +313,12 @@ decorated `@one_transaction` (in `GenomeDatabaseConnectionFTPUpdate.py`), which
 commits when it returns and rolls back when it raises, `sys.exit()` included, and
 nothing inside it commits. Fields are set to NULL in the transaction their new
 values are written in, so a failed run leaves the old values rather than NULL;
-nothing asks `[y/n]`, `--do_not_null_field` being how a run keeps the old values.
+nothing asks `[y/n]`, `--do_not_null_field` being how a run keeps the old values,
+with one exception the user chose: `update_metadata_db` given `--genome_list`
+without `--do_not_null_field` asks before reaching the database
+(`metadata_database_manager.confirm_partial_load()`), since it then removes every
+genome's metadata and writes back only the list's; with no terminal the run ends
+there, changing nothing.
 Every metadata write goes through `gtdb_lite/gtdb_importer.py`
 `GTDBImporter.import_metadata_to_db()`, which calls the database's `upsert()`
 stored procedure. It raises on any error: it printed them until 0.1.47, and

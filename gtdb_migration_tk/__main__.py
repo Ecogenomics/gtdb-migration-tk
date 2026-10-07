@@ -337,7 +337,7 @@ def __gtdb_selected_genomes(group, required):
 
 def __genome_list(group, required):
     group.add_argument('--genome_list',
-                       help='Only process genomes in this list ( we can use the metadata file exported from GTDB.',
+                       help='Only process genomes in this list (e.g. metadata file exported from GTDB)',
                        required=required, default=None)
 
 
