@@ -24,7 +24,8 @@ importer. The command wrote only the genomes of a table exported from the
 database (--metadata), printing every other one as skipped, so a genome the
 database did not hold, or an export of the wrong release, lost its estimates in
 a run that succeeded. And a genome checkm left out kept the estimates of the
-sequences it had before the update, as though they were its own. The database is
+sequences it had before the update, as though they were its own. And a genome
+checkm never planned had no estimates, and nothing said so. The database is
 stood in for by a cursor over the genomes it holds; nothing is reached.
 """
 
@@ -70,12 +71,15 @@ HELD = (99.47, 0.5, 0.0, 'o__Sphingomonadales (UID3310)', 77, 474, 300, 0.0)
 class FakeCursor(object):
     """A cursor over a database holding the given genomes, recording each statement.
 
-    estimates maps a genome to (has_changed, the CheckM estimates it holds).
+    estimates maps a genome to (has_changed, the CheckM estimates it holds);
+    missing is (genome, has_changed, added on its last update) of each NCBI
+    genome with no completeness once the update is made.
     """
 
-    def __init__(self, genomes=GENOMES, estimates=None):
+    def __init__(self, genomes=GENOMES, estimates=None, missing=()):
         self.genomes = list(genomes)
         self.estimates = dict(estimates or {})
+        self.missing = sorted(missing)
         self.statements = []
         self.result = []
 
@@ -87,6 +91,8 @@ class FakeCursor(object):
             self.result = [(self.genomes.index(gid), gid, has_changed) + tuple(values)
                            for gid, (has_changed, values) in sorted(self.estimates.items())
                            if gid in params[0] and any(v is not None for v in values)]
+        elif sql.startswith('SELECT g.id_at_source, g.has_changed'):
+            self.result = list(self.missing)
 
     def fetchall(self):
         return list(self.result)
@@ -149,6 +155,15 @@ class TempDirCase(unittest.TestCase):
         left_out = self.table('checkm_not_assessed.tsv', ['genome_id', 'reason', 'detail'],
                               [(gid, 'genome_too_large', '2067143420') for gid in not_assessed])
         return profile, qa, left_out
+
+    def manager(self, cursor):
+        """A manager built without a database, its cursor and connection fakes."""
+
+        manager = C.CheckMDatabaseManager.__new__(C.CheckMDatabaseManager)
+        manager.logger = logging.getLogger('timestamp')
+        manager.temp_cur = cursor
+        manager.temp_con = FakeConnection()
+        return manager
 
 
 class PlanningTheImport(TempDirCase):
@@ -249,19 +264,10 @@ class PlanningTheImport(TempDirCase):
 
 
 class WritingToTheDatabase(TempDirCase):
-    """A manager built without a database, its cursor and connection fakes."""
-
-    def manager(self, cursor):
-        manager = C.CheckMDatabaseManager.__new__(C.CheckMDatabaseManager)
-        manager.logger = logging.getLogger('timestamp')
-        manager.temp_cur = cursor
-        manager.temp_con = FakeConnection()
-        return manager
-
     def test_every_field_is_upserted_to_metadata_genes_in_one_commit(self):
         cursor = FakeCursor()
         manager = self.manager(cursor)
-        manager.add_checkm_to_db(*self.release_files())
+        manager.add_checkm_to_db(*self.release_files(), self.dir)
 
         upserts = cursor.upserts()
         self.assertEqual(len(upserts), 8)
@@ -278,7 +284,7 @@ class WritingToTheDatabase(TempDirCase):
         manager = self.manager(cursor)
 
         with self.assertRaisesRegex(UnknownGenomesError, 'GCF_000000002.1'):
-            manager.add_checkm_to_db(*self.release_files())
+            manager.add_checkm_to_db(*self.release_files(), self.dir)
         self.assertEqual(cursor.upserts(), {})
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
 
@@ -288,7 +294,7 @@ class WritingToTheDatabase(TempDirCase):
         stale = 'GCA_977065575.1'
         cursor = FakeCursor(genomes=GENOMES + (stale,), estimates={stale: (True, HELD)})
         manager = self.manager(cursor)
-        manager.add_checkm_to_db(*self.release_files(not_assessed=[stale]))
+        manager.add_checkm_to_db(*self.release_files(not_assessed=[stale]), self.dir)
 
         self.assertEqual(cursor.cleared(), [[2]])
         update = [sql for sql, _params in cursor.statements if sql.startswith('UPDATE metadata_genes')][0]
@@ -307,7 +313,7 @@ class WritingToTheDatabase(TempDirCase):
         new = 'GCA_977065575.1'
         cursor = FakeCursor(genomes=GENOMES + (new,), estimates={new: (True, (None,) * 8)})
         manager = self.manager(cursor)
-        manager.add_checkm_to_db(*self.release_files(not_assessed=[new]))
+        manager.add_checkm_to_db(*self.release_files(not_assessed=[new]), self.dir)
 
         self.assertEqual(cursor.cleared(), [])
         with open(os.path.join(self.dir, C.CLEARED_NAME)) as handle:
@@ -318,7 +324,7 @@ class WritingToTheDatabase(TempDirCase):
         kept = 'GCA_000000003.1'
         cursor = FakeCursor(genomes=GENOMES + (kept,), estimates={kept: (False, HELD)})
         manager = self.manager(cursor)
-        manager.add_checkm_to_db(*self.release_files(not_assessed=[kept]))
+        manager.add_checkm_to_db(*self.release_files(not_assessed=[kept]), self.dir)
 
         self.assertEqual(cursor.cleared(), [])
         self.assertIn('not changed by this update', self.warnings[0])
@@ -330,7 +336,7 @@ class WritingToTheDatabase(TempDirCase):
         versioned = 'GCF_000000009.2'
         cursor = FakeCursor(genomes=GENOMES + (versioned,), estimates={versioned: (True, HELD)})
         manager = self.manager(cursor)
-        manager.add_checkm_to_db(*self.release_files())
+        manager.add_checkm_to_db(*self.release_files(), self.dir)
 
         self.assertEqual(cursor.cleared(), [])
 
@@ -340,7 +346,7 @@ class WritingToTheDatabase(TempDirCase):
         cursor = FakeCursor(genomes=(GENOMES[0], stale), estimates={stale: (True, HELD)})
         manager = self.manager(cursor)
         with self.assertRaises(UnknownGenomesError):
-            manager.add_checkm_to_db(*self.release_files(not_assessed=[stale]))
+            manager.add_checkm_to_db(*self.release_files(not_assessed=[stale]), self.dir)
 
         self.assertEqual(cursor.cleared(), [])
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
@@ -350,30 +356,115 @@ class WritingToTheDatabase(TempDirCase):
         manager = self.manager(cursor)
 
         with self.assertRaises(C.CheckMTableError):
-            manager.add_checkm_to_db(*self.release_files(qa_rows=[qa_row(GENOMES[0])]))
+            manager.add_checkm_to_db(*self.release_files(qa_rows=[qa_row(GENOMES[0])]), self.dir)
         self.assertEqual(cursor.statements, [])
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+
+class GenomesWithNoEstimates(TempDirCase):
+    """A genome checkm never planned is in neither its tables nor its not-assessed file."""
+
+    def missing_file(self):
+        with open(os.path.join(self.dir, C.MISSING_NAME)) as handle:
+            return [line.split('\t') for line in handle.read().splitlines()]
+
+    def test_a_genome_with_no_estimates_that_checkm_did_not_leave_out_is_warned_of_and_written(self):
+        # r237: added by update_db as unchanged, so never planned by checkm
+        unplanned = 'GCA_001341675.1'
+        cursor = FakeCursor(genomes=GENOMES + (unplanned,), missing=[(unplanned, True, True)])
+        manager = self.manager(cursor)
+        manager.add_checkm_to_db(*self.release_files(), self.dir)
+
+        self.assertEqual(self.missing_file(), [list(C.MISSING_HEADER), [unplanned, C.STATUS_NEW]])
+        self.assertIn('1 genome(s) have no CheckM estimates', self.warnings[0])
+        self.assertIn('1 new', self.warnings[0])
+        self.assertIn(unplanned, self.warnings[0])
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+
+    def test_a_genome_checkm_left_out_is_not_warned_of_again(self):
+        # checkm_not_assessed.tsv already says why it has none
+        left_out = 'GCA_977065575.1'
+        cursor = FakeCursor(genomes=GENOMES + (left_out,), missing=[(left_out, True, True)])
+        manager = self.manager(cursor)
+        manager.add_checkm_to_db(*self.release_files(not_assessed=[left_out]), self.dir)
+
+        self.assertEqual(self.missing_file(), [list(C.MISSING_HEADER)])
+        self.assertEqual(self.warnings, [])
+
+    def test_each_genome_says_whether_this_update_made_it_new_or_updated_it(self):
+        cursor = FakeCursor(missing=[('GCA_000000005.1', True, True),     # added, or a new version
+                                     ('GCF_000000006.1', True, False),    # sequences changed
+                                     ('GCA_000000007.1', False, False)])  # left as it was
+        manager = self.manager(cursor)
+        manager.add_checkm_to_db(*self.release_files(), self.dir)
+
+        self.assertEqual(self.missing_file()[1:], [['GCA_000000005.1', C.STATUS_NEW],
+                                                   ['GCA_000000007.1', C.STATUS_UNCHANGED],
+                                                   ['GCF_000000006.1', C.STATUS_UPDATED]])
+        self.assertIn('1 new, 1 updated, 1 unchanged', self.warnings[0])
+
+    def test_genomes_with_no_estimates_are_asked_for_once_every_field_is_written_and_cleared(self):
+        # what the database will hold, not what it held before the update
+        stale = 'GCA_977065575.1'
+        cursor = FakeCursor(genomes=GENOMES + (stale,), estimates={stale: (True, HELD)})
+        manager = self.manager(cursor)
+        manager.add_checkm_to_db(*self.release_files(not_assessed=[stale]), self.dir)
+
+        statements = [sql for sql, _params in cursor.statements]
+        asked = [i for i, sql in enumerate(statements) if sql.startswith('SELECT g.id_at_source, g.has_changed')]
+        written = [i for i, sql in enumerate(statements)
+                   if 'upsert(' in sql or sql.startswith('UPDATE metadata_genes')]
+        self.assertEqual(len(asked), 1)
+        self.assertGreater(asked[0], max(written))
+
+    def test_only_ncbi_genomes_are_asked_for(self):
+        # user genomes are not CheckM'd by the release
+        cursor = FakeCursor()
+        manager = self.manager(cursor)
+        manager.add_checkm_to_db(*self.release_files(), self.dir)
+
+        params = [params for sql, params in cursor.statements
+                  if sql.startswith('SELECT g.id_at_source, g.has_changed')][0]
+        self.assertEqual(sorted(params[0]), ['GenBank', 'RefSeq'])
+
+    def test_the_file_is_written_with_its_header_alone_where_no_genome_is_missing(self):
+        manager = self.manager(FakeCursor())
+        manager.add_checkm_to_db(*self.release_files(), self.dir)
+
+        self.assertEqual(self.missing_file(), [list(C.MISSING_HEADER)])
+        self.assertEqual(self.warnings, [])
 
 
 class TheCommandLine(TempDirCase):
     def test_update_checkm_db_takes_checkms_release_files_and_no_metadata_file(self):
         profile, qa, left_out = self.release_files()
+        out_dir = os.path.join(self.dir, 'update_checkm_db')
         options = main_module.get_main_parser().parse_args(
             ['update_checkm_db', '--db_service', 'gtdb_r237', '-c', profile, '-q', qa,
-             '-n', left_out, '-l', os.path.join(self.dir, 'run.log')])
+             '-n', left_out, '-o', out_dir, '-l', os.path.join(self.dir, 'run.log')])
         self.assertFalse(hasattr(options, 'metadata'))
 
         with mock.patch.object(main_py, 'CheckMDatabaseManager') as manager:
             main_py.OptionsParser().parse_options(options)
         manager.assert_called_once_with({'service': 'gtdb_r237'})
-        manager.return_value.add_checkm_to_db.assert_called_once_with(profile, qa, left_out)
+        manager.return_value.add_checkm_to_db.assert_called_once_with(profile, qa, left_out, out_dir)
+        self.assertTrue(os.path.isdir(out_dir))
+
+    def test_an_out_dir_is_required(self):
+        # it is where the genomes with no estimates are written
+        profile, qa, left_out = self.release_files()
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
+            main_module.get_main_parser().parse_args(
+                ['update_checkm_db', '--db_service', 'gtdb_r237', '-c', profile, '-q', qa,
+                 '-n', left_out, '-l', os.path.join(self.dir, 'run.log')])
 
     def test_a_metadata_file_is_no_longer_accepted(self):
         profile, qa, left_out = self.release_files()
         with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
             main_module.get_main_parser().parse_args(
                 ['update_checkm_db', '--db_service', 'gtdb_r237', '-c', profile, '-q', qa,
-                 '-n', left_out, '-m', 'metadata.tsv', '-l', os.path.join(self.dir, 'run.log')])
+                 '-n', left_out, '-o', self.dir, '-m', 'metadata.tsv',
+                 '-l', os.path.join(self.dir, 'run.log')])
 
 
 if __name__ == '__main__':
