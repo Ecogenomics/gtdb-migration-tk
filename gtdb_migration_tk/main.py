@@ -391,10 +391,21 @@ class OptionsParser():
         p = MetadataDatabaseManager(database_keywords(options))
         p.update_reps(options.final_cluster_file)
 
-    def update_ncbitax_db(self, options):
+    def update_ncbi_tax_db(self, options):
+        for path in (options.organism_names, options.filtered, options.unfiltered):
+            check_file_exists(path)
+        if options.genome_list and not options.do_not_null_field:
+            # asked before the database is reached, so no transaction waits on the answer
+            confirm_partial_load(options.genome_list, 'update_ncbi_tax_db')
+        make_sure_path_exists(options.output_dir)
         p = NCBITaxDatabaseManager(database_keywords(options))
-        p.update_ncbitax_db(options.organism_names, options.filtered, options.unfiltered, options.genome_list,
-                            options.do_not_null_field)
+        try:
+            p.update_ncbi_tax_db(options.organism_names, options.filtered, options.unfiltered,
+                                 options.genome_list, options.output_dir, options.do_not_null_field)
+        except MetadataTableError as exc:
+            # a file to put right, said in one line; nothing was written
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def add_surveillance_genomes(self, options):
         p = MetadataDatabaseManager(database_keywords(options))
@@ -588,8 +599,8 @@ class OptionsParser():
             self.update_metadata_db(options)
         elif options.subparser_name == 'update_reps_db':
             self.update_reps_db(options)
-        elif options.subparser_name == 'update_ncbitax_db':
-            self.update_ncbitax_db(options)
+        elif options.subparser_name == 'update_ncbi_tax_db':
+            self.update_ncbi_tax_db(options)
         elif options.subparser_name == 'update_type_designation':
             self.update_type_designation(options)
         elif options.subparser_name == 'update_genomes':

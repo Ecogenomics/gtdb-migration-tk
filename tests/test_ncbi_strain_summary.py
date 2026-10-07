@@ -35,6 +35,7 @@ from unittest import mock
 from gtdb_migration_tk import __main__ as main_module
 from gtdb_migration_tk import main as main_py
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
+from gtdb_migration_tk.utils.common import open_text
 
 SUMMARY_HEADER = ['assembly_accession', 'bioproject', 'infraspecific_name', 'excluded_from_refseq',
                   'relation_to_type_material']
@@ -114,7 +115,7 @@ class WritingTheStrainSummary(TempDirCase):
 
         NCBIStrainParser([summary], 1).generate_ncbi_strains_summary(genome_dirs, self.dir)
 
-        with open(os.path.join(self.dir, 'strain_summary_file.tsv')) as handle:
+        with open_text(os.path.join(self.dir, 'strain_summary_file.tsv.gz')) as handle:
             self.assertEqual(handle.read().splitlines(), [
                 'genome_id\tOrganism name\tncbi_strain_identifiers\tncbi_type_material_designation',
                 'GCF_000005845.2\tEscherichia coli str. K-12 substr. MG1655\tK-12\tassembly from type material'])
@@ -129,7 +130,7 @@ class WritingTheStrainSummary(TempDirCase):
     def run_parser(self, summaries, genome_dirs, cpus=1):
         with self.assertLogs('timestamp', level='INFO') as logged:
             NCBIStrainParser(summaries, cpus).generate_ncbi_strains_summary(genome_dirs, self.dir)
-        with open(os.path.join(self.dir, 'strain_summary_file.tsv')) as handle:
+        with open_text(os.path.join(self.dir, 'strain_summary_file.tsv.gz')) as handle:
             rows = [line.split('\t') for line in handle.read().splitlines()[1:]]
         return rows, [r for r in logged.records if r.levelno >= logging.WARNING]
 
@@ -170,7 +171,7 @@ class WritingTheStrainSummary(TempDirCase):
         # the failure was swallowed: the table was left empty, or short of the
         # genomes the failed worker had, and the run reported success
         summary = self.summary('assembly_summary_bacteria_refseq.txt', [('GCF_000000001.1', 'na')])
-        earlier = os.path.join(self.dir, 'strain_summary_file.tsv')
+        earlier = os.path.join(self.dir, 'strain_summary_file.tsv.gz')
         with open(earlier, 'w') as handle:
             handle.write('an earlier run\n')
         genome_dirs = self.genome_dirs('GCF_000000001.1\t{}\tG000000001'.format(self.genome('GCF_000000001.1')),
@@ -183,7 +184,23 @@ class WritingTheStrainSummary(TempDirCase):
             self.assertEqual(handle.read(), 'an earlier run\n')
         self.assertEqual(sorted(os.listdir(self.dir)),
                          sorted(['assembly_summary_bacteria_refseq.txt', 'genome_dirs.tsv', 'genomes',
-                                 'strain_summary_file.tsv']))
+                                 'strain_summary_file.tsv.gz']))
+
+
+class WritingItGzipped(TempDirCase):
+    def test_the_table_is_gzipped_and_an_uncompressed_one_an_earlier_run_left_is_removed(self):
+        open(os.path.join(self.dir, 'strain_summary_file.tsv'), 'w').close()
+        summary = self.summary('assembly_summary_bacteria_refseq.txt', [('GCF_000005845.2', 'na')])
+        genome_dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        with open(genome_dirs, 'w') as handle:
+            handle.write('GCF_000005845.2\t{}\tG000005845\n'.format(self.genome('GCF_000005845.2')))
+
+        output = NCBIStrainParser([summary], 1).generate_ncbi_strains_summary(genome_dirs, self.dir)
+
+        self.assertEqual(output, os.path.join(self.dir, 'strain_summary_file.tsv.gz'))
+        with open(output, 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'strain_summary_file.tsv')))
 
 
 class TheCommandLine(TempDirCase):

@@ -31,6 +31,7 @@ from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists, get_num_
 from gtdb_migration_tk.biolib_lite.seq_io import read_fasta
 from gtdb_migration_tk.genometk_lite.metadata_genes import MetadataGenes
 from gtdb_migration_tk.genometk_lite.metadata_nucleotide import MetadataNucleotide
+from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_gzip_text, remove_uncompressed
 
 
 # What a genome needed and did not have. The metadata of a release is generated
@@ -176,6 +177,20 @@ class GenomeTables(NamedTuple):
     lsu_5S_count: int
 
 
+# The three tables create_tables writes giving every genome a row, the count of
+# the rRNA genes of each kind it holds, 0 where none was found.
+COUNT_TABLES = ('metadata_ssu_silva_count.tsv', 'metadata_lsu_silva_23s_count.tsv',
+                'metadata_lsu_5S_count.tsv')
+
+# Tables create_tables wrote and no longer does, removed from --out_dir when it
+# writes the others: update_metadata_db --input_folder refuses a table it does
+# not know. metadata_ssu_gg.tsv held the Greengenes (2013_08) classification of
+# the 16S rRNA genes from ssu_gg/ in each genome directory, which nothing has
+# written since rna_silva took over (ssu_gg was among the folders 6d985bc, 2022,
+# listed as deprecated); in r237 it had a row for none of 1,346,118 genomes.
+SUPERSEDED_TABLES = ('metadata_ssu_gg.tsv',)
+
+
 class EmptyGenomeDirs(ValueError):
     """The genome_dirs file create_tables was given names no genomes."""
 
@@ -186,7 +201,7 @@ def taxonomy_table(prefix: str) -> str:
     Parameters
     ----------
     prefix : str
-        ssu_gg, ssu_silva or lsu_silva_23s.
+        ssu_silva or lsu_silva_23s.
 
     @return: the table's file name, metadata_<prefix>.tsv.
     """
@@ -199,7 +214,7 @@ class MetadataTable(object):
 
     Calculates nothing: genomic_metadata, rna_silva and trnascan have written
     their results into each genome directory, and this collects them into the
-    ten tables update_metadata_db loads. A genome missing a file is given no
+    nine tables update_metadata_db loads. A genome missing a file is given no
     row in that table.
     """
 
@@ -221,8 +236,6 @@ class MetadataTable(object):
         # every path here is relative to one genome's directory
         self.metadata_nt_file: str = 'metadata.genome_nt.tsv'
         self.metadata_gene_file: str = 'metadata.genome_gene.tsv'
-        self.ssu_gg_taxonomy_file: str = os.path.join('ssu_gg', 'ssu.taxonomy.tsv')
-        self.ssu_gg_fna_file: str = os.path.join('ssu_gg', 'ssu.fna')
         self.ssu_silva_taxonomy_file: str = os.path.join(
             silva_folder, 'ssu.taxonomy.tsv')
         self.ssu_silva_fna_file: str = os.path.join(silva_folder, 'ssu.fna')
@@ -244,7 +257,6 @@ class MetadataTable(object):
         self.table_sources: Dict[str, str] = {
             NT_TABLE: self.metadata_nt_file,
             GENE_TABLE: self.metadata_gene_file,
-            taxonomy_table('ssu_gg'): self.ssu_gg_taxonomy_file,
             taxonomy_table('ssu_silva'): self.ssu_silva_taxonomy_file,
             taxonomy_table('lsu_silva_23s'): self.lsu_silva_23s_taxonomy_file,
             LSU_5S_TABLE: self.lsu_5S_fna_file,
@@ -295,9 +307,8 @@ class MetadataTable(object):
                             summary_file: Optional[str] = None) -> Tuple[Optional[TableRow], int]:
         """Read the taxonomic information of one genome's rRNA genes.
 
-        One method over the three rRNA tables -- ssu_gg, ssu_silva and
-        lsu_silva_23s -- which differ in the prefix their fields carry and in
-        whether a summary file accompanies them.
+        One method over the two classified rRNA tables, ssu_silva and
+        lsu_silva_23s, which differ in the prefix their fields carry.
 
         Parameters
         ----------
@@ -312,7 +323,7 @@ class MetadataTable(object):
             hit reported.
         summary_file : str, optional
             HMM summary of the same genes, read for the length of the contig
-            the hit sits on. The greengenes table has none.
+            the hit sits on.
 
         @return: the header and the genome's row, its row None where no hit
                  was reported, or None where the genome has no such table;
@@ -538,14 +549,10 @@ class MetadataTable(object):
         lsu_5S, lsu_5S_count = self._read_lsu_5S_files(
             gid, os.path.join(gpath, self.lsu_5S_fna_file),
             os.path.join(gpath, self.lsu_5S_summary_file))
-        ssu_gg, _ = self._read_taxonomy_file(
-            gid, os.path.join(gpath, self.ssu_gg_taxonomy_file), 'ssu_gg',
-            os.path.join(gpath, self.ssu_gg_fna_file))
 
         tables = {
             NT_TABLE: self._read_field_table(gid, os.path.join(gpath, self.metadata_nt_file)),
             GENE_TABLE: self._read_field_table(gid, os.path.join(gpath, self.metadata_gene_file)),
-            taxonomy_table('ssu_gg'): ssu_gg,
             taxonomy_table('ssu_silva'): ssu_silva,
             taxonomy_table('lsu_silva_23s'): lsu_23s,
             LSU_5S_TABLE: lsu_5S,
@@ -558,7 +565,7 @@ class MetadataTable(object):
         """Create metadata tables.
 
         One pass over the release, gathering what every earlier command wrote
-        into each genome directory into the ten tables the database is loaded
+        into each genome directory into the nine tables the database is loaded
         from. The genomes are read cpus at a time on threads (_read_genome()),
         and written here in the order of the genome_dirs file, so the tables
         are the same whatever cpus is.
@@ -590,15 +597,19 @@ class MetadataTable(object):
 
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
+        for superseded in SUPERSEDED_TABLES:
+            for path in (os.path.join(output_dir, superseded), os.path.join(output_dir, superseded + GZIP_SUFFIX)):
+                if os.path.exists(path):
+                    os.remove(path)
+                    self.logger.info('Removed {}, which an earlier run wrote and nothing does now.'.format(path))
 
-        fouts: Dict[str, TextIO] = {table: open(os.path.join(output_dir, table), 'w')
-                                    for table in self.table_sources}
-        fout_ssu_silva_count = open(os.path.join(
-            output_dir, 'metadata_ssu_silva_count.tsv'), 'w')
-        fout_lsu_silva_23s_count = open(os.path.join(
-            output_dir, 'metadata_lsu_silva_23s_count.tsv'), 'w')
-        fout_lsu_5S_count = open(os.path.join(
-            output_dir, 'metadata_lsu_5S_count.tsv'), 'w')
+        # each table gzipped, under its name and GZIP_SUFFIX
+        written_tables = [table for table in self.table_sources] + list(COUNT_TABLES)
+        fouts: Dict[str, TextIO] = {table: open_gzip_text(os.path.join(output_dir, table + GZIP_SUFFIX))
+                                    for table in written_tables}
+        fout_ssu_silva_count = fouts[COUNT_TABLES[0]]
+        fout_lsu_silva_23s_count = fouts[COUNT_TABLES[1]]
+        fout_lsu_5S_count = fouts[COUNT_TABLES[2]]
 
         fout_ssu_silva_count.write('%s\t%s\n' % ('genome_id', 'ssu_count'))
         fout_lsu_silva_23s_count.write(
@@ -642,9 +653,10 @@ class MetadataTable(object):
 
         for fout in fouts.values():
             fout.close()
-        fout_ssu_silva_count.close()
-        fout_lsu_silva_23s_count.close()
-        fout_lsu_5S_count.close()
+        # a table of an earlier run left uncompressed beside its gzipped one
+        # would be loaded twice by update_metadata_db, which refuses the folder
+        for table in written_tables:
+            remove_uncompressed(os.path.join(output_dir, table + GZIP_SUFFIX), self.logger)
 
         self.log_summary(genome_count)
 

@@ -94,7 +94,18 @@ class FakeCursor(object):
         self.genomes = list(genomes)
         self.statements = []
         self.upserts = []
+        self.copied = []
         self.result = []
+        self.rowcount = 0
+
+    def copy_expert(self, sql, handle):
+        self.statements.append(sql)
+        self.copied.append(sorted(line for line in handle.read().splitlines() if line))
+
+    def resets(self):
+        """(statement, the genomes it was told were written) of each reset_unwritten()."""
+        resets = [sql for sql in self.statements if sql.startswith('UPDATE') and 'NULL' in sql]
+        return list(zip(resets, self.copied))
 
     def written(self):
         """(table, field) -> sorted [(genome, value), ...], every chunk of each joined."""
@@ -182,10 +193,13 @@ class LoadingMetadataInOneTransaction(OneTransaction):
         self.addCleanup(patcher.stop)
         self.load(manager)
 
-        nulls = [sql for sql in manager.temp_cur.statements if 'NULL' in sql]
-        self.assertEqual(sorted(nulls),
-                         ['UPDATE metadata_type_material SET gtdb_type_designation_ncbi_taxa = NULL',
-                          'UPDATE metadata_type_material SET lpsn_priority_year = NULL'])
+        # each field is set to NULL for the genomes it holds a value of that the
+        # table did not give one: GB_GCA_000000002.1 has no lpsn_priority_year
+        self.assertEqual(manager.temp_cur.resets(), [
+            (M.RESET_UNWRITTEN.format(table='metadata_type_material', field='gtdb_type_designation_ncbi_taxa'),
+             ['GCA_000000002.1', 'GCF_000000001.1']),
+            (M.RESET_UNWRITTEN.format(table='metadata_type_material', field='lpsn_priority_year'),
+             ['GCF_000000001.1'])])
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
 
     def test_do_not_null_field_sets_nothing_to_null(self):
@@ -321,6 +335,22 @@ class LoadingOnlyWhatTheDatabaseHolds(OneTransaction):
         self.refused('genome_id\tncbi_taxid\nGCF_000000001.1\t562\n', 'line 1 has 3 column',
                      description='ncbi_taxid\tNCBI taxonomy identifier.\tINT\n')
 
+    def test_a_field_is_set_to_null_after_it_is_written_and_only_for_genomes_it_was_not_written_for(self):
+        # setting it to NULL for every genome first rewrote every row of the table
+        # once more, upsert() rewriting the rows of every genome given a value
+        manager, messages = self.load()
+
+        statements = manager.temp_cur.statements
+        upserts = [i for i, sql in enumerate(statements) if sql.startswith('SELECT upsert(')]
+        resets = [i for i, sql in enumerate(statements) if sql.startswith('UPDATE') and 'NULL' in sql]
+        self.assertEqual(len(resets), 2)
+        self.assertLess(max(upserts), min(resets))
+        self.assertTrue(all('IS NOT NULL' in statements[i] and 'NOT EXISTS' in statements[i] for i in resets))
+        self.assertEqual([written for _, written in manager.temp_cur.resets()],
+                         [['GCA_000000002.1', 'GCF_000000001.1']] * 2)
+        self.assertIn('Set metadata_ncbi.ncbi_taxid to NULL for 0 genome(s) holding a value this table did '
+                      'not give them.', messages)
+
     def test_a_table_is_written_in_chunks_and_the_chunks_are_the_whole_table(self):
         genomes = ['GCF_{:09d}.1'.format(i) for i in range(25)]
         table = 'genome_id\tncbi_taxid\n' + ''.join('{}\t{}\n'.format(gid, i) for i, gid in enumerate(genomes))
@@ -354,6 +384,41 @@ class ChoosingTheTables(OneTransaction):
         manager.description_table = {'metadata_gene.tsv': ['metadata_gene.desc.tsv']}
 
         with self.assertRaisesRegex(M.MetadataTableError, 'holds 2 table.*: one.tsv, two.tsv'):
+            manager.process_metadata_files(None, table_folder=folder)
+
+    def gzipped_folder(self, *names):
+        folder = os.path.join(self.dir, 'tables')
+        os.makedirs(folder)
+        for name in names:
+            path = os.path.join(folder, name)
+            text = ('genome_id\tncbi_strain_identifiers\tncbi_type_material_designation\n'
+                    'GCF_000000001.1\tK-12\tassembly from type material\n')
+            with (gzip.open(path, 'wt') if name.endswith('.gz') else open(path, 'w')) as handle:
+                handle.write(text)
+        manager = self.manager(cursor=FakeCursor(genomes=HELD))
+        with mock.patch.object(M.GenomeDatabaseConnectionFTPUpdate, 'GenomeDatabaseConnectionFTPUpdate'):
+            manager.description_table = M.MetadataDatabaseManager({}).description_table
+        return folder, manager
+
+    def test_a_folder_of_gzipped_tables_is_loaded_as_one_of_plain_ones_is(self):
+        # create_tables, parse_ncbi_assemblies, parse_ncbi_dir and ncbi_strains write them gzipped
+        folder, manager = self.gzipped_folder('strain_summary_file.tsv.gz')
+        manager.process_metadata_files(None, table_folder=folder)
+
+        self.assertEqual(manager.temp_cur.written()[('metadata_ncbi', 'ncbi_strain_identifiers')],
+                         [('GCF_000000001.1', 'K-12')])
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+
+    def test_a_table_both_gzipped_and_not_is_refused_before_anything(self):
+        # each would be loaded, the second over the first
+        folder, manager = self.gzipped_folder('strain_summary_file.tsv', 'strain_summary_file.tsv.gz')
+        with self.assertRaisesRegex(M.MetadataTableError, 'both gzipped and not: strain_summary_file.tsv'):
+            manager.process_metadata_files(None, table_folder=folder)
+        self.assertEqual(manager.temp_cur.statements, [])
+
+    def test_a_gzipped_table_it_does_not_know_is_named_as_it_is(self):
+        folder, manager = self.gzipped_folder('not_a_table.tsv.gz')
+        with self.assertRaisesRegex(M.MetadataTableError, 'does not know: not_a_table.tsv.gz'):
             manager.process_metadata_files(None, table_folder=folder)
 
     def test_the_strain_summary_is_read_once_against_both_its_descriptions(self):
@@ -479,20 +544,164 @@ class ReplacingTheSurveillanceGenomes(OneTransaction):
 
 
 class UpdatingNCBITaxonomy(OneTransaction):
-    def test_genomes_not_in_the_database_are_skipped_in_one_commit(self):
-        # NCBI's organism names and taxonomies cover every assembly NCBI holds
-        manager = self.manager(cls=M.NCBITaxDatabaseManager)
-        names = self.write('names.tsv', 'GB_GCA_000000002.1\tEscherichia coli\n')
-        taxonomy = self.write('tax.tsv', 'GB_GCA_000000002.1\td__Bacteria;p__;c__;o__;f__;g__;s__\n')
-        with mock.patch.object(M, 'GTDBImporter') as importer:
-            manager.update_ncbitax_db(names, taxonomy, taxonomy, None)
+    """update_ncbi_tax_db, through the real importer, the database a cursor holding HELD."""
 
-        calls = importer.return_value.import_metadata_to_db.call_args_list
-        self.assertEqual([call.args[1] for call in calls],
-                         ['ncbi_organism_name', 'ncbi_taxonomy', 'ncbi_taxonomy_unfiltered'])
-        self.assertTrue(all(call.kwargs['unknown'] == SKIP for call in calls))
+    NAMES = ('RS_GCF_000000001.1\tEscherichia coli\n'
+             'GB_GCA_000000002.1\tStaphylococcus aureus\n'
+             'GB_GCA_999999999.1\tnot in the database\n')
+    FILTERED = ('GCF_000000001.1\td__Bacteria; p__Pseudomonadota;\n'
+                'GCA_999999999.1\td__Bacteria\n')
+    UNFILTERED = ('GCF_000000001.1\td__Bacteria;x__Pseudomonadati;p__Pseudomonadota\n'
+                  'GCA_000000002.1\td__Bacteria;p__Bacillota\n')
+
+    def setUp(self):
+        super().setUp()
+        handler = logging.FileHandler(os.path.join(self.dir, 'run.log'))
+        logging.getLogger('timestamp').addHandler(handler)
+        self.addCleanup(logging.getLogger('timestamp').removeHandler, handler)
+        self.addCleanup(handler.close)
+
+    def run_update(self, names=NAMES, filtered=FILTERED, unfiltered=UNFILTERED, genome_list=None,
+                   genomes=HELD, **kwargs):
+        manager = self.manager(cls=M.NCBITaxDatabaseManager, cursor=FakeCursor(genomes=genomes))
+        files = [self.write(name, text) for name, text in (('names.tsv', names), ('filtered.tsv', filtered),
+                                                           ('unfiltered.tsv', unfiltered))]
+        out_dir = os.path.join(self.dir, 'out')
+        os.makedirs(out_dir, exist_ok=True)
+        with self.assertLogs('timestamp', level='INFO') as logged:
+            manager.update_ncbi_tax_db(*files, genome_list, out_dir, **kwargs)
+        with open(os.path.join(out_dir, M.NCBI_TAX_MISSING_NAME)) as handle:
+            missing = [line.split('\t') for line in handle.read().splitlines()]
+        return manager, missing, logged.records
+
+    def test_the_genomes_the_database_holds_are_written_and_the_rest_skipped_in_one_commit(self):
+        # NCBI's files cover every assembly NCBI holds
+        manager, _, _ = self.run_update()
+
+        self.assertEqual(manager.temp_cur.written(), {
+            ('metadata_ncbi', 'ncbi_organism_name'): [('GCA_000000002.1', 'Staphylococcus aureus'),
+                                                      ('GCF_000000001.1', 'Escherichia coli')],
+            ('metadata_taxonomy', 'ncbi_taxonomy'): [('GCF_000000001.1', 'd__Bacteria;p__Pseudomonadota')],
+            ('metadata_taxonomy', 'ncbi_taxonomy_unfiltered'): [
+                ('GCA_000000002.1', 'd__Bacteria;p__Bacillota'),
+                ('GCF_000000001.1', 'd__Bacteria;x__Pseudomonadati;p__Pseudomonadota')]})
         self.assertEqual(len([sql for sql in manager.temp_cur.statements if 'NULL' in sql]), 3)
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+
+    def test_each_field_is_set_to_null_only_for_genomes_its_file_gave_no_value(self):
+        manager, _, _ = self.run_update()
+
+        self.assertEqual(manager.temp_cur.resets(), [
+            (M.RESET_UNWRITTEN.format(table='metadata_ncbi', field='ncbi_organism_name'),
+             ['GCA_000000002.1', 'GCF_000000001.1']),
+            (M.RESET_UNWRITTEN.format(table='metadata_taxonomy', field='ncbi_taxonomy'),
+             ['GCF_000000001.1']),
+            (M.RESET_UNWRITTEN.format(table='metadata_taxonomy', field='ncbi_taxonomy_unfiltered'),
+             ['GCA_000000002.1', 'GCF_000000001.1'])])
+        statements = manager.temp_cur.statements
+        self.assertLess(max(i for i, sql in enumerate(statements) if sql.startswith('SELECT upsert(')),
+                        max(i for i, sql in enumerate(statements) if sql.startswith('UPDATE')))
+
+    def test_do_not_null_field_sets_nothing_to_null(self):
+        manager, _, _ = self.run_update(do_not_null_field=True)
+        self.assertEqual(manager.temp_cur.resets(), [])
+
+    def test_each_genome_without_one_of_the_three_is_written_to_the_error_file_and_warned_of(self):
+        _, missing, records = self.run_update()
+
+        self.assertEqual(missing, [['genome_id', 'ncbi_organism_name', 'ncbi_taxonomy', 'ncbi_taxonomy_unfiltered'],
+                                   ['GCA_000000002.1', '', 'missing', '']])
+        warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('1 genome(s) of the genomes table have no ncbi_taxonomy, e.g. GCA_000000002.1', warnings[0])
+
+    def test_an_empty_value_is_missing_not_written(self):
+        # an empty taxonomy made Taxonomy().read() fail
+        names = 'RS_GCF_000000001.1\t\nGB_GCA_000000002.1\tStaphylococcus aureus\n'
+        filtered = 'GCF_000000001.1\t\nGCA_000000002.1\td__Bacteria\n'
+        manager, missing, _ = self.run_update(names=names, filtered=filtered)
+
+        self.assertNotIn(('GCF_000000001.1', ''), manager.temp_cur.written()[('metadata_ncbi', 'ncbi_organism_name')])
+        self.assertEqual(missing[1:], [['GCF_000000001.1', 'missing', 'missing', '']])
+
+    def test_a_genome_list_matches_every_file_whichever_way_it_names_a_genome(self):
+        # the organism names were matched as written (RS_GCF_...) and the
+        # taxonomies with a prefix added, so no list matched both
+        for listed in ('GCF_000000001.1\n', 'RS_GCF_000000001.1\n'):
+            genome_list = self.write('genomes.tsv', listed)
+            manager, missing, _ = self.run_update(genome_list=genome_list, do_not_null_field=True)
+
+            self.assertEqual(sorted(manager.temp_cur.written()), [
+                ('metadata_ncbi', 'ncbi_organism_name'), ('metadata_taxonomy', 'ncbi_taxonomy'),
+                ('metadata_taxonomy', 'ncbi_taxonomy_unfiltered')])
+            self.assertTrue(all(rows == [('GCF_000000001.1', rows[0][1])]
+                                for rows in manager.temp_cur.written().values()))
+            self.assertEqual(missing[1:], [])
+
+    def test_a_genome_named_twice_refuses_the_run(self):
+        manager = self.manager(cls=M.NCBITaxDatabaseManager, cursor=FakeCursor(genomes=HELD))
+        files = [self.write('names.tsv', self.NAMES),
+                 self.write('filtered.tsv', 'GCF_000000001.1\td__A\nRS_GCF_000000001.1\td__B\n'),
+                 self.write('unfiltered.tsv', self.UNFILTERED)]
+        with self.assertRaisesRegex(M.MetadataTableError, 'names GCF_000000001.1 more than once, again on line 2'):
+            manager.update_ncbi_tax_db(*files, None, self.dir)
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+    def test_a_file_is_written_in_chunks_that_are_the_whole_file(self):
+        genomes = ['GCF_{:09d}.1'.format(i) for i in range(25)]
+        names = ''.join('{}\tname {}\n'.format(gid, i) for i, gid in enumerate(genomes))
+        taxonomy = ''.join('{}\td__Bacteria\n'.format(gid) for gid in genomes)
+        with mock.patch.object(M, 'CHUNK_GENOMES', 10):
+            chunked, _, _ = self.run_update(names, taxonomy, taxonomy, genomes=genomes)
+        whole, _, _ = self.run_update(names, taxonomy, taxonomy, genomes=genomes)
+
+        self.assertEqual(len(chunked.temp_cur.upserts), 9)
+        self.assertEqual(chunked.temp_cur.written(), whole.temp_cur.written())
+
+
+class TheNCBITaxonomyCommandLine(unittest.TestCase):
+    def options(self, *extra):
+        from gtdb_migration_tk import __main__ as main_module
+        return main_module.get_main_parser().parse_args(
+            ['update_ncbi_tax_db', '--db_service', 'gtdb_r237', '-n', 'names.tsv', '--filtered', 'f.tsv',
+             '--unfiltered', 'u.tsv', '-l', 'run.log'] + list(extra))
+
+    def test_the_command_takes_the_organism_names_as_n_and_requires_an_out_dir(self):
+        options = self.options('-o', 'out')
+        self.assertEqual((options.organism_names, options.output_dir), ('names.tsv', 'out'))
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+            self.options()
+        self.assertEqual(ended.exception.code, 2)
+
+    def test_update_ncbitax_db_is_no_longer_a_command(self):
+        from gtdb_migration_tk import __main__ as main_module
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+            main_module.get_main_parser().parse_args(
+                ['update_ncbitax_db', '--db_service', 'gtdb_r237', '-o', 'names.tsv', '--filtered', 'f.tsv',
+                 '--unfiltered', 'u.tsv', '-l', 'run.log'])
+        self.assertEqual(ended.exception.code, 2)
+
+    def test_the_command_asks_only_for_a_genome_list_without_do_not_null_field(self):
+        from gtdb_migration_tk import main as main_py
+        out_dir = tempfile.mkdtemp(prefix='metadata_database_manager_test.')
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        for extra, asks in (([], False), (['--genome_list', 'g.tsv'], True),
+                            (['--genome_list', 'g.tsv', '--do_not_null_field'], False)):
+            options = self.options('-o', out_dir, *extra)
+            with mock.patch.object(main_py, 'confirm_partial_load') as confirm, \
+                    mock.patch.object(main_py, 'check_file_exists'), \
+                    mock.patch.object(main_py, 'NCBITaxDatabaseManager') as manager:
+                main_py.OptionsParser().parse_options(options)
+            self.assertEqual(confirm.called, asks, extra)
+            if asks:
+                self.assertEqual(confirm.call_args.args, ('g.tsv', 'update_ncbi_tax_db'))
+            manager.return_value.update_ncbi_tax_db.assert_called_once_with(
+                'names.tsv', 'f.tsv', 'u.tsv', options.genome_list, out_dir, options.do_not_null_field)
+
+    def test_the_prompt_names_the_command_asking(self):
+        with mock.patch('builtins.input', return_value='n'), self.assertRaises(SystemExit) as ended:
+            M.confirm_partial_load('g.tsv', 'update_ncbi_tax_db')
+        self.assertTrue(str(ended.exception.code).startswith('update_ncbi_tax_db:'))
 
 
 class DecidingTypeDesignations(unittest.TestCase):

@@ -18,7 +18,7 @@
 """Writing one metadata field of many genomes, through the database's upsert().
 
 Every metadata command writes through import_metadata_to_db(): update_metadata_db,
-update_checkm_db, update_reps_db, update_ncbitax_db, update_propagated_tax and
+update_checkm_db, update_reps_db, update_ncbi_tax_db, update_propagated_tax and
 add_taxonomy_to_database.
 
 WHAT A FAILURE DOES

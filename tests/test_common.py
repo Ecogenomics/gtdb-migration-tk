@@ -77,6 +77,34 @@ class TempDirCase(unittest.TestCase):
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
+class WritingGzippedTables(TempDirCase):
+    def test_a_table_is_gzipped_and_the_same_text_gives_the_same_bytes(self):
+        # no time or file name in the header: a table written again from the
+        # same genomes is the same file
+        paths = [os.path.join(self.dir, name) for name in ('a.tsv.gz', 'b.tsv.gz')]
+        for path in paths:
+            with C.open_gzip_text(path) as handle:
+                handle.write('genome_id\tx\nGCA_000000001.1\t1\n')
+        contents = []
+        for path in paths:
+            with open(path, 'rb') as handle:
+                contents.append(handle.read())
+
+        self.assertEqual(contents[0][:2], C.GZIP_MAGIC)
+        self.assertEqual(contents[0], contents[1])
+        with C.open_text(paths[0]) as handle:
+            self.assertEqual(handle.read(), 'genome_id\tx\nGCA_000000001.1\t1\n')
+
+    def test_the_uncompressed_table_an_earlier_run_left_is_removed(self):
+        table = os.path.join(self.dir, 'metadata_nt.tsv')
+        open(table, 'w').close()
+        open(table + '.gz', 'w').close()
+
+        self.assertTrue(C.remove_uncompressed(table + '.gz'))
+        self.assertFalse(os.path.exists(table))
+        self.assertFalse(C.remove_uncompressed(table + '.gz'))
+
+
 class AskingAProgramItsVersion(TempDirCase):
     def test_a_version_printed_on_stdout_is_read(self):
         self.program('prodigal', stdout=REAL_OUTPUT['prodigal'][0])

@@ -116,6 +116,7 @@ def print_help():
      update_checkm_db   -> Import CheckM estimates.
      update_checkm2_db  -> Import CheckM2 estimates.
      update_metadata_db -> Update metadata in database.
+     update_ncbi_tax_db -> Update NCBI organism names and taxonomy.
      update_reps_db     -> Update species cluter representatives in database.
 
     Metadata:
@@ -553,7 +554,7 @@ def __only_ncbi(group):
 
 
 def __organism_names(group, required):
-    group.add_argument('-o', '--organism_names', help='NCBI Organism name file.', default=None, required=required)
+    group.add_argument('-n', '--organism_names', help='NCBI Organism name file.', default=None, required=required)
 
 
 def __output_dir(group, required):
@@ -1081,12 +1082,14 @@ def get_main_parser():
             __silent(grp)
 
 
-    with subparser(sub_parsers, 'update_ncbitax_db', 'Update Organism name in the database.') as parser:
+    with subparser(sub_parsers, 'update_ncbi_tax_db',
+                   'Update the NCBI organism name and taxonomy of each genome in the database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __database_setup(grp)
             __organism_names(grp, required=True)
             __filtered_taxonomy(grp, required=True)
             __unfiltered_taxonomy(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __do_not_null_field(grp)

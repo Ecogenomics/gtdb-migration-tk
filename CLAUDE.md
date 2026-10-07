@@ -312,7 +312,11 @@ Each metadata command is ONE transaction: the manager method `main.py` calls is
 decorated `@one_transaction` (in `GenomeDatabaseConnectionFTPUpdate.py`), which
 commits when it returns and rolls back when it raises, `sys.exit()` included, and
 nothing inside it commits. Fields are set to NULL in the transaction their new
-values are written in, so a failed run leaves the old values rather than NULL;
+values are written in, so a failed run leaves the old values rather than NULL,
+and after them, only for the genomes holding a value the run did not write
+(`metadata_database_manager.reset_unwritten()`): an UPDATE rewrites every row it
+touches, and a field of `metadata_ncbi` set to NULL for every genome first
+rewrote the whole 1.3 GB table before `upsert()` rewrote it again;
 nothing asks `[y/n]`, `--do_not_null_field` being how a run keeps the old values,
 with one exception the user chose: `update_metadata_db` given `--genome_list`
 without `--do_not_null_field` asks before reaching the database
@@ -327,7 +331,7 @@ raising, so a failed write finished as a successful one. `upsert()` fails a whol
 field for one genome not in `genomes.id_at_source`, so the importer checks the
 genomes first and the caller says what to do with those the database does not
 hold: `REFUSE` (the default; input meant to be the release's genomes) or `SKIP`
-(input that covers all of NCBI, as `update_ncbitax_db`'s does). Either way they
+(input that covers all of NCBI, as `update_ncbi_tax_db`'s does). Either way they
 are listed beside the log (`biolib_lite.logger.log_directory()`). A genome may be
 named `GB_GCA_...`/`RS_GCF_...` or `GCA_...`/`GCF_...`: a leading `GB_` or `RS_` is
 taken off (`gtdb_importer.id_at_source()`), giving `genomes.id_at_source`.

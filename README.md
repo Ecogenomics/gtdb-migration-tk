@@ -958,20 +958,25 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 `create_tables` calculates nothing. It walks the genomes of the genome_dirs file
 it is given (`--gtdb_genome_path_file`), which may be any release's and not only
 NCBI's, and gathers what earlier commands wrote into each genome directory into
-ten tables in `--out_dir`:
+nine tables in `--out_dir`, each gzipped (`metadata_nt.tsv.gz` and so on):
 
 | Read from the genome directory | Written by | Table |
 | --- | --- | --- |
 | `metadata.genome_nt.tsv` | `genomic_metadata` | `metadata_nt.tsv` |
 | `metadata.genome_gene.tsv` | `genomic_metadata` | `metadata_gene.tsv` |
-| `ssu_gg/ssu.taxonomy.tsv`, `ssu.fna` | nothing in the toolkit today | `metadata_ssu_gg.tsv` |
 | `rna_silva_<ver>/ssu.*` | `rna_silva -r ssu` | `metadata_ssu_silva.tsv`, `metadata_ssu_silva_count.tsv` |
 | `rna_silva_<ver>/lsu_23S.*` | `rna_silva -r lsu_23S` | `metadata_lsu_silva_23s.tsv`, `metadata_lsu_silva_23s_count.tsv` |
 | `rna_silva_<ver>/lsu_5S.*` | `rna_silva -r lsu_5S` | `metadata_lsu_5S.tsv`, `metadata_lsu_5S_count.tsv` |
 | `trna/<gid>_trna_stats.tsv` | `trnascan` | `metadata_trna_count.tsv` |
 
 `--silva_version` only names the `rna_silva_<ver>` directory, and must match
-`config.SILVA_VERSION`. A genome without a file is given no row in that table;
+`config.SILVA_VERSION`. `metadata_ssu_gg.tsv`, the Greengenes classification of
+the 16S rRNA genes from `ssu_gg/`, is no longer written: nothing has written
+`ssu_gg/` since `rna_silva` took over, and r237 had none. A run removes one an
+earlier run left in `--out_dir`, which `update_metadata_db --input_folder` would
+otherwise refuse as a table it does not know. The `ssu_gg_*` fields of
+`metadata_rna` still hold the 2013 Greengenes values loaded for genomes added
+before 2019, which nothing loads or clears. A genome without a file is given no row in that table;
 the three `*_count.tsv` tables are the exception, giving every genome a row, 0
 where nothing was found. The run ends by logging, for every other table, how many
 genomes have a row, how many had no file to read it from, and how many had one
@@ -992,8 +997,16 @@ did not get to every genome. The log goes to `-l/--log`, which is required, so
 that the run's account of what is missing is where it was asked to be. A
 genome_dirs file naming no genomes is
 refused, exiting 1, before anything is written, rather than replacing the tables
-in `--out_dir` with ten of no rows. The table names are the ones
+in `--out_dir` with nine of no rows. The table names are the ones
 `update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
+
+`create_tables`, `parse_ncbi_assemblies`, `parse_ncbi_dir` and `ncbi_strains`
+write their tables gzipped, `<table>.tsv.gz`, with no time or file name in the
+gzip header, so the same genomes give the same bytes. A table an earlier run
+left uncompressed in the same `--out_dir` is removed once the gzipped one is
+written, since `update_metadata_db` refuses a folder holding a table both ways.
+r237's `ncbi_assembly_summary.tsv` is 73 MB gzipped, where it was 598 MB, for 11
+seconds more of a 38-second run.
 
 `create_tables` reads `--cpus` genomes at once on threads (default 1; give it
 8) and writes them in the order of the genome_dirs file, so the tables are the
@@ -1014,7 +1027,7 @@ server others are using.
 `parse_ncbi_assemblies` (`parse_assemblies` until 0.1.55) takes the NCBI
 assembly summaries the release was selected from (`-n`), as `select_genomes`
 and `strains type_table` do, rather than `--rb`, `--ra`, `--gb` and `--ga`. It
-writes `ncbi_assembly_summary.tsv` in `-o/--out_dir`, one row for every genome of
+writes `ncbi_assembly_summary.tsv.gz` in `-o/--out_dir`, one row for every genome of
 the summaries, and requires a log (`-l`). It takes no list of genomes: which of
 them the database loads is for `update_metadata_db` to decide.
 
@@ -1038,7 +1051,7 @@ summaries), skipping and counting the rest.
 `parse_ncbi_dir` reads what NCBI's own files in each genome directory of a
 genome_dirs file (`-g`) say -- `_assembly_stats.txt`, `_genomic.gff.gz` and
 `_genomic.gbff.gz` -- on `--cpus` processes, and writes
-`ncbi_assembly_metadata.tsv` in `-o/--out_dir`, the name `update_metadata_db
+`ncbi_assembly_metadata.tsv.gz` in `-o/--out_dir`, the name `update_metadata_db
 --input_folder` loads against `metadata_ncbi_assembly.desc.tsv`. It requires a
 log (`-l`).
 
@@ -1057,8 +1070,8 @@ of 300 r237 genomes drawn at random had none). Four of its columns are not
 loaded, the database having no field for them: `ncbi_contig_l50`,
 `ncbi_component_count`, `ncbi_geo_loc_name` and `ncbi_metagenome_source`.
 `ncbi_isolation_source` and `ncbi_lat_lon` are, since 0.1.55; loading the table
-sets them, as every field it loads, to NULL for every genome first unless
-`--do_not_null_field` is given.
+sets them, as every field it loads, to NULL for every genome it gives no value,
+unless `--do_not_null_field` is given.
 
 ### Taxonomy
 
@@ -1080,7 +1093,7 @@ sets them, as every field it loads, to NULL for every genome first unless
 | `update_checkm2_db` | Import CheckM2 estimates |
 | `update_metadata_db` | Update metadata in the database |
 | `update_reps_db` | Update species cluster representatives |
-| `update_ncbitax_db` | Update NCBI organism names and taxonomy |
+| `update_ncbi_tax_db` | Update NCBI organism names and taxonomy (`update_ncbitax_db` until 0.1.57) |
 | `update_taxid_to_db` | Add the NCBI taxid for each rank of each genome |
 | `update_type_designation` | Update `type_designation` once SeqCode, NCBI and LPSN data are loaded |
 | `add_surveillance_genomes` | Add surveillance genomes to a GTDB table |
@@ -1113,24 +1126,30 @@ password is read from `~/.pgpass`. A password on the command line is shown by
 `PGSERVICE=gtdb_r237` in the environment does what `--db_service gtdb_r237` does.
 
 Each of these commands is one transaction, committed when it is done: a run that
-fails leaves the database as it was, and exits non-zero. A field is set to NULL
-for every genome before its new values are written, in that same transaction,
-unless `--do_not_null_field` is given; nothing asks first, but
+fails leaves the database as it was, and exits non-zero. Once a field is
+written, it is set to NULL for every genome holding a value the run did not give
+it, in that same transaction, unless `--do_not_null_field` is given: the same
+end as setting it to NULL for every genome first, without rewriting the rows of
+the genomes given a value, which `upsert()` rewrites anyway (setting
+`metadata_ncbi.ncbi_organism_name` to NULL for every genome took four minutes
+for r237, a new version of each of the table's rows; it now touches none).
+Nothing asks first, but
 `update_metadata_db` given `--genome_list` (below). A genome the database
 does not hold refuses the run (a metadata table, CheckM results, a taxonomy or a
 cluster file of another release, or `update_db` not yet run), except in
-`update_ncbitax_db`, whose NCBI files cover every assembly NCBI holds and whose
+`update_ncbi_tax_db`, whose NCBI files cover every assembly NCBI holds and whose
 other genomes are skipped. Either way each one is listed in
 `unknown_genomes.<table>.<field>.tsv` beside the log.
 
-`update_metadata_db` loads the tables other commands write: every `.tsv` of
-`-i/--input_folder`, each a table it knows (`metadata_*.tsv` from
-`create_tables`, `ncbi_assembly_summary.tsv` from `parse_ncbi_assemblies`,
-`ncbi_assembly_metadata.tsv` from `parse_ncbi_dir`, `strain_summary_file.tsv`
-from `ncbi_strains`) and loads against its descriptions in
-`data_files/table_description/`, or one table given as `--metadata_table` with
-`--metadata_table_desc`. A folder holding a table it does not know, or a table
-without its description, is refused, every one named, before anything is
+`update_metadata_db` loads the tables other commands write: every `.tsv` and
+`.tsv.gz` of `-i/--input_folder`, each a table it knows by its name without
+`.gz` (`metadata_*.tsv` from `create_tables`, `ncbi_assembly_summary.tsv` from
+`parse_ncbi_assemblies`, `ncbi_assembly_metadata.tsv` from `parse_ncbi_dir`,
+`strain_summary_file.tsv` from `ncbi_strains`, which all write them gzipped) and
+loads against its descriptions in `data_files/table_description/`, or one table,
+gzipped or not, given as `--metadata_table` with `--metadata_table_desc`. A
+folder holding a table it does not know, a table both gzipped and not, or a
+table without its description, is refused, every one named, before anything is
 written. A column no description names is not loaded, and the log says which.
 
 It loads the genomes the database holds, `genomes.id_at_source`, skipping and
@@ -1138,9 +1157,8 @@ counting the rest, since a table may cover more (`parse_ncbi_assemblies`' covers
 every genome of NCBI's summaries). `--genome_list` loads only the genomes in the
 first column of a file instead, and a genome of it the database does not hold
 refuses the run. Given `--genome_list` without `--do_not_null_field`, it asks
-`[y/n]` before reaching the database: every field loaded is set to NULL for every
-genome and written again only for those listed, removing the metadata of every
-other genome. A run with no terminal to answer ends there, having changed
+`[y/n]` before reaching the database: every field loaded is written only for
+those listed and set to NULL for every other genome, removing its metadata. A run with no terminal to answer ends there, having changed
 nothing.
 
 A table is read once, in chunks of 100,000 genomes, each field of a chunk
@@ -1152,6 +1170,28 @@ the database as it was and can be run again. A table is refused, and nothing
 written, where a row has more or fewer columns than the header, a genome is
 named twice, or an INT field holds anything but a whole number (`12.0` is
 written as 12, `12.5` refused).
+
+`update_ncbi_tax_db` writes each genome's NCBI organism name
+(`metadata_ncbi.ncbi_organism_name`), standardised taxonomy
+(`metadata_taxonomy.ncbi_taxonomy`) and unfiltered taxonomy
+(`ncbi_taxonomy_unfiltered`) from the three files `parse_ncbi_taxonomy` writes:
+
+```bash
+gtdb_migration_tk update_ncbi_tax_db --db_service gtdb_r237 \
+    -n ncbi_r237_organism_names.tsv --filtered ncbi_r237_standardized.tsv \
+    --unfiltered ncbi_r237_unfiltered_taxonomy.tsv \
+    -o update_ncbi_tax_db -l update_ncbi_tax_db/update_ncbi_tax_db.log
+```
+
+It writes the genomes the database holds, or with `--genome_list` those listed,
+asking first as `update_metadata_db` does; a genome is matched however a file or
+the list names it (`RS_GCF_...` or `GCF_...`). Each such genome without one of
+the three -- no line in its file, or an empty value -- is written to
+`ncbi_tax_missing.tsv` in `-o/--out_dir` (`genome_id`, then each field, `missing`
+or empty), written whether or not there are any, and counted in a WARNING per
+field. For r237 that is 1,486 genomes without a taxonomy, those whose taxid NCBI
+deleted. A file naming a genome twice refuses the run. Each file is written in
+chunks, as `update_metadata_db` writes a table.
 
 `update_db` brings the NCBI genomes of the `genomes` table into line with a
 release, from the two files `update_genomes` wrote for it: `report.log` says what
@@ -1291,7 +1331,7 @@ did and wrote the table this command's fields were loaded from, are gone.
 | `strains` | Year of priority (`date_table`) and type material status (`type_table`) of each genome, from LPSN |
 | `ncbi_strains` | Parse NCBI assembly reports for strain identifiers and type material status |
 
-`ncbi_strains` writes `strain_summary_file.tsv` in `--out_dir`: each genome of a
+`ncbi_strains` writes `strain_summary_file.tsv.gz` in `--out_dir`: each genome of a
 genome_dirs file (`-g`) with its organism name and strain IDs, read from its
 `_assembly_report.txt` on `--cpus` processes, and its NCBI type material status,
 the `relation_to_type_material` of the assembly summaries (`-n`, as
@@ -1310,7 +1350,7 @@ none of the summaries has an empty type material status, which
 `update_metadata_db` loads as NULL, and one with no assembly report an empty
 organism name and strain IDs; the log ends with a WARNING counting each. A
 genome that cannot be read stops the run. The table is written as
-`strain_summary_file.tsv.partial` and renamed only once every genome is in it,
+`strain_summary_file.tsv.gz.partial` and renamed only once every genome is in it,
 so a failed run leaves no table, or the one an earlier run wrote.
 
 `strains type_table` decides which genomes of a release are assembled from type
