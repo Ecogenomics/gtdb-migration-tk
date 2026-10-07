@@ -33,6 +33,7 @@ from gtdb_migration_tk.update_genomes import (STATUS_FASTA_CHANGED,
                                               STATUS_REMOVED,
                                               STATUS_SEQUENCES_UNCHANGED,
                                               STATUS_TO_CURATE)
+from gtdb_migration_tk.utils.common import open_text
 
 FAKE_CHECKM2 = r'''#!/bin/sh
 if [ "$1" = "--version" ]; then echo 1.1.0; exit 0; fi
@@ -175,7 +176,8 @@ class TempDirCase(unittest.TestCase):
         return manager.run(dirs, report, self.out, all_genomes)
 
     def table(self, name):
-        with open(os.path.join(self.out, name)) as handle:
+        # a release table is gzipped, a batch's is not and not_assessed is not
+        with open_text(os.path.join(self.out, name)) as handle:
             header = handle.readline().rstrip('\n').split('\t')
             rows = [line.rstrip('\n').split('\t') for line in handle]
         return header, rows
@@ -220,7 +222,7 @@ class ChoosingTheGenomes(TempDirCase):
         with open(os.path.join(self.batch(1), 'checkm', 'bins.txt')) as handle:
             self.assertEqual(handle.read().split(),
                              ['GCA_000000001.1_protein', 'GCA_000000003.1_protein'])
-        self.assertEqual(self.first_column('checkm.profiles.tsv'),
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_PROFILE),
                          ['GCA_000000001.1_protein', 'GCA_000000003.1_protein'])
 
     def test_checkm2_plans_and_assesses_only_the_new_and_changed_genomes(self):
@@ -263,6 +265,21 @@ class RunningCheckM2(TempDirCase):
 
         self.assertEqual(self.first_column(M.CHECKM2_RELEASE_REPORT),
                          ['GCA_000000001.1', 'GCF_000000003.1'])
+
+    def test_the_release_report_is_gzipped_and_an_uncompressed_one_left_before_is_removed(self):
+        os.makedirs(self.out, exist_ok=True)
+        stale = os.path.join(self.out, M.CHECKM2_SUPERSEDED_FILES[0])
+        with open(stale, 'w') as handle:
+            handle.write('stale\n')
+        dirs, report = self.release({'GCA_000000001.1': STATUS_NEW})
+        self.assertTrue(self.run_checkm2(dirs, report))
+
+        with open(os.path.join(self.out, M.CHECKM2_RELEASE_REPORT), 'rb') as handle:
+            self.assertEqual(handle.read(2), b'\x1f\x8b')
+        self.assertFalse(os.path.exists(stale))
+        # the batch keeps its own report uncompressed, as CheckM2 wrote it
+        with open(os.path.join(self.batch(1), M.CHECKM2_BATCH_REPORT)) as handle:
+            self.assertEqual(handle.readline().split('\t')[0], 'Name')
 
     def test_all_genomes_assesses_every_genome_the_release_holds(self):
         dirs, report = self.release({'GCA_000000001.1': STATUS_NEW,
@@ -383,14 +400,12 @@ class RunningCheckM(TempDirCase):
                                      'GCA_000000003.1': STATUS_NEW})
         self.run_checkm(dirs, report)
 
-        header, rows = self.table('checkm.profiles.tsv')
+        header, rows = self.table(M.CHECKM_RELEASE_PROFILE)
         self.assertEqual(header, ['Bin Id', 'Completeness', 'Taxonomy'])
         self.assertEqual(rows, [['GCA_000000001.1_protein', '99.0', 'k__Bacteria'],
                                 ['GCA_000000003.1_protein', '99.0', 'k__Bacteria']])
-        self.assertEqual(self.first_column('checkm.qa_sh100.tsv'),
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_QA_SH100),
                          ['GCA_000000001.1_protein', 'GCA_000000003.1_protein'])
-        with open(os.path.join(self.out, M.CHECKM_RELEASE_ALIGNMENT)) as handle:
-            self.assertEqual(len(handle.readlines()), 2)
 
     def test_the_version_is_written_beside_each_batch_it_made(self):
         dirs, report = self.release({'GCA_000000001.1': STATUS_NEW})
@@ -406,7 +421,7 @@ class RunningCheckM(TempDirCase):
 
         self.assertTrue(os.path.exists(
             os.path.join(self.batch(1), FAILED_CANARY)))
-        self.assertFalse(os.path.exists(os.path.join(self.out, 'checkm.profiles.tsv')))
+        self.assertFalse(os.path.exists(os.path.join(self.out, M.CHECKM_RELEASE_PROFILE)))
 
     def test_the_release_tables_are_the_batches_concatenated_under_one_header(self):
         genomes = {'GCA_%09d.1' % i: STATUS_NEW for i in range(5)}
@@ -414,12 +429,57 @@ class RunningCheckM(TempDirCase):
         self.run_checkm(dirs, report, batch_size=2)
 
         proteins = [gid + '_protein' for gid in sorted(genomes)]
-        header, rows = self.table('checkm.profiles.tsv')
+        header, rows = self.table(M.CHECKM_RELEASE_PROFILE)
         self.assertEqual(header, ['Bin Id', 'Completeness', 'Taxonomy'])
         self.assertEqual([row[0] for row in rows], proteins)
-        self.assertEqual(self.first_column('checkm.qa_sh100.tsv'), proteins)
-        with open(os.path.join(self.out, M.CHECKM_RELEASE_ALIGNMENT)) as handle:
-            self.assertEqual([line.split('\t')[0] for line in handle], proteins)
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_QA_SH100), proteins)
+
+    def test_the_release_tables_are_gzipped_and_the_genomes_left_out_are_not(self):
+        dirs, report = self.release({'GCA_000000001.1': STATUS_NEW})
+        self.run_checkm(dirs, report)
+
+        for name in (M.CHECKM_RELEASE_PROFILE, M.CHECKM_RELEASE_QA_SH100):
+            with open(os.path.join(self.out, name), 'rb') as handle:
+                self.assertEqual(handle.read(2), b'\x1f\x8b', name)
+        with open(os.path.join(self.out, M.CHECKM_NOT_ASSESSED)) as handle:
+            self.assertEqual(handle.readline().rstrip('\n').split('\t'), list(M.NOT_ASSESSED_HEADER))
+
+    def test_the_alignments_stay_in_their_batches_and_are_not_gathered_for_the_release(self):
+        # nothing reads them, and for r237 the release's copy was 142 GB
+        genomes = {'GCA_%09d.1' % i: STATUS_NEW for i in range(3)}
+        dirs, report = self.release(genomes)
+        self.run_checkm(dirs, report, batch_size=2)
+
+        with open(os.path.join(self.batch(1), M.CHECKM_ALIGNMENT)) as handle:
+            self.assertEqual([line.split('\t')[0] for line in handle],
+                             [gid + '_protein' for gid in sorted(genomes)[:2]])
+        self.assertTrue(os.path.exists(os.path.join(self.batch(2), M.CHECKM_ALIGNMENT)))
+        self.assertEqual([name for name in os.listdir(self.out) if 'alignment' in name], [])
+
+    def test_what_an_earlier_run_wrote_for_the_release_is_removed_once_replaced(self):
+        # an uncompressed table beside the gzipped one, a few genomes short, is
+        # how the stale one gets read; the joined alignments are no longer made
+        os.makedirs(self.out, exist_ok=True)
+        for name in M.CHECKM_SUPERSEDED_FILES:
+            with open(os.path.join(self.out, name), 'w') as handle:
+                handle.write('stale\n')
+        dirs, report = self.release({'GCA_000000001.1': STATUS_NEW})
+        self.run_checkm(dirs, report)
+
+        for name in M.CHECKM_SUPERSEDED_FILES:
+            self.assertFalse(os.path.exists(os.path.join(self.out, name)), name)
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_PROFILE), ['GCA_000000001.1_protein'])
+
+    def test_an_earlier_release_file_is_kept_while_a_batch_is_unfinished(self):
+        os.makedirs(self.out, exist_ok=True)
+        stale = os.path.join(self.out, M.CHECKM_SUPERSEDED_FILES[0])
+        with open(stale, 'w') as handle:
+            handle.write('stale\n')
+        dirs, report = self.release({'GCA_000000001.1': STATUS_NEW})
+        os.environ['FAIL_BATCH'] = 'batch_000001'
+        self.assertFalse(self.run_checkm(dirs, report))
+
+        self.assertTrue(os.path.exists(stale))
 
     def test_a_genome_without_proteins_is_named_rather_than_failing_its_batch(self):
         dirs, report = self.release({'GCA_000000001.1': STATUS_NEW,
@@ -427,7 +487,7 @@ class RunningCheckM(TempDirCase):
                                     missing={'GCA_000000001.1'})
         self.run_checkm(dirs, report)
 
-        self.assertEqual(self.first_column('checkm.profiles.tsv'), ['GCA_000000002.1_protein'])
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_PROFILE), ['GCA_000000002.1_protein'])
         self.assertEqual(self.not_assessed(M.CHECKM_NOT_ASSESSED),
                          {'GCA_000000001.1': M.REASON_NO_PROTEINS})
 
@@ -440,7 +500,7 @@ class RunningCheckM(TempDirCase):
         self.assertTrue(self.run_checkm(dirs, report, batch_size=2))
 
         self.assertEqual(len(self.calls_of('lineage_wf')), 1)
-        self.assertEqual(self.first_column('checkm.profiles.tsv'),
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_PROFILE),
                          ['GCA_000000001.1_protein', 'GCA_000000002.1_protein'])
         self.assertEqual(self.not_assessed(M.CHECKM_NOT_ASSESSED),
                          {'GCA_000000003.1': M.REASON_NO_PROTEINS})
@@ -456,7 +516,7 @@ class RunningCheckM(TempDirCase):
         self.run_checkm(dirs, report)
 
         self.assertTrue(os.path.exists(os.path.join(self.batch(1), SUCCESS_CANARY)))
-        self.assertTrue(os.path.exists(os.path.join(self.out, 'checkm.profiles.tsv')))
+        self.assertTrue(os.path.exists(os.path.join(self.out, M.CHECKM_RELEASE_PROFILE)))
 
     def test_an_out_dir_holding_another_commands_batches_is_refused(self):
         dirs, report = self.release({'GCA_000000001.1': STATUS_NEW})
@@ -703,7 +763,7 @@ class AGenomeTooLargeToAssess(TempDirCase):
         dirs, report = self.release_with_a_metagenome()
         self.assertTrue(self.command(M.CheckM, dirs, report))
 
-        self.assertEqual(self.first_column('checkm.profiles.tsv'), [self.SMALL + '_protein'])
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_PROFILE), [self.SMALL + '_protein'])
         self.assertEqual(self.not_assessed(M.CHECKM_NOT_ASSESSED),
                          {self.LARGE: M.REASON_GENOME_TOO_LARGE})
 
@@ -726,7 +786,7 @@ class AGenomeTooLargeToAssess(TempDirCase):
         dirs, report = self.release_with_a_metagenome()
         self.command(M.CheckM, dirs, report, max_genome_size=10000)
 
-        self.assertEqual(self.first_column('checkm.profiles.tsv'),
+        self.assertEqual(self.first_column(M.CHECKM_RELEASE_PROFILE),
                          [self.SMALL + '_protein', self.LARGE + '_protein'])
         self.assertEqual(self.not_assessed(M.CHECKM_NOT_ASSESSED), {})
 
