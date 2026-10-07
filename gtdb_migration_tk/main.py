@@ -20,7 +20,7 @@ import logging
 
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists
 from gtdb_migration_tk.busco_manager import BuscoManager
-from gtdb_migration_tk.checkm_database_manager import CheckMDatabaseManager
+from gtdb_migration_tk.checkm_database_manager import CheckM2DatabaseManager, CheckMDatabaseManager
 from gtdb_migration_tk.checkm_manager import CheckM, CheckM2, CheckMManager
 from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk import config
@@ -335,14 +335,6 @@ class OptionsParser():
     def generate_checkm2_data(self, options):
         self.generate_checkm_data(options, program=CheckM2)
 
-    def prepare_checkm2_batch(self, options):
-        p = CheckMManager(options.cpus)
-        p.prepare_checkm2_batch(options.checkm_summary_genbank, options.checkm_summary_refseq,options.metadata,
-                                options.gtdb_genome_path_file,options.output_dir)
-
-    def join_checkm2_results(self,options):
-        p = CheckMManager(options.cpus)
-        p.join_checkm2_results(options.checkm2_output_dir,options.output_dir)
 
     def join_checkm_files(self, options):
         p = CheckMManager()
@@ -369,8 +361,13 @@ class OptionsParser():
     def update_checkm_db(self, options):
         make_sure_path_exists(options.output_dir)
         p = CheckMDatabaseManager(database_keywords(options))
-        p.add_checkm_to_db(options.checkm_profile, options.check_qa, options.not_assessed,
+        p.add_checkm_to_db(options.checkm_profile_file, options.check_qa, options.not_assessed,
                            options.output_dir)
+
+    def update_checkm2_db(self, options):
+        make_sure_path_exists(options.output_dir)
+        p = CheckM2DatabaseManager(database_keywords(options))
+        p.add_checkm2_to_db(options.checkm2_profile_file, options.not_assessed, options.output_dir)
 
     def update_metadata_db(self, options):
         p = MetadataDatabaseManager(database_keywords(options))
@@ -548,12 +545,10 @@ class OptionsParser():
             self.generate_checkm_data(options)
         elif options.subparser_name == 'checkm2':
             self.generate_checkm2_data(options)
-        elif options.subparser_name == 'prepare_checkm2':
-            self.prepare_checkm2_batch(options)
-        elif options.subparser_name == 'join_checkm2':
-            self.join_checkm2_results(options)
         elif options.subparser_name == 'update_checkm_db':
             self.update_checkm_db(options)
+        elif options.subparser_name == 'update_checkm2_db':
+            self.update_checkm2_db(options)
         elif options.subparser_name == 'busco':
             self.generate_busco_data(options)
         elif options.subparser_name == 'add_surveillance_genomes':

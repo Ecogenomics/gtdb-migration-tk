@@ -440,7 +440,7 @@ class TheCommandLine(TempDirCase):
         profile, qa, left_out = self.release_files()
         out_dir = os.path.join(self.dir, 'update_checkm_db')
         options = main_module.get_main_parser().parse_args(
-            ['update_checkm_db', '--db_service', 'gtdb_r237', '-c', profile, '-q', qa,
+            ['update_checkm_db', '--db_service', 'gtdb_r237', '-f', profile, '-q', qa,
              '-n', left_out, '-o', out_dir, '-l', os.path.join(self.dir, 'run.log')])
         self.assertFalse(hasattr(options, 'metadata'))
 
@@ -455,16 +455,185 @@ class TheCommandLine(TempDirCase):
         profile, qa, left_out = self.release_files()
         with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
             main_module.get_main_parser().parse_args(
-                ['update_checkm_db', '--db_service', 'gtdb_r237', '-c', profile, '-q', qa,
+                ['update_checkm_db', '--db_service', 'gtdb_r237', '-f', profile, '-q', qa,
                  '-n', left_out, '-l', os.path.join(self.dir, 'run.log')])
 
     def test_a_metadata_file_is_no_longer_accepted(self):
         profile, qa, left_out = self.release_files()
         with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
             main_module.get_main_parser().parse_args(
-                ['update_checkm_db', '--db_service', 'gtdb_r237', '-c', profile, '-q', qa,
+                ['update_checkm_db', '--db_service', 'gtdb_r237', '-f', profile, '-q', qa,
                  '-n', left_out, '-o', self.dir, '-m', 'metadata.tsv',
                  '-l', os.path.join(self.dir, 'run.log')])
+
+
+
+# ------------------------------------------------------------- update_checkm2_db
+
+# the columns of CheckM2's quality_report.tsv as checkm2 gathers it for the release
+QUALITY_REPORT_HEADER = ['Name', 'Completeness', 'Contamination', 'Completeness_Model_Used',
+                         'Additional_Notes']
+SPECIFIC = 'Neural Network (Specific Model)'
+GENERAL = 'Gradient Boost (General Model)'
+
+# the CheckM2 estimates a genome holds in metadata_genes, one value for each of C.CHECKM2_FIELDS
+HELD2 = (99.1, 0.4, 'Specific')
+
+
+def report_row(accession, completeness='100.0', contamination='2.76', model=SPECIFIC):
+    return [accession, completeness, contamination, model, 'None']
+
+
+class CheckM2Case(TempDirCase):
+    def checkm2_files(self, rows=None, not_assessed=(), header=QUALITY_REPORT_HEADER, compress=True):
+        rows = rows if rows is not None else [report_row(GENOMES[0]),
+                                              report_row(GENOMES[1], '87.0', '3.4', GENERAL)]
+        by_name = [dict(zip(QUALITY_REPORT_HEADER, row)) for row in rows]
+        report = self.table('checkm2.quality_report.tsv.gz' if compress else 'checkm2.quality_report.tsv',
+                            header, [[row[column] for column in header] for row in by_name],
+                            compress=compress)
+        left_out = self.table('checkm2_not_assessed.tsv', ['genome_id', 'reason', 'detail'],
+                              [(gid, 'no_protein_file', '') for gid in not_assessed])
+        return report, left_out
+
+
+class PlanningTheCheckM2Import(CheckM2Case):
+    def test_completeness_contamination_and_the_model_are_written_for_every_genome(self):
+        genomes, fields, not_assessed = C.plan_checkm2_import(*self.checkm2_files())
+
+        self.assertEqual(genomes, list(GENOMES))
+        self.assertEqual(not_assessed, [])
+        self.assertEqual(fields, [
+            ('checkm2_completeness', 'FLOAT', [('GCA_000000001.1', '100.0'), ('GCF_000000002.1', '87.0')]),
+            ('checkm2_contamination', 'FLOAT', [('GCA_000000001.1', '2.76'), ('GCF_000000002.1', '3.4')]),
+            ('checkm2_model', 'TEXT', [('GCA_000000001.1', 'Specific'), ('GCF_000000002.1', 'General')])])
+
+    def test_columns_are_found_by_name_wherever_they_are(self):
+        reordered = ['Name', 'Additional_Notes', 'Completeness_Model_Used', 'Contamination', 'Completeness']
+        self.assertEqual(C.plan_checkm2_import(*self.checkm2_files(header=reordered)),
+                         C.plan_checkm2_import(*self.checkm2_files()))
+
+    def test_a_plain_report_is_read_as_a_gzipped_one_is(self):
+        self.assertEqual(C.plan_checkm2_import(*self.checkm2_files(compress=False)),
+                         C.plan_checkm2_import(*self.checkm2_files()))
+
+    def test_a_model_naming_neither_general_nor_specific_is_refused_naming_it(self):
+        # the database would otherwise hold a value nothing reading it expects
+        with self.assertRaisesRegex(C.CheckMTableError, 'Transformer \\(Universal Model\\)') as raised:
+            C.plan_checkm2_import(*self.checkm2_files(rows=[
+                report_row(GENOMES[0]), report_row(GENOMES[1], model='Transformer (Universal Model)')]))
+        self.assertIn('GCF_000000002.1', str(raised.exception))
+
+    def test_a_report_missing_a_column_is_refused_naming_it(self):
+        header = [column for column in QUALITY_REPORT_HEADER if column != 'Completeness_Model_Used']
+        with self.assertRaisesRegex(C.CheckMTableError, "'Completeness_Model_Used'"):
+            C.plan_checkm2_import(*self.checkm2_files(header=header))
+
+    def test_a_genome_both_assessed_and_not_is_refused(self):
+        with self.assertRaisesRegex(C.CheckMTableError, 'CheckM2 tables'):
+            C.plan_checkm2_import(*self.checkm2_files(not_assessed=[GENOMES[1]]))
+
+
+class WritingCheckM2ToTheDatabase(CheckM2Case):
+    def manager(self, cursor):
+        manager = super().manager(cursor)
+        manager.__class__ = C.CheckM2DatabaseManager
+        return manager
+
+    def test_the_three_fields_are_upserted_to_metadata_genes_in_one_commit(self):
+        cursor = FakeCursor()
+        manager = self.manager(cursor)
+        manager.add_checkm2_to_db(*self.checkm2_files(), self.dir)
+
+        upserts = cursor.upserts()
+        self.assertEqual(sorted(upserts), sorted(C.CHECKM2_FIELDS))
+        self.assertEqual(upserts['checkm2_model'],
+                         ('TEXT', [('GCA_000000001.1', 'Specific'), ('GCF_000000002.1', 'General')]))
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+
+    def test_a_genome_checkm2_left_out_has_its_earlier_checkm2_estimates_cleared(self):
+        stale = 'GCA_977065575.1'
+        cursor = FakeCursor(genomes=GENOMES + (stale,), estimates={stale: (True, HELD2)})
+        manager = self.manager(cursor)
+        manager.add_checkm2_to_db(*self.checkm2_files(not_assessed=[stale]), self.dir)
+
+        self.assertEqual(cursor.cleared(), [[2]])
+        update = [sql for sql, _params in cursor.statements if sql.startswith('UPDATE metadata_genes')][0]
+        self.assertEqual(update.count('= NULL'), len(C.CHECKM2_FIELDS))
+        for field in C.CHECKM2_FIELDS:
+            self.assertIn('{} = NULL'.format(field), update)
+        self.assertNotIn('checkm_completeness', update)
+        self.assertIn('Cleared the CheckM2 estimates of 1 genome(s) checkm2 left out', self.warnings[0])
+        with open(os.path.join(self.dir, C.CHECKM2_CLEARED_NAME)) as handle:
+            self.assertEqual(handle.read().splitlines(),
+                             ['\t'.join(('genome_id',) + C.CHECKM2_FIELDS),
+                              '\t'.join([stale] + [str(v) for v in HELD2])])
+
+    def test_genomes_with_no_checkm2_estimates_are_written_to_their_own_file(self):
+        unplanned = 'GCA_001341675.1'
+        cursor = FakeCursor(genomes=GENOMES + (unplanned,), missing=[(unplanned, True, True)])
+        manager = self.manager(cursor)
+        manager.add_checkm2_to_db(*self.checkm2_files(), self.dir)
+
+        asked = [sql for sql, _params in cursor.statements
+                 if sql.startswith('SELECT g.id_at_source, g.has_changed')][0]
+        self.assertIn('m.checkm2_completeness IS NULL', asked)
+        with open(os.path.join(self.dir, C.CHECKM2_MISSING_NAME)) as handle:
+            self.assertEqual(handle.read().splitlines(), ['genome_id\tstatus', unplanned + '\tnew'])
+        self.assertIn('have no CheckM2 estimates', self.warnings[0])
+        self.assertFalse(os.path.exists(os.path.join(self.dir, C.MISSING_NAME)))
+
+    def test_a_report_that_cannot_be_written_is_refused_before_the_database_is_asked(self):
+        cursor = FakeCursor()
+        manager = self.manager(cursor)
+        with self.assertRaises(C.CheckMTableError):
+            manager.add_checkm2_to_db(*self.checkm2_files(rows=[report_row(GENOMES[0], model='?')]), self.dir)
+        self.assertEqual(cursor.statements, [])
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+
+class TheCheckM2CommandLine(CheckM2Case):
+    def test_update_checkm2_db_takes_checkm2s_release_files(self):
+        report, left_out = self.checkm2_files()
+        out_dir = os.path.join(self.dir, 'update_checkm2_db')
+        options = main_module.get_main_parser().parse_args(
+            ['update_checkm2_db', '--db_service', 'gtdb_r237', '-f', report, '-n', left_out,
+             '-o', out_dir, '-l', os.path.join(self.dir, 'run.log')])
+
+        with mock.patch.object(main_py, 'CheckM2DatabaseManager') as manager:
+            main_py.OptionsParser().parse_options(options)
+        manager.assert_called_once_with({'service': 'gtdb_r237'})
+        manager.return_value.add_checkm2_to_db.assert_called_once_with(report, left_out, out_dir)
+        self.assertTrue(os.path.isdir(out_dir))
+
+    def test_the_profile_files_are_f_for_both_commands_never_c(self):
+        # -c is --cpus throughout the toolkit, and -p is --password in every *_db command
+        profile, qa, left_out = self.release_files()
+        report, left_out2 = self.checkm2_files()
+        common = ['--db_service', 'gtdb_r237', '-o', self.dir, '-l', os.path.join(self.dir, 'run.log')]
+        parser = main_module.get_main_parser()
+
+        options = parser.parse_args(['update_checkm_db', '--checkm_profile_file', profile, '-q', qa,
+                                     '-n', left_out] + common)
+        self.assertEqual(options.checkm_profile_file, profile)
+        options = parser.parse_args(['update_checkm2_db', '--checkm2_profile_file', report,
+                                     '-n', left_out2] + common)
+        self.assertEqual(options.checkm2_profile_file, report)
+        for argv in (['update_checkm_db', '-c', profile, '-q', qa, '-n', left_out],
+                     ['update_checkm2_db', '-c', report, '-n', left_out2],
+                     ['update_checkm2_db', '-r', report, '-n', left_out2]):
+            with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+                parser.parse_args(argv + common)
+            self.assertEqual(ended.exception.code, 2)
+
+    def test_join_checkm2_and_prepare_checkm2_are_gone(self):
+        # checkm2 batches, runs and gathers CheckM2 itself; update_checkm2_db loads it
+        for command in ('join_checkm2', 'prepare_checkm2'):
+            with mock.patch('sys.stdout'), mock.patch('sys.stderr') as stderr, \
+                    self.assertRaises(SystemExit) as ended:
+                main_module.get_main_parser().parse_args([command, '-h'])
+            self.assertEqual(ended.exception.code, 2)
+            self.assertIn('invalid choice', ''.join(call.args[0] for call in stderr.write.call_args_list))
 
 
 if __name__ == '__main__':

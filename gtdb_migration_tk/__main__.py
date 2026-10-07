@@ -114,6 +114,7 @@ def print_help():
     Access to Database:
      update_db          -> Update the NCBI genomes of the GTDB database to a new release.
      update_checkm_db   -> Import CheckM estimates.
+     update_checkm2_db  -> Import CheckM2 estimates.
      update_metadata_db -> Update metadata in database.
      update_reps_db     -> Update species cluter representatives in database.
 
@@ -194,7 +195,7 @@ def __checkm_files(group, required):
 
 
 def __checkm_profile(group, required):
-    group.add_argument('-c', '--checkm_profile', required=required,
+    group.add_argument('-f', '--checkm_profile_file', required=required,
                        help='checkm.profiles.tsv.gz, as checkm writes it for the release.')
 
 
@@ -208,6 +209,18 @@ def __checkm_not_assessed(group, required):
     group.add_argument('-n', '--not_assessed', required=required,
                        help='checkm_not_assessed.tsv, as checkm writes it for the release; '
                             'the CheckM estimates a genome it names held of its sequences '
+                            'before this update are cleared.')
+
+
+def __checkm2_profile_file(group, required):
+    group.add_argument('-f', '--checkm2_profile_file', required=required,
+                       help='checkm2.quality_report.tsv.gz, as checkm2 writes it for the release.')
+
+
+def __checkm2_not_assessed(group, required):
+    group.add_argument('-n', '--not_assessed', required=required,
+                       help='checkm2_not_assessed.tsv, as checkm2 writes it for the release; '
+                            'the CheckM2 estimates a genome it names held of its sequences '
                             'before this update are cleared.')
 
 
@@ -769,15 +782,6 @@ def __remove(group, db_name):
                        action='store_true')
 
 
-def __checkm_summary_refseq(grp, required):
-    grp.add_argument('--checkm_summary_refseq', required=required, help='CheckM summary file for RefSeq genomes.')
-
-def __checkm_summary_genbank(grp, required):
-    grp.add_argument('--checkm_summary_genbank', required=required, help='CheckM summary file for GenBank genomes.')
-
-def __checkm2_output_dir(grp, required):
-    grp.add_argument('--checkm2_output_dir', required=required, help='CheckM v2 output directory with batches.')
-
 def __report(grp, required):
     grp.add_argument('--report', required=required,
                      help='Report log indicating new, modified, unmodified, ..., genomes.')
@@ -1009,28 +1013,6 @@ def get_main_parser():
 
 
 
-    with subparser(sub_parsers, 'prepare_checkm2',
-                      'Prepare files to run CheckM2 for the new release.') as parser:
-        with arg_group(parser, 'required named arguments') as grp:
-            __checkm_summary_genbank(grp, required=True)
-            __checkm_summary_refseq(grp, required=True)
-            __gtdb_genome_path_file(grp, required=True)
-            __metadata_file(grp, required=True)
-            __output_dir(grp, required=True)
-            __log_file(grp, required=True)
-        with arg_group(parser, 'options arguments') as grp:
-            __silent(grp)
-            __cpus(grp)
-
-    with subparser(sub_parsers, 'join_checkm2',
-                        'Join CheckM2 output files for different batches.') as parser:
-        with arg_group(parser, 'required named arguments') as grp:
-            __checkm2_output_dir(grp, required=True)
-            __output_dir(grp, required=True)
-            __log_file(grp, required=True)
-        with arg_group(parser, 'options arguments') as grp:
-            __silent(grp)
-            __cpus(grp)
     with subparser(sub_parsers, 'update_db',
                    'Update the NCBI genomes of the Postgres database to a new release.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
@@ -1053,6 +1035,17 @@ def get_main_parser():
             __checkm_profile(grp, required=True)
             __checkm_qa(grp, required=True)
             __checkm_not_assessed(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
+
+    # Commands to Update CheckM2 value in DB
+    with subparser(sub_parsers, 'update_checkm2_db', 'Update the CheckM2 value in Postgres database.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __database_setup(grp)
+            __checkm2_profile_file(grp, required=True)
+            __checkm2_not_assessed(grp, required=True)
             __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:

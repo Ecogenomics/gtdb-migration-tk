@@ -870,8 +870,6 @@ the LTP classification of a gene already extracted does not depend on it.
 | `checkm` | Run CheckM on new and modified genomes |
 | `checkm2` | Run CheckM2 on new and modified genomes |
 | `join_checkm` | Join CheckM output across GTDB versions |
-| `prepare_checkm2` | Prepare files to run CheckM2 for the new release |
-| `join_checkm2` | Join CheckM2 output files for different batches |
 | `busco` | Estimate quality of new fungal genomes |
 
 `checkm` and `checkm2` estimate the completeness and contamination of the
@@ -1045,6 +1043,7 @@ RefSeq or GenBank genome of `-m` that no summary holds is warned of.
 | --- | --- |
 | `update_db` | Update the GTDB PostgreSQL database |
 | `update_checkm_db` | Import CheckM estimates |
+| `update_checkm2_db` | Import CheckM2 estimates |
 | `update_metadata_db` | Update metadata in the database |
 | `update_reps_db` | Update species cluster representatives |
 | `update_ncbitax_db` | Update NCBI organism names and taxonomy |
@@ -1153,7 +1152,7 @@ genomes:
 
 ```bash
 gtdb_migration_tk update_checkm_db --db_service gtdb_r237 \
-    -c checkm/checkm.profiles.tsv.gz -q checkm/checkm.qa_sh100.tsv.gz \
+    -f checkm/checkm.profiles.tsv.gz -q checkm/checkm.qa_sh100.tsv.gz \
     -n checkm/checkm_not_assessed.tsv -o update_checkm_db -l update_checkm_db.log
 ```
 
@@ -1190,6 +1189,33 @@ These are genomes `checkm` never planned, such as one `update_db` added that
 new version that took over its predecessor's row, as `report.log` calls it new),
 `updated` (`has_changed`, added earlier: its sequences changed under its
 accession) or `unchanged`.
+
+`update_checkm2_db` does the same for the estimates `checkm2` made, from its
+release files:
+
+```bash
+gtdb_migration_tk update_checkm2_db --db_service gtdb_r237 \
+    -f checkm2/checkm2.quality_report.tsv.gz -n checkm2/checkm2_not_assessed.tsv \
+    -o update_checkm2_db -l update_checkm2_db.log
+```
+
+| Field of `metadata_genes` | From `checkm2.quality_report.tsv.gz` |
+| --- | --- |
+| `checkm2_completeness` | Completeness |
+| `checkm2_contamination` | Contamination |
+| `checkm2_model` | Completeness_Model_Used, as `General` or `Specific` |
+
+CheckM2 names the model it estimated completeness with, e.g. `Neural Network
+(Specific Model)` or `Gradient Boost (General Model)`; the database holds
+`Specific` or `General`. A report naming a model that is neither is refused,
+naming the model and its genomes, and nothing is written. A genome `checkm2` left
+out (`-n`) that this update changed and that holds CheckM2 estimates has the
+three fields set to NULL, each written with what it held to
+`checkm2_estimates_cleared.tsv` beside the log, and the genomes with no
+`checkm2_completeness` that the not-assessed file does not name are written to
+`checkm2_estimates_missing.tsv` in `--out_dir`, as for `update_checkm_db`.
+`join_checkm2` and `prepare_checkm2`, which ran CheckM2 by hand before `checkm2`
+did and wrote the table this command's fields were loaded from, are gone.
 
 ### Nomenclature resources
 
