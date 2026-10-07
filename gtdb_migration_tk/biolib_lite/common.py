@@ -55,9 +55,14 @@ def canonical_gid(gid):
 def get_num_lines(file_path):
     """ Calculate the number of lines in a file."""
     # the file and the mapping are both closed here: neither was, and a caller
-    # that counts the lines of a file per genome leaked a descriptor each time
-    with open(file_path, "r+") as fp:
-        with mmap.mmap(fp.fileno(), 0) as buf:
+    # that counts the lines of a file per genome leaked a descriptor each time.
+    # Opened for reading alone: it was opened "r+" and mapped writable, so a
+    # read-only file could not be counted. mmap refuses a file of no bytes, which
+    # has no lines; the ValueError reached every caller handed an empty file
+    with open(file_path, "rb") as fp:
+        if os.fstat(fp.fileno()).st_size == 0:
+            return 0
+        with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as buf:
             lines = 0
             while buf.readline():
                 lines += 1

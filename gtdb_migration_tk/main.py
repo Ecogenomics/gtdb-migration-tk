@@ -30,7 +30,7 @@ from gtdb_migration_tk.trans_table import GTranslate
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_manager import BadHmmDatabase, MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager
-from gtdb_migration_tk.metadata_manager import MetadataManager, MetadataTable
+from gtdb_migration_tk.metadata_manager import EmptyGenomeDirs, MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeType
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
@@ -264,8 +264,14 @@ class OptionsParser():
 
     def create_metadata_tables(self, options):
         p = MetadataTable(options.silva_version)
-        p.create_metadata_tables(
-            options.gtdb_genome_path_file, options.output_dir)
+        try:
+            p.create_metadata_tables(
+                options.gtdb_genome_path_file, options.output_dir)
+        except EmptyGenomeDirs as exc:
+            # the wrong file, or one an earlier step left empty: the user's to
+            # fix, said in one line rather than as a traceback
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def parse_assemblies(self, options):
         for assembly_summary in options.new_list_genomes:

@@ -14,10 +14,13 @@ real enough to be calculated over: a few hundred bases of FASTA and a GFF with o
 CDS in it, so the calculators run rather than being stubbed out.
 """
 
+import contextlib
 import gzip
+import io
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -337,6 +340,193 @@ class WhatTheLogSays(TempDirCase):
 
         self.assertIn('1 of 2 genomes were missing a file',
                       captured.records[-1].getMessage())
+
+
+# ------------------------------------------------------------ create_tables
+
+TRNA_STATS = ('tRNAs decoding Standard 20 AA:              40\n'
+              'Selenocysteine tRNAs (TCA):                 0\n')
+
+
+class WhatCreateTablesLogs(TempDirCase):
+    """create_tables passes over a genome without a file, and the log says how many.
+
+    A genome missing a table's file is given no row in it and nothing else says
+    so, which across a release is how genomic_metadata, rna_silva or trnascan
+    not getting to every genome would go unseen until the database was loaded.
+    """
+
+    def gathered_genome(self, gid, nt=True, gene=True, trna=True):
+        """A genome directory holding what earlier commands wrote into it."""
+        gpath = os.path.join(self.dir, gid)
+        os.makedirs(os.path.join(gpath, 'trna'))
+        if nt:
+            with open(os.path.join(gpath, 'metadata.genome_nt.tsv'), 'w') as handle:
+                handle.write('gc_percentage\t50.0\ngenome_size\t400\n')
+        if gene:
+            with open(os.path.join(gpath, 'metadata.genome_gene.tsv'), 'w') as handle:
+                handle.write('protein_count\t1\n')
+        if trna:
+            with open(os.path.join(gpath, 'trna', gid + '_trna_stats.tsv'), 'w') as handle:
+                handle.write(TRNA_STATS)
+        return gpath
+
+    def create_tables(self, genomes):
+        out_dir = os.path.join(self.dir, 'tables')
+        logger = logging.getLogger('timestamp')
+        logger.setLevel(logging.INFO)
+        with self.assertLogs('timestamp', level='INFO') as captured:
+            M.MetadataTable('138.2').create_metadata_tables(
+                self.genome_dirs_file(genomes), out_dir)
+        return out_dir, [record.getMessage() for record in captured.records]
+
+    def line_for(self, messages, table):
+        lines = [message for message in messages if message.strip().startswith(table + ':')]
+        self.assertEqual(len(lines), 1, messages)
+        return lines[0]
+
+    def test_each_table_is_given_the_genomes_it_has_a_row_for(self):
+        whole = self.gathered_genome('GCA_000001.1')
+        no_gene = self.gathered_genome('GCA_000002.1', gene=False)
+        out_dir, messages = self.create_tables([('GCA_000001.1', whole), ('GCA_000002.1', no_gene)])
+
+        self.assertIn('Rows written for 2 genomes:', messages)
+        self.assertEqual(self.line_for(messages, M.NT_TABLE).strip(), 'metadata_nt.tsv: 2 with a row.')
+        self.assertEqual(self.line_for(messages, M.GENE_TABLE).strip(),
+                         'metadata_gene.tsv: 1 with a row; 1 had no metadata.genome_gene.tsv.')
+
+        # and the count is of the rows the table holds, header aside
+        with open(os.path.join(out_dir, M.GENE_TABLE)) as handle:
+            self.assertEqual(len(handle.readlines()) - 1, 1)
+
+    def test_a_genome_missing_a_file_is_counted_against_the_table_read_from_it(self):
+        no_trna = self.gathered_genome('GCA_000003.1', trna=False)
+        _, messages = self.create_tables([('GCA_000003.1', no_trna)])
+
+        self.assertIn('1 had no ' + os.path.join('trna', '<gid>_trna_stats.tsv'),
+                      self.line_for(messages, M.TRNA_TABLE))
+        self.assertIn('1 had no ' + os.path.join('rna_silva_138.2', 'ssu.taxonomy.tsv'),
+                      self.line_for(messages, M.taxonomy_table('ssu_silva')))
+
+    def test_every_table_with_rows_only_for_some_genomes_is_named(self):
+        _, messages = self.create_tables([('GCA_000001.1', self.gathered_genome('GCA_000001.1'))])
+
+        for table in (M.NT_TABLE, M.GENE_TABLE, M.taxonomy_table('ssu_gg'),
+                      M.taxonomy_table('ssu_silva'), M.taxonomy_table('lsu_silva_23s'),
+                      M.LSU_5S_TABLE, M.TRNA_TABLE):
+            self.line_for(messages, table)
+
+    def test_a_file_with_nothing_to_report_is_not_called_missing(self):
+        gpath = self.gathered_genome('GCA_000004.1')
+        silva = os.path.join(gpath, 'rna_silva_138.2')
+        os.makedirs(silva)
+        with open(os.path.join(silva, 'ssu.taxonomy.tsv'), 'w') as handle:
+            handle.write('query_id\ttaxonomy\tlength\n')
+        _, messages = self.create_tables([('GCA_000004.1', gpath)])
+
+        self.assertEqual(self.line_for(messages, M.taxonomy_table('ssu_silva')).strip(),
+                         'metadata_ssu_silva.tsv: 0 with a row; 1 had nothing to report.')
+
+    def test_a_genome_with_no_nucleotide_metadata_is_warned_of(self):
+        # every genome has a FASTA, so one without this is a genome
+        # genomic_metadata did not get to
+        whole = self.gathered_genome('GCA_000001.1')
+        no_nt = self.gathered_genome('GCA_000002.1', nt=False)
+        out_dir = os.path.join(self.dir, 'tables')
+        logger = logging.getLogger('timestamp')
+        logger.setLevel(logging.INFO)
+        with self.assertLogs('timestamp', level='INFO') as captured:
+            M.MetadataTable('138.2').create_metadata_tables(
+                self.genome_dirs_file([('GCA_000001.1', whole), ('GCA_000002.1', no_nt)]), out_dir)
+
+        warned = [record.getMessage().strip() for record in captured.records
+                  if record.levelno == logging.WARNING]
+        self.assertEqual(warned, ['metadata_nt.tsv: 1 with a row; 1 had no metadata.genome_nt.tsv.'])
+
+    def test_a_table_rightly_missing_for_some_genomes_is_not_warned_of(self):
+        # no proteins called, no tRNA or rRNA gene found: not a step left undone
+        gpath = self.gathered_genome('GCA_000003.1', gene=False, trna=False)
+        logger = logging.getLogger('timestamp')
+        logger.setLevel(logging.INFO)
+        with self.assertLogs('timestamp', level='INFO') as captured:
+            M.MetadataTable('138.2').create_metadata_tables(
+                self.genome_dirs_file([('GCA_000003.1', gpath)]), os.path.join(self.dir, 'tables'))
+
+        self.assertFalse([record for record in captured.records if record.levelno >= logging.WARNING])
+
+
+class AnEmptyGenomeDirsFile(TempDirCase):
+    """A genome_dirs file naming no genomes ends the command before anything is written.
+
+    Ten tables of no rows would replace the release's in --out_dir, for
+    update_metadata_db to load.
+    """
+
+    def test_it_is_refused_and_no_tables_are_written(self):
+        out_dir = os.path.join(self.dir, 'tables')
+        with self.assertRaises(M.EmptyGenomeDirs):
+            M.MetadataTable('138.2').create_metadata_tables(self.genome_dirs_file([]), out_dir)
+        self.assertFalse(os.path.exists(out_dir))
+
+    def test_an_earlier_releases_tables_are_left_as_they_were(self):
+        out_dir = os.path.join(self.dir, 'tables')
+        os.makedirs(out_dir)
+        table = os.path.join(out_dir, M.NT_TABLE)
+        with open(table, 'w') as handle:
+            handle.write('genome_id\tgc_percentage\nGCA_000001.1\t50.0\n')
+
+        with self.assertRaises(M.EmptyGenomeDirs):
+            M.MetadataTable('138.2').create_metadata_tables(self.genome_dirs_file([]), out_dir)
+        with open(table) as handle:
+            self.assertEqual(handle.read(), 'genome_id\tgc_percentage\nGCA_000001.1\t50.0\n')
+
+    def test_the_command_says_so_and_exits_1(self):
+        from gtdb_migration_tk import __main__ as main_module
+        for name in ('timestamp', 'no_timestamp'):
+            self.addCleanup(self.drop_handlers, logging.getLogger(name))
+        genome_dirs = self.genome_dirs_file([])
+        log = os.path.join(self.dir, 'create_tables.log')
+        argv = ['gtdb_migration_tk', 'create_tables', '-g', genome_dirs,
+                '-o', os.path.join(self.dir, 'tables'), '-v', '138.2', '-l', log, '--silent']
+
+        with mock.patch.object(sys, 'argv', argv), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as ended:
+            main_module.main()
+
+        self.assertEqual(ended.exception.code, 1)
+        with open(log) as handle:
+            self.assertIn('ERROR: {} names no genomes'.format(genome_dirs), handle.read())
+
+    @staticmethod
+    def drop_handlers(logger):
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+
+
+class CreateTablesCommandLine(TempDirCase):
+    def test_the_log_is_written_where_l_says(self):
+        from gtdb_migration_tk import __main__ as main_module
+        log = os.path.join(self.dir, 'create_tables.log')
+        out_dir = os.path.join(self.dir, 'tables')
+        options = main_module.get_main_parser().parse_args(
+            ['create_tables', '-g', self.genome_dirs_file([]), '-o', out_dir,
+             '-v', '138.2', '-l', log])
+
+        self.assertEqual(main_module.log_candidates(options.log, options.output_dir)[0],
+                         (self.dir, 'create_tables.log'))
+
+    def test_without_l_the_log_goes_to_the_out_dir(self):
+        from gtdb_migration_tk import __main__ as main_module
+        out_dir = os.path.join(self.dir, 'tables')
+        options = main_module.get_main_parser().parse_args(
+            ['create_tables', '-g', self.genome_dirs_file([]), '-o', out_dir, '-v', '138.2'])
+
+        self.assertIsNone(options.log)
+        self.assertEqual(main_module.log_candidates(options.log, options.output_dir)[0],
+                         (out_dir, main_module.FALLBACK_LOG))
 
 
 if __name__ == '__main__':

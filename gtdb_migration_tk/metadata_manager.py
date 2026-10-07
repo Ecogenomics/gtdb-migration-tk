@@ -17,6 +17,7 @@
 
 import os
 import datetime
+from collections import Counter
 import logging
 import multiprocessing as mp
 import ntpath
@@ -70,15 +71,50 @@ GENE_METADATA_FILES = ('metadata.genome_gene.tsv', 'metadata.genome_gene.desc.ts
 # metadata of an earlier run was removed for want of a GFF.
 ProducerResult = Tuple[List[MissingFile], bool]
 
+# The tables create_tables writes that give a genome a row only where it has
+# something to put in one. A genome without the file a table is read from is
+# passed over by its parser without a word, which across a million genomes is
+# the one thing worth knowing about the run, so each is counted and the run
+# ends by saying how many (MetadataTable.log_summary()). The three *_count.tsv
+# tables give every genome a row, 0 where nothing was found, and are not here.
+NT_TABLE = 'metadata_nt.tsv'
+GENE_TABLE = 'metadata_gene.tsv'
+LSU_5S_TABLE = 'metadata_lsu_5S.tsv'
+TRNA_TABLE = 'metadata_trna_count.tsv'
+
+# The tables every genome of a release should have a row in. Each genome has a
+# genomic FASTA, so genomic_metadata gives each its nucleotide metadata, and one
+# without it is a genome that command did not get to; the summary warns of it.
+# The others are rightly missing for some genomes: no proteins called, no rRNA
+# gene found.
+EVERY_GENOME_TABLES = frozenset({NT_TABLE})
+
+
+class EmptyGenomeDirs(ValueError):
+    """The genome_dirs file create_tables was given names no genomes."""
+
+
+def taxonomy_table(prefix: str) -> str:
+    """The table of one of the rRNA genes _parse_taxonomy_file() reads.
+
+    Parameters
+    ----------
+    prefix : str
+        ssu_gg, ssu_silva or lsu_silva_23s.
+
+    @return: the table's file name, metadata_<prefix>.tsv.
+    """
+
+    return 'metadata_{}.tsv'.format(prefix)
+
 
 class MetadataTable(object):
-    """Create metadata table for all NCBI and user genomes.
+    """Gather the metadata of every genome of a release into tables.
 
-    This script assumes the scripts metadata_generate.py
-    and ssu.py have been run in order to create the
-    required metadata. Four tables are generated which
-    specific nucleotide derived, gene derived, and SSU
-    derived metadata.
+    Calculates nothing: genomic_metadata, rna_silva and trnascan have written
+    their results into each genome directory, and this collects them into the
+    ten tables update_metadata_db loads. A genome missing a file is given no
+    row in that table.
     """
 
     def __init__(self, silva_version: str) -> None:
@@ -128,6 +164,24 @@ class MetadataTable(object):
         # have been headed is kept by prefix rather than by a flag each
         self.taxonomy_headers: Set[str] = set()
 
+        # the file in a genome's directory each table's rows are read from, in
+        # the order the closing summary names them
+        self.table_sources: Dict[str, str] = {
+            NT_TABLE: self.metadata_nt_file,
+            GENE_TABLE: self.metadata_gene_file,
+            taxonomy_table('ssu_gg'): self.ssu_gg_taxonomy_file,
+            taxonomy_table('ssu_silva'): self.ssu_silva_taxonomy_file,
+            taxonomy_table('lsu_silva_23s'): self.lsu_silva_23s_taxonomy_file,
+            LSU_5S_TABLE: self.lsu_5S_fna_file,
+            TRNA_TABLE: os.path.join('trna', '<gid>_trna_stats.tsv')}
+
+        # genomes given a row in each table, and genomes without the file it
+        # is read from
+        self.rows: Counter = Counter()
+        self.absent: Counter = Counter()
+
+        self.logger: logging.Logger = logging.getLogger('timestamp')
+
     def _parse_nt(self, genome_id: str, metadata_nt_file: str, fout: TextIO) -> None:
         """Parse metadata file with information derived from nucleotide sequences.
 
@@ -149,6 +203,7 @@ class MetadataTable(object):
         """
 
         if not os.path.exists(metadata_nt_file):
+            self.absent[NT_TABLE] += 1
             return
 
         if self.write_nt_header:
@@ -165,6 +220,7 @@ class MetadataTable(object):
             line_split = line.split('\t')
             fout.write('\t' + line_split[1].strip())
         fout.write('\n')
+        self.rows[NT_TABLE] += 1
 
     def _parse_gene(self, genome_id: str, metadata_gene_file: str, fout: TextIO) -> None:
         """Parse metadata file with information derived from called genes.
@@ -186,6 +242,7 @@ class MetadataTable(object):
         """
 
         if not os.path.exists(metadata_gene_file):
+            self.absent[GENE_TABLE] += 1
             return
 
         if self.write_gene_header:
@@ -201,6 +258,7 @@ class MetadataTable(object):
             line_split = line.split('\t')
             fout.write('\t' + line_split[1].strip())
         fout.write('\n')
+        self.rows[GENE_TABLE] += 1
 
     def _parse_taxonomy_file(self,
                              genome_id: str,
@@ -237,6 +295,7 @@ class MetadataTable(object):
         """
 
         if not os.path.exists(metadata_taxonomy_file):
+            self.absent[taxonomy_table(prefix)] += 1
             return 0
 
         with open(metadata_taxonomy_file) as f:
@@ -314,6 +373,7 @@ class MetadataTable(object):
                                 fout.write("\t{0}".format(sum_list[idx_seq]))
 
                 fout.write('\n')
+                self.rows[taxonomy_table(prefix)] += 1
 
             return identified_ssu_genes
 
@@ -346,6 +406,7 @@ class MetadataTable(object):
 
         # check if a 5S sequence was identified
         if not os.path.exists(fna_file):
+            self.absent[LSU_5S_TABLE] += 1
             return 0
 
         # write header
@@ -381,6 +442,7 @@ class MetadataTable(object):
         if longest_seq_id:
             fout.write('%s\t%s\t%d\t%d\t%s\n' % (accession, longest_seq_id,
                                                  longest_seq, longest_contig_len, seqs[longest_seq_id]))
+            self.rows[LSU_5S_TABLE] += 1
 
         return identified_genes
 
@@ -405,6 +467,7 @@ class MetadataTable(object):
         """
 
         if not os.path.exists(trna_file):
+            self.absent[TRNA_TABLE] += 1
             return
 
         # write header
@@ -439,6 +502,7 @@ class MetadataTable(object):
 
         fout_trna_count.write('%s\t%d\t%d\t%d\n' % (
             genome_id, trna_count, trna_aa_count, trna_selenocysteine_count))
+        self.rows[TRNA_TABLE] += 1
 
     def create_metadata_tables(self, gtdb_genome_path_file: str, output_dir: str) -> None:
         """Create metadata tables.
@@ -456,21 +520,33 @@ class MetadataTable(object):
             Directory the tables are written to, made if it does not exist.
 
         @return: nothing; the tables are written under output_dir.
+
+        Raises
+        ------
+        EmptyGenomeDirs
+            The genome_dirs file names no genomes. Nothing is written: ten
+            tables of no rows would replace the release's in --out_dir, and
+            update_metadata_db would load them.
         """
+
+        numlines = get_num_lines(gtdb_genome_path_file)
+        if numlines == 0:
+            raise EmptyGenomeDirs('{} names no genomes; no tables were written.'.format(
+                gtdb_genome_path_file))
 
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        fout_nt = open(os.path.join(output_dir, 'metadata_nt.tsv'), 'w')
-        fout_gene = open(os.path.join(output_dir, 'metadata_gene.tsv'), 'w')
+        fout_nt = open(os.path.join(output_dir, NT_TABLE), 'w')
+        fout_gene = open(os.path.join(output_dir, GENE_TABLE), 'w')
         fout_gg_taxonomy = open(os.path.join(
-            output_dir, 'metadata_ssu_gg.tsv'), 'w')
+            output_dir, taxonomy_table('ssu_gg')), 'w')
         fout_ssu_silva_taxonomy = open(os.path.join(
-            output_dir, 'metadata_ssu_silva.tsv'), 'w')
+            output_dir, taxonomy_table('ssu_silva')), 'w')
         fout_lsu_silva_23s_taxonomy = open(os.path.join(
-            output_dir, 'metadata_lsu_silva_23s.tsv'), 'w')
+            output_dir, taxonomy_table('lsu_silva_23s')), 'w')
         fout_lsu_5S = open(os.path.join(
-            output_dir, 'metadata_lsu_5S.tsv'), 'w')
+            output_dir, LSU_5S_TABLE), 'w')
         fout_ssu_silva_count = open(os.path.join(
             output_dir, 'metadata_ssu_silva_count.tsv'), 'w')
         fout_lsu_silva_23s_count = open(os.path.join(
@@ -478,7 +554,7 @@ class MetadataTable(object):
         fout_lsu_5S_count = open(os.path.join(
             output_dir, 'metadata_lsu_5S_count.tsv'), 'w')
         fout_trna_count = open(os.path.join(
-            output_dir, 'metadata_trna_count.tsv'), 'w')
+            output_dir, TRNA_TABLE), 'w')
 
         fout_ssu_silva_count.write('%s\t%s\n' % ('genome_id', 'ssu_count'))
         fout_lsu_silva_23s_count.write(
@@ -486,9 +562,12 @@ class MetadataTable(object):
         fout_lsu_5S_count.write('%s\t%s\n' % ('genome_id', 'lsu_5s_count'))
 
         # generate metadata for NCBI assemblies
-        numlines = get_num_lines(gtdb_genome_path_file)
+        self.logger.info('Gathering the metadata of {:,} genomes into {}.'.format(
+            numlines, output_dir))
+        genome_count = 0
         with open(gtdb_genome_path_file) as ggpf:
             for line in tqdm(ggpf,ncols=100,total=numlines,smoothing=50/numlines):
+                genome_count += 1
 
                 line_split = line.strip().split('\t')
 
@@ -563,6 +642,42 @@ class MetadataTable(object):
         fout_lsu_silva_23s_count.close()
         fout_lsu_5S_count.close()
         fout_trna_count.close()
+
+        self.log_summary(genome_count)
+
+    def log_summary(self, genome_count: int) -> None:
+        """Say how many genomes each table holds, and how many had no file.
+
+        A parser passes over a genome without the file its table is read from,
+        and nothing else says so: this is where a release finds that
+        genomic_metadata, rna_silva or trnascan did not get to every genome. A
+        genome with the file and still no row is one whose file named nothing
+        to report, such as an rRNA table of no hits.
+
+        Parameters
+        ----------
+        genome_count : int
+            Genomes of the genome_dirs file, every one of them read.
+
+        @return: nothing; a line is logged for each table of table_sources.
+        """
+
+        self.logger.info('Rows written for {:,} genomes:'.format(genome_count))
+        for table, source in self.table_sources.items():
+            rows = self.rows[table]
+            absent = self.absent[table]
+            nothing = genome_count - rows - absent
+
+            parts = ['{:,} with a row'.format(rows)]
+            if absent:
+                parts.append('{:,} had no {}'.format(absent, source))
+            if nothing:
+                parts.append('{:,} had nothing to report'.format(nothing))
+            message = '  {}: {}.'.format(table, '; '.join(parts))
+            if absent and table in EVERY_GENOME_TABLES:
+                self.logger.warning(message)
+            else:
+                self.logger.info(message)
 
 
 class MetadataManager(object):
