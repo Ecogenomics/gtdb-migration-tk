@@ -1124,8 +1124,9 @@ def get_main_parser():
             __gtdb_genome_path_file(grp, required=True)
             __output_dir(grp, required=True)
             __silva_version(grp, required=True)
+            __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
-            __log_file(grp, required=False)
+            __cpus(grp, default=8)
             __silent(grp)
 
     # Create metadata tables from NCBI assemblies

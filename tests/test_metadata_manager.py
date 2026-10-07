@@ -182,12 +182,8 @@ class AGenomeWhoseGenesHaveGone(TempDirCase):
         table = M.MetadataTable('138.2')
         # the file removed is the one create_tables reads
         self.assertEqual(table.metadata_gene_file, M.GENE_METADATA_FILES[0])
-        out = os.path.join(self.dir, 'gene_rows.tsv')
-        with open(out, 'w') as fout:
-            table._parse_gene('GCA_000005.1', os.path.join(self.gpath, table.metadata_gene_file), fout)
-
-        with open(out) as handle:
-            self.assertEqual(handle.read(), '')
+        self.assertIsNone(table._read_field_table(
+            'GCA_000005.1', os.path.join(self.gpath, table.metadata_gene_file)))
 
     def test_the_removal_is_warned_of_with_the_missing_gff_and_counted(self):
         logger = logging.getLogger('timestamp')
@@ -518,15 +514,110 @@ class CreateTablesCommandLine(TempDirCase):
         self.assertEqual(main_module.log_candidates(options.log, options.output_dir)[0],
                          (self.dir, 'create_tables.log'))
 
-    def test_without_l_the_log_goes_to_the_out_dir(self):
+    def test_a_run_naming_no_log_is_refused(self):
         from gtdb_migration_tk import __main__ as main_module
         out_dir = os.path.join(self.dir, 'tables')
-        options = main_module.get_main_parser().parse_args(
-            ['create_tables', '-g', self.genome_dirs_file([]), '-o', out_dir, '-v', '138.2'])
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+            main_module.get_main_parser().parse_args(
+                ['create_tables', '-g', self.genome_dirs_file([]), '-o', out_dir, '-v', '138.2'])
 
-        self.assertIsNone(options.log)
-        self.assertEqual(main_module.log_candidates(options.log, options.output_dir)[0],
-                         (out_dir, main_module.FALLBACK_LOG))
+        self.assertEqual(ended.exception.code, 2)
+
+
+    def test_cpus_defaults_to_what_the_file_server_was_measured_to_take_and_is_passed_on(self):
+        from gtdb_migration_tk import __main__ as main_module
+        from gtdb_migration_tk import main as main_py
+        out_dir = os.path.join(self.dir, 'tables')
+        argv = ['create_tables', '-g', self.genome_dirs_file([]), '-o', out_dir, '-v', '138.2',
+                '-l', os.path.join(self.dir, 'create_tables.log')]
+        options = main_module.get_main_parser().parse_args(argv)
+        self.assertEqual(options.cpus, M.CREATE_TABLES_THREADS)
+
+        options = main_module.get_main_parser().parse_args(argv + ['--cpus', '3'])
+        with mock.patch.object(main_py, 'MetadataTable') as table:
+            main_py.OptionsParser().parse_options(options)
+        table.return_value.create_metadata_tables.assert_called_once_with(
+            options.gtdb_genome_path_file, out_dir, 3)
+
+
+class ReadingOnThreads(TempDirCase):
+    """create_tables reads genomes on threads and writes them in the order given.
+
+    Each table is headed by the first genome that has the file it is read
+    from, so a table written as genomes finished would be headed, and ordered,
+    by whichever thread came back first.
+    """
+
+    def genome(self, gid, gene=True, ssu=True):
+        gpath = WhatCreateTablesLogs.gathered_genome(self, gid, gene=gene)
+        if ssu:
+            silva = os.path.join(gpath, 'rna_silva_138.2')
+            os.makedirs(silva)
+            with open(os.path.join(silva, 'ssu.taxonomy.tsv'), 'w') as handle:
+                handle.write('query_id\ttaxonomy\tlength\n{0}_1\td__Bacteria\t1500\n'.format(gid))
+            with open(os.path.join(silva, 'ssu.fna'), 'w') as handle:
+                handle.write('>{0}_1\nACGTACGT\n'.format(gid))
+            with open(os.path.join(silva, 'ssu.hmm_summary.tsv'), 'w') as handle:
+                handle.write('Sequence Id\tSequence length\n{0}_1\t5000\n'.format(gid))
+        return gpath
+
+    def tables(self, genome_dirs, cpus):
+        out_dir = os.path.join(self.dir, 'tables_{}'.format(cpus))
+        with self.assertLogs('timestamp', level='INFO'):
+            M.MetadataTable('138.2').create_metadata_tables(genome_dirs, out_dir, cpus)
+        written = {}
+        for name in sorted(os.listdir(out_dir)):
+            with open(os.path.join(out_dir, name)) as handle:
+                written[name] = handle.read()
+        return written
+
+    def test_the_tables_are_the_same_whatever_cpus_is(self):
+        # the first genome has no gene table and no rRNA genes, so those
+        # tables are headed by a later one
+        genomes = [('GCA_{:06d}.1'.format(i), self.genome('GCA_{:06d}.1'.format(i),
+                                                          gene=i > 0, ssu=i % 3 == 1))
+                   for i in range(40)]
+        genome_dirs = self.genome_dirs_file(genomes)
+
+        serial = self.tables(genome_dirs, 1)
+        self.assertEqual(self.tables(genome_dirs, 8), serial)
+        self.assertEqual(serial[M.GENE_TABLE].splitlines()[:2],
+                         ['genome_id\tprotein_count', 'GCA_000001.1\t1'])
+        self.assertEqual([line.split('\t')[0] for line in serial[M.NT_TABLE].splitlines()[1:]],
+                         [gid for gid, _ in genomes])
+        self.assertEqual(serial[M.taxonomy_table('ssu_silva')].splitlines()[:2],
+                         ['genome_id\tssu_query_id\tssu_silva_taxonomy\tssu_length\tssu_sequence\tssu_contig_len',
+                          'GCA_000001.1\tGCA_000001.1_1\td__Bacteria\t1500\tACGTACGT\t5000'])
+
+    def test_results_come_back_in_the_order_given_however_they_finish(self):
+        import time
+        # the first items take longest, so later ones finish first
+        results = list(M.ordered_map(lambda i: time.sleep((10 - i) / 1000.0) or i, range(10), 4))
+
+        self.assertEqual(results, list(range(10)))
+
+    def test_no_more_than_threads_times_depth_genomes_are_in_hand_at_once(self):
+        drawn = []
+
+        def items():
+            for i in range(100):
+                drawn.append(i)
+                yield i
+
+        in_hand = []
+        for yielded, _ in enumerate(M.ordered_map(lambda i: i, items(), 3, depth=2), start=1):
+            in_hand.append(len(drawn) - yielded)
+
+        self.assertLessEqual(max(in_hand), 3 * 2)
+
+    def test_a_genome_that_cannot_be_read_stops_the_run(self):
+        def read(i):
+            if i == 5:
+                raise ValueError('genome 5')
+            return i
+
+        with self.assertRaisesRegex(ValueError, 'genome 5'):
+            list(M.ordered_map(read, range(50), 4))
 
 
 if __name__ == '__main__':
