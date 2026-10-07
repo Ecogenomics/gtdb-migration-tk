@@ -31,6 +31,8 @@ ncbi_ncrna_count	Number of ncRNA genes identified in genome.	INT	metadata_ncbi
 ncbi_rrna_count	Number of rRNA genes identified in genome.	INT	metadata_ncbi
 ncbi_ssu_count	Number of 16S rRNA genes identified in genome.	INT	metadata_ncbi
 ncbi_translation_table	Specifies the genetic code used for translation.	INT	metadata_ncbi
+ncbi_isolation_source	Physical, environmental and/or local geographical source of the sample, from the source feature of the GenBank file.	TEXT	metadata_ncbi
+ncbi_lat_lon	Latitude and longitude of the place the sample was collected, from the source feature of the GenBank file.	TEXT	metadata_ncbi
 ncbi_taxonomy	NCBI taxonomy string.	TEXT	metadata_taxonomy
 ncbi_type_strain	NCBI type material.	TEXT	metadata_taxonomy
 ncbi_strain_identifiers	NCBI strain information for the assembly report	TEXT	metadata_ncbi

@@ -524,14 +524,14 @@ class CreateTablesCommandLine(TempDirCase):
         self.assertEqual(ended.exception.code, 2)
 
 
-    def test_cpus_defaults_to_what_the_file_server_was_measured_to_take_and_is_passed_on(self):
+    def test_cpus_defaults_to_1_and_is_passed_on(self):
         from gtdb_migration_tk import __main__ as main_module
         from gtdb_migration_tk import main as main_py
         out_dir = os.path.join(self.dir, 'tables')
         argv = ['create_tables', '-g', self.genome_dirs_file([]), '-o', out_dir, '-v', '138.2',
                 '-l', os.path.join(self.dir, 'create_tables.log')]
         options = main_module.get_main_parser().parse_args(argv)
-        self.assertEqual(options.cpus, M.CREATE_TABLES_THREADS)
+        self.assertEqual(options.cpus, 1)
 
         options = main_module.get_main_parser().parse_args(argv + ['--cpus', '3'])
         with mock.patch.object(main_py, 'MetadataTable') as table:

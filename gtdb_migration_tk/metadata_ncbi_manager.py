@@ -31,7 +31,6 @@ __status__ = 'Development'
 
 import logging
 import os
-import sys
 import multiprocessing as mp
 import random
 import re
@@ -41,6 +40,7 @@ from collections import defaultdict
 from numpy import (zeros as np_zeros,sum as np_sum)
 from tqdm import tqdm
 
+from gtdb_migration_tk.biolib_lite.common import get_num_lines
 from gtdb_migration_tk.ncbi_utils import read_assembly_summary
 from gtdb_migration_tk.utils.tools import openfile
 
@@ -73,38 +73,39 @@ class GenericFeatureParser():
           Generic feature file to parse.
         """
 
-        for line in openfile(gff_file):
-            if line[0] == '#':
-                continue
+        with openfile(gff_file) as handle:
+            for line in handle:
+                if line[0] == '#':
+                    continue
 
-            line_split = line.split('\t')
-            if line_split[2] == 'tRNA':
-                self.tRNA_count += 1
-            elif line_split[2] == 'rRNA':
-                self.rRNA_count += 1
+                line_split = line.split('\t')
+                if line_split[2] == 'tRNA':
+                    self.tRNA_count += 1
+                elif line_split[2] == 'rRNA':
+                    self.rRNA_count += 1
 
-                if 'product=16S ribosomal RNA' in line_split[8]:
-                    self.rRNA_16S_count += 1
-            elif line_split[2] == 'ncRNA':
-                self.ncRNA_count += 1
-            elif line_split[2] == 'CDS':
-                self.cds_count += 1
+                    if 'product=16S ribosomal RNA' in line_split[8]:
+                        self.rRNA_16S_count += 1
+                elif line_split[2] == 'ncRNA':
+                    self.ncRNA_count += 1
+                elif line_split[2] == 'CDS':
+                    self.cds_count += 1
 
-                seq_id = line_split[0]
-                if seq_id not in self.genes:
-                    self.genes[seq_id] = []
-                    self.last_coding_base[seq_id] = 0
+                    seq_id = line_split[0]
+                    if seq_id not in self.genes:
+                        self.genes[seq_id] = []
+                        self.last_coding_base[seq_id] = 0
 
-                start = int(line_split[3])
-                end = int(line_split[4])
+                    start = int(line_split[3])
+                    end = int(line_split[4])
 
-                # a list of intervals, not gene IDs of this module's making: the
-                # counter those came from was reset only when a contig was first
-                # met, so a GFF returning to an earlier contig reused IDs that
-                # contig already had and overwrote its own genes. Nothing read them
-                self.genes[seq_id].append([start, end])
-                self.last_coding_base[seq_id] = max(
-                    self.last_coding_base[seq_id], end)
+                    # a list of intervals, not gene IDs of this module's making: the
+                    # counter those came from was reset only when a contig was first
+                    # met, so a GFF returning to an earlier contig reused IDs that
+                    # contig already had and overwrote its own genes. Nothing read them
+                    self.genes[seq_id].append([start, end])
+                    self.last_coding_base[seq_id] = max(
+                        self.last_coding_base[seq_id], end)
 
     def _coding_mask(self, seq_id):
         """Build mask indicating which bases in a sequences are coding."""
@@ -144,6 +145,33 @@ class GenericFeatureParser():
         return int(coding_bases)
 
 
+# The table parse_ncbi_dir writes in its --out_dir. update_metadata_db loads a
+# table of this name against metadata_ncbi_assembly.desc.tsv; under any other
+# name --input_folder refuses it. It is not the table parse_ncbi_assemblies
+# writes (NCBI_ASSEMBLY_TABLE, ncbi_assembly_summary.tsv).
+NCBI_DIR_TABLE = 'ncbi_assembly_metadata.tsv'
+
+# The NCBI files of a genome directory parse_ncbi_dir reads, by the suffix of
+# the assembly's name each is found under. A genome missing one is given a row
+# all the same, empty in the fields read from it, which update_metadata_db loads
+# as NULL; the run ends by saying how many genomes were missing each.
+ASSEMBLY_STATS_SUFFIX = '_assembly_stats.txt'
+GFF_SUFFIX = '_genomic.gff.gz'
+GBFF_SUFFIX = '_genomic.gbff.gz'
+NCBI_DIR_FILES = (ASSEMBLY_STATS_SUFFIX, GFF_SUFFIX, GBFF_SUFFIX)
+
+# NCBI publishes no annotation, and so no GFF, for many GenBank assemblies (121
+# of 300 genomes of r237 drawn at random): a genome without one is told of, not
+# warned of. Every assembly has its statistics and its GenBank flat file.
+NCBI_DIR_UNANNOTATED = frozenset({GFF_SUFFIX})
+
+# genomes handed to a worker process at once
+NCBI_DIR_CHUNK = 16
+
+# how many genomes a warning names
+EXAMPLES = 10
+
+
 class NCBIMetaDir(object):
     """Create metadata file from the assembly stats file of each NCBI assembly."""
 
@@ -169,6 +197,7 @@ class NCBIMetaDir(object):
         self.stats_info = {}
 
         self.cpus = cpus
+        self.logger = logging.getLogger('timestamp')
 
     def _randomword(self, length):
         """Generate a random string of lowercase letters to mask internal slashes."""
@@ -192,40 +221,41 @@ class NCBIMetaDir(object):
         metadata_stats = [''] * len(self.stats)
 
         file_section = 'Assembly info'
-        for line in open(assembly_stat_file):
-            if 'Assembly Statistics Report' in line:
-                file_section = 'ASR'
-            elif 'Statistic Types' in line:
-                file_section = 'ST'
-            elif 'Sequence-type Description' in line:
-                file_section = 'SD'
+        with open(assembly_stat_file) as handle:
+            for line in handle:
+                if 'Assembly Statistics Report' in line:
+                    file_section = 'ASR'
+                elif 'Statistic Types' in line:
+                    file_section = 'ST'
+                elif 'Sequence-type Description' in line:
+                    file_section = 'SD'
 
-            if file_section == 'ASR' and ':' in line:
-                field = line[2:line.find(':')]
-                value = line[line.find(':') + 1:].strip()
-                if field in self.fields:
-                    if field == 'Organism name' and '(' in value:
-                        metadata_index = self.fields.index(field)
-                        metadata_fields[metadata_index] = value[0:value.find(
-                            '(')].strip()
-                    else:
-                        metadata_index = self.fields.index(field)
-                        metadata_fields[metadata_index] = value
-            elif file_section == 'ST':
-                line_split = line.split('\t')
-                if len(line_split) == 2:
-                    field = line_split[0][2:]
-                    desc = line_split[1].strip()
-                    if field in self.stats:
-                        self.stats_info[field] = desc
-            elif file_section == 'SD':
-                line_split = line.split('\t')
-                if len(line_split) == 6 and (line_split[0] in ['all', 'Primary Assembly']) and (line_split[1] == 'all') and (line_split[3] == 'all'):
-                    field = line_split[4]
-                    value = line_split[5].strip()
-                    if field in self.stats:
-                        metadata_index = self.stats.index(field)
-                        metadata_stats[metadata_index] = value
+                if file_section == 'ASR' and ':' in line:
+                    field = line[2:line.find(':')]
+                    value = line[line.find(':') + 1:].strip()
+                    if field in self.fields:
+                        if field == 'Organism name' and '(' in value:
+                            metadata_index = self.fields.index(field)
+                            metadata_fields[metadata_index] = value[0:value.find(
+                                '(')].strip()
+                        else:
+                            metadata_index = self.fields.index(field)
+                            metadata_fields[metadata_index] = value
+                elif file_section == 'ST':
+                    line_split = line.split('\t')
+                    if len(line_split) == 2:
+                        field = line_split[0][2:]
+                        desc = line_split[1].strip()
+                        if field in self.stats:
+                            self.stats_info[field] = desc
+                elif file_section == 'SD':
+                    line_split = line.split('\t')
+                    if len(line_split) == 6 and (line_split[0] in ['all', 'Primary Assembly']) and (line_split[1] == 'all') and (line_split[3] == 'all'):
+                        field = line_split[4]
+                        value = line_split[5].strip()
+                        if field in self.stats:
+                            metadata_index = self.stats.index(field)
+                            metadata_stats[metadata_index] = value
 
         return metadata_fields, metadata_stats
 
@@ -233,9 +263,6 @@ class NCBIMetaDir(object):
         """Parse statistics from generic feature file (GFF)."""
 
         metadata_gff = [''] * len(self.gff_fields)
-
-        if not os.path.exists(gff_file):
-            return metadata_gff
 
         gff_parser = GenericFeatureParser(gff_file)
         metadata_gff[self.gff_fields.index('cds_count')] = gff_parser.cds_count
@@ -254,10 +281,6 @@ class NCBIMetaDir(object):
         """Parse statistics and metadata from GenBank file."""
         metadata_gbff = [''] * len(self.gbff_fields)
 
-        if not os.path.exists(genbank_file):
-            print(f'Missing {genbank_file}')
-            return metadata_gbff
-
         pattern_gene = re.compile(r"^\s{0,20}\w")
         pattern_source = re.compile(r"^\s{5}source\s{10}")
         source_info_bool = False
@@ -265,24 +288,25 @@ class NCBIMetaDir(object):
         source_info = []
 
         # We read the file line by line using openfile to handle gzipped files
-        for line in openfile(genbank_file):
+        with openfile(genbank_file) as handle:
+            for line in handle:
 
-            # 1. Extract Translation Table
-            if '/transl_table=' in line:
-                translation_table = line[line.rfind('=') + 1:].strip()
-                metadata_gbff[self.gbff_fields.index('translation_table')] = translation_table
+                # 1. Extract Translation Table
+                if '/transl_table=' in line:
+                    translation_table = line[line.rfind('=') + 1:].strip()
+                    metadata_gbff[self.gbff_fields.index('translation_table')] = translation_table
 
-            # 2. Extract Source Metadata
-            if pattern_source.match(line):
-                source_info_bool = True
-            elif pattern_gene.match(line) and source_info_bool:
-                # Stop appending to source_info once we hit the next main feature
-                source_info_bool = False
-            elif source_info_bool:
-                # Replace all '/' characters by a random string except the first one
-                # '/' will be used to separate those metadata later on
-                line = re.sub(r"(?!^\/)\/", randomstring, ' '.join(line.split()))
-                source_info.append("{0} ".format(' '.join(line.split())))
+                # 2. Extract Source Metadata
+                if pattern_source.match(line):
+                    source_info_bool = True
+                elif pattern_gene.match(line) and source_info_bool:
+                    # Stop appending to source_info once we hit the next main feature
+                    source_info_bool = False
+                elif source_info_bool:
+                    # Replace all '/' characters by a random string except the first one
+                    # '/' will be used to separate those metadata later on
+                    line = re.sub(r"(?!^\/)\/", randomstring, ' '.join(line.split()))
+                    source_info.append("{0} ".format(' '.join(line.split())))
 
         # Process the source_info array if any metadata was found
         if source_info:
@@ -308,82 +332,121 @@ class NCBIMetaDir(object):
 
         return metadata_gbff
 
-    def parse_ncbi_dir(self, gtdb_genome_path_file, output_file):
-        """Create metadata by parsing assembly stats files."""
+    def header(self):
+        """The header of NCBI_DIR_TABLE, its columns in the order the worker writes them.
 
-        fout = open(output_file, 'w')
-        fout.write('Assembly accession')
-        fout.write(
-            '\t' + '\t'.join(['ncbi_' + x.lower().replace(' ', '_') for x in self.fields]))
-        fout.write(
-            '\t' + '\t'.join(['ncbi_' + x.lower().replace('-', '_') for x in self.stats]))
-        fout.write('\t' + '\t'.join(['ncbi_' + x.lower()
-                                     for x in self.gff_fields]))
-        fout.write('\t' + '\t'.join(['ncbi_' + x.lower()
-                                     for x in self.gbff_fields]))
-        fout.write('\n')
+        @return: the header line, newline ended.
+        """
 
-        processed_assemblies = defaultdict(list)
-        countr = 0
-        line_to_process = []
-        for line in open(gtdb_genome_path_file):
-            countr += 1
-            statusStr = '{} lines read.'.format(countr)
-            sys.stdout.write('%s\r' % statusStr)
-            sys.stdout.flush()
-            line_to_process.append(line)
+        return '\t'.join(['Assembly accession']
+                         + ['ncbi_' + x.lower().replace(' ', '_') for x in self.fields]
+                         + ['ncbi_' + x.lower().replace('-', '_') for x in self.stats]
+                         + ['ncbi_' + x.lower() for x in self.gff_fields]
+                         + ['ncbi_' + x.lower() for x in self.gbff_fields]) + '\n'
 
-        with mp.Pool(processes=self.cpus) as pool:
-            list_lines_to_write = list(tqdm(pool.imap_unordered(self.ncbi_parser_worker, line_to_process),
-                                         total=len(line_to_process),ncols=100,
-                                            smoothing=50/len(line_to_process), unit='genome'))
+    def parse_ncbi_dir(self, gtdb_genome_path_file, output_dir):
+        """Write the metadata NCBI's own files in each genome directory hold.
 
+        Every genome of the genome_dirs file is given a row. One missing a file
+        is empty in the fields read from it, which update_metadata_db loads as
+        NULL, and the run ends by warning how many genomes were missing each
+        file. Rows are written as the workers finish them, in no particular
+        order, rather than held until every genome is done.
 
-        for line_to_write in list_lines_to_write:
-            if line_to_write != 'null':
-                fout.write(line_to_write + '\n')
+        Parameters
+        ----------
+        gtdb_genome_path_file : str
+            genome_dirs file: accession, directory, canonical accession.
+        output_dir : str
+            Directory NCBI_DIR_TABLE is written to.
 
-        fout.close()
+        @return: the path of the table written.
+        """
 
-    def ncbi_parser_worker(self,job):
-        line = job
+        output_file = os.path.join(output_dir, NCBI_DIR_TABLE)
+        genome_count = get_num_lines(gtdb_genome_path_file)
+        self.logger.info('Reading the NCBI files of {:,} genomes on {:,} processes into {}.'.format(
+            genome_count, self.cpus, output_file))
+
+        missing = defaultdict(list)
+        written = 0
+        with open(output_file, 'w') as fout, open(gtdb_genome_path_file) as genomes:
+            fout.write(self.header())
+            with mp.Pool(processes=self.cpus) as pool:
+                for gid, line_to_write, absent in tqdm(
+                        pool.imap_unordered(self.ncbi_parser_worker, genomes, chunksize=NCBI_DIR_CHUNK),
+                        total=genome_count, ncols=100, smoothing=50 / max(genome_count, 1), unit='genome'):
+                    fout.write(line_to_write + '\n')
+                    written += 1
+                    for suffix in absent:
+                        missing[suffix].append(gid)
+
+        for suffix in NCBI_DIR_FILES:
+            if missing[suffix]:
+                gids = sorted(missing[suffix])
+                message = 'Identified {:,} genomes with a missing {} file, e.g.: {}; their fields read ' \
+                          'from it are empty.'.format(len(gids), suffix, ', '.join(gids[:EXAMPLES]))
+                if suffix in NCBI_DIR_UNANNOTATED:
+                    self.logger.info(message + ' NCBI does not annotate every assembly.')
+                else:
+                    self.logger.warning(message)
+        self.logger.info('Wrote the NCBI metadata of {:,} genomes to {}.'.format(written, output_file))
+
+        return output_file
+
+    def ncbi_parser_worker(self, line):
+        """Read the NCBI files of one genome; run on a worker process.
+
+        Parameters
+        ----------
+        line : str
+            The genome's line of the genome_dirs file.
+
+        @return: the genome's accession, its row (without a newline), and the
+                 suffixes of NCBI_DIR_FILES it has no file for.
+        """
 
         line_split = line.strip().split('\t')
-
         gid = line_split[0]
         gpath = line_split[1]
         assembly_id = os.path.basename(os.path.normpath(gpath))
 
+        absent = []
 
-        protein_file = os.path.join(
-            gpath, "prodigal", gid + "_protein.faa.gz")
-        if not os.path.exists(protein_file):
-            return 'null'
-
-        assembly_stat_file = os.path.join(
-            gpath, assembly_id + '_assembly_stats.txt')
-        line_to_write = gid
+        assembly_stat_file = os.path.join(gpath, assembly_id + ASSEMBLY_STATS_SUFFIX)
         if os.path.exists(assembly_stat_file):
-            metadata_fields, metadata_stats = self._parse_assembly_stats(
-                assembly_stat_file)
+            metadata_fields, metadata_stats = self._parse_assembly_stats(assembly_stat_file)
+        else:
+            metadata_fields, metadata_stats = [''] * len(self.fields), [''] * len(self.stats)
+            absent.append(ASSEMBLY_STATS_SUFFIX)
 
-            line_to_write = gid + '\t%s\t%s' % ('\t'.join(metadata_fields),
-                                           '\t'.join(metadata_stats))
-
-            gff_file = os.path.join(
-                gpath, assembly_id + '_genomic.gff.gz')
+        gff_file = os.path.join(gpath, assembly_id + GFF_SUFFIX)
+        if os.path.exists(gff_file):
             gff_stats = self._parse_gff(gff_file)
-            line_to_write = line_to_write + '\t' + '\t'.join(map(str, gff_stats))
+        else:
+            gff_stats = [''] * len(self.gff_fields)
+            absent.append(GFF_SUFFIX)
 
-            genbank_file = os.path.join(
-                gpath, assembly_id + '_genomic.gbff.gz')
+        genbank_file = os.path.join(gpath, assembly_id + GBFF_SUFFIX)
+        if os.path.exists(genbank_file):
             gbff_stats = self._parse_gbff(genbank_file)
-            line_to_write = line_to_write + '\t' + '\t'.join(map(str, gbff_stats))
+        else:
+            gbff_stats = [''] * len(self.gbff_fields)
+            absent.append(GBFF_SUFFIX)
+
+        line_to_write = '\t'.join([gid] + metadata_fields + metadata_stats
+                                  + [str(v) for v in gff_stats] + [str(v) for v in gbff_stats])
+
+        return gid, line_to_write, absent
 
 
-        return line_to_write
 
-
+# The table parse_ncbi_assemblies writes in its --out_dir. update_metadata_db loads a
+# table of this name against metadata_ncbi_assembly_file.desc.tsv, whose fields
+# are the ones written here; under any other name --input_folder refuses it, and
+# under ncbi_assembly_metadata.tsv it would be read against the description of
+# parse_ncbi_dir's fields.
+NCBI_ASSEMBLY_TABLE = 'ncbi_assembly_summary.tsv'
 
 class NCBIMeta(object):
     """Create metadata file from the assembly stats file of each NCBI assembly."""
@@ -428,46 +491,32 @@ class NCBIMeta(object):
             return ['' if value == 'na' else value, str('not used as type' in value)]
         return [value]
 
-    def parse_assemblies(self, assembly_summary_files, genome_id_file, output_file):
+    def parse_assemblies(self, assembly_summary_files, output_dir):
         """Create metadata by parsing NCBI assembly metadata files.
+
+        Every genome of the summaries is written: which of them are loaded into
+        the database is update_metadata_db's to decide. A genome is written
+        once, from the first summary holding it: a genome in two summaries, or
+        a summary given twice, would otherwise have two rows.
 
         Parameters
         ----------
         assembly_summary_files : sequence of str
             The NCBI assembly summaries the release was selected from, gzipped or
             not, read by column name (ncbi_utils.read_assembly_summary()).
-        genome_id_file : str
-            Table whose first column names the genomes to write.
-        output_file : str
-            Metadata table written, a row per genome.
+        output_dir : str
+            Directory NCBI_ASSEMBLY_TABLE is written to, a row per genome.
 
-        @return: None
+        @return: the path of the table written.
         """
 
-        # get identifier of genomes in GTDB
-        genome_ids = set()
-        with open(genome_id_file) as handle:
-            for line in handle:
-                if line[0] == '#':
-                    continue
-
-                if '\t' in line:
-                    genome_id = line.strip().split('\t')[0]
-                else:
-                    genome_id = line.strip().split(',')[0]
-
-                if genome_id.startswith('GCA_'):
-                    genome_id = 'GB_' + genome_id
-                elif genome_id.startswith('GCF_'):
-                    genome_id = 'RS_' + genome_id
-
-                genome_ids.add(genome_id)
-        ncbi_ids = {gid for gid in genome_ids if gid.startswith(('GB_', 'RS_'))}
-        self.logger.info('Read {:,} RefSeq and GenBank genome(s) from {}.'.format(
-            len(ncbi_ids), genome_id_file))
+        output_file = os.path.join(output_dir, NCBI_ASSEMBLY_TABLE)
+        self.logger.info('Writing the NCBI metadata of every genome of {:,} assembly '
+                         'summaries to {}.'.format(len(assembly_summary_files), output_file))
 
         # write out metadata
         written = set()
+        again = []
         with open(output_file, 'w') as fout:
             fout.write('\t'.join(['genome_id'] + [field for column in self.COLUMNS
                                                   for field in self.fields[column]]) + '\n')
@@ -483,22 +532,26 @@ class NCBIMeta(object):
                     elif genome_id.startswith('GCF_'):
                         genome_id = 'RS_' + genome_id
 
-                    if genome_id in genome_ids:
-                        values = [genome_id]
-                        for column, value in zip(self.COLUMNS, row[1:]):
-                            values.extend(self.field_values(column, value))
-                        fout.write('\t'.join(values) + '\n')
-                        written.add(genome_id)
-                self.logger.info('  {:,} of its {:,} genome(s) are listed and written.'.format(
-                    len(written) - before, rows))
+                    if genome_id in written:
+                        again.append((genome_id, assembly_file))
+                        continue
+                    values = [genome_id]
+                    for column, value in zip(self.COLUMNS, row[1:]):
+                        values.extend(self.field_values(column, value))
+                    fout.write('\t'.join(values) + '\n')
+                    written.add(genome_id)
+                self.logger.info('  Wrote {:,} of its {:,} genome(s).'.format(len(written) - before, rows))
 
+        if again:
+            self.logger.warning('{:,} genome(s) are in more than one assembly summary, e.g. {}; '
+                                'each was written once, from the first summary holding it. A '
+                                'summary was given twice, or the summaries overlap.'.format(
+                                    len(again), ', '.join('{} again in {}'.format(gid, path)
+                                                          for gid, path in again[:EXAMPLES])))
         self.logger.info('Wrote the NCBI metadata of {:,} genome(s) from {:,} assembly summaries '
                          'to {}.'.format(len(written), len(assembly_summary_files), output_file))
-        missing = sorted(ncbi_ids - written)
-        if missing:
-            self.logger.warning('{:,} NCBI genome(s) of {} are in none of the assembly summaries '
-                                'given, e.g. {}; they have no row.'.format(
-                                    len(missing), genome_id_file, ', '.join(missing[:10])))
+
+        return output_file
 
     def format_wgs(self, wgs_accession):
         if not wgs_accession or wgs_accession == "na":

@@ -24,6 +24,7 @@ taken for one that succeeded by whatever ran it, a shell's && or a script. The
 command is stood in for; what is tested is what main() does with how it ended.
 """
 
+import argparse
 import contextlib
 import io
 import logging
@@ -83,6 +84,33 @@ class TheExitStatus(unittest.TestCase):
         # ncbi_genome_sync returns its exit status rather than raising it
         self.assertEqual(self.run_main(lambda options: 3), 3)
         self.assertIsNone(self.run_main(lambda options: 0))
+
+
+
+class TheCpusDefault(unittest.TestCase):
+    """Every command's -c/--cpus defaults to 1."""
+
+    @staticmethod
+    def commands(parser, path=()):
+        """(command path, parser) of every subcommand, nested ones included."""
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, sub in action.choices.items():
+                    yield path + (name,), sub
+                    yield from TheCpusDefault.commands(sub, path + (name,))
+
+    def test_every_command_taking_cpus_defaults_to_1(self):
+        # create_tables and list_genomes defaulted to 8 and update_genomes to 16
+        taking = {}
+        for path, parser in self.commands(main_module.get_main_parser()):
+            for action in parser._actions:
+                if '--cpus' in action.option_strings:
+                    taking[' '.join(path)] = action.default
+
+        self.assertGreater(len(taking), 20)
+        for command in ('create_tables', 'list_genomes', 'update_genomes'):
+            self.assertIn(command, taking)
+        self.assertEqual({command: default for command, default in taking.items() if default != 1}, {})
 
 
 if __name__ == '__main__':
