@@ -146,6 +146,76 @@ class AGenomeWhoseGenesAreNotCalledYet(TempDirCase):
                                             'GCA_000002.1_protein.gff.gz'))
 
 
+# --------------------------------------- a genome whose GFF has gone since a run
+
+class AGenomeWhoseGenesHaveGone(TempDirCase):
+    """Gene metadata of an earlier run does not outlive the GFF it came from.
+
+    create_metadata_tables() reads metadata.genome_gene.tsv wherever it is. r237
+    called 15 genomes as empty proteomes, this command gave each a protein count
+    of 0, and the patch that called them again left 3 with no GFF and the 0, to
+    be loaded as though Prodigal had found no genes.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gpath = self.genome_dir('GCA_000005.1', 'GCA_000005.1_ASM5v1')
+        self.run_metadata([('GCA_000005.1', self.gpath)])
+        os.remove(os.path.join(self.gpath, 'prodigal', 'GCA_000005.1_protein.gff.gz'))
+
+    def test_the_gene_metadata_of_the_earlier_run_is_removed(self):
+        self.run_metadata([('GCA_000005.1', self.gpath)])
+
+        for name in M.GENE_METADATA_FILES:
+            self.assertFalse(self.wrote(self.gpath, name), name + ' was left')
+
+    def test_the_nucleotide_metadata_is_still_written(self):
+        self.run_metadata([('GCA_000005.1', self.gpath)])
+
+        self.assertTrue(self.wrote(self.gpath, 'metadata.genome_nt.tsv'))
+
+    def test_create_tables_gives_it_no_gene_row(self):
+        self.run_metadata([('GCA_000005.1', self.gpath)])
+        table = M.MetadataTable('138.2')
+        # the file removed is the one create_tables reads
+        self.assertEqual(table.metadata_gene_file, M.GENE_METADATA_FILES[0])
+        out = os.path.join(self.dir, 'gene_rows.tsv')
+        with open(out, 'w') as fout:
+            table._parse_gene('GCA_000005.1', os.path.join(self.gpath, table.metadata_gene_file), fout)
+
+        with open(out) as handle:
+            self.assertEqual(handle.read(), '')
+
+    def test_the_removal_is_warned_of_with_the_missing_gff_and_counted(self):
+        logger = logging.getLogger('timestamp')
+        logger.setLevel(logging.WARNING)
+        with self.assertLogs('timestamp', level='WARNING') as logged:
+            self.run_metadata([('GCA_000005.1', self.gpath)])
+
+        self.assertTrue(any('GCA_000005.1 has no called genes (GFF)' in line
+                            and 'removed the gene metadata an earlier run wrote' in line
+                            for line in logged.output), logged.output)
+        self.assertTrue(any('for 1 genome(s) that no longer have called genes' in line
+                            for line in logged.output), logged.output)
+
+    def test_a_genome_that_never_had_gene_metadata_is_not_said_to_have_lost_it(self):
+        gpath = self.genome_dir('GCA_000006.1', 'GCA_000006.1_ASM6v1', gff=False)
+        logger = logging.getLogger('timestamp')
+        logger.setLevel(logging.WARNING)
+        with self.assertLogs('timestamp', level='WARNING') as logged:
+            self.run_metadata([('GCA_000006.1', gpath)])
+
+        self.assertFalse(any('removed' in line.lower() for line in logged.output), logged.output)
+
+    def test_a_genome_with_no_sequences_keeps_its_gene_metadata(self):
+        # with no FASTA the genome directory is left as it was found: the mirror
+        # has lost a file, which is not the genes having gone
+        os.remove(os.path.join(self.gpath, 'GCA_000005.1_ASM5v1_genomic.fna.gz'))
+        self.run_metadata([('GCA_000005.1', self.gpath)])
+
+        self.assertTrue(self.wrote(self.gpath, M.GENE_METADATA_FILES[0]))
+
+
 # ----------------------------------------------- a genome missing its sequences
 
 class AGenomeWithNoSequences(TempDirCase):

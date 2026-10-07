@@ -57,6 +57,19 @@ MetadataJob = Tuple[str, str, str]
 # where it was looked for. A row of MISSING_FILES_NAME.
 MissingFile = Tuple[str, str, str]
 
+# What gene() writes into a genome directory, and what is removed from one whose
+# GFF has gone. create_metadata_tables() reads metadata.genome_gene.tsv wherever
+# it is, so a table an earlier run wrote outlives the genes it was calculated
+# from: r237 called 15 genomes as empty proteomes, generate_metadata wrote each
+# a protein count of 0, and the patch that called them again left 3 with no GFF
+# at all -- and with the 0, which create_metadata_tables() would have loaded as
+# though Prodigal had found no genes, where nothing is known.
+GENE_METADATA_FILES = ('metadata.genome_gene.tsv', 'metadata.genome_gene.desc.tsv')
+
+# What _producer() hands back: the files the genome was missing, and whether gene
+# metadata of an earlier run was removed for want of a GFF.
+ProducerResult = Tuple[List[MissingFile], bool]
+
 
 class MetadataTable(object):
     """Create metadata table for all NCBI and user genomes.
@@ -618,18 +631,27 @@ class MetadataManager(object):
         self.logger.info('Generating metadata for {:,} genomes:'.format(
             len(input_files)))
         missing: List[MissingFile] = []
+        removed = 0
         with mp.Pool(processes=self.cpus) as pool:
-            for result in tqdm(pool.imap_unordered(self._producer, input_files),
-                               total=len(input_files), ncols=100, unit='genome'):
+            for result, removed_gene in tqdm(pool.imap_unordered(self._producer, input_files),
+                                             total=len(input_files), ncols=100, unit='genome'):
                 # warned here rather than in the worker: several processes
                 # appending to one log file interleave, and the parent is
                 # reading every result anyway
                 for gid, what, missing_file in result:
-                    self.logger.warning('{} has no {}: {}'.format(
-                        gid, MISSING_LABEL[what], missing_file))
+                    self.logger.warning('{} has no {}: {}{}'.format(
+                        gid, MISSING_LABEL[what], missing_file,
+                        '; removed the gene metadata an earlier run wrote'
+                        if removed_gene and what == MISSING_PROTEIN_GFF else ''))
                 missing.extend(result)
+                removed += removed_gene
 
         self.report_missing(missing, len(input_files), out_dir)
+        if removed:
+            self.logger.warning(
+                'Removed the gene metadata an earlier run wrote for {:,} genome(s) '
+                'that no longer have called genes; create_tables gives them no gene '
+                'row.'.format(removed))
 
     def report_missing(self,
                        missing: Sequence[MissingFile],
@@ -668,7 +690,7 @@ class MetadataManager(object):
 
         return report
 
-    def _producer(self, job: MetadataJob) -> List[MissingFile]:
+    def _producer(self, job: MetadataJob) -> ProducerResult:
         """Process each genome.
 
         A genome missing a file is reported and passed over rather than ending
@@ -679,6 +701,10 @@ class MetadataManager(object):
         files that create_metadata_tables() reads independently, so half a
         genome is worth having and is not done again when prodigal catches up.
 
+        A genome with its FASTA and no GFF has the gene metadata of an earlier
+        run removed (GENE_METADATA_FILES): it was calculated from genes the
+        genome no longer has, and create_metadata_tables() would load it.
+
         Parameters
         ----------
         job : MetadataJob
@@ -686,7 +712,8 @@ class MetadataManager(object):
             Prodigal called.
 
         @return: the files this genome should have had and did not, which is
-                 empty for a genome that was processed in full.
+                 empty for a genome that was processed in full, and whether gene
+                 metadata of an earlier run was removed.
         """
 
         gid, genome_file, gff_file = job
@@ -701,7 +728,7 @@ class MetadataManager(object):
         # without the sequences there is nothing to calculate at all, and the
         # genome directory is left as it was found -- including its old log
         if any(what == MISSING_GENOMIC_FASTA for _, what, _ in missing):
-            return missing
+            return missing, False
 
         # clean up old log files
         log_file = os.path.join(full_genome_dir, 'genometk.log')
@@ -712,8 +739,17 @@ class MetadataManager(object):
         self.nucleotide(genome_file,full_genome_dir)
         if not missing:
             self.gene(genome_file,gff_file,full_genome_dir)
+            return missing, False
 
-        return missing
+        # no GFF: gene metadata already here is of genes the genome no longer has
+        removed = False
+        for name in GENE_METADATA_FILES:
+            path = os.path.join(full_genome_dir, name)
+            if os.path.exists(path):
+                os.remove(path)
+                removed = True
+
+        return missing, removed
 
     def nucleotide(self, genome_file: str, output_dir: str) -> None:
         """Calculate metadata derived from one genome's nucleotide sequences.
