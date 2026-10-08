@@ -1272,8 +1272,16 @@ refuses the run. Given `--genome_list` without `--do_not_null_field`, it asks
 those listed and set to NULL for every other genome, removing its metadata. A run with no terminal to answer ends there, having changed
 nothing.
 
-A table is read once, in chunks of 100,000 genomes, each field of a chunk
-written before the next is read, so what is held does not grow with the table:
+A table is read once, in chunks of 100,000 genomes, each chunk written before
+the next is read, so what is held does not grow with the table. The fields a
+table gives one database table are written together, one UPDATE a chunk, so
+each row is rewritten once: they were written a field at a time through
+`upsert()`, which rewrote every row once for each field, so r237's
+`metadata_gene.tsv` took six minutes for three fields and the 35 fields of
+`ncbi_assembly_metadata.tsv` would each have rewritten `metadata_ncbi`, 1.4 GB.
+A field a genome is given no value is left as it was, and a genome with no row
+in the table is given one, as `upsert()` did.
+
 r237's 3.87M-genome `ncbi_assembly_summary.tsv` reads in 14 seconds at a peak of
 600 MB, most of it the database's genomes, where it was read whole into 8.5 GB.
 Every chunk is in the run's one transaction, so a run stopped part way leaves

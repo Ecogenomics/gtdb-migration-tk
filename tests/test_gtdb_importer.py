@@ -53,6 +53,14 @@ class FakeCursor(object):
     def fetchall(self):
         return list(self.result)
 
+    def copy_expert(self, sql, handle):
+        self.statements.append((sql, handle.read()))
+        if self.fail_on and self.fail_on in sql:
+            raise RuntimeError('the server refused ' + self.fail_on)
+
+    def sql(self):
+        return [sql for sql, _ in self.statements]
+
     def upserts(self):
         return [params for sql, params in self.statements if 'upsert(' in sql]
 
@@ -163,6 +171,70 @@ class GenomesTheDatabaseDoesNotHold(TempDirCase):
         with self.assertRaises(I.UnknownGenomesError):
             I.GTDBImporter(cur).import_metadata_to_db('metadata_taxonomy', 'gtdb_domain',
                                                       'TEXT', [(None, 'd__Bacteria')])
+
+
+class WritingATablesFieldsTogether(TempDirCase):
+    """update_metadata_db wrote each field through its own upsert(), rewriting every row once a field."""
+
+    FIELDS = [('ncbi_taxid', 'INT'), ('ncbi_organism_name', 'TEXT')]
+
+    def test_the_fields_are_copied_in_and_every_row_written_by_one_update(self):
+        cur = FakeCursor(['GCA_000000001.1', 'GCF_000000002.1'])
+        I.GTDBImporter(cur).import_fields_to_db(
+            'metadata_ncbi', self.FIELDS, [('GB_GCA_000000001.1', ['562', 'Escherichia coli']),
+                                           ('GCF_000000002.1', [None, 'a\tb\\c'])])
+
+        sql = cur.sql()
+        self.assertEqual(sql[1], 'DROP TABLE IF EXISTS gtdb_new_values')
+        self.assertEqual(sql[2], 'CREATE TEMPORARY TABLE gtdb_new_values (id_at_source TEXT, "ncbi_taxid" INT, '
+                                 '"ncbi_organism_name" TEXT) ON COMMIT DROP')
+        copy, copied = cur.statements[3]
+        self.assertEqual(copy, 'COPY gtdb_new_values (id_at_source, "ncbi_taxid", "ncbi_organism_name") FROM STDIN')
+        # the prefix taken off, a value not given NULL, a tab and a backslash escaped
+        self.assertEqual(copied, 'GCA_000000001.1\t562\tEscherichia coli\n'
+                                 'GCF_000000002.1\t\\N\ta\\tb\\\\c\n')
+        updates = [s for s in sql if s.startswith('UPDATE')]
+        self.assertEqual(len(updates), 1)
+        self.assertIn('SET "ncbi_taxid" = COALESCE(n."ncbi_taxid", m."ncbi_taxid"), '
+                      '"ncbi_organism_name" = COALESCE(n."ncbi_organism_name", m."ncbi_organism_name")', updates[0])
+        self.assertIn('LOCK TABLE "metadata_ncbi" IN EXCLUSIVE MODE', sql)
+        inserts = [s for s in sql if s.startswith('INSERT')]
+        self.assertEqual(len(inserts), 1)
+        self.assertIn('WHERE NOT EXISTS (SELECT 1 FROM "metadata_ncbi" m WHERE m.id = g.id)', inserts[0])
+        self.assertEqual(cur.upserts(), [])
+
+    def test_a_genome_the_database_does_not_hold_is_refused_before_anything_is_written(self):
+        cur = FakeCursor(['GCA_000000001.1'])
+        with self.assertRaises(I.UnknownGenomesError) as raised:
+            I.GTDBImporter(cur).import_fields_to_db(
+                'metadata_ncbi', self.FIELDS, [('GCA_000000001.1', ['562', 'x']), ('GCA_000000099.1', ['1', None])])
+
+        self.assertIn('GCA_000000099.1', str(raised.exception))
+        self.assertEqual(cur.sql(), ['SELECT id_at_source FROM genomes'])
+        # listed for the field it was given a value of
+        self.assertTrue(os.path.exists(os.path.join(self.dir, 'unknown_genomes.metadata_ncbi.ncbi_taxid.tsv')))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'unknown_genomes.metadata_ncbi.ncbi_organism_name.tsv')))
+
+    def test_skipped_genomes_leave_the_rest_written(self):
+        cur = FakeCursor(['GCA_000000001.1'])
+        skipped = I.GTDBImporter(cur).import_fields_to_db(
+            'metadata_ncbi', self.FIELDS, [('GCA_000000001.1', ['562', 'x']), ('GCA_000000099.1', ['1', 'y'])],
+            unknown=I.SKIP)
+        self.assertEqual(skipped, 1)
+        self.assertEqual(cur.statements[3][1], 'GCA_000000001.1\t562\tx\n')
+
+    def test_no_genome_to_write_writes_nothing(self):
+        cur = FakeCursor(['GCA_000000001.1'])
+        I.GTDBImporter(cur).import_fields_to_db('metadata_ncbi', self.FIELDS, [])
+        self.assertEqual(cur.sql(), ['SELECT id_at_source FROM genomes'])
+
+    def test_a_name_or_type_that_is_not_plain_is_refused(self):
+        cur = FakeCursor(['GCA_000000001.1'])
+        for table, fields in (('metadata_ncbi; DROP TABLE genomes', self.FIELDS),
+                              ('metadata_ncbi', [('ncbi_taxid"', 'INT')]),
+                              ('metadata_ncbi', [('ncbi_taxid', 'INT); DROP TABLE genomes; --')])):
+            with self.subTest(table=table, fields=fields), self.assertRaises(ValueError):
+                I.GTDBImporter(cur).import_fields_to_db(table, fields, [('GCA_000000001.1', ['1'])])
 
 
 if __name__ == '__main__':

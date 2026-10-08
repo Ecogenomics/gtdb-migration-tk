@@ -43,6 +43,7 @@ from unittest import mock
 from gtdb_migration_tk import metadata_database_manager as M
 from gtdb_migration_tk import ncbi_genome_category as GENOME_CATEGORY
 from gtdb_migration_tk import ncbi_strain_summary as NCBI_STRAINS
+from gtdb_migration_tk.gtdb_lite import gtdb_importer as I
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import SKIP, UnknownGenomesError
 
 SUMMARY = ('accession\tgtdb_type_designation_ncbi_taxa\tlpsn_priority_year\n'
@@ -69,8 +70,12 @@ class LoadingATable(unittest.TestCase):
             importer.return_value.genomes.return_value = {'GCF_000000001.1', 'GCA_000000002.1'}
             manager.process_metadata_files(None, do_not_null_field=True, table_file=metadata_file,
                                            table_file_desc=self.description)
-        return {call.args[1]: sorted(call.args[3])
-                for call in importer.return_value.import_metadata_to_db.call_args_list}
+        loaded = defaultdict(list)
+        for call in importer.return_value.import_fields_to_db.call_args_list:
+            _table, fields, rows = call.args
+            for i, (field, _type) in enumerate(fields):
+                loaded[field].extend((genome, values[i]) for genome, values in rows if values[i] is not None)
+        return {field: sorted(rows) for field, rows in loaded.items()}
 
     def test_a_gzipped_table_is_read_as_a_plain_one_is(self):
         plain = os.path.join(self.dir, 'gtdb_type_strain_summary.tsv')
@@ -88,7 +93,13 @@ class LoadingATable(unittest.TestCase):
 
 
 class FakeCursor(object):
-    """A cursor recording each statement, over the rows of metadata_view."""
+    """A cursor recording each statement, over the rows of metadata_view.
+
+    upserts holds each write: upsert()'s parameters (table, field, type, genomes,
+    values) for a field written alone, or (table, fields, rows) for the fields
+    of a table written together by import_fields_to_db(), its rows those copied
+    into NEW_VALUES_TABLE, each (genome, value or None of each field).
+    """
 
     def __init__(self, accessions=(), fail_on=None, genomes=()):
         self.accessions = list(accessions)
@@ -97,12 +108,21 @@ class FakeCursor(object):
         self.statements = []
         self.upserts = []
         self.copied = []
+        self.new_values = None
         self.result = []
         self.rowcount = 0
 
     def copy_expert(self, sql, handle):
         self.statements.append(sql)
-        self.copied.append(sorted(line for line in handle.read().splitlines() if line))
+        if self.fail_on and self.fail_on in sql:
+            raise RuntimeError('the server refused ' + self.fail_on)
+        lines = [line for line in handle.read().splitlines() if line]
+        if sql.startswith('COPY ' + I.NEW_VALUES_TABLE):
+            fields = [name.strip().strip('"') for name in sql[sql.index('(') + 1:sql.index(')')].split(',')][1:]
+            rows = [line.split('\t') for line in lines]
+            self.new_values = (fields, [(row[0], [None if v == '\\N' else v for v in row[1:]]) for row in rows])
+        else:
+            self.copied.append(sorted(lines))
 
     def resets(self):
         """(statement, the genomes it was told were written) of each reset_unwritten()."""
@@ -112,8 +132,15 @@ class FakeCursor(object):
     def written(self):
         """(table, field) -> sorted [(genome, value), ...], every chunk of each joined."""
         fields = defaultdict(list)
-        for table, field, _type, genomes, values in self.upserts:
-            fields[(table, field)].extend(zip(genomes, values))
+        for write in self.upserts:
+            if len(write) == 5:
+                table, field, _type, genomes, values = write
+                fields[(table, field)].extend(zip(genomes, values))
+            else:
+                table, names, rows = write
+                for i, field in enumerate(names):
+                    fields[(table, field)].extend((genome, values[i]) for genome, values in rows
+                                                  if values[i] is not None)
         return {key: sorted(rows) for key, rows in fields.items()}
 
     def execute(self, sql, params=None):
@@ -126,6 +153,8 @@ class FakeCursor(object):
             self.result = [(genome,) for genome in self.genomes]
         elif sql.startswith('SELECT upsert('):
             self.upserts.append(params)
+        elif sql.startswith('UPDATE "') and I.NEW_VALUES_TABLE in sql:
+            self.upserts.append((sql.split('"')[1],) + self.new_values)
 
     def fetchall(self):
         return list(self.result)
@@ -217,7 +246,7 @@ class LoadingMetadataInOneTransaction(OneTransaction):
         manager = self.manager()
         patcher, importer = self.importer()
         self.addCleanup(patcher.stop)
-        importer.return_value.import_metadata_to_db.side_effect = [None, RuntimeError('refused')]
+        importer.return_value.import_fields_to_db.side_effect = RuntimeError('refused')
         with self.assertRaises(RuntimeError):
             self.load(manager)
 
@@ -364,7 +393,7 @@ class LoadingOnlyWhatTheDatabaseHolds(OneTransaction):
         manager, messages = self.load()
 
         statements = manager.temp_cur.statements
-        upserts = [i for i, sql in enumerate(statements) if sql.startswith('SELECT upsert(')]
+        upserts = [i for i, sql in enumerate(statements) if sql.startswith('UPDATE "') and I.NEW_VALUES_TABLE in sql]
         resets = [i for i, sql in enumerate(statements) if sql.startswith('UPDATE') and 'NULL' in sql]
         self.assertEqual(len(resets), 2)
         self.assertLess(max(upserts), min(resets))
@@ -373,6 +402,15 @@ class LoadingOnlyWhatTheDatabaseHolds(OneTransaction):
                          [['GCA_000000002.1', 'GCF_000000001.1']] * 2)
         self.assertIn('Set metadata_ncbi.ncbi_taxid to NULL for 0 genome(s) holding a value this table did '
                       'not give them.', messages)
+
+    def test_the_fields_of_a_table_are_written_in_one_statement_for_each_chunk(self):
+        # upsert() was called for each field, rewriting every row of the table once a field
+        manager, _ = self.load()
+        updates = [sql for sql in manager.temp_cur.statements if sql.startswith('UPDATE "metadata_ncbi"')]
+        self.assertEqual(len(updates), 1)
+        self.assertIn('"ncbi_taxid" = COALESCE', updates[0])
+        self.assertIn('"ncbi_organism_name" = COALESCE', updates[0])
+        self.assertFalse(any(sql.startswith('SELECT upsert(') for sql in manager.temp_cur.statements))
 
     def test_a_table_is_written_in_chunks_and_the_chunks_are_the_whole_table(self):
         genomes = ['GCF_{:09d}.1'.format(i) for i in range(25)]
