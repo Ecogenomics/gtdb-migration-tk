@@ -467,11 +467,23 @@ class MetadataDatabaseManager(object):
             skipped = 0
             out_of_range: List[Tuple[str, str, str]] = []
 
+            # the fields of each database table, written together
+            # (GTDBImporter.import_fields_to_db()): each row of a chunk is then
+            # rewritten once, where upsert() rewrote it once for each field
+            by_table: Dict[str, List[str]] = {}
+            for _, field in loaded:
+                by_table.setdefault(descriptions[field][1], []).append(field)
+
             def flush():
-                for _, field in loaded:
-                    if chunk[field]:
-                        data_type, table = descriptions[field]
-                        importer.import_metadata_to_db(table, field, data_type, chunk[field])
+                for table, fields in by_table.items():
+                    values: Dict[str, List[Optional[str]]] = {}
+                    for i, field in enumerate(fields):
+                        for genome_id, value in chunk[field]:
+                            values.setdefault(genome_id, [None] * len(fields))[i] = value
+                    if values:
+                        importer.import_fields_to_db(table, [(field, descriptions[field][0]) for field in fields],
+                                                     list(values.items()))
+                    for field in fields:
                         written[field] += len(chunk[field])
                         chunk[field] = []
 

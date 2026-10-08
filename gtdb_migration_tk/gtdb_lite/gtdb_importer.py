@@ -15,11 +15,26 @@
 #                                                                             #
 ###############################################################################
 
-"""Writing one metadata field of many genomes, through the database's upsert().
+"""Writing metadata of many genomes: one field through the database's upsert(),
+or every field of a table at once.
 
-Every metadata command writes through import_metadata_to_db(): update_metadata_db,
-update_checkm_db, update_reps_db, update_ncbi_tax_db, update_propagated_tax and
-add_taxonomy_to_database.
+The metadata commands write through import_metadata_to_db(), one field at a
+time: update_checkm_db, update_reps_db, update_ncbi_tax_db, update_propagated_tax
+and add_taxonomy_to_database. update_metadata_db writes through
+import_fields_to_db(), every field a table of its gives one table at once.
+
+ONE TABLE AT ONCE
+
+PostgreSQL writes a new version of every row an UPDATE touches, so upsert(),
+called for each field, rewrote every row of the table once for each field it was
+given, and joined the genomes table once for each: over r237, metadata_gene's
+three fields took six minutes against metadata_genes' 1.35M rows, and
+ncbi_assembly_metadata's 35 fields of metadata_ncbi would have taken an hour.
+import_fields_to_db() copies a chunk of genomes into a temporary table, a column
+for each field, and sets every field of each row in one UPDATE, so each row is
+rewritten once whatever the number of fields. A field a genome is given no value
+for keeps what it held, as it does when upsert() is not called for that genome,
+and a genome with no row in the table is given one, as upsert() does.
 
 WHAT A FAILURE DOES
 
@@ -51,9 +66,11 @@ failed; add_taxonomy_to_database is documented as taking such names.
 """
 
 import csv
+import io
 import logging
 import os
-from typing import Iterable, List, Optional, Set, Tuple
+import re
+from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 from gtdb_migration_tk.biolib_lite.logger import log_directory
 
@@ -67,6 +84,42 @@ GTDB_PREFIXES = ('GB_', 'RS_')
 # how many of the genomes the database does not hold an error names; all of them
 # are written to a file beside the log
 UNKNOWN_EXAMPLES = 10
+
+# the temporary table import_fields_to_db() copies a chunk of genomes into
+NEW_VALUES_TABLE = 'gtdb_new_values'
+
+# a table or field name, and a type, as a description gives them; anything else
+# is refused rather than written into SQL
+SQL_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+SQL_TYPE = re.compile(r'^[A-Za-z][A-Za-z ]*$')
+
+
+def copy_text(value: Optional[str]) -> str:
+    """A value as COPY's text format reads it: NULL as \\N, its backslashes, tabs and line ends escaped.
+
+    @return: str.
+    """
+
+    if value is None:
+        return '\\N'
+    return (value.replace('\\', '\\\\').replace('\t', '\\t')
+            .replace('\n', '\\n').replace('\r', '\\r'))
+
+
+def quoted(name: str) -> str:
+    """A table or field name quoted for SQL, as upsert()'s %I quotes it.
+
+    @return: e.g. '"coding_bases"'.
+
+    Raises
+    ------
+    ValueError
+        The name is not a plain identifier.
+    """
+
+    if not SQL_NAME.match(name):
+        raise ValueError('{!r} is not a table or field name.'.format(name))
+    return '"{}"'.format(name)
 
 
 class UnknownGenomesError(ValueError):
@@ -183,6 +236,96 @@ class GTDBImporter(object):
         if source_ids:
             self.temp_cur.execute('SELECT upsert(%s::regclass, %s, %s, %s, %s)',
                                   (table, field, typemeta, source_ids, values))
+
+        return len(not_held)
+
+    def import_fields_to_db(self, table: str, fields: Sequence[Tuple[str, str]],
+                            rows: Iterable[Tuple[str, Sequence[Optional[str]]]],
+                            unknown: str = REFUSE) -> int:
+        """Write several fields of one table for a list of genomes, each row rewritten once.
+
+        Parameters
+        ----------
+        table : str
+            e.g. metadata_ncbi.
+        fields : sequence of (str, str)
+            Each field and its type, e.g. [('ncbi_taxid', 'INT'), ...].
+        rows : iterable of (str, sequence of str or None)
+            Each genome, as GTDB or NCBI names it, and its value of each field
+            in the order of fields; None where it is given none, the field then
+            keeping what it holds.
+        unknown : str
+            REFUSE or SKIP, as import_metadata_to_db() takes it.
+
+        @return: the number of genomes the database does not hold, skipped.
+
+        Raises
+        ------
+        UnknownGenomesError
+            unknown is REFUSE and a genome is not in the database; every one is
+            in a file beside the log for each field it was given a value of.
+        ValueError
+            A table, field or type that is not a plain name.
+        """
+
+        if unknown not in (REFUSE, SKIP):
+            raise ValueError('unknown must be {} or {}, not {}.'.format(REFUSE, SKIP, unknown))
+        for _, data_type in fields:
+            if not SQL_TYPE.match(data_type):
+                raise ValueError('{!r} is not a type.'.format(data_type))
+        names = [quoted(field) for field, _ in fields]
+        target = quoted(table)
+
+        genomes = self.genomes()
+        held: List[Tuple[str, Sequence[Optional[str]]]] = []
+        not_held: List[Tuple[str, Sequence[Optional[str]]]] = []
+        for genome_id, values in rows:
+            source_id = id_at_source(genome_id)
+            if source_id in genomes:
+                held.append((source_id, values))
+            else:
+                not_held.append((str(genome_id), values))
+
+        if not_held:
+            files = []
+            for i, (field, _) in enumerate(fields):
+                given = [genome_id for genome_id, values in not_held if values[i] is not None]
+                if given:
+                    files.append(self.write_unknown_genomes(table, field, given))
+            if unknown == REFUSE:
+                raise UnknownGenomesError(
+                    '{:,} genome(s) to be written to {} are not in the database, e.g. {}; the database '
+                    'holds another release, or update_db has not been run. Every one is in {}.'.format(
+                        len(not_held), table, ', '.join(g for g, _ in not_held[:UNKNOWN_EXAMPLES]),
+                        ', '.join(files)))
+            self.logger.info('Skipped {:,} genome(s) not in the database for {} (listed in {}).'.format(
+                len(not_held), table, ', '.join(files)))
+
+        if held:
+            columns = ', '.join(names)
+            self.temp_cur.execute('DROP TABLE IF EXISTS {}'.format(NEW_VALUES_TABLE))
+            self.temp_cur.execute('CREATE TEMPORARY TABLE {} (id_at_source TEXT, {}) ON COMMIT DROP'.format(
+                NEW_VALUES_TABLE, ', '.join('{} {}'.format(name, data_type)
+                                            for name, (_, data_type) in zip(names, fields))))
+            self.temp_cur.copy_expert(
+                'COPY {} (id_at_source, {}) FROM STDIN'.format(NEW_VALUES_TABLE, columns),
+                io.StringIO(''.join('\t'.join([copy_text(source_id)] + [copy_text(v) for v in values]) + '\n'
+                                    for source_id, values in held)))
+            self.temp_cur.execute('ANALYZE {}'.format(NEW_VALUES_TABLE))
+            # as upsert() does: no other run writes the table until this one ends
+            self.temp_cur.execute('LOCK TABLE {} IN EXCLUSIVE MODE'.format(target))
+            self.temp_cur.execute(
+                'UPDATE {target} AS m SET {sets} FROM {new} n JOIN genomes g ON g.id_at_source = n.id_at_source '
+                'WHERE m.id = g.id'.format(target=target, new=NEW_VALUES_TABLE,
+                                           sets=', '.join('{0} = COALESCE(n.{0}, m.{0})'.format(name)
+                                                          for name in names)))
+            self.temp_cur.execute(
+                'INSERT INTO {target} (id, {columns}) SELECT g.id, {values} FROM {new} n '
+                'JOIN genomes g ON g.id_at_source = n.id_at_source '
+                'WHERE NOT EXISTS (SELECT 1 FROM {target} m WHERE m.id = g.id)'.format(
+                    target=target, columns=columns, new=NEW_VALUES_TABLE,
+                    values=', '.join('n.' + name for name in names)))
+            self.temp_cur.execute('DROP TABLE {}'.format(NEW_VALUES_TABLE))
 
         return len(not_held)
 

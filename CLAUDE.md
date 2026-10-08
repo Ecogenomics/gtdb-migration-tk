@@ -329,9 +329,12 @@ without `--do_not_null_field` asks before reaching the database
 (`metadata_database_manager.confirm_partial_load()`), since it then removes every
 genome's metadata and writes back only the list's; with no terminal the run ends
 there, changing nothing.
-Every metadata write goes through `gtdb_lite/gtdb_importer.py`
-`GTDBImporter.import_metadata_to_db()`, which calls the database's `upsert()`
-stored procedure. It raises on any error: it printed them until 0.1.47, and
+Every metadata write goes through `gtdb_lite/gtdb_importer.py`'s `GTDBImporter`:
+`import_metadata_to_db()` writes one field through the database's `upsert()`
+stored procedure, and `import_fields_to_db()`, which `update_metadata_db` uses,
+writes every field a table gives one database table in one UPDATE per chunk, so
+each row is rewritten once rather than once a field (PostgreSQL writes a new
+version of every row an UPDATE touches). Both raise on any error: it printed them until 0.1.47, and
 PostgreSQL rolls back on `commit()` a transaction with a failed statement without
 raising, so a failed write finished as a successful one. `upsert()` fails a whole
 field for one genome not in `genomes.id_at_source`, so the importer checks the
