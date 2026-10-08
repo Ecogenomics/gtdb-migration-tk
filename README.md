@@ -952,7 +952,7 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 | `parse_ncbi_assemblies` | Parse NCBI assembly summary files to generate metadata |
 | `parse_ncbi_dir` | Parse the GTDB directory for extra NCBI metadata |
 | `add_names_dmp` | Parse an NCBI `names.dmp` file into a table |
-| `ncbi_genome_category` | Identify genomes marked by NCBI as a MAG or SAG |
+| `parse_ncbi_genome_category` | Identify genomes marked by NCBI as a MAG, SAG or environmental genome |
 | `generate_seqcode_table` | Generate a metadata table for genomes in SeqCode |
 
 `create_tables` calculates nothing. It walks the genomes of the genome_dirs file
@@ -1002,8 +1002,8 @@ refused, exiting 1, before anything is written, rather than replacing the tables
 in `--out_dir` with nine of no rows. The table names are the ones
 `update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
 
-`create_tables`, `parse_ncbi_assemblies`, `parse_ncbi_dir` and `ncbi_strains`
-write their tables gzipped, `<table>.tsv.gz`, with no time or file name in the
+`create_tables`, `parse_ncbi_assemblies`, `parse_ncbi_dir`,
+`parse_ncbi_genome_category` and `ncbi_strains` write their tables gzipped, `<table>.tsv.gz`, with no time or file name in the
 gzip header, so the same genomes give the same bytes. A table an earlier run
 left uncompressed in the same `--out_dir` is removed once the gzipped one is
 written, since `update_metadata_db` refuses a folder holding a table both ways.
@@ -1092,6 +1092,46 @@ loaded, the database having no field for them: `ncbi_contig_l50`,
 sets them, as every field it loads, to NULL for every genome it gives no value,
 unless `--do_not_null_field` is given.
 
+`parse_ncbi_genome_category` (named `ncbi_genome_category` until 0.1.62) writes
+the genomes of a genome_dirs file (`-g`) that NCBI
+marks as a MAG, a SAG or an environmental genome, with where that was found, to
+`ncbi_genome_category.tsv.gz` in `-o/--out_dir`, as `parse_ncbi_dir` writes its
+table: `genome_id`, `ncbi_genome_category` (`derived from metagenome`, `derived
+from single cell`, `derived from environmental sample`) and `source`, in
+accession order. `update_metadata_db --input_folder` loads it by that name
+against `metadata_ncbi_genome_category.desc.tsv`, `source` not being loaded;
+until 0.1.62 it went to whatever file `-o` named, loaded with `--metadata_table`. It takes
+the assembly summaries the release was selected from as `-n`, as
+`select_genomes` and `ncbi_strains` do (`--genbank_assembly_summary` and
+`--refseq_assembly_summary`, one of each, until 0.1.62).
+
+```bash
+gtdb_migration_tk parse_ncbi_genome_category -g genome_dirs.tsv \
+    -n ncbi/assembly_summary_{archaea,bacteria}_{refseq,genbank}.txt.gz \
+    -o parse_ncbi_genome_category \
+    -l parse_ncbi_genome_category/parse_ncbi_genome_category.log -c 16
+```
+
+The summaries' `excluded_from_refseq` decides most genomes (814,000 of r237's
+1,346,119); a user genome (`U_`) is a MAG. The rest are looked for in the head
+of their GenBank file's first record, its header and source feature, on `--cpus`
+processes, and the lines a category was found on are written beside the table,
+`ncbi_genome_category_evidence.tsv`, which `update_metadata_db` passes over. In r226 that search added 104 SAGs, every one found there.
+Over 5,103 r237 genomes, those 104 among them, the table is the one 0.1.61 wrote.
+Measured on 16 processes: 157 genomes/s where reading the whole file managed 88,
+about an hour for r237's 532,119. Before 0.1.62 a run took 8 to 13 hours a part
+in r226, most of it spent pickling the summaries' category of every genome once
+for each genome handed to a worker.
+
+An `excluded_from_refseq` naming a `derived from` the command does not know
+refuses the run before any GenBank file is read, naming every such value, exiting
+1; add it to `SUMMARY_PHRASES` or `NOT_A_CATEGORY`. A genome that cannot be read
+stops the run. The table is written as `ncbi_genome_category.tsv.gz.partial` and renamed once
+every genome is decided, so a failed run leaves no table, or the one an earlier
+run wrote. A genome with no GenBank file, one in none of the summaries, and one
+marked both a MAG and a SAG (written as a MAG) are each counted in a closing
+WARNING.
+
 ### Taxonomy
 
 | Command | Description |
@@ -1164,12 +1204,14 @@ other genomes are skipped. Either way each one is listed in
 `.tsv.gz` of `-i/--input_folder`, each a table it knows by its name without
 `.gz` (`metadata_*.tsv` from `create_tables`, `ncbi_assembly_summary.tsv` from
 `parse_ncbi_assemblies`, `ncbi_assembly_metadata.tsv` from `parse_ncbi_dir`,
+`ncbi_genome_category.tsv` from `parse_ncbi_genome_category`,
 `strain_summary_file.tsv` from `ncbi_strains`, which all write them gzipped) and
 loads against its descriptions in `data_files/table_description/`, or one table,
 gzipped or not, given as `--metadata_table` with `--metadata_table_desc`. A
 folder holding a table it does not know, a table both gzipped and not, or a
 table without its description, is refused, every one named, before anything is
-written; `substrains.tsv`, the report `ncbi_strains` writes beside its table, is
+written; `substrains.tsv` and `ncbi_genome_category_evidence.tsv`, the reports
+`ncbi_strains` and `parse_ncbi_genome_category` write beside their tables, are
 passed over. A column no description names is not loaded, and the log says which.
 
 It loads the genomes the database holds, `genomes.id_at_source`, skipping and

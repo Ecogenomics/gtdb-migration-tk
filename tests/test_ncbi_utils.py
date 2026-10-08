@@ -489,6 +489,32 @@ class StrainIdentifierTests(unittest.TestCase):
         self.assertEqual(U.strain_identifiers('strain=n/a', 'H082280513'), ['H082280513'])
 
 
+class GbffFirstRecordHeadTests(unittest.TestCase):
+    # parse_ncbi_dir and parse_ncbi_genome_category read a GenBank file this far
+    HEAD = ['LOCUS       contig1\n',
+            '  TITLE     Capturing single cell genomes\n',
+            'FEATURES             Location/Qualifiers\n',
+            '     source          1..5000\n',
+            '                     /isolation_source="soil; a long value\n',
+            '                     continued"\n']
+
+    def test_the_header_and_the_source_feature_are_given_and_nothing_after(self):
+        rest = ['     CDS             1..300\n', 'ORIGIN\n', '//\n', 'LOCUS       contig2\n']
+        lines = iter(self.HEAD + rest)
+        self.assertEqual(list(U.gbff_first_record_head(lines)), self.HEAD)
+        # the CDS line ended it, and nothing past it was read
+        self.assertEqual(next(lines), 'ORIGIN\n')
+
+    def test_a_first_record_with_no_source_feature_is_given_to_its_end(self):
+        lines = ['LOCUS       contig1\n', 'FEATURES             Location/Qualifiers\n',
+                 '     CDS             1..300\n', 'ORIGIN\n', '//\n', 'LOCUS       contig2\n']
+        self.assertEqual(list(U.gbff_first_record_head(lines)), lines[:4])
+
+    def test_the_genbank_file_is_named_for_the_assembly(self):
+        self.assertEqual(U.genomic_gbff('/x/GCA_000000001.1_ASM1v1/'),
+                         '/x/GCA_000000001.1_ASM1v1/GCA_000000001.1_ASM1v1_genomic.gbff.gz')
+
+
 class NomenclaturalCodeTests(unittest.TestCase):
     def test_a_seqcode_name_is_read_without_its_code(self):
         self.assertEqual(U.strip_nomenclatural_code('Patescibacteriaceae (SeqCode)'),

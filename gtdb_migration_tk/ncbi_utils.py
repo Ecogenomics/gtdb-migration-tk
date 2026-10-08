@@ -393,6 +393,63 @@ def ncbi_translation_table(gff_file: str) -> Optional[int]:
     return ncbi_transl_table
 
 
+# The GenBank flat file NCBI publishes beside the genome: a record per contig,
+# each its header, its feature table and its sequence, 3.3 MB of gzip a genome
+# on average over r237. What GTDB reads from it -- the source qualifiers
+# parse_ncbi_dir writes, and the text parse_ncbi_genome_category looks for -- is the
+# assembly's BioSample's, the same on every record, and lies in the first
+# record's header and source feature, a few kilobytes. So both read that far
+# and no further, through gbff_first_record_head().
+GENOMIC_GBFF_EXT = '_genomic.gbff.gz'
+
+# The line that opens the source feature, and any line opening a feature or a
+# section ('ORIGIN', '//' aside): a qualifier, or a qualifier's continuation,
+# is indented 21 spaces, so is neither.
+GBFF_SOURCE_RE = re.compile(r'^\s{5}source\s{10}')
+GBFF_FEATURE_RE = re.compile(r'^\s{0,20}\w')
+
+
+def genomic_gbff(genome_dir: str) -> str:
+    """The GenBank flat file NCBI serves for a genome.
+
+    Parameters
+    ----------
+    genome_dir : str
+        Genome directory, of the mirror or of a release.
+
+    @return: path of the GenBank file in that directory, which may not exist.
+    """
+
+    assembly = os.path.basename(os.path.normpath(genome_dir))
+
+    return os.path.join(genome_dir, assembly + GENOMIC_GBFF_EXT)
+
+
+def gbff_first_record_head(lines: Iterable[str]) -> Iterator[str]:
+    """The lines of a GenBank file's first record as far as the end of its source feature.
+
+    The header (LOCUS to FEATURES, the references' TITLEs among it) and the
+    source feature with its qualifiers are given; the line after the source
+    feature, the next feature or ORIGIN, is not, and nothing after it is read.
+    A first record with no source feature is given to its end ('//').
+
+    Parameters
+    ----------
+    lines : iterable of str
+        The file's lines, as an open file gives them.
+
+    @return: iterator over the lines, each as read.
+    """
+
+    in_source = False
+    for line in lines:
+        if GBFF_SOURCE_RE.match(line):
+            in_source = True
+        elif line.startswith('//') or (in_source and GBFF_FEATURE_RE.match(line)):
+            return
+        yield line
+
+
 # NCBI's null: what an empty field holds in an assembly summary, and what GTDB
 # writes in the same position of the tables it derives from one.
 NCBI_NA = 'na'

@@ -32,7 +32,7 @@ from gtdb_migration_tk.marker_manager import BadHmmDatabase, MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager, MetadataTableError, confirm_partial_load
 from gtdb_migration_tk.metadata_manager import EmptyGenomeDirs, MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
-from gtdb_migration_tk.ncbi_genome_category import GenomeType
+from gtdb_migration_tk.ncbi_genome_category import GenomeCategoryError, GenomeType
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.ncbi_genome_sync import NCBIGenomeSync
 from gtdb_migration_tk.ncbi_metadata_sync import NCBIMetadataSync
@@ -443,12 +443,19 @@ class OptionsParser():
         p = Propagate(database_keywords(options))
         p.set_gtdb_domain()
 
-    def ncbi_genome_category(self, options):
+    def parse_ncbi_genome_category(self, options):
+        for assembly_summary in options.new_list_genomes:
+            check_file_exists(assembly_summary)
+        check_file_exists(options.gtdb_genome_path_file)
+        make_sure_path_exists(options.output_dir)
         p = GenomeType(options.cpus)
-        p.run(options.genbank_assembly_summary,
-              options.refseq_assembly_summary,
-              options.gtdb_genome_path_file,
-              options.output_file)
+        try:
+            p.run(options.new_list_genomes, options.gtdb_genome_path_file, options.output_dir)
+        except GenomeCategoryError as exc:
+            # a value of the summaries for a person to place, said in one line;
+            # nothing was written
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def generate_trnascan_data(self, options):
         check_file_exists(options.gtdb_genome_path_file)
@@ -593,8 +600,8 @@ class OptionsParser():
             self.update_propagated_tax(options)
         elif options.subparser_name == 'set_gtdb_domain':
             self.set_gtdb_domain(options)
-        elif options.subparser_name == 'ncbi_genome_category':
-            self.ncbi_genome_category(options)
+        elif options.subparser_name == 'parse_ncbi_genome_category':
+            self.parse_ncbi_genome_category(options)
         elif options.subparser_name == 'update_metadata_db':
             self.update_metadata_db(options)
         elif options.subparser_name == 'update_reps_db':
