@@ -974,9 +974,11 @@ nine tables in `--out_dir`, each gzipped (`metadata_nt.tsv.gz` and so on):
 the 16S rRNA genes from `ssu_gg/`, is no longer written: nothing has written
 `ssu_gg/` since `rna_silva` took over, and r237 had none. A run removes one an
 earlier run left in `--out_dir`, which `update_metadata_db --input_folder` would
-otherwise refuse as a table it does not know. The `ssu_gg_*` fields of
-`metadata_rna` still hold the 2013 Greengenes values loaded for genomes added
-before 2019, which nothing loads or clears. A genome without a file is given no row in that table;
+otherwise refuse as a table it does not know. The eight `ssu_gg_*` fields were
+dropped from `metadata_rna` and `metadata_view` of `gtdb_r237_dev` on
+2026-10-08, the view recreated without them; the values of the 86,077 genomes
+that held them (nearly all added from 2015 to 2018), and the view's definition
+before and after, are in `release237/processing/drop_ssu_gg/`. A genome without a file is given no row in that table;
 the three `*_count.tsv` tables are the exception, giving every genome a row, 0
 where nothing was found. The run ends by logging, for every other table, how many
 genomes have a row, how many had no file to read it from, and how many had one
