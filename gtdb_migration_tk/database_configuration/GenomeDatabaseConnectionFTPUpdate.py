@@ -16,6 +16,50 @@
 ###############################################################################
 
 import functools
+import io
+from typing import Iterable
+
+
+# The temporary table reset_unwritten() puts the genomes just written in.
+WRITTEN_TABLE = 'gtdb_written_genomes'
+
+# What reset_unwritten() sets to NULL: a genome holding a value that this run gave
+# none. A genome given a value is rewritten by upsert() whatever it held, so
+# setting it to NULL first only rewrote the row once more.
+RESET_UNWRITTEN = ('UPDATE {table} AS m SET {field} = NULL FROM genomes g '
+                   'WHERE g.id = m.id AND m.{field} IS NOT NULL '
+                   'AND NOT EXISTS (SELECT 1 FROM ' + WRITTEN_TABLE + ' w WHERE w.id_at_source = g.id_at_source)')
+
+
+def reset_unwritten(cur, table: str, field: str, written: Iterable[str]) -> int:
+    """Set a field to NULL for every genome holding a value this run did not write.
+
+    Done once the field is written, in the same transaction, which leaves what
+    setting it to NULL for every genome first did -- the new values, and NULL
+    for every other genome -- without rewriting the rows of the genomes given a
+    value. PostgreSQL writes a new version of every row an UPDATE touches: the
+    NULLs alone rewrote metadata_ncbi, 1.3 GB, for each field, and upsert()
+    then rewrote it again, each version kept to the end of the transaction.
+
+    Parameters
+    ----------
+    cur : cursor
+        The cursor of the caller's transaction.
+    table, field : str
+        e.g. metadata_ncbi, ncbi_organism_name.
+    written : iterable of str
+        The genomes given a value, as genomes.id_at_source names them.
+
+    @return: the number of genomes set to NULL.
+    """
+
+    cur.execute('CREATE TEMPORARY TABLE IF NOT EXISTS {} (id_at_source TEXT) ON COMMIT DROP'.format(WRITTEN_TABLE))
+    cur.execute('TRUNCATE {}'.format(WRITTEN_TABLE))
+    cur.copy_expert('COPY {} (id_at_source) FROM STDIN'.format(WRITTEN_TABLE),
+                    io.StringIO(''.join(genome + '\n' for genome in written)))
+    cur.execute('ANALYZE {}'.format(WRITTEN_TABLE))
+    cur.execute(RESET_UNWRITTEN.format(table=table, field=field))
+    return cur.rowcount
 
 
 def one_transaction(method):
