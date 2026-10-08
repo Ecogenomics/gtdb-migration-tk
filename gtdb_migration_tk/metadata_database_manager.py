@@ -26,6 +26,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from psycopg2.extras import execute_values
 
 from gtdb_migration_tk.biolib_lite.common import canonical_gid
+from gtdb_migration_tk.biolib_lite.logger import log_directory
 from gtdb_migration_tk.biolib_lite.taxonomy import Taxonomy
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 # reset_unwritten() lives beside one_transaction, update_propagated_tax using it too
@@ -49,6 +50,16 @@ CHUNK_GENOMES = 100000
 # the types a description gives a field that only a whole number can be written to
 INTEGER_TYPES = ('INT', 'INTEGER')
 WHOLE_NUMBER = re.compile(r'^[+-]?[0-9]+$')
+
+# What PostgreSQL's integer holds. A value past it failed upsert()'s cast, which
+# rolled back the whole run with a traceback part way through: r237's
+# GCA_964261755.1, NCBI's 'UC_feces_MAGs_combined', is 9.5 Gbp of MAGs submitted
+# as one assembly, and five of its fields (genome_size, gc_count, coding_bases,
+# ncbi_total_length, ncbi_ungapped_length) do not fit. Such a value is left
+# unwritten, as an empty one is, and each is listed beside the log
+# (INT_OUT_OF_RANGE_NAME).
+INTEGER_RANGE = (-2 ** 31, 2 ** 31 - 1)
+INT_OUT_OF_RANGE_NAME = 'int_out_of_range.{table}.tsv'
 
 # how many lines or genomes an error names
 EXAMPLES = 10
@@ -404,7 +415,11 @@ class MetadataDatabaseManager(object):
         nothing of the run is written -- where a row has more or fewer columns
         than the header, a genome is named twice, or an INT field holds a value
         that is not a whole number: each was passed over, the row's fields left
-        unset, the last row kept, or 12.5 written as 12.
+        unset, the last row kept, or 12.5 written as 12. A whole number too big
+        for an INT field is left unwritten, as an empty value is, so the
+        genome's field is NULL unless --do_not_null_field keeps what it held;
+        each is counted in a WARNING and listed in INT_OUT_OF_RANGE_NAME beside
+        the log.
 
         Parameters
         ----------
@@ -450,6 +465,7 @@ class MetadataDatabaseManager(object):
             seen: Set[str] = set()
             rows = 0
             skipped = 0
+            out_of_range: List[Tuple[str, str, str]] = []
 
             def flush():
                 for _, field in loaded:
@@ -490,6 +506,10 @@ class MetadataDatabaseManager(object):
                                                      'whole number, and {} is {}; nothing was written.'.format(
                                                          metadata_file, line_number, genome_id, field, value,
                                                          field, descriptions[field][0]))
+                        if not INTEGER_RANGE[0] <= int(number) <= INTEGER_RANGE[1]:
+                            out_of_range.append((genome_id, field, number))
+                            empty[field].add(genome_id)
+                            continue
                         value = number
                     chunk[field].append((genome_id, value))
 
@@ -501,6 +521,20 @@ class MetadataDatabaseManager(object):
 
         self.logger.info('Read {:,} genomes of {}: {:,} loaded, {:,} not in {} and skipped.'.format(
             rows, metadata_file, rows - skipped, skipped, keep_source))
+        if out_of_range:
+            name = os.path.basename(metadata_file)
+            for suffix in (GZIP_SUFFIX, '.tsv'):
+                if name.endswith(suffix):
+                    name = name[:-len(suffix)]
+            report = os.path.join(log_directory(), INT_OUT_OF_RANGE_NAME.format(table=name))
+            with open(report, 'w') as handle:
+                handle.write('genome_id\tfield\tvalue\n')
+                for row in out_of_range:
+                    handle.write('\t'.join(row) + '\n')
+            self.logger.warning('{} gives {:,} value(s) too big for an INT field, which are not written, the '
+                                'field left without a value: {}. Every one is in {}.'.format(
+                                    metadata_file, len(out_of_range),
+                                    ', '.join('{} {} {}'.format(*row) for row in out_of_range[:EXAMPLES]), report))
         for _, field in loaded:
             self.logger.info('Wrote {}.{} for {:,} genomes.'.format(descriptions[field][1], field, written[field]))
 
