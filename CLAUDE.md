@@ -320,7 +320,7 @@ commits when it returns and rolls back when it raises, `sys.exit()` included, an
 nothing inside it commits. Fields are set to NULL in the transaction their new
 values are written in, so a failed run leaves the old values rather than NULL,
 and after them, only for the genomes holding a value the run did not write
-(`metadata_database_manager.reset_unwritten()`): an UPDATE rewrites every row it
+(`reset_unwritten()`, in `GenomeDatabaseConnectionFTPUpdate.py` beside `one_transaction`, which `update_propagated_tax` uses too): an UPDATE rewrites every row it
 touches, and a field of `metadata_ncbi` set to NULL for every genome first
 rewrote the whole 1.3 GB table before `upsert()` rewrote it again;
 nothing asks `[y/n]`, `--do_not_null_field` being how a run keeps the old values,

@@ -360,14 +360,10 @@ def __gtdb_init_taxonomy(group, required):
     group.add_argument('--gtdb_init_taxonomy', required=required, help='Initial taxonomy for latest release.')
 
 
-def __gtdb_metadata_current_release(group, required):
-    group.add_argument('--gtdb_metadata_cur', required=required,
-                       help='GTDB metadata for current NCBI release.')
-
-
 def __gtdb_metadata_previous_release(group, required):
-    group.add_argument('--gtdb_metadata_prev', required=required,
-                       help='GTDB metadata for previous NCBI release.')
+    group.add_argument('--gtdb_metadata_prev', required=required, nargs='+',
+                       help='GTDB metadata files of the previous release, gzipped or not '
+                            '(e.g. its ar53_metadata and bac120_metadata files).')
 
 
 def __gtdb_prev_sp_clusters(group, required):
@@ -376,6 +372,11 @@ def __gtdb_prev_sp_clusters(group, required):
 
 def __gtdb_sp_clusters(group, required):
     group.add_argument('--gtdb_sp_clusters', required=required, help='Species clusters for latest release.')
+
+
+def __propagated_dir(group, required):
+    group.add_argument('-i', '--input_dir', required=required,
+                       help='Directory propagate_gtdb_taxonomy wrote its files to (its --output_dir).')
 
 
 def __input_dir(group, required):
@@ -580,11 +581,6 @@ def __report_file(group, required):
 
 def __report_folder(group, required):
     group.add_argument('-r', '--report_folder', help='Path to report directory.', required=required)
-
-
-def __representative_file(group, required):
-    group.add_argument('--rep_file', required=required,
-                       help='GTDB representatives file.')
 
 
 def __rfq_arc_assembly_file(group, required):
@@ -1180,10 +1176,9 @@ def get_main_parser():
     # # Steps to propagate GTDB Taxonomy
     with subparser(sub_parsers, 'propagate_gtdb_taxonomy', 'Propagating GTDB taxonomy to new release.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
+            __database_setup(grp)
             __gtdb_metadata_previous_release(grp, required=True)
-            __gtdb_metadata_current_release(grp, required=True)
-            __taxonomy_file(grp, required=True)
-            __representative_file(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
@@ -1252,13 +1247,9 @@ def get_main_parser():
                    'Push changed from propagated taxonomy to new database.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __database_setup(grp)
-            __taxonomy_file(grp, required=True)
-            __metadata_file(grp, required=True)
-            __genome_list(grp, required=True)
-            __representative_file(grp, required=True)
+            __propagated_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
-            __truncate_taxonomy(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'set_gtdb_domain',

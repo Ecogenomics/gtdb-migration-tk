@@ -38,7 +38,7 @@ from gtdb_migration_tk.ncbi_genome_sync import NCBIGenomeSync
 from gtdb_migration_tk.ncbi_metadata_sync import NCBIMetadataSync
 from gtdb_migration_tk.ncbi_tax_manager import TaxonomyNCBI
 from gtdb_migration_tk.prodigal_manager import ProdigalManager
-from gtdb_migration_tk.propagate_taxonomy import Propagate
+from gtdb_migration_tk.propagate_taxonomy import Propagate, PropagationError
 from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
 from gtdb_migration_tk.rna_manager_silva import RnaManagerSILVA
 from gtdb_migration_tk.select_genomes import SelectGenomes
@@ -418,9 +418,16 @@ class OptionsParser():
                                    options.output_file)
 
     def propagate_gtdb_taxonomy(self, options):
-        p = Propagate()
-        p.propagate_taxonomy(options.gtdb_metadata_prev, options.gtdb_metadata_cur, options.taxonomy_file,
-                             options.rep_file)
+        for metadata_file in options.gtdb_metadata_prev:
+            check_file_exists(metadata_file)
+        make_sure_path_exists(options.output_dir)
+        p = Propagate(database_keywords(options))
+        try:
+            p.propagate_taxonomy(options.gtdb_metadata_prev, options.output_dir)
+        except PropagationError as exc:
+            # the files or the database to put right, said in one line; nothing was written
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def propagate_curated_taxonomy(self, options):
         p = Propagate()
@@ -436,8 +443,7 @@ class OptionsParser():
 
     def update_propagated_tax(self, options):
         p = Propagate(database_keywords(options))
-        p.add_propagated_taxonomy(options.taxonomy_file, options.metadata, options.genome_list,
-                                  options.truncate_taxonomy, options.rep_file)
+        p.add_propagated_taxonomy(options.input_dir)
 
     def set_gtdb_domain(self, options):
         p = Propagate(database_keywords(options))

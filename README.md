@@ -1143,6 +1143,55 @@ WARNING.
 | `set_gtdb_domain` | Set missing GTDB domain information from the NCBI domain |
 | `curation_lists` | Lists and pseudo-trees for curation review |
 
+`propagate_gtdb_taxonomy` carries the previous release's GTDB taxonomy and
+species representatives to the genomes of the database (`--db_service`, or
+`--hostname -u -d -p`). It reads the previous release from its GTDB metadata
+files (`--gtdb_metadata_prev`, one or more, gzipped or not: a release's
+`ar53_metadata` and `bac120_metadata`) and the genomes and the taxonomy they
+hold from the database, where it read them from a metadata file exported by
+hand (`--gtdb_metadata_cur`) until 0.1.63. It writes two headerless tables,
+gzipped, in `-o/--out_dir`, which `update_propagated_tax` reads from the same
+directory, `-i/--input_dir` (`-t` and `--rep_file`, which named each file, until
+0.1.63):
+
+| File | Rows |
+| --- | --- |
+| `gtdb_taxonomy_propagated.tsv.gz` | `genome_id`, taxonomy: each genome inheriting a taxonomy |
+| `gtdb_sp_reps_propagated.tsv.gz` | `genome_id`, `True` or `False`: every genome of the database, whether it inherits representative status |
+
+```bash
+gtdb_migration_tk propagate_gtdb_taxonomy --db_service gtdb_r237 \
+    --gtdb_metadata_prev ar53_metadata_r232.tsv.gz bac120_metadata_r232.tsv.gz \
+    -o propagate_taxonomy -l propagate_taxonomy/propagate.log
+gtdb_migration_tk update_propagated_tax --db_service gtdb_r237 -i propagate_taxonomy \
+    -l propagate_taxonomy/update.log
+```
+
+`update_propagated_tax` writes every rank of every genome the taxonomy names,
+and every genome's representative status, in one transaction. A genome the
+taxonomy does not name keeps its domain, which `set_gtdb_domain` gives a genome
+GTDB has not classified, and its ranks below the domain are set to NULL, each
+rank's count logged as a WARNING, so no genome keeps a taxonomy the previous
+release did not give it; over r237 that is none. Until 0.1.63 it took
+`--truncate_taxonomy`, which set every genome of a metadata file exported by
+hand (`-m`) to its domain first, and `--genome_list`, which kept the writes to
+the genomes of the same export; the files name only genomes of the database.
+
+A genome inherits from the genome of the previous release with its accession or
+else its canonical accession, `G` and the nine digits: a new version, a move
+between GenBank and RefSeq, or both. The log counts each, and the genomes of
+the previous release not in the database with the representatives among them.
+A run where one canonical accession names two genomes of the previous release,
+or of the database, is refused, as is one where the previous release names a
+genome twice, so no genome has more than one predecessor. The database's
+taxonomy of a genome of the previous release must be the previous release's, or
+not yet set (no rank below the domain holding more than its prefix: NULL, or the
+bare `p__` ... `s__` `update_propagated_tax --truncate_taxonomy` writes); every one that is not is
+listed in `gtdb_taxonomy_mismatches.tsv` beside the log, nothing is written, and
+the run exits 1. Against `gtdb_r237_dev` with r232's two files it takes about a
+minute: 900,882 genomes inherit a taxonomy, none differs, and both tables are the
+ones 0.1.62 wrote from an export of the same database.
+
 ### Database
 
 | Command | Description |
