@@ -41,7 +41,8 @@ from numpy import (zeros as np_zeros,sum as np_sum)
 from tqdm import tqdm
 
 from gtdb_migration_tk.biolib_lite.common import get_num_lines
-from gtdb_migration_tk.ncbi_utils import read_assembly_summary
+from gtdb_migration_tk.ncbi_utils import (GBFF_SOURCE_RE, GENOMIC_GBFF_EXT, gbff_first_record_head,
+                                          read_assembly_summary)
 from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_gzip_text, remove_uncompressed
 from gtdb_migration_tk.utils.tools import openfile
 
@@ -165,7 +166,7 @@ NCBI_DIR_TABLE = 'ncbi_assembly_metadata.tsv'
 # as NULL; the run ends by saying how many genomes were missing each.
 ASSEMBLY_STATS_SUFFIX = '_assembly_stats.txt'
 GFF_SUFFIX = '_genomic.gff.gz'
-GBFF_SUFFIX = '_genomic.gbff.gz'
+GBFF_SUFFIX = GENOMIC_GBFF_EXT
 NCBI_DIR_FILES = (ASSEMBLY_STATS_SUFFIX, GFF_SUFFIX, GBFF_SUFFIX)
 
 # NCBI publishes no annotation, and so no GFF, for many GenBank assemblies (121
@@ -318,8 +319,6 @@ class NCBIMetaDir(object):
         """
         metadata_gbff = [''] * len(self.gbff_fields)
 
-        pattern_gene = re.compile(r"^\s{0,20}\w")
-        pattern_source = re.compile(r"^\s{5}source\s{10}")
         source_info_bool = False
         randomstring = self._randomword(10)
         source_info = []
@@ -327,19 +326,14 @@ class NCBIMetaDir(object):
         # read as far as the end of the first record's source feature, or of
         # the first record, whichever comes first
         with openfile(genbank_file) as handle:
-            for line in handle:
-                if pattern_source.match(line):
+            for line in gbff_first_record_head(handle):
+                if GBFF_SOURCE_RE.match(line):
                     source_info_bool = True
-                elif pattern_gene.match(line) and source_info_bool:
-                    # the next feature: the source feature has ended
-                    break
                 elif source_info_bool:
                     # Replace all '/' characters by a random string except the first one
                     # '/' will be used to separate those metadata later on
                     line = re.sub(r"(?!^\/)\/", randomstring, ' '.join(line.split()))
                     source_info.append("{0} ".format(' '.join(line.split())))
-                elif line.startswith('//'):
-                    break
 
         # Process the source_info array if any metadata was found
         if source_info:

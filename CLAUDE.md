@@ -175,7 +175,9 @@ columns every GTDB genome table opens with (`GENOME_COLUMNS`, `table_header()`),
 `file_md5()`), how a strain designation is split into strain IDs
 (`strain_identifiers()`, shared by `ncbi_strains` and `strains type_table`) and how
 NCBI's `(SeqCode)` is taken off a name (`strip_nomenclatural_code()`, shared by
-`ncbi_tax_manager` and `strains`). It is a leaf: it imports nothing from the package, and
+`ncbi_tax_manager` and `strains`) and how far a GenBank file is read
+(`genomic_gbff()`, `gbff_first_record_head()`: the first record's header and
+source feature, shared by `parse_ncbi_dir` and `parse_ncbi_genome_category`). It is a leaf: it imports nothing from the package, and
 `ncbi_genome_sync.py` imports from it and from nothing else in the package. The
 command modules do not import one another; anything two of them need goes here.
 

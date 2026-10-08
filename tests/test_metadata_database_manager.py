@@ -41,6 +41,7 @@ from collections import defaultdict
 from unittest import mock
 
 from gtdb_migration_tk import metadata_database_manager as M
+from gtdb_migration_tk import ncbi_genome_category as GENOME_CATEGORY
 from gtdb_migration_tk import ncbi_strain_summary as NCBI_STRAINS
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import SKIP, UnknownGenomesError
 
@@ -432,6 +433,25 @@ class ChoosingTheTables(OneTransaction):
         self.assertIn(NCBI_STRAINS.SUBSTRAINS_NAME, M.NOT_TABLES)
         self.assertEqual(manager.temp_cur.written()[('metadata_ncbi', 'ncbi_strain_identifiers')],
                          [('GCF_000000001.1', 'K-12')])
+
+    def test_the_genome_category_table_is_known_and_its_evidence_passed_over(self):
+        # parse_ncbi_genome_category wrote to whatever file -o named, loaded by hand
+        folder = os.path.join(self.dir, 'tables')
+        os.makedirs(folder)
+        with gzip.open(os.path.join(folder, GENOME_CATEGORY.CATEGORY_TABLE_NAME + '.gz'), 'wt') as handle:
+            handle.write('genome_id\tncbi_genome_category\tsource\n'
+                         'GCF_000000001.1\tderived from single cell\tGBFF file\n')
+        with open(os.path.join(folder, GENOME_CATEGORY.EVIDENCE_NAME), 'w') as handle:
+            handle.write('genome_id\tevidence\nGCF_000000001.1\t/note="single cell"\n')
+        manager = self.manager(cursor=FakeCursor(genomes=HELD))
+        with mock.patch.object(M.GenomeDatabaseConnectionFTPUpdate, 'GenomeDatabaseConnectionFTPUpdate'):
+            manager.description_table = M.MetadataDatabaseManager({}).description_table
+
+        manager.process_metadata_files(None, table_folder=folder)
+
+        self.assertIn(GENOME_CATEGORY.EVIDENCE_NAME, M.NOT_TABLES)
+        self.assertEqual(manager.temp_cur.written(), {('metadata_ncbi', 'ncbi_genome_category'):
+                                                      [('GCF_000000001.1', 'derived from single cell')]})
 
     def test_the_strain_summary_is_read_once_against_both_its_descriptions(self):
         # it was read, and its fields set to NULL, once for each description

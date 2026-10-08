@@ -120,9 +120,10 @@ def print_help():
      update_reps_db     -> Update species cluter representatives in database.
 
     Metadata:
-      create_tables         -> Gather the metadata in each genome directory into tables.
-      parse_ncbi_assemblies -> Create tables with metadata for all NCBI genomes from assembly summaries.
-      parse_ncbi_dir        -> Create tables with metadata for all NCBI genomes from directories.
+      create_tables              -> Gather the metadata in each genome directory into tables.
+      parse_ncbi_assemblies      -> Create tables with metadata for all NCBI genomes from assembly summaries.
+      parse_ncbi_dir             -> Create tables with metadata for all NCBI genomes from directories.
+      parse_ncbi_genome_category -> Genomes NCBI marks as a MAG, SAG or environmental genome.
 
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release.
@@ -317,12 +318,6 @@ def __gbk_arc_assembly_file(group, required):
 def __gbk_bac_assembly_file(group, required):
     group.add_argument('--gb','--gbk_bac_assembly_file', required=required,
                        help="Bacterial Assembly summary file from GenBank.")
-
-
-def __genbank_assembly_summary(group, required):
-    group.add_argument('-g', '--genbank_assembly_summary', required=required,
-                       help='File from NCBI indicating metadata for genome assemblies in GenBank '
-                            '(ftp://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt).')
 
 
 def __genome_directory(group, required):
@@ -577,12 +572,6 @@ def __previous_metadata_file(group, required):
     group.add_argument('--previous_metadata_file',
                        help='File indicating metadata of each genome in previous GTDB version.',
                        required=required)
-
-
-def __refseq_assembly_summary(group, required):
-    group.add_argument('-g', '--refseq_assembly_summary', required=required,
-                       help='File from NCBI indicating metadata for genome assemblies in RefSeq '
-                            '(ftp://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_refseq.txt).')
 
 
 def __report_file(group, required):
@@ -1280,13 +1269,12 @@ def get_main_parser():
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 
-    with subparser(sub_parsers, 'ncbi_genome_category',
-                   'Identify genomes marked by NCBI as being a MAG or SAG.') as parser:
+    with subparser(sub_parsers, 'parse_ncbi_genome_category',
+                   'Identify genomes marked by NCBI as being a MAG, SAG or environmental genome.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
-            __genbank_assembly_summary(grp, required=True)
-            __refseq_assembly_summary(grp, required=True)
             __gtdb_genome_path_file(grp, required=True)
-            __output_file(grp, required=True)
+            __new_list_genomes(grp, required=True)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)

@@ -55,8 +55,10 @@ EXAMPLES = 10
 # Files a command writes beside its tables that are reports, not tables, so are
 # passed over in --input_folder rather than refused as tables this command does
 # not know: ncbi_strains writes substrains.tsv beside strain_summary_file.tsv.gz,
-# which r237 wrote into the folder update_metadata_db loads.
-NOT_TABLES = ('substrains.tsv',)
+# which r237 wrote into the folder update_metadata_db loads, and
+# parse_ncbi_genome_category the GenBank file lines it found each category on
+# beside ncbi_genome_category.tsv.gz.
+NOT_TABLES = ('substrains.tsv', 'ncbi_genome_category_evidence.tsv')
 
 
 # update_ncbi_tax_db: what each of its three files is written to, in the order
@@ -316,7 +318,8 @@ class MetadataDatabaseManager(object):
                                   'metadata_trna_count.tsv':['metadata_trna.desc.tsv'],
                                   'ncbi_assembly_summary.tsv':['metadata_ncbi_assembly_file.desc.tsv'],
                                   'strain_summary_file.tsv':['metadata_ncbi_assembly.desc.tsv','metadata_ncbi_assembly_file.desc.tsv'],
-                                  'ncbi_assembly_metadata.tsv':['metadata_ncbi_assembly.desc.tsv']
+                                  'ncbi_assembly_metadata.tsv':['metadata_ncbi_assembly.desc.tsv'],
+                                  'ncbi_genome_category.tsv':['metadata_ncbi_genome_category.desc.tsv']
                                   }
 
         self.temp_con = GenomeDatabaseConnectionFTPUpdate.GenomeDatabaseConnectionFTPUpdate(database)
@@ -356,7 +359,8 @@ class MetadataDatabaseManager(object):
         desc_table_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                       'data_files', 'table_description')
         # a table is known by its name without GZIP_SUFFIX: create_tables,
-        # parse_ncbi_assemblies, parse_ncbi_dir and ncbi_strains write them gzipped
+        # parse_ncbi_assemblies, parse_ncbi_dir, parse_ncbi_genome_category and
+        # ncbi_strains write them gzipped
         tables = sorted(glob.glob(os.path.join(table_folder, '*.tsv'))
                         + glob.glob(os.path.join(table_folder, '*.tsv' + GZIP_SUFFIX)))
         reports = [table for table in tables if os.path.basename(table) in NOT_TABLES]
