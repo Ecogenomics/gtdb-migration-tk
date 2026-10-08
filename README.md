@@ -1169,7 +1169,8 @@ loads against its descriptions in `data_files/table_description/`, or one table,
 gzipped or not, given as `--metadata_table` with `--metadata_table_desc`. A
 folder holding a table it does not know, a table both gzipped and not, or a
 table without its description, is refused, every one named, before anything is
-written. A column no description names is not loaded, and the log says which.
+written; `substrains.tsv`, the report `ncbi_strains` writes beside its table, is
+passed over. A column no description names is not loaded, and the log says which.
 
 It loads the genomes the database holds, `genomes.id_at_source`, skipping and
 counting the rest, since a table may cover more (`parse_ncbi_assemblies`' covers
@@ -1371,6 +1372,14 @@ organism name and strain IDs; the log ends with a WARNING counting each. A
 genome that cannot be read stops the run. The table is written as
 `strain_summary_file.tsv.gz.partial` and renamed only once every genome is in it,
 so a failed run leaves no table, or the one an earlier run wrote.
+
+Genomes whose infraspecific name names a substrain (`substr.`) are written to
+`substrains.tsv` in `--out_dir`, a TSV of `genome_id` and `strain_id` (the
+infraspecific name as NCBI gives it, e.g. `strain=K-12 substr. MG1655`), sorted
+by genome; the log gives their count and the file in one line. It is written
+on every run, its header alone where there are none. It is not a table:
+`update_metadata_db --input_folder` passes over it by name rather than refusing
+the folder, so `ncbi_strains` may write into the folder it loads.
 
 `strains type_table` decides which genomes of a release are assembled from type
 material, matching each genome's NCBI species and strain IDs against LPSN's type

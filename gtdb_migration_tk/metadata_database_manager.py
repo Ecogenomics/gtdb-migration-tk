@@ -52,6 +52,12 @@ WHOLE_NUMBER = re.compile(r'^[+-]?[0-9]+$')
 # how many lines or genomes an error names
 EXAMPLES = 10
 
+# Files a command writes beside its tables that are reports, not tables, so are
+# passed over in --input_folder rather than refused as tables this command does
+# not know: ncbi_strains writes substrains.tsv beside strain_summary_file.tsv.gz,
+# which r237 wrote into the folder update_metadata_db loads.
+NOT_TABLES = ('substrains.tsv',)
+
 
 # update_ncbi_tax_db: what each of its three files is written to, in the order
 # they are loaded and the error file names them
@@ -353,6 +359,11 @@ class MetadataDatabaseManager(object):
         # parse_ncbi_assemblies, parse_ncbi_dir and ncbi_strains write them gzipped
         tables = sorted(glob.glob(os.path.join(table_folder, '*.tsv'))
                         + glob.glob(os.path.join(table_folder, '*.tsv' + GZIP_SUFFIX)))
+        reports = [table for table in tables if os.path.basename(table) in NOT_TABLES]
+        if reports:
+            self.logger.info('Passing over {}, not a table.'.format(
+                ', '.join(os.path.basename(report) for report in reports)))
+            tables = [table for table in tables if table not in reports]
         if not tables:
             raise MetadataTableError('{} holds no .tsv or .tsv.gz table.'.format(table_folder))
 
