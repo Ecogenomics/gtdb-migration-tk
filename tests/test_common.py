@@ -39,6 +39,9 @@ REAL_OUTPUT = {
     'hmmsearch': ('# hmmsearch :: search profile(s) against a sequence database\n'
                   '# HMMER 3.4 (Aug 2023); http://hmmer.org/\n',
                   'HMMER 3.4 (Aug 2023)'),
+    'hmmalign': ('# hmmalign :: align sequences to a profile HMM\n'
+                 '# HMMER 3.4 (Aug 2023); http://hmmer.org/\n',
+                 'HMMER 3.4 (Aug 2023)'),
     'nhmmer': ('# nhmmer :: search a DNA model, alignment, or sequence against a '
                'DNA database\n# HMMER 3.4 (Aug 2023); http://hmmer.org/\n',
                'HMMER 3.4 (Aug 2023)'),

@@ -28,6 +28,7 @@ from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
 from gtdb_migration_tk.trans_table import GTranslate
 from gtdb_migration_tk.lpsn import LPSN
+from gtdb_migration_tk.marker_alignment_manager import AlignmentError, MarkerAlignmentManager
 from gtdb_migration_tk.marker_manager import BadHmmDatabase, MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager, MetadataTableError, confirm_partial_load
 from gtdb_migration_tk.metadata_manager import EmptyGenomeDirs, MetadataManager, MetadataTable
@@ -252,6 +253,22 @@ class OptionsParser():
             # line, rather than coming out as a traceback through the argparse
             # frames; nothing has been claimed or written by this point
             self.logger.error(str(exc))
+            sys.exit(1)
+
+    def align_marker_genes(self, options):
+        check_file_exists(options.gtdb_genome_path_file)
+        make_sure_path_exists(options.output_dir)
+        p = MarkerAlignmentManager(database_keywords(options), options.cpus, options.batch_size,
+                                   options.tmp_dir, options.reclaim, options.lease * 60 * 60)
+        try:
+            finished = p.run(options.marker_set_ids, options.all_genomes, options.gtdb_genome_path_file,
+                             options.output_dir)
+        except AlignmentError as exc:
+            # the markers or the genome_dirs file to put right, said in one line;
+            # nothing has been aligned
+            self.logger.error(str(exc))
+            sys.exit(1)
+        if not finished:
             sys.exit(1)
 
     def run_tophit(self, options):
@@ -554,6 +571,8 @@ class OptionsParser():
             self.select_genomes(options)
         elif options.subparser_name == 'hmmsearch':
             self.run_hmmsearch(options)
+        elif options.subparser_name == 'align_marker_genes':
+            self.align_marker_genes(options)
         elif options.subparser_name == 'top_hit':
             self.run_tophit(options)
         elif options.subparser_name == 'genomic_metadata':

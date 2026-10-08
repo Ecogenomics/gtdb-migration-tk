@@ -140,6 +140,15 @@ its own: one holding batches another command planned is refused
 Both are handed prodigal's proteins (`--genes`) and take them as correct; neither
 takes a translation table.
 
+`align_marker_genes` (`marker_alignment_manager.py`) is the batched command whose
+results go to the database: it decides the genomes from `aligned_markers`
+(`--new_genomes`, or `--all_genomes`), plans only those under
+`<out_dir>/marker_sets_<ids>_<new|all>/`, and writes each batch's rows in one
+transaction before its SUCCESS -- the one command whose writes are a transaction a
+batch rather than one a run, so a batch is the unit of restart for the database
+as for the work. It aligns a batch's genes to each marker by one `hmmalign`, the
+match states of each being what it gives the gene alone.
+
 ### `ncbi_genome_sync.py` is deliberately self-contained
 
 It is a standalone script grafted onto the toolkit. It owns its argparse via
