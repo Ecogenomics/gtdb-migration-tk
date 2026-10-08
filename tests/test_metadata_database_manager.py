@@ -41,6 +41,7 @@ from collections import defaultdict
 from unittest import mock
 
 from gtdb_migration_tk import metadata_database_manager as M
+from gtdb_migration_tk import ncbi_strain_summary as NCBI_STRAINS
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import SKIP, UnknownGenomesError
 
 SUMMARY = ('accession\tgtdb_type_designation_ncbi_taxa\tlpsn_priority_year\n'
@@ -420,6 +421,17 @@ class ChoosingTheTables(OneTransaction):
         folder, manager = self.gzipped_folder('not_a_table.tsv.gz')
         with self.assertRaisesRegex(M.MetadataTableError, 'does not know: not_a_table.tsv.gz'):
             manager.process_metadata_files(None, table_folder=folder)
+
+    def test_the_substrains_ncbi_strains_writes_beside_its_table_are_passed_over_not_refused(self):
+        # r237 wrote ncbi_strains into the folder update_metadata_db loads
+        folder, manager = self.gzipped_folder('strain_summary_file.tsv.gz')
+        with open(os.path.join(folder, NCBI_STRAINS.SUBSTRAINS_NAME), 'w') as handle:
+            handle.write('genome_id\tstrain_id\nGCF_000000001.1\tstrain=K-12 substr. MG1655\n')
+        manager.process_metadata_files(None, table_folder=folder)
+
+        self.assertIn(NCBI_STRAINS.SUBSTRAINS_NAME, M.NOT_TABLES)
+        self.assertEqual(manager.temp_cur.written()[('metadata_ncbi', 'ncbi_strain_identifiers')],
+                         [('GCF_000000001.1', 'K-12')])
 
     def test_the_strain_summary_is_read_once_against_both_its_descriptions(self):
         # it was read, and its fields set to NULL, once for each description

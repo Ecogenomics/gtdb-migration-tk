@@ -63,6 +63,10 @@ STRAIN_SUMMARY_NAME = 'strain_summary_file.tsv'
 STRAIN_SUMMARY_HEADER = ('genome_id', 'Organism name', 'ncbi_strain_identifiers',
                          'ncbi_type_material_designation')
 
+# the genomes whose infraspecific name names a substrain, written in --out_dir
+SUBSTRAINS_NAME = 'substrains.tsv'
+SUBSTRAINS_HEADER = ('genome_id', 'strain_id')
+
 # the NCBI file of a genome directory the strain IDs are read from
 ASSEMBLY_REPORT_SUFFIX = '_assembly_report.txt'
 
@@ -174,14 +178,17 @@ class NCBIStrainParser(object):
         in none of the summaries has no type material status, written empty,
         which update_metadata_db loads as NULL; it was written as the text None.
         One with no assembly report has no organism name or strain IDs. Each is
-        counted in a closing warning.
+        counted in a closing warning. The genomes whose infraspecific name
+        names a substrain are written to SUBSTRAINS_NAME, one row each, rather
+        than a line each in the log, where they ran to thousands of lines.
 
         Parameters
         ----------
         genome_dir_file : str
             genome_dirs file: accession, directory, canonical accession.
         out_dir : str
-            Directory STRAIN_SUMMARY_NAME is written to, gzipped (with GZIP_SUFFIX).
+            Directory STRAIN_SUMMARY_NAME is written to, gzipped (with GZIP_SUFFIX),
+            and SUBSTRAINS_NAME.
 
         @return: the path of the table written.
         """
@@ -209,7 +216,7 @@ class NCBIStrainParser(object):
                         if not has_report:
                             no_report.append(genome_id)
                         if substrain is not None:
-                            substrains.append('{} strain {}'.format(genome_id, substrain))
+                            substrains.append((genome_id, substrain))
                         outf.write('{}\t{}\t{}\t{}\n'.format(
                             genome_id, species, ';'.join(strain_ids), typemat if typemat is not None else ''))
                         written += 1
@@ -220,9 +227,12 @@ class NCBIStrainParser(object):
         os.replace(partial, output_file)
         remove_uncompressed(output_file, self.logger)
 
-        self.logger.info("Substrains of interest:")
-        for substr in sorted(substrains):
-            self.logger.info('- ' + substr)
+        substrains_file = os.path.join(out_dir, SUBSTRAINS_NAME)
+        with open(substrains_file, 'w') as outf:
+            outf.write('\t'.join(SUBSTRAINS_HEADER) + '\n')
+            for genome_id, substrain in sorted(substrains):
+                outf.write('{}\t{}\n'.format(genome_id, substrain))
+        self.logger.info('Identified {:,} substrains of interest: {}'.format(len(substrains), substrains_file))
         if no_report:
             self.logger.warning('Identified {:,} genomes with a missing {} file, e.g.: {}; their organism '
                                 'name and strain IDs are empty.'.format(

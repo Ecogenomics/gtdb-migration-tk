@@ -71,12 +71,12 @@ class TempDirCase(unittest.TestCase):
             handle.write('\n'.join(lines) + '\n')
         return path
 
-    def genome(self, gid):
+    def genome(self, gid, report=ASSEMBLY_REPORT):
         assembly = gid + '_ASM584v2'
         gpath = os.path.join(self.dir, 'genomes', assembly)
         os.makedirs(gpath)
         with open(os.path.join(gpath, assembly + '_assembly_report.txt'), 'w') as handle:
-            handle.write(ASSEMBLY_REPORT)
+            handle.write(report)
         return gpath
 
 
@@ -185,6 +185,43 @@ class WritingTheStrainSummary(TempDirCase):
         self.assertEqual(sorted(os.listdir(self.dir)),
                          sorted(['assembly_summary_bacteria_refseq.txt', 'genome_dirs.tsv', 'genomes',
                                  'strain_summary_file.tsv.gz']))
+
+
+class WritingTheSubstrains(TempDirCase):
+    # each was a line of the log, thousands of them over a release
+    def test_the_substrains_are_written_to_a_table_and_counted_in_one_line_of_the_log(self):
+        substrain_report = ASSEMBLY_REPORT.replace('strain=K-12', 'strain=K-12 substr. MG1655')
+        genomes = [('GCF_000000002.1', substrain_report), ('GCF_000000003.1', ASSEMBLY_REPORT),
+                   ('GCF_000000001.1', substrain_report)]
+        summary = self.summary('assembly_summary_bacteria_refseq.txt', [(gid, 'na') for gid, _ in genomes])
+        genome_dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        with open(genome_dirs, 'w') as handle:
+            for gid, report in genomes:
+                handle.write('{}\t{}\tG\n'.format(gid, self.genome(gid, report)))
+
+        with self.assertLogs('timestamp', level='INFO') as logged:
+            NCBIStrainParser([summary], 2).generate_ncbi_strains_summary(genome_dirs, self.dir)
+
+        substrains = os.path.join(self.dir, 'substrains.tsv')
+        with open(substrains) as handle:
+            self.assertEqual(handle.read().splitlines(), [
+                'genome_id\tstrain_id',
+                'GCF_000000001.1\tstrain=K-12 substr. MG1655',
+                'GCF_000000002.1\tstrain=K-12 substr. MG1655'])
+        messages = [r.getMessage() for r in logged.records]
+        self.assertIn('Identified 2 substrains of interest: {}'.format(substrains), messages)
+        self.assertFalse(any('MG1655' in message for message in messages))
+
+    def test_a_release_with_no_substrains_has_a_table_of_its_header_alone(self):
+        summary = self.summary('assembly_summary_bacteria_refseq.txt', [('GCF_000005845.2', 'na')])
+        genome_dirs = os.path.join(self.dir, 'genome_dirs.tsv')
+        with open(genome_dirs, 'w') as handle:
+            handle.write('GCF_000005845.2\t{}\tG000005845\n'.format(self.genome('GCF_000005845.2')))
+
+        NCBIStrainParser([summary], 1).generate_ncbi_strains_summary(genome_dirs, self.dir)
+
+        with open(os.path.join(self.dir, 'substrains.tsv')) as handle:
+            self.assertEqual(handle.read(), 'genome_id\tstrain_id\n')
 
 
 class WritingItGzipped(TempDirCase):
