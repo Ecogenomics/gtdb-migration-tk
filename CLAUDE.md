@@ -44,7 +44,11 @@ the place to be resolving dependencies.
 
 There is no linter or formatter configured. Releases are cut by publishing a
 GitHub release, which builds a conda package on the `ace-internal` channel from
-`conda/meta.yaml`; that recipe reads the version from `setup.py`.
+`conda/meta.yaml`; that recipe reads the version from `setup.py`. The recipe
+installs with `pip install .`, so a file the package reads at run time (the
+descriptions in `data_files/table_description/`, the barrnap models in
+`data_files/barrnap/`) is installed only if `setup.py`'s `package_data` names
+it; `tests/test_packaging.py` builds a wheel and fails on a data file left out.
 
 **Versioning.** `gtdb_migration_tk/VERSION` is the changelog. Its first line is
 the version, read by both `setup.py` and `gtdb_migration_tk/__init__.py`. Bump it

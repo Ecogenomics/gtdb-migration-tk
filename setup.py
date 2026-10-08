@@ -21,7 +21,12 @@ setup(
     maintainer_email='p.chaumeil@uq.edu.au',
     packages=find_packages(include=['gtdb_migration_tk', 'gtdb_migration_tk.*']),
     scripts=['bin/gtdb_migration_tk'],
-    package_data={'gtdb_migration_tk': ['VERSION']},
+    # the data files are read from beside the package (update_metadata_db's
+    # descriptions, rna_silva's barrnap models), so an install without them --
+    # every conda package built from a release, until 0.1.59 -- cannot run those
+    package_data={'gtdb_migration_tk': ['VERSION',
+                                        'data_files/barrnap/*.hmm',
+                                        'data_files/table_description/*.tsv']},
     extras_require={'test': ['pytest>=7.0']},
     url='https://github.com/Ecogenomics/gtdb-migration-tk',
     description='Toolkit for updating the GTDB to the next release and test data.',
