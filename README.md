@@ -310,6 +310,7 @@ it on a file server shared with other work.
 | `prodigal` | Call genes using Prodigal, under the translation table `trans_table` predicted |
 | `hmmsearch` | Run HMMER on new and modified genomes |
 | `top_hit` | Generate TopHit file for TIGRFAM or Pfam |
+| `align_marker_genes` | Align the marker genes of the database's genomes into `aligned_markers`, in batches under `--out_dir` |
 | `genomic_metadata` | Generate metadata derived from nucleotide and protein files |
 | `rna_silva` | Identify and classify 16S, 23S and 5S rRNA genes against SILVA, in batches under `--out_dir` |
 | `rna_ltp` | Classify the 16S rRNA genes `rna_silva` extracted against LTP, in batches under `--out_dir` |
@@ -658,6 +659,53 @@ one where the other was wanted stops there with a line saying so. It used not to
 be: `hmmsearch` reads a directory as a file that "appears to be empty", wrote no
 marker table, and the run met that one call later as a `FileNotFoundError` on the
 table in a worker.
+
+`align_marker_genes` aligns the markers of the marker sets it is given
+(`--marker_set_ids`, `marker_sets.id`: 1 = bac120, 2 = ar122, 19 = ar53) for the NCBI
+genomes of the database and writes them to `aligned_markers`, which GTDB's MSAs and
+trees are built from. It was `gtdb -r power realign_updated_genomes` of the gtdb
+package until 0.1.66. `--new_genomes` aligns the genomes with no row for any of the
+markers -- those `update_db` added, and those whose sequences changed, whose rows
+it removes; `--all_genomes` aligns every NCBI genome again, rewriting its rows,
+which is rarely wanted. One of the two is required. HMMER's `hmmalign` must be on
+`PATH`, 3.2 or later: over 4,400 genomes added from 2015 to 2025, hmmalign 3.2.1, 3.3,
+3.3.2 and 3.4 each rebuild all 520,859 rows of `aligned_markers` compared, and
+3.1b1 and 3.1b2 differ in about 250 (TIGRFAM markers alone, 5% of genomes). The
+`gtdb_migration_tk-r237` environment puts HMMER 3.4 first on `PATH` when activated.
+
+```bash
+gtdb_migration_tk align_marker_genes --db_service gtdb_r237 --marker_set_ids 1 2 --new_genomes \
+    -g genome_dirs.tsv -o align_marker_genes -l align_marker_genes/align.log -c 16
+```
+
+For each marker the gene of the genome's top-hit table
+(`prodigal/<marker dir>/<gid>_<marker dir>_tophit.tsv.gz`) naming it with the
+highest bitscore, the first of equal ones, is aligned to the marker's HMM, and the
+HMM's match states kept; `multiple_hits`, `hit_number` and `unique_genes` say how
+many genes named it and how many distinct sequences they were. A genome is not
+expected to have every marker: one no gene names is a row of gaps as long as the
+HMM. The genes of a batch are aligned to a marker by one `hmmalign` rather than one
+a gene, the alignment of each being the same; over 150 r237 genomes kept from r232,
+every field of all 34,950 rows is the one the gtdb package wrote, but for one
+e-value whose top-hit table was made again since. On 16 processes a batch of 1,000
+genomes is read and aligned in about 26 seconds.
+
+The markers are checked first: a set the database does not hold, or an HMM that is
+missing, of another length than `markers.size`, or of another Pfam or TIGRFAM
+version than `config.py`, refuses the run. So does a genome to align that the
+genome_dirs file does not locate, every one listed in `not_in_genome_dirs.tsv`. A
+genome without called proteins (`prodigal/<gid>_protein.faa.gz`) is passed over: the
+log counts them and `missing_protein_file.tsv` in `--out_dir` lists them. One with
+proteins and no top-hit table, or whose table names a gene its proteins do not hold,
+fails its batch.
+
+The genomes are cut into batches of `--batch_size` (1,000) under
+`<out_dir>/marker_sets_<ids>_<new|all>/`, claimed as the other batched commands
+claim theirs, so a stopped run, or several machines, carry on from the batches
+finished. Each batch's rows are written in one transaction as it ends, and its
+SUCCESS after that commits: a genome has all its rows or none, and a batch that
+failed is rolled back, said in the log and in its FAILED file, and retried by the
+next run, which exits 1.
 
 `genomic_metadata` derives each genome's nucleotide statistics (GC, genome size, N50) and
 gene statistics (protein count, coding bases, coding density) and writes them into

@@ -103,6 +103,7 @@ VERSION_QUERIES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     'tRNAscan-SE': (('tRNAscan-SE', '-h'), r'tRNAscan-SE \d\S*(?: \([^)]*\))?'),
     'prodigal': (('prodigal', '-v'), r'Prodigal V\d\S*(?: .*)?'),
     'hmmsearch': (('hmmsearch', '-h'), HMMER_VERSION),
+    'hmmalign': (('hmmalign', '-h'), HMMER_VERSION),
     'nhmmer': (('nhmmer', '-h'), HMMER_VERSION),
     'blastn': (('blastn', '-version'), r'blastn: \d\S*'),
     'makeblastdb': (('makeblastdb', '-version'), r'makeblastdb: \d\S*'),

@@ -97,19 +97,20 @@ def print_help():
       update_genomes -> Update RefSeq and GenBank genomes from the NCBI FTP mirror.
 
     Call genes:
-      call_genes_wf    -> Full call genes workflow (prodigal -> hmmsearch -> top_hit).
-      trans_table      -> Predict translation table for each genome using gTranslate.
-      prodigal         -> Call genes using Prodigal.
-      hmmsearch        -> Search Tigrfam/Pfam markers genes and generate tophit files.
-      top_hit          -> Generate tophit files.
-      genomic_metadata -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
-      rna_silva        -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA.
-      rna_ltp          -> Classify the 16S rRNA genes rna_silva extracted against the LTP DB.
-      trnascan         -> Identifies tRNAs in genomes.
-      join_checkm      -> Join CheckM output files for different releases.
-      checkm           -> Estimates the quality of the new genomes.
-      checkm2          -> Estimates the quality of the new genomes with CheckM2.
-      busco            -> Estimate quality of new fungal genomes.
+      call_genes_wf      -> Full call genes workflow (prodigal -> hmmsearch -> top_hit).
+      trans_table        -> Predict translation table for each genome using gTranslate.
+      prodigal           -> Call genes using Prodigal.
+      hmmsearch          -> Search Tigrfam/Pfam markers genes and generate tophit files.
+      top_hit            -> Generate tophit files.
+      align_marker_genes -> Align the marker genes of the database's genomes into aligned_markers.
+      genomic_metadata   -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
+      rna_silva          -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA.
+      rna_ltp            -> Classify the 16S rRNA genes rna_silva extracted against the LTP DB.
+      trnascan           -> Identifies tRNAs in genomes.
+      join_checkm        -> Join CheckM output files for different releases.
+      checkm             -> Estimates the quality of the new genomes.
+      checkm2            -> Estimates the quality of the new genomes with CheckM2.
+      busco              -> Estimate quality of new fungal genomes.
       
     Access to Database:
      update_db          -> Update the NCBI genomes of the GTDB database to a new release.
@@ -1098,6 +1099,29 @@ def get_main_parser():
             __reclaim(grp)
             __lease(grp)
             __all_genomes(grp)
+            __silent(grp)
+
+    with subparser(sub_parsers, 'align_marker_genes',
+                   "Align the marker genes of the database's genomes into aligned_markers.") as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __database_setup(grp)
+            grp.add_argument('--marker_set_ids', required=True, nargs='+', type=int,
+                             help='Marker sets whose markers are aligned (marker_sets.id), '
+                                  'e.g. 1 = bac120; 2 = ar122; 19 = ar53.')
+            __gtdb_genome_path_file(grp, required=True)
+            __output_dir(grp, required=True)
+            __log_file(grp, required=True)
+        with mutex_group(parser, required=True) as grp:
+            grp.add_argument('--new_genomes', action='store_true',
+                             help='Align the NCBI genomes with no row in aligned_markers for any of the markers.')
+            grp.add_argument('--all_genomes', action='store_true',
+                             help='Align every NCBI genome of the database, writing its rows again.')
+        with arg_group(parser, 'options arguments') as grp:
+            __cpus(grp)
+            __tmp_dir(grp)
+            __batch_size(grp, default=1000)
+            __reclaim(grp)
+            __lease(grp)
             __silent(grp)
 
     # Create metadata tables
