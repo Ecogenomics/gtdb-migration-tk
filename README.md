@@ -1282,6 +1282,15 @@ written, where a row has more or fewer columns than the header, a genome is
 named twice, or an INT field holds anything but a whole number (`12.0` is
 written as 12, `12.5` refused).
 
+A whole number too big for PostgreSQL's `integer` is not written: the genome's
+field is left without a value, as an empty one is, so it is NULL unless
+`--do_not_null_field` keeps what it held. Each is counted in a WARNING and
+listed in `int_out_of_range.<table>.tsv` beside the log. It failed `upsert()`'s
+cast, rolling back the run with a traceback: r237 holds GCA_964261755.1, NCBI's
+`UC_feces_MAGs_combined`, 9.5 Gbp of MAGs submitted as one assembly (322,603%
+contamination by CheckM), whose `genome_size`, `gc_count`, `coding_bases`,
+`ncbi_total_length` and `ncbi_ungapped_length` do not fit.
+
 `update_ncbi_tax_db` writes each genome's NCBI organism name
 (`metadata_ncbi.ncbi_organism_name`), standardised taxonomy
 (`metadata_taxonomy.ncbi_taxonomy`) and unfiltered taxonomy

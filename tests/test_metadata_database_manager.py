@@ -307,6 +307,27 @@ class LoadingOnlyWhatTheDatabaseHolds(OneTransaction):
         self.assertEqual(manager.temp_cur.written()[('metadata_ncbi', 'ncbi_taxid')],
                          [('GCA_000000002.1', '-7'), ('GCF_000000001.1', '0')])
 
+    def test_a_whole_number_too_big_for_an_int_field_is_left_unwritten_and_listed_beside_the_log(self):
+        # r237's GCA_964261755.1, 9.5 Gbp of MAGs as one assembly, failed upsert()'s cast to INT
+        # and rolled back the run with a traceback
+        table = ('genome_id\tncbi_taxid\nGCF_000000001.1\t9528631298\nGCA_000000002.1\t2147483647\n'
+                 'GCA_000000003.1\t-2147483649\n')
+        with mock.patch.object(M, 'log_directory', return_value=self.dir):
+            manager, messages = self.load(table=table, genomes=HELD + ('GCA_000000003.1',))
+
+        self.assertEqual(manager.temp_cur.written()[('metadata_ncbi', 'ncbi_taxid')],
+                         [('GCA_000000002.1', '2147483647')])
+        # each is left without a value, so set to NULL where it held one
+        self.assertEqual([written for sql, written in manager.temp_cur.resets() if 'ncbi_taxid' in sql],
+                         [['GCA_000000002.1']])
+        self.assertTrue(any('gives 2 value(s) too big for an INT field, which are not written' in m
+                            and 'GCF_000000001.1 ncbi_taxid 9528631298' in m for m in messages))
+        with open(os.path.join(self.dir, 'int_out_of_range.ncbi_assembly_metadata.tsv')) as handle:
+            self.assertEqual(handle.read().splitlines(), ['genome_id\tfield\tvalue',
+                                                          'GCF_000000001.1\tncbi_taxid\t9528631298',
+                                                          'GCA_000000003.1\tncbi_taxid\t-2147483649'])
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+
     def refused(self, table, pattern, description=NCBI_DESCRIPTION):
         manager = self.manager(cursor=FakeCursor(genomes=HELD))
         table_file = self.write('ncbi_assembly_metadata.tsv', table)
