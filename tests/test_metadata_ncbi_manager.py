@@ -267,8 +267,8 @@ all\tall\tall\tall\tcontig-count\t104
 all\tall\tall\tall\tscaffold-N50\t748878
 """
 
-GFF = ('contig1\tGenbank\tCDS\t1\t300\t.\t+\t0\tID=cds-1\n'
-       'contig1\tGenbank\tCDS\t400\t900\t.\t+\t0\tID=cds-2\n'
+GFF = ('contig1\tGenbank\tCDS\t1\t300\t.\t+\t0\tID=cds-1;transl_table=11\n'
+       'contig1\tGenbank\tCDS\t400\t900\t.\t+\t0\tID=cds-2;transl_table=11\n'
        'contig1\tGenbank\ttRNA\t1000\t1075\t.\t+\t.\tID=rna-1\n'
        'contig1\tGenbank\trRNA\t2000\t3500\t.\t+\t.\tID=rna-2;product=16S ribosomal RNA\n')
 
@@ -378,8 +378,10 @@ class ParsingTheNcbiDirectories(TempDirCase):
                                       self.genome('GCA_000000004.1', gbff=False),
                                       self.genome('GCA_000000005.1')])
 
-        self.assertEqual(rows['GCA_000000003.1']['ncbi_translation_table'], '')
-        self.assertEqual(rows['GCA_000000005.1']['ncbi_translation_table'], '11')
+        # the translation table is the GFF's, the source qualifiers the GenBank file's
+        self.assertEqual(rows['GCA_000000003.1']['ncbi_isolation_source'], '')
+        self.assertEqual(rows['GCA_000000003.1']['ncbi_translation_table'], '11')
+        self.assertEqual(rows['GCA_000000005.1']['ncbi_isolation_source'], 'human gut')
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].levelname, 'WARNING')
         self.assertIn('Identified 2 genomes with a missing _genomic.gbff.gz file, e.g.: '
@@ -390,6 +392,8 @@ class ParsingTheNcbiDirectories(TempDirCase):
         rows, summaries = self.parse([self.genome('GCA_000000006.1', gff=False)])
 
         self.assertEqual(rows['GCA_000000006.1']['ncbi_cds_count'], '')
+        # an unannotated genome declares no translation table
+        self.assertEqual(rows['GCA_000000006.1']['ncbi_translation_table'], '')
         self.assertEqual([r.levelname for r in summaries], ['INFO'])
         self.assertIn('missing _genomic.gff.gz file', summaries[0].getMessage())
 
@@ -398,6 +402,61 @@ class ParsingTheNcbiDirectories(TempDirCase):
         rows, _ = self.parse(genomes, cpus=4)
 
         self.assertEqual(sorted(rows), sorted(gid for gid, _ in genomes))
+
+
+SECOND_RECORD = """LOCUS       contig2
+FEATURES             Location/Qualifiers
+     source          1..800
+                     /isolation_source="Human gut"
+                     /lat_lon="0.00 N 0.00 E"
+//
+"""
+
+
+class ReadingAsLittleAsItCan(TempDirCase):
+    """parse_ncbi_dir reads a GenBank file's first record, as far as its source feature."""
+
+    def gbff(self, *members):
+        """A gzipped GenBank file of the members given, each a str (gzipped) or bytes (as they are)."""
+        path = os.path.join(self.dir, 'genome_genomic.gbff.gz')
+        with open(path, 'wb') as handle:
+            for member in members:
+                handle.write(gzip.compress(member.encode()) if isinstance(member, str) else member)
+        return path
+
+    def test_the_source_qualifiers_are_the_first_records(self):
+        # the last record's were taken; the records of r237 disagree in case alone
+        values = N.NCBIMetaDir()._parse_gbff(self.gbff(GBFF + SECOND_RECORD))
+        fields = dict(zip(N.NCBIMetaDir().gbff_fields, values))
+
+        self.assertEqual((fields['isolation_source'], fields['lat_lon']), ('human gut', '27.47 S 153.02 E'))
+        self.assertEqual(fields['translation_table'], '')
+
+    def test_the_file_is_not_read_past_the_first_records_source_feature(self):
+        # a full read meets the bytes that follow it, which are not gzip
+        path = self.gbff(GBFF, b'not gzip at all' * 1000)
+        with self.assertRaises(Exception):
+            with gzip.open(path, 'rt') as handle:
+                handle.read()
+
+        fields = dict(zip(N.NCBIMetaDir().gbff_fields, N.NCBIMetaDir()._parse_gbff(path)))
+        self.assertEqual(fields['isolation_source'], 'human gut')
+
+    def test_a_record_with_no_source_feature_is_read_to_its_end_and_no_further(self):
+        path = self.gbff('LOCUS       contig1\nFEATURES             Location/Qualifiers\n//\n',
+                         b'not gzip at all' * 1000)
+        self.assertEqual(set(N.NCBIMetaDir()._parse_gbff(path)), {''})
+
+    def test_the_gff_gives_its_first_translation_table_and_builds_no_coding_mask_unasked(self):
+        path = os.path.join(self.dir, 'genome_genomic.gff.gz')
+        with gzip.open(path, 'wt') as handle:
+            handle.write(GFF.replace('transl_table=11\n', 'transl_table=4\n', 1))
+        parser = N.GenericFeatureParser(path)
+
+        self.assertEqual(parser.translation_table, 4)
+        self.assertEqual(parser.coding_mask, {})
+        self.assertEqual(parser.total_coding_bases(), 300 + 501)
+        self.assertEqual(N.NCBIMetaDir()._parse_gff(path)[1], 4)
 
 
 class TheNcbiDirCommandLine(TempDirCase):
