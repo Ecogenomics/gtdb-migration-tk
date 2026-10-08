@@ -55,15 +55,17 @@ class GenericFeatureParser():
         self.rRNA_count = 0
         self.rRNA_16S_count = 0
         self.ncRNA_count = 0
+        # the first transl_table= of the file, as ncbi_utils.ncbi_translation_table() reads it
+        self.translation_table = None
 
         self.genes = {}
         self.last_coding_base = {}
 
         self._parse(filename)
 
+        # built when coding bases are asked for: parse_ncbi_dir wants the counts
+        # alone, and a mask is an array as long as each contig
         self.coding_mask = {}
-        for seq_id in self.genes:
-            self.coding_mask[seq_id] = self._coding_mask(seq_id)
 
     def _parse(self, gff_file):
         """Parse GFF file.
@@ -78,6 +80,9 @@ class GenericFeatureParser():
             for line in handle:
                 if line[0] == '#':
                     continue
+
+                if self.translation_table is None and 'transl_table=' in line:
+                    self.translation_table = int(line[line.rfind('=') + 1:].strip())
 
                 line_split = line.split('\t')
                 if line_split[2] == 'tRNA':
@@ -127,6 +132,8 @@ class GenericFeatureParser():
         # check if sequence has any genes
         if seq_id not in self.genes:
             return 0
+        if seq_id not in self.coding_mask:
+            self.coding_mask[seq_id] = self._coding_mask(seq_id)
 
         return np_sum(self.coding_mask[seq_id])
 
@@ -261,7 +268,17 @@ class NCBIMetaDir(object):
         return metadata_fields, metadata_stats
 
     def _parse_gff(self, gff_file):
-        """Parse statistics from generic feature file (GFF)."""
+        """Parse statistics from generic feature file (GFF).
+
+        @return: the counts of self.gff_fields, and the translation table NCBI
+                 declares on the genome's CDS features, or None for none.
+
+        Raises
+        ------
+        FileNotFoundError
+            The genome has no GFF, which NCBI publishes only for the assemblies
+            it annotated.
+        """
 
         metadata_gff = [''] * len(self.gff_fields)
 
@@ -276,10 +293,29 @@ class NCBIMetaDir(object):
         metadata_gff[self.gff_fields.index(
             'ssu_count')] = gff_parser.rRNA_16S_count
 
-        return metadata_gff
+        return metadata_gff, gff_parser.translation_table
 
     def _parse_gbff(self, genbank_file):
-        """Parse statistics and metadata from GenBank file."""
+        """Parse the source metadata of a genome from its GenBank file.
+
+        Only the first record is read, and of it only as far as the end of its
+        source feature: the file is a record per contig, its sequence included,
+        and the source qualifiers are the assembly's BioSample's, the same on
+        every record. Reading every record read 1.9 MB of gzip a genome, 2.5 TB
+        for r237, for four qualifiers; the first record's source feature is a
+        few kilobytes. Over 1,500 genomes of r237 the qualifiers differed from
+        those of the whole file in one, whose records disagree (Soil and soil):
+        the last record's were taken, and now the first's. The translation
+        table is taken from the GFF (_parse_gff()); over the same genomes it is
+        the GenBank file's.
+
+        @return: the values of self.gbff_fields, the translation table empty.
+
+        Raises
+        ------
+        FileNotFoundError
+            The genome has no GenBank file.
+        """
         metadata_gbff = [''] * len(self.gbff_fields)
 
         pattern_gene = re.compile(r"^\s{0,20}\w")
@@ -288,26 +324,22 @@ class NCBIMetaDir(object):
         randomstring = self._randomword(10)
         source_info = []
 
-        # We read the file line by line using openfile to handle gzipped files
+        # read as far as the end of the first record's source feature, or of
+        # the first record, whichever comes first
         with openfile(genbank_file) as handle:
             for line in handle:
-
-                # 1. Extract Translation Table
-                if '/transl_table=' in line:
-                    translation_table = line[line.rfind('=') + 1:].strip()
-                    metadata_gbff[self.gbff_fields.index('translation_table')] = translation_table
-
-                # 2. Extract Source Metadata
                 if pattern_source.match(line):
                     source_info_bool = True
                 elif pattern_gene.match(line) and source_info_bool:
-                    # Stop appending to source_info once we hit the next main feature
-                    source_info_bool = False
+                    # the next feature: the source feature has ended
+                    break
                 elif source_info_bool:
                     # Replace all '/' characters by a random string except the first one
                     # '/' will be used to separate those metadata later on
                     line = re.sub(r"(?!^\/)\/", randomstring, ' '.join(line.split()))
                     source_info.append("{0} ".format(' '.join(line.split())))
+                elif line.startswith('//'):
+                    break
 
         # Process the source_info array if any metadata was found
         if source_info:
@@ -415,26 +447,31 @@ class NCBIMetaDir(object):
 
         absent = []
 
+        # each file is opened rather than looked for first: on NFS, where a
+        # genome directory is not cached, every look is a round trip
         assembly_stat_file = os.path.join(gpath, assembly_id + ASSEMBLY_STATS_SUFFIX)
-        if os.path.exists(assembly_stat_file):
+        try:
             metadata_fields, metadata_stats = self._parse_assembly_stats(assembly_stat_file)
-        else:
+        except FileNotFoundError:
             metadata_fields, metadata_stats = [''] * len(self.fields), [''] * len(self.stats)
             absent.append(ASSEMBLY_STATS_SUFFIX)
 
+        translation_table = None
         gff_file = os.path.join(gpath, assembly_id + GFF_SUFFIX)
-        if os.path.exists(gff_file):
-            gff_stats = self._parse_gff(gff_file)
-        else:
+        try:
+            gff_stats, translation_table = self._parse_gff(gff_file)
+        except FileNotFoundError:
             gff_stats = [''] * len(self.gff_fields)
             absent.append(GFF_SUFFIX)
 
         genbank_file = os.path.join(gpath, assembly_id + GBFF_SUFFIX)
-        if os.path.exists(genbank_file):
+        try:
             gbff_stats = self._parse_gbff(genbank_file)
-        else:
+        except FileNotFoundError:
             gbff_stats = [''] * len(self.gbff_fields)
             absent.append(GBFF_SUFFIX)
+        if translation_table is not None:
+            gbff_stats[self.gbff_fields.index('translation_table')] = str(translation_table)
 
         line_to_write = '\t'.join([gid] + metadata_fields + metadata_stats
                                   + [str(v) for v in gff_stats] + [str(v) for v in gbff_stats])

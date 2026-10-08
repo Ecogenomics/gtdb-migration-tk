@@ -1059,8 +1059,25 @@ log (`-l`).
 
 ```bash
 gtdb_migration_tk parse_ncbi_dir -g genome_dirs.tsv \
-    -o parse_ncbi_dir -l parse_ncbi_dir/parse_ncbi_dir.log --cpus 8
+    -o parse_ncbi_dir -l parse_ncbi_dir/parse_ncbi_dir.log --cpus 32
 ```
+
+Its time is the file server's: an uncached genome directory is several round
+trips before a byte is read. The GenBank file is read only as far as the end of
+its first record's source feature, which holds the source qualifiers
+(`isolation_source`, `lat_lon` and the rest, the BioSample's, the same on every
+record), and the translation table is taken from the GFF, read once for it and
+its counts; the GenBank files of r237 are 1.9 MB gzipped on average, 2.5 TB in
+all, for those four qualifiers. Measured on fresh r237 genomes:
+
+| `--cpus` | before 0.1.60 | since |
+| --- | --- | --- |
+| 16 | 54 genomes/s | 66 genomes/s |
+| 32 | 47 genomes/s | 78 genomes/s (~4.8 h for 1.35M) |
+| 64 | 58 genomes/s | 76 genomes/s |
+
+Past 32 it is no faster: opening one small file in each of 1.35M uncached genome
+directories alone runs at ~160 a second from one machine.
 
 Every genome is given a row, written as soon as it is read, in no particular
 order. A genome missing one of the three files is empty in the fields read from
