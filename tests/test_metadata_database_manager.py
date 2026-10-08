@@ -443,6 +443,29 @@ class ChoosingTheTables(OneTransaction):
         self.assertEqual(len(nulls), 2)
 
 
+class TheDescriptions(unittest.TestCase):
+    """The description files update_metadata_db loads a table against."""
+
+    def descriptions(self):
+        with mock.patch.object(M.GenomeDatabaseConnectionFTPUpdate, 'GenomeDatabaseConnectionFTPUpdate'):
+            table = M.MetadataDatabaseManager({}).description_table
+        folder = os.path.join(os.path.dirname(M.__file__), 'data_files', 'table_description')
+        return {name: os.path.join(folder, name) for files in table.values() for name in files}, folder
+
+    def test_every_description_a_known_table_is_loaded_against_exists(self):
+        used, _ = self.descriptions()
+        self.assertEqual([name for name, path in used.items() if not os.path.exists(path)], [])
+
+    def test_no_description_names_a_greengenes_field(self):
+        # the ssu_gg_* fields were dropped from metadata_rna in 0.1.58, and
+        # nothing has written them since rna_silva took over
+        _, folder = self.descriptions()
+        for name in sorted(os.listdir(folder)):
+            with open(os.path.join(folder, name)) as handle:
+                fields = [line.split('\t')[0] for line in handle if line.strip()]
+            self.assertEqual([field for field in fields if '_gg_' in field or field.startswith('gg_')], [], name)
+
+
 class AskingBeforeAPartialLoad(unittest.TestCase):
     """--genome_list without --do_not_null_field removes every genome's metadata and writes the list's."""
 
