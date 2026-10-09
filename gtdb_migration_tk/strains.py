@@ -49,7 +49,7 @@ TYPE MATERIAL UNDER THE SEQCODE
 
 A genome's gtdb_type_designation_ncbi_taxa is decided in three steps, the last
 having the final word. LPSN's designation first, from the strain matching. Then
-the SeqCode: a genome typing a species valid under it (download_seqcode_data's
+the SeqCode: a genome typing a species valid under it (seqcode download's
 seqcode_table.tsv, --seqcode_table) is a type strain of species, and the type
 species of its genus where the SeqCode says so. Then NCBI: a genome whose
 excluded_from_refseq says it is derived from a metagenome and not used as type
@@ -147,7 +147,7 @@ LPSN_TYPE_DESIGNATIONS = {'Type strain': 'type strain of species',
 SUMMARY_COLUMNS = ('assembly_accession', 'taxid', 'organism_name', 'infraspecific_name',
                    'isolate', 'relation_to_type_material', 'excluded_from_refseq')
 
-# The columns of download_seqcode_data's seqcode_table.tsv type_table reads, by
+# The columns of seqcode download's seqcode_table.tsv type_table reads, by
 # name: the release's genome typing each species, the species' status, and
 # whether it is the type species of its genus. A species whose status holds
 # SEQCODE_VALID is valid under the SeqCode, and its genome a type strain of species.
@@ -1329,7 +1329,7 @@ class Strains(object):
         Parameters
         ----------
         seqcode_table : str
-            seqcode_table.tsv, from download_seqcode_data.
+            seqcode_table.tsv, from seqcode download.
 
         @return: GTDB accession -> whether the SeqCode makes its species the type
                  species of its genus.
@@ -1346,7 +1346,7 @@ class Strains(object):
             missing = [c for c in (SEQCODE_GENOME, SEQCODE_STATUS, SEQCODE_TYPE_SPECIES_OF_GENUS)
                        if c not in header]
             if missing:
-                raise StrainsError('{} has no {} column(s): it is not a table of download_seqcode_data.'.format(
+                raise StrainsError('{} has no {} column(s): it is not a table of seqcode download.'.format(
                     seqcode_table, ', '.join(missing)))
             genome_index = header.index(SEQCODE_GENOME)
             status_index = header.index(SEQCODE_STATUS)
@@ -1551,7 +1551,7 @@ class Strains(object):
                                    seqcode_table):
         """Parse multiple sources to identify genomes assembled from type material.
 
-        seqcode_table is download_seqcode_data's seqcode_table.tsv of the release.
+        seqcode_table is seqcode download's seqcode_table.tsv of the release.
         """
 
         # initialize data being parsed from file

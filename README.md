@@ -1025,7 +1025,6 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 | `parse_ncbi_dir` | Parse the GTDB directory for extra NCBI metadata |
 | `add_names_dmp` | Parse an NCBI `names.dmp` file into a table |
 | `parse_ncbi_genome_category` | Identify genomes marked by NCBI as a MAG, SAG or environmental genome |
-| `download_seqcode_data` | Download the SeqCode Registry's species and the release's genome typing each as `seqcode_table.tsv` (`generate_seqcode_table` until 0.1.72) |
 
 `create_tables` calculates nothing. It walks the genomes of the genome_dirs file
 it is given (`--gtdb_genome_path_file`), which may be any release's and not only
@@ -1575,6 +1574,7 @@ did and wrote the table this command's fields were loaded from, are gone.
 | Command | Description |
 | --- | --- |
 | `lpsn` | LPSN processing (`pull_html`, `parse_html`, `lpsn_wf`, `add_metadata`) |
+| `seqcode` | SeqCode Registry processing (`download`: the Registry's species and the release's genome typing each as `seqcode_table.tsv`; `download_seqcode_data` until 0.1.74, `generate_seqcode_table` until 0.1.72) |
 | `bacdive` | BacDive processing (`download_strains`) — in development |
 | `strains` | Year of priority (`date_table`) and type material status (`type_table`) of each genome, from LPSN |
 | `ncbi_strains` | Parse NCBI assembly reports for strain identifiers and type material status |
@@ -1614,7 +1614,7 @@ material, matching each genome's NCBI species and strain IDs against LPSN's type
 strains, and writes `gtdb_type_strain_summary.tsv.gz` for `metadata_type_material`,
 which `update_metadata_db` loads gzipped as it is.
 A genome typing a species valid under the SeqCode (`--seqcode_table`, the
-`seqcode_table.tsv` of `download_seqcode_data`) is then a type strain of species,
+`seqcode_table.tsv` of `seqcode download`) is then a type strain of species,
 `SeqCode` among its `gtdb_type_designation_ncbi_taxa_sources` and the type species
 of its genus where the SeqCode says so. Last, a genome NCBI excludes from RefSeq as
 `derived from metagenome` and `not used as type` is `not used as type`, with no
@@ -1643,7 +1643,7 @@ gtdb_migration_tk strains type_table -g release237/genome_dirs.tsv \
 The type material of a release is made and loaded in this order:
 
 ```bash
-gtdb_migration_tk download_seqcode_data -g release237/genome_dirs.tsv \
+gtdb_migration_tk seqcode download -g release237/genome_dirs.tsv \
     -n ncbi/assembly_summary_*.txt.gz -o seqcode
 gtdb_migration_tk strains type_table ... --seqcode_table seqcode/seqcode_table.tsv -o strain_table
 gtdb_migration_tk update_metadata_db --db_service gtdb_r237_dev \

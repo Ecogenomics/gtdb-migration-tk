@@ -40,7 +40,7 @@ SUMMARY_HEADER = ('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_su
                   '#assembly_accession\tbioproject\ttaxid\tspecies_taxid\torganism_name\t'
                   'infraspecific_name\tisolate\trelation_to_type_material\texcluded_from_refseq\n')
 
-# the columns of download_seqcode_data's table type_table reads, and one it does not
+# the columns of seqcode download's table type_table reads, and one it does not
 SEQCODE_HEADER = 'seqcode_type_material_accn\tseqcode_id\tseqcode_species_status\tseqcode_type_species_of_genus\n'
 METAGENOME_NOT_TYPE = 'derived from metagenome; not used as type'
 
@@ -115,7 +115,7 @@ class StrainsCase(unittest.TestCase):
         return genome_dirs, summaries, names, nodes
 
     def seqcode_table(self):
-        """download_seqcode_data's seqcode_table.tsv, of self.seqcode_rows."""
+        """seqcode download's seqcode_table.tsv, of self.seqcode_rows."""
         return self.write('seqcode_table.tsv', SEQCODE_HEADER + ''.join(
             '{}\t{}\t{}\t{}\n'.format(acc, number, status, type_species)
             for number, (acc, status, type_species) in enumerate(self.seqcode_rows, start=100)))
@@ -283,7 +283,7 @@ class TypeMaterialUnderTheSeqCode(StrainsCase):
         with self.assertRaisesRegex(BadInput, 'excluded_from_refseq'):
             S.Strains(self.out).load_genomes(genome_dirs, summaries)
 
-    def test_the_columns_read_are_those_download_seqcode_data_writes(self):
+    def test_the_columns_read_are_those_seqcode_download_writes(self):
         from gtdb_migration_tk import seqcode_manager
         for column in (S.SEQCODE_GENOME, S.SEQCODE_STATUS, S.SEQCODE_TYPE_SPECIES_OF_GENUS):
             self.assertIn(column, seqcode_manager.TABLE_HEADER)
