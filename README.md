@@ -1025,7 +1025,7 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 | `parse_ncbi_dir` | Parse the GTDB directory for extra NCBI metadata |
 | `add_names_dmp` | Parse an NCBI `names.dmp` file into a table |
 | `parse_ncbi_genome_category` | Identify genomes marked by NCBI as a MAG, SAG or environmental genome |
-| `generate_seqcode_table` | Generate a metadata table for genomes in SeqCode |
+| `download_seqcode_data` | Download the SeqCode Registry's species and the release's genome typing each as `seqcode_table.tsv` (`generate_seqcode_table` until 0.1.72) |
 
 `create_tables` calculates nothing. It walks the genomes of the genome_dirs file
 it is given (`--gtdb_genome_path_file`), which may be any release's and not only
