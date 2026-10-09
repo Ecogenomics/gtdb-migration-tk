@@ -108,25 +108,27 @@ def print_help():
       checkm             -> Estimates the quality of the new genomes.
       checkm2            -> Estimates the quality of the new genomes with CheckM2.
       busco              -> Estimate quality of new fungal genomes.
-      align_marker_genes -> Align the marker genes of the database's genomes into aligned_markers.
-      
-    Update tables in GTDB database:
-     update_db          -> Update the NCBI genomes of the GTDB database to a new release.
-     update_checkm_db   -> Import CheckM estimates.
-     update_checkm2_db  -> Import CheckM2 estimates.
-     update_ncbi_tax_db -> Update NCBI organism names and taxonomy.
-     update_reps_db     -> Update species cluter representatives in database.
-     update_metadata_db -> Update metadata in database.
 
-    Metadata:
+    Create metadata tables for import into DB:
       create_tables              -> Gather the metadata in each genome directory into tables.
       parse_ncbi_assemblies      -> Create tables with metadata for all NCBI genomes from assembly summaries.
       parse_ncbi_dir             -> Create tables with metadata for all NCBI genomes from directories.
       parse_ncbi_genome_category -> Genomes NCBI marks as a MAG, SAG or environmental genome.
+      align_marker_genes         -> Align the marker genes of the database's genomes into aligned_markers.
+
+    Update tables in GTDB database:
+      update_db                -> Update the NCBI genomes of the GTDB database to a new release.
+      update_checkm_db         -> Import CheckM estimates.
+      update_checkm2_db        -> Import CheckM2 estimates.
+      update_ncbi_tax_db       -> Update NCBI organism names and taxonomy.
+      update_reps_db           -> Update species cluster representatives in database.
+      update_metadata_db       -> Update metadata table(s) in database.
+      add_surveillance_genomes -> Create DB tables for surveillance genomes, which are not part of the GTDB release but are used for classification.
 
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release.
       update_propagate_tax    -> Push propagated taxonomy to new DB.
+      set_gtdb_domain         -> Set the GTDB domain of genome in the database.
 
     Information from online resources:
       lpsn         -> Command to download and parse LPSN data.
@@ -146,13 +148,11 @@ def print_help():
       compare_field        -> Compare a specific metadata field between to metadata files.
       check_unique_strains -> Check if a genomes has to different strains from a same collection.
       check_db_population  -> Check if the database is populated with the correct number of genomes.
-      
 
   Use: gtdb_migration_tk <command> -h for command specific help.
 
   Feature requests or bug reports can be sent to Donovan Parks (donovan.parks@gmail.com)
     or posted on GitHub (https://github.com/Ecogenomics/gtdb_migration_tk).
-    
     ''')
 
     #get python filename
