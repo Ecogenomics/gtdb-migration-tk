@@ -47,6 +47,7 @@ update_propagated_tax to read from the same directory (-i), which writes them
 and sets the ranks below the domain to NULL for every genome they do not name.
 """
 
+import contextlib
 import csv
 import logging
 import os
@@ -61,6 +62,8 @@ from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTP
 from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate import one_transaction, reset_unwritten
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import GTDBImporter, UNKNOWN_EXAMPLES, UnknownGenomesError, id_at_source
 from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_gzip_text, open_text, read_gtdb_metadata
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 csv.field_size_limit(sys.maxsize)
 
@@ -90,6 +93,51 @@ USER_PREFIX = 'U_'
 # how many genomes a line of the log or an error names
 EXAMPLES = 10
 
+# set_gtdb_domain: the marker sets a genome's domain is read from (marker_sets.id),
+# and the genomes it is given one -- its id, as GTDB names it, as the database
+# does, and its NCBI taxonomy
+BACTERIAL_MARKER_SET = 1
+ARCHAEAL_MARKER_SET = 19
+MISSING_DOMAIN = (
+    "SELECT mt.id, gs.external_id_prefix || '_' || g.id_at_source, g.id_at_source, mt.ncbi_taxonomy "
+    'FROM metadata_taxonomy mt JOIN genomes g ON g.id = mt.id '
+    'JOIN genome_sources gs ON gs.id = g.genome_source_id '
+    "WHERE (mt.gtdb_domain IS NULL OR mt.gtdb_domain IN ('none', 'd__')) AND mt.ncbi_taxonomy IS NOT NULL")
+
+# How many markers of each set each genome of a range of aligned_markers' blocks
+# has a gene aligned for (a row with an e-value; a row of gaps is a marker not
+# found). aligned_markers is read whole, in ALIGNED_MARKER_PARTS ranges of its
+# blocks, each read once, so that a bar can say how far the read is: PostgreSQL
+# says nothing of a query's progress. The reading is the cost. Over gtdb_r237_dev's
+# 292,783 genomes without a domain, two queries a genome, as it was, took 21 ms a
+# genome, some 1.7 hours; one query, read by a parallel scan on three processes,
+# 16 minutes, with nothing to say how far it was; the ranges, on one connection,
+# 19 minutes, a tenth every two, and the same counts.
+# The ranges are read in one REPEATABLE READ transaction, so all of them see the
+# table as it stood when the first was read, as a single query would; its size is
+# measured after that, and a row the snapshot sees is in a block below it. The
+# last range is bounded too: PostgreSQL reads 'ctid >= x' alone by a scan of the
+# whole table.
+MARKERS_FOUND = (
+    'SELECT am.genome_id, count(*) FILTER (WHERE msc.set_id = %s), count(*) FILTER (WHERE msc.set_id = %s) '
+    'FROM aligned_markers am '
+    'JOIN marker_set_contents msc ON msc.marker_id = am.marker_id AND msc.set_id IN (%s, %s) '
+    "WHERE am.ctid >= %s::tid AND am.ctid < %s::tid AND am.evalue <> '' "
+    'GROUP BY am.genome_id')
+ALIGNED_MARKERS_BLOCKS = ("SELECT pg_relation_size('aligned_markers') / current_setting('block_size')::int, "
+                          "current_setting('block_size')::int")
+ALIGNED_MARKER_PARTS = 100
+
+# what set_gtdb_domain writes in --output_dir: the genomes whose markers give
+# another domain than NCBI's, those whose markers were too few to say and were
+# given NCBI's, and those whose NCBI domain has no d__, which refuse the run
+DOMAIN_DISAGREEMENTS_NAME = 'gtdb_domain_disagreements.tsv'
+DOMAIN_DISAGREEMENTS_HEADER = ('genome_id', 'ncbi_domain', 'gtdb_domain', 'bac120_percent', 'ar53_percent')
+DOMAIN_FROM_NCBI_NAME = 'gtdb_domain_from_ncbi.tsv'
+DOMAIN_FROM_NCBI_HEADER = ('genome_id', 'ncbi_domain', 'bac120_percent', 'ar53_percent')
+NCBI_DOMAIN_ERRORS_NAME = 'ncbi_domain_errors.tsv'
+NCBI_DOMAIN_ERRORS_HEADER = ('genome_id', 'ncbi_domain')
+
 
 class PropagationError(ValueError):
     """The taxonomy cannot be propagated as the files and the database stand."""
@@ -115,6 +163,19 @@ def normalised(taxonomy):
     """
 
     return ';'.join(taxon.strip() for taxon in taxonomy.strip().rstrip(';').split(';'))
+
+
+def write_tsv(path, header, rows):
+    """Write a table with a header, the header alone where there are no rows.
+
+    @return: path.
+    """
+
+    with open(path, 'w') as handle:
+        handle.write('\t'.join(header) + '\n')
+        for row in rows:
+            handle.write('\t'.join(row) + '\n')
+    return path
 
 
 def write_gzipped(path, rows):
@@ -436,74 +497,138 @@ class Propagate(object):
             len(rep_to_commit), sum(1 for _, isrep in rep_to_commit if isrep == 'True'), time.time() - started))
 
     @one_transaction
-    def set_gtdb_domain(self):
-        """Set missing GTDB domain information to reflect NCBI domain."""
+    def set_gtdb_domain(self, output_dir):
+        """Give each genome with no GTDB domain one, from its marker genes or else NCBI's.
 
-        self.logger.info('Identifying NCBI genomes with missing domain information.')
+        The domain is the marker set, bac120 or ar53, more of whose markers the
+        genome has a gene aligned for, as a share of the set; where neither share
+        reaches DEFAULT_DOMAIN_THRESHOLD it is the genome's NCBI domain. Nothing
+        is printed but a bar of how much of aligned_markers has been read: each
+        genome whose markers give another domain than NCBI's is listed in
+        DOMAIN_DISAGREEMENTS_NAME and each given NCBI's domain in
+        DOMAIN_FROM_NCBI_NAME, both in output_dir, with a line of the log
+        counting each.
 
-        # get concatenated alignments for all representatives
-        self.temp_cur.execute(
-            "SELECT count(*) from marker_set_contents where set_id = 1;")
-        len_bac_marker = self.temp_cur.fetchone()[0]
+        Parameters
+        ----------
+        output_dir : str
+            Directory the lists are written to.
 
-        self.temp_cur.execute(
-            "SELECT count(*) from marker_set_contents where set_id = 19;")
-        len_arc_marker = self.temp_cur.fetchone()[0]
+        @return: None
+        """
 
+        # before anything is read, so that every range of aligned_markers is read
+        # from the one snapshot; it must be the transaction's first statement
+        self.temp_cur.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
 
+        self.temp_cur.execute('SELECT set_id, count(*) FROM marker_set_contents WHERE set_id IN (%s, %s) '
+                              'GROUP BY set_id', (BACTERIAL_MARKER_SET, ARCHAEAL_MARKER_SET))
+        set_size = dict(self.temp_cur.fetchall())
 
-        q = ("SELECT id,name, ncbi_taxonomy FROM metadata_taxonomy "
-            + "LEFT JOIN genomes USING(id) "
-             + "WHERE (gtdb_domain IS NULL or gtdb_domain = 'none' or gtdb_domain = 'd__') and ncbi_taxonomy IS NOT NULL")
-        self.temp_cur.execute(q)
+        self.temp_cur.execute(MISSING_DOMAIN)
+        genomes = self.temp_cur.fetchall()
+        self.logger.info('{:,} genome(s) have an NCBI taxonomy and no GTDB domain.'.format(len(genomes)))
 
+        # refused before aligned_markers is read, which takes minutes
+        ncbi_domains = {db_id: ncbi_taxonomy.split(';')[0].strip() for db_id, _, _, ncbi_taxonomy in genomes}
+        bad_prefix = sorted((genome_id, ncbi_domains[db_id]) for db_id, genome_id, _, _ in genomes
+                            if not ncbi_domains[db_id].startswith('d__'))
+        if bad_prefix:
+            path = write_tsv(os.path.join(output_dir, NCBI_DOMAIN_ERRORS_NAME), NCBI_DOMAIN_ERRORS_HEADER, bad_prefix)
+            self.logger.error('{:,} genome(s) have an NCBI domain without its d__ prefix, e.g. {}; nothing was '
+                              'written. Each is listed in {}.'.format(
+                                  len(bad_prefix), ', '.join('{} ({})'.format(*g) for g in bad_prefix[:EXAMPLES]),
+                                  path))
+            sys.exit(1)
 
+        found = self.markers_found({db_id for db_id, _, _, _ in genomes}) if genomes else {}
 
-        missing_domain_info = []
-        for genome_id,name, ncbi_taxonomy in self.temp_cur.fetchall():
-            ncbi_domain = list(map(str.strip, ncbi_taxonomy.split(';')))[0]
-            if ncbi_domain[0:3] != 'd__':
-                self.logger.error('NCBI domain has the incorrect prefix: %s' % ncbi_domain)
-                sys.exit(1)
-
-            query_al_mark = ("SELECT count(*) " +
-                             "FROM aligned_markers am " +
-                             "LEFT JOIN marker_set_contents msc ON msc.marker_id = am.marker_id " +
-                             "WHERE genome_id = %s and msc.set_id = %s and (evalue <> '') IS TRUE;")
-
-            self.temp_cur.execute(query_al_mark, (genome_id, 1))
-            aligned_bac_count = self.temp_cur.fetchone()[0]
-
-            self.temp_cur.execute(query_al_mark, (genome_id, 19))
-            aligned_arc_count = self.temp_cur.fetchone()[0]
-
-            arc_aa_per = (aligned_arc_count * 100.0 / len_arc_marker)
-            bac_aa_per = (aligned_bac_count * 100.0 / len_bac_marker)
-
-            if arc_aa_per < self.DEFAULT_DOMAIN_THRESHOLD and bac_aa_per < self.DEFAULT_DOMAIN_THRESHOLD:
-                gtdb_domain = None
-            elif bac_aa_per >= arc_aa_per :
-                gtdb_domain = "d__Bacteria"
+        domains, from_ncbi, disagreements = [], [], []
+        for db_id, genome_id, source_id, _ in genomes:
+            ncbi_domain = ncbi_domains[db_id]
+            bac_count, arc_count = found.get(db_id, (0, 0))
+            bac_percent = bac_count * 100.0 / set_size[BACTERIAL_MARKER_SET]
+            arc_percent = arc_count * 100.0 / set_size[ARCHAEAL_MARKER_SET]
+            row = ['{:.2f}'.format(bac_percent), '{:.2f}'.format(arc_percent)]
+            if bac_percent < self.DEFAULT_DOMAIN_THRESHOLD and arc_percent < self.DEFAULT_DOMAIN_THRESHOLD:
+                gtdb_domain = ncbi_domain
+                from_ncbi.append([genome_id, ncbi_domain] + row)
             else:
-                gtdb_domain = "d__Archaea"
+                gtdb_domain = 'd__Bacteria' if bac_percent >= arc_percent else 'd__Archaea'
+                if gtdb_domain != ncbi_domain:
+                    disagreements.append([genome_id, ncbi_domain, gtdb_domain] + row)
+            domains.append((source_id, gtdb_domain))
 
-            if gtdb_domain is None:
-                print([ncbi_domain, genome_id])
-                missing_domain_info.append([ncbi_domain, genome_id])
+        started = time.time()
+        if domains:
+            GTDBImporter(self.temp_cur).import_metadata_to_db('metadata_taxonomy', 'gtdb_domain', 'TEXT', domains)
+        self.logger.info('Set gtdb_domain for {:,} genome(s), {:,} d__Bacteria and {:,} d__Archaea, in {:.0f} s.'.format(
+            len(domains), sum(1 for _, d in domains if d == 'd__Bacteria'),
+            sum(1 for _, d in domains if d == 'd__Archaea'), time.time() - started))
 
-            elif gtdb_domain != ncbi_domain:
-                self.logger.warning(f"{name}: NCBI ({ncbi_domain}) and GTDB ({gtdb_domain}) domains disagree in domain report "
-                                    f"(Bac = {round(bac_aa_per,2)}%; Ar = {round(arc_aa_per,2)}%).")
-                missing_domain_info.append([gtdb_domain, genome_id])
-            else:
-                missing_domain_info.append([gtdb_domain, genome_id])
+        path = write_tsv(os.path.join(output_dir, DOMAIN_FROM_NCBI_NAME), DOMAIN_FROM_NCBI_HEADER, sorted(from_ncbi))
+        message = '{:,} genome(s) have fewer than {:.0f}% of the bac120 and of the ar53 markers aligned and were ' \
+                  'given their NCBI domain; each is listed in {}.'.format(
+                      len(from_ncbi), self.DEFAULT_DOMAIN_THRESHOLD, path)
+        (self.logger.warning if from_ncbi else self.logger.info)(message)
 
+        path = write_tsv(os.path.join(output_dir, DOMAIN_DISAGREEMENTS_NAME), DOMAIN_DISAGREEMENTS_HEADER,
+                         sorted(disagreements))
+        message = '{:,} genome(s) were given a GTDB domain by their markers that is not their NCBI domain; ' \
+                  'each is listed in {}.'.format(len(disagreements), path)
+        (self.logger.warning if disagreements else self.logger.info)(message)
 
+    def markers_found(self, wanted):
+        """How many markers of bac120 and of ar53 each genome has a gene aligned for.
 
-        q = "UPDATE metadata_taxonomy SET gtdb_domain = %s WHERE id = %s"
-        self.temp_cur.executemany(q, missing_domain_info)
+        aligned_markers is read in ALIGNED_MARKER_PARTS ranges of its blocks, a
+        bar on the console saying how much has been read and a line of the log
+        each tenth. The transaction's snapshot is taken by then.
 
-        self.logger.info('NCBI genomes that were missing GTDB domain info: %d' % len(missing_domain_info))
+        Parameters
+        ----------
+        wanted : set of int
+            The genomes (genomes.id) to count; the rest of each range is passed over.
+
+        @return: genomes.id -> [bac120 markers found, ar53 markers found], for each
+                 wanted genome with any.
+        """
+
+        self.temp_cur.execute(ALIGNED_MARKERS_BLOCKS)
+        blocks, block_size = self.temp_cur.fetchone()
+        parts = max(1, min(ALIGNED_MARKER_PARTS, blocks))
+        bounds = [blocks * i // parts for i in range(parts + 1)]
+        self.logger.info('Reading the markers aligned for each genome from aligned_markers ({:.1f} GB) in {:,} '
+                         'parts.'.format(blocks * block_size / 1e9, parts))
+
+        found = {}
+        started = time.time()
+        silent = getattr(self.logger, 'is_silent', False)
+        # the bar only on a terminal, and not with --silent; while it is drawn the log's
+        # lines go to the console through tqdm, above it rather than through it.
+        # logging_redirect_tqdm() gives a logger a console handler whether it had
+        # one or not, so it is not used where there is no bar
+        with tqdm(total=blocks * block_size, unit='B', unit_scale=True, ncols=100, leave=False,
+                  desc='Reading aligned_markers', disable=True if silent else None) as progress, \
+                (contextlib.nullcontext() if progress.disable else logging_redirect_tqdm([self.logger])):
+            for part in range(parts):
+                low, high = bounds[part], bounds[part + 1]
+                self.temp_cur.execute(MARKERS_FOUND, (BACTERIAL_MARKER_SET, ARCHAEAL_MARKER_SET,
+                                                      BACTERIAL_MARKER_SET, ARCHAEAL_MARKER_SET,
+                                                      '({},0)'.format(low), '({},0)'.format(high)))
+                for genome, bac_count, arc_count in self.temp_cur.fetchall():
+                    if genome in wanted:
+                        counts = found.setdefault(genome, [0, 0])
+                        counts[0] += bac_count
+                        counts[1] += arc_count
+                progress.update((high - low) * block_size)
+                if (part + 1) * 10 // parts > part * 10 // parts and part + 1 < parts:
+                    self.logger.info('Read {}% of aligned_markers in {:.1f} min.'.format(
+                        (part + 1) * 100 // parts, (time.time() - started) / 60))
+
+        self.logger.info('Read aligned_markers in {:.1f} min: {:,} of the {:,} genome(s) have a marker '
+                         'aligned.'.format((time.time() - started) / 60, len(found), len(wanted)))
+        return found
 
     def propagate_taxonomy_from_reps_to_cluster(self,taxonomy_file,metadata_file,output_file):
         """Propagate labels to all genomes in a cluster. Based on genometreetk"""

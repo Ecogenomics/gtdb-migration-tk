@@ -463,8 +463,9 @@ class OptionsParser():
         p.add_propagated_taxonomy(options.input_dir)
 
     def set_gtdb_domain(self, options):
+        make_sure_path_exists(options.output_dir)
         p = Propagate(database_keywords(options))
-        p.set_gtdb_domain()
+        p.set_gtdb_domain(options.output_dir)
 
     def parse_ncbi_genome_category(self, options):
         for assembly_summary in options.new_list_genomes:

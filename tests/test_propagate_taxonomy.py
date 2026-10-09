@@ -31,7 +31,9 @@ by fakes, and the importer by a mock: what is tested is what is written, and
 when it is committed.
 """
 
+import contextlib
 import gzip
+import io
 import logging
 import os
 import shutil
@@ -213,17 +215,145 @@ class UpdatingThePropagatedTaxonomy(TaxonomyCase):
         self.assertEqual((propagate.temp_con.commits, propagate.temp_con.rollbacks), (0, 1))
 
 
-class SettingTheGTDBDomain(TaxonomyCase):
-    def test_an_ncbi_domain_without_its_prefix_ends_the_run_non_zero_with_a_rollback(self):
-        # sys.exit() with no code ended it with exit status 0
-        cursor = FakeCursor(fetchone=[(120,), (53,)],
-                            fetchall=[[(7, 'RS_GCF_000000001.1', 'Bacteria;p__Bacillota')]])
-        propagate = self.propagate(cursor)
-        with self.assertRaises(SystemExit) as raised:
-            propagate.set_gtdb_domain()
+class DomainCursor(FakeCursor):
+    """A database of genomes without a domain and an aligned_markers of a few blocks.
 
-        self.assertEqual(raised.exception.code, 1)
+    genomes are (id, GTDB name, id_at_source, NCBI taxonomy); ranges map the first
+    block of each range of aligned_markers to its rows (genome id, bac120 found,
+    ar53 found).
+    """
+
+    def __init__(self, genomes, ranges, blocks):
+        super().__init__()
+        self.genomes, self.ranges, self.blocks = genomes, ranges, blocks
+        self.ranges_read = []
+
+    def execute(self, sql, params=None):
+        self.statements.append(sql)
+        if sql.startswith('SELECT set_id, count(*) FROM marker_set_contents'):
+            self.result = [(1, 120), (19, 53)]
+        elif sql == P.MISSING_DOMAIN:
+            self.result = list(self.genomes)
+        elif sql == P.ALIGNED_MARKERS_BLOCKS:
+            self.result = [(self.blocks, 8192)]
+        elif sql == P.MARKERS_FOUND:
+            low, high = params[-2:]
+            self.ranges_read.append((low, high))
+            self.result = self.ranges.get(int(low[1:].split(',')[0]), [])
+
+    def fetchone(self):
+        return self.result[0]
+
+    def fetchall(self):
+        return list(self.result)
+
+
+class SettingTheGTDBDomain(TaxonomyCase):
+    def set_domain(self, genomes, ranges=None, blocks=1):
+        """set_gtdb_domain over genomes (id, GTDB name, id_at_source, NCBI taxonomy).
+
+        @return: (propagate, importer mock, log messages, what reached stdout or stderr).
+        """
+        cursor = DomainCursor(genomes, ranges or {}, blocks)
+        propagate = self.propagate(cursor)
+        console = io.StringIO()
+        with mock.patch.object(P, 'GTDBImporter') as importer, contextlib.redirect_stdout(console), \
+                contextlib.redirect_stderr(console), \
+                self.assertLogs('timestamp', level='INFO') as logged:
+            try:
+                propagate.set_gtdb_domain(self.dir)
+            except SystemExit as exc:
+                propagate.exit_code = exc.code
+        return propagate, importer, [r.getMessage() for r in logged.records], console.getvalue()
+
+    def table(self, name):
+        with open(os.path.join(self.dir, name)) as handle:
+            return [line.split('\t') for line in handle.read().splitlines()]
+
+    def test_the_markers_decide_the_domain_and_ncbi_does_where_they_are_too_few(self):
+        _, importer, _, _ = self.set_domain([
+            (1, 'RS_GCF_000000001.1', 'GCF_000000001.1', TAXONOMY),
+            (2, 'GB_GCA_000000002.1', 'GCA_000000002.1', ARCHAEON),   # 10% and 11.3%: the larger share
+            (3, 'GB_GCA_000000003.1', 'GCA_000000003.1', TAXONOMY),   # the markers over NCBI
+            (4, 'GB_GCA_000000004.1', 'GCA_000000004.1', ARCHAEON),   # 9.2% and 9.4%: NCBI's
+            (5, 'GB_GCA_000000005.1', 'GCA_000000005.1', TAXONOMY)],  # not aligned: NCBI's
+            {0: [(1, 118, 4), (2, 12, 6), (3, 0, 50), (4, 11, 5)]})
+        importer.return_value.import_metadata_to_db.assert_called_once_with(
+            'metadata_taxonomy', 'gtdb_domain', 'TEXT',
+            [('GCF_000000001.1', 'd__Bacteria'), ('GCA_000000002.1', 'd__Archaea'),
+             ('GCA_000000003.1', 'd__Archaea'), ('GCA_000000004.1', 'd__Archaea'),
+             ('GCA_000000005.1', 'd__Bacteria')])
+
+    def test_a_disagreement_is_listed_in_the_output_directory_and_counted_in_one_line_and_nothing_is_printed(self):
+        # each was a WARNING of its own, and each genome the markers could not decide a print()
+        propagate, _, messages, stdout = self.set_domain([
+            (1, 'RS_GCF_000000001.1', 'GCF_000000001.1', TAXONOMY),
+            (3, 'GB_GCA_000000003.1', 'GCA_000000003.1', TAXONOMY),
+            (5, 'GB_GCA_000000005.1', 'GCA_000000005.1', TAXONOMY)],
+            {0: [(1, 120, 0), (3, 0, 50)]})
+
+        self.assertEqual(stdout, '')
+        self.assertEqual(propagate.temp_con.commits, 1)
+        self.assertEqual(self.table(P.DOMAIN_DISAGREEMENTS_NAME), [
+            list(P.DOMAIN_DISAGREEMENTS_HEADER),
+            ['GB_GCA_000000003.1', 'd__Bacteria', 'd__Archaea', '0.00', '94.34']])
+        self.assertEqual(self.table(P.DOMAIN_FROM_NCBI_NAME), [
+            list(P.DOMAIN_FROM_NCBI_HEADER), ['GB_GCA_000000005.1', 'd__Bacteria', '0.00', '0.00']])
+        about_disagreements = [m for m in messages if 'not their NCBI domain' in m]
+        self.assertEqual(about_disagreements, ['1 genome(s) were given a GTDB domain by their markers that is not '
+                                               'their NCBI domain; each is listed in {}.'.format(
+                                                   os.path.join(self.dir, P.DOMAIN_DISAGREEMENTS_NAME))])
+        self.assertFalse(any('GCA_000000003.1' in m for m in messages))
+
+    def test_with_no_disagreement_the_list_is_its_header_and_the_line_says_none(self):
+        _, _, messages, _ = self.set_domain([(1, 'RS_GCF_000000001.1', 'GCF_000000001.1', TAXONOMY)],
+                                            {0: [(1, 120, 0)]})
+        self.assertEqual(self.table(P.DOMAIN_DISAGREEMENTS_NAME), [list(P.DOMAIN_DISAGREEMENTS_HEADER)])
+        self.assertTrue(any(m.startswith('0 genome(s) were given a GTDB domain') for m in messages))
+
+    def test_aligned_markers_is_read_once_in_ranges_of_its_blocks_and_a_genome_across_two_is_summed(self):
+        # two queries a genome, 586,000 over r237, and then one query of which nothing said how far it was
+        propagate, importer, messages, _ = self.set_domain(
+            [(1, 'RS_GCF_000000001.1', 'GCF_000000001.1', ARCHAEON)],
+            {0: [(1, 3, 2), (9, 120, 0)], 250: [(1, 3, 2)], 500: [(1, 0, 2)]}, blocks=1000)
+
+        cursor = propagate.temp_cur
+        self.assertEqual(cursor.statements[0], 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+        self.assertEqual(len(cursor.ranges_read), P.ALIGNED_MARKER_PARTS)
+        bounds = [int(t[1:].split(',')[0]) for pair in cursor.ranges_read for t in pair]
+        self.assertEqual((bounds[0], bounds[-1]), (0, 1000))
+        self.assertTrue(all(bounds[i] == bounds[i + 1] for i in range(1, len(bounds) - 1, 2)))
+        # 6 of 120 and 6 of 53, read in three ranges; genome 9 is not one without a domain
+        importer.return_value.import_metadata_to_db.assert_called_once_with(
+            'metadata_taxonomy', 'gtdb_domain', 'TEXT', [('GCF_000000001.1', 'd__Archaea')])
+        self.assertEqual([m for m in messages if m.startswith('Read ') and '% of aligned_markers' in m],
+                         ['Read {}% of aligned_markers in 0.0 min.'.format(p) for p in range(10, 100, 10)])
+
+    def test_a_table_smaller_than_the_parts_is_read_a_block_a_part(self):
+        propagate, _, _, _ = self.set_domain([(1, 'RS_GCF_000000001.1', 'GCF_000000001.1', TAXONOMY)],
+                                             {0: [(1, 120, 0)]}, blocks=3)
+        self.assertEqual(propagate.temp_cur.ranges_read, [('(0,0)', '(1,0)'), ('(1,0)', '(2,0)'), ('(2,0)', '(3,0)')])
+
+    def test_with_no_genome_without_a_domain_aligned_markers_is_not_read(self):
+        propagate, importer, _, _ = self.set_domain([])
+        self.assertEqual(propagate.temp_cur.ranges_read, [])
+        importer.return_value.import_metadata_to_db.assert_not_called()
+        self.assertEqual(self.table(P.DOMAIN_DISAGREEMENTS_NAME), [list(P.DOMAIN_DISAGREEMENTS_HEADER)])
+
+    def test_an_ncbi_domain_without_its_prefix_ends_the_run_non_zero_before_reading_and_each_is_listed(self):
+        # sys.exit() with no code ended it with exit status 0, at the first
+        propagate, importer, messages, stdout = self.set_domain([
+            (1, 'RS_GCF_000000001.1', 'GCF_000000001.1', 'Bacteria;p__Bacillota'),
+            (2, 'RS_GCF_000000002.1', 'GCF_000000002.1', TAXONOMY)])
+
+        self.assertEqual(propagate.exit_code, 1)
         self.assertEqual((propagate.temp_con.commits, propagate.temp_con.rollbacks), (0, 1))
+        self.assertEqual(propagate.temp_cur.ranges_read, [])
+        importer.return_value.import_metadata_to_db.assert_not_called()
+        self.assertEqual(self.table(P.NCBI_DOMAIN_ERRORS_NAME), [
+            list(P.NCBI_DOMAIN_ERRORS_HEADER), ['RS_GCF_000000001.1', 'Bacteria']])
+        self.assertTrue(any(m.startswith('1 genome(s) have an NCBI domain without its d__ prefix') for m in messages))
+        self.assertEqual(stdout, '')
 
 
 class PropagatingCase(TaxonomyCase):
@@ -408,6 +538,19 @@ class TheCommandLine(TaxonomyCase):
         with mock.patch.object(main_py, 'Propagate') as propagate:
             main_py.OptionsParser().parse_options(options)
         propagate.return_value.add_propagated_taxonomy.assert_called_once_with(self.dir)
+
+    def test_set_gtdb_domain_requires_an_output_directory_and_is_handed_it(self):
+        out_dir = os.path.join(self.dir, 'domain')
+        argv = ['set_gtdb_domain', '--db_service', 'gtdb_r237', '-l', os.path.join(self.dir, 'run.log')]
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+            main_module.get_main_parser().parse_args(argv)
+        self.assertEqual(ended.exception.code, 2)
+
+        options = main_module.get_main_parser().parse_args(argv + ['-o', out_dir])
+        with mock.patch.object(main_py, 'Propagate') as propagate:
+            main_py.OptionsParser().parse_options(options)
+        propagate.return_value.set_gtdb_domain.assert_called_once_with(out_dir)
+        self.assertTrue(os.path.isdir(out_dir))
 
     def test_the_options_the_files_replaced_are_no_longer_accepted(self):
         for argv in (['propagate_gtdb_taxonomy', '--db_service', 'x', '--gtdb_metadata_prev', 'p.tsv',

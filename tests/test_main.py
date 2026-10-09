@@ -57,7 +57,7 @@ class TheExitStatus(unittest.TestCase):
         @return: the code main() exited with, or None where it returned.
         """
 
-        argv = ['gtdb_migration_tk', 'set_gtdb_domain', '--db_service', 'gtdb_r237',
+        argv = ['gtdb_migration_tk', 'set_gtdb_domain', '--db_service', 'gtdb_r237', '-o', self.dir,
                 '-l', os.path.join(self.dir, 'run.log'), '--silent']
         with mock.patch.object(sys, 'argv', argv), \
                 mock.patch.object(main_module.OptionsParser, 'parse_options',
