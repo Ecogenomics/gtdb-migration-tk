@@ -556,6 +556,29 @@ class TheDescriptions(unittest.TestCase):
                 fields = [line.split('\t')[0] for line in handle if line.strip()]
             self.assertEqual([field for field in fields if '_gg_' in field or field.startswith('gg_')], [], name)
 
+    def test_no_field_is_described_in_two_files(self):
+        # metadata_ncbi_type_material_designation.desc.tsv, which nothing read,
+        # sent ncbi_type_material_designation to an ncbi_taxonomy table the
+        # database does not have, where metadata_ncbi_assembly_file.desc.tsv
+        # sends it to metadata_taxonomy; removed in 0.1.70
+        _, folder = self.descriptions()
+        described_in = defaultdict(list)
+        for name in sorted(os.listdir(folder)):
+            with open(os.path.join(folder, name)) as handle:
+                for line in handle:
+                    if line.strip():
+                        described_in[line.split('\t')[0]].append(name)
+        self.assertEqual({field: names for field, names in described_in.items() if len(names) > 1}, {})
+
+    def test_every_line_of_a_description_is_a_field_its_description_type_and_table(self):
+        _, folder = self.descriptions()
+        for name in sorted(os.listdir(folder)):
+            with open(os.path.join(folder, name)) as handle:
+                lines = handle.read().split('\n')
+            self.assertEqual(lines[-1], '', name)
+            for line_number, line in enumerate(lines[:-1], start=1):
+                self.assertEqual(len(line.split('\t')), 4, '{} line {}'.format(name, line_number))
+
 
 class AskingBeforeAPartialLoad(unittest.TestCase):
     """--genome_list without --do_not_null_field removes every genome's metadata and writes the list's."""
