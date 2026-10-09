@@ -133,6 +133,18 @@ class DecidingTypeMaterial(StrainsCase):
                 self.assertEqual(summary[OTHER_GENOME]['gtdb_type_designation_ncbi_taxa'],
                                  'not type material')
 
+    def test_every_row_of_the_summary_has_a_value_for_each_column_of_its_header(self):
+        # update_metadata_db refuses a table with a short row, and the header
+        # named an is_from_standard column no row held
+        self.run_type_table()
+        with gzip.open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rt') as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+            rows = [line.rstrip('\n').split('\t') for line in handle]
+
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(len(row), len(header), row[0])
+
     def test_every_genome_of_the_release_is_in_the_summary_and_no_other(self):
         # a genome of the summaries the release does not hold is not decided
         self.genomes['GCA_000000009.1'] = ('gb', '562', 'Escherichia coli X', 'strain=X', 'na', 'na')
