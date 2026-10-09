@@ -1113,9 +1113,10 @@ def get_main_parser():
             __log_file(grp, required=True)
         with mutex_group(parser, required=True) as grp:
             grp.add_argument('--new_genomes', action='store_true',
-                             help='Align the NCBI genomes with no row in aligned_markers for any of the markers.')
+                             help="Align each NCBI genome's markers of the sets it has no row in aligned_markers "
+                                  "for: new genomes, and sets not aligned for a genome before.")
             grp.add_argument('--all_genomes', action='store_true',
-                             help='Align every NCBI genome of the database, writing its rows again.')
+                             help='Align every marker of every NCBI genome of the database, writing its rows again.')
         with arg_group(parser, 'options arguments') as grp:
             __cpus(grp)
             __tmp_dir(grp)

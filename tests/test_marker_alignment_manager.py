@@ -64,12 +64,14 @@ TOPHIT_HEADER = 'Gene Id\tTop hits (Family id,e-value,bitscore)\n'
 
 
 class FakeCursor(object):
-    """A database of marker sets, markers and genomes, recording each statement."""
+    """A database of marker sets, markers, genomes and the rows of aligned_markers
+    they hold (held, (genome id, marker id)), recording each statement."""
 
-    def __init__(self, markers=(), genomes=(), sets=((1, 'bac120'), (2, 'ar122'))):
+    def __init__(self, markers=(), genomes=(), sets=((1, 'bac120'), (2, 'ar122')), held=()):
         self.sets = list(sets)
         self.markers = list(markers)
         self.genomes = list(genomes)
+        self.held = set(held)
         self.statements = []
         self.copied = []
         self.result = []
@@ -83,8 +85,19 @@ class FakeCursor(object):
             self.result = [(m.db_id, m.accession, m.hmm, m.size, m.database) for m in self.markers]
         elif 'FROM genomes g' in sql:
             self.result = list(self.genomes)
+        elif sql == A.MARKERS_HELD:
+            low, high, marker_ids = params
+            counts = {}
+            for genome, marker in self.held:
+                if low <= genome < high and marker in marker_ids:
+                    counts[genome] = counts.get(genome, 0) + 1
+            self.result = sorted(counts.items())
+        elif sql == A.ROWS_HELD:
+            genome_ids, marker_ids = params
+            self.result = sorted((g, m) for g, m in self.held if g in genome_ids and m in marker_ids)
         elif sql.startswith('INSERT INTO aligned_markers'):
             self.rowcount = len(self.copied[-1])
+            self.held.update((int(row[0]), int(row[1])) for row in self.copied[-1])
 
     def copy_expert(self, sql, handle):
         self.statements.append(sql)
@@ -364,8 +377,8 @@ class AligningARelease(TempDirCase):
         manager, out_dir, finished, messages = self.run_release(genome_dirs, cursor)
 
         self.assertFalse(finished)
-        # one rollback ends reading the genomes, one undoes the failed batch
-        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 2))
+        # two end reading the genomes and their rows, one undoes the failed batch
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 3))
         self.assertTrue(any('failed, nothing of it written' in m and 'GCA_000000001.1 names gene g9' in m
                             for m in messages))
         failed = [d for d in os.listdir(os.path.join(out_dir, 'marker_sets_1_2_new'))
@@ -379,14 +392,88 @@ class AligningARelease(TempDirCase):
             self.run_release(genome_dirs, cursor)
         self.assertEqual(cursor.copied, [])
 
-    def test_new_genomes_are_those_with_no_row_for_any_of_the_markers(self):
-        cursor = FakeCursor()
+    def written(self, cursor):
+        return sorted((row[0], row[1], row[2]) for copied in cursor.copied for row in copied)
+
+    def test_a_genome_is_given_only_the_markers_it_has_no_row_for_and_one_with_every_one_is_not_planned(self):
+        # it took the genomes with no row for any marker, so a set added to a run aligned nothing
+        genome_dirs, cursor = self.release()
+        cursor.held = {(11, 101), (12, 101), (12, 202)}
+        manager, out_dir, finished, messages = self.run_release(genome_dirs, cursor)
+
+        self.assertTrue(finished)
+        self.assertEqual(self.written(cursor), [('11', '202', 'MPQS')])
+        self.assertIn('2 of the 3 NCBI genome(s) of the database have a marker to align (with no row for it).',
+                      messages)
+        planned = os.path.join(out_dir, 'marker_sets_1_2_new', 'batch_000001', A.BATCHFILE_NAME)
+        with gzip.open(planned, 'rt') as handle:
+            self.assertNotIn('GCA_000000002.1', handle.read())
+
+    def test_a_row_of_gaps_is_held_and_not_aligned_again(self):
+        genome_dirs, cursor = self.release()
+        cursor.held = {(12, 101)}   # GCA_000000002.1 has no gene for either: its rows are gaps
+        self.run_release(genome_dirs, cursor)
+        self.assertEqual([r for r in self.written(cursor) if r[0] == '12'], [('12', '202', '----')])
+
+    def test_a_genome_lacking_only_pfam_markers_needs_no_tigrfam_table(self):
+        genome_dirs, cursor = self.release()
+        cursor.held = {(11, 202), (12, 202)}
+        os.remove(A.tophit_file(os.path.join(self.dir, 'genomes', 'GCA_000000001.1_ASM1v1', 'prodigal'),
+                                'GCA_000000001.1', 'TIGR'))
+        _, out_dir, finished, _ = self.run_release(genome_dirs, cursor)
+
+        self.assertTrue(finished)
+        self.assertEqual(self.written(cursor), [('11', '101', 'MKALIE'), ('12', '101', '------')])
+        with open(os.path.join(out_dir, 'missing_tophit_file.tsv')) as handle:
+            self.assertEqual(handle.read().splitlines(), ['genome_id\ttophit_file'])
+
+    def test_the_genomes_with_a_marker_to_align_are_found_a_range_of_genome_ids_at_a_time(self):
+        cursor = FakeCursor(held={(11, 101), (11, 202), (12, 101), (99, 101), (99, 202)})
         manager = self.manager(cursor)
-        manager.select_genomes([self.pf, self.tigr], all_genomes=False)
-        self.assertIn('NOT EXISTS (SELECT 1 FROM aligned_markers am WHERE am.genome_id = g.id AND '
-                      'am.marker_id = ANY(%s))', cursor.statements[-1])
-        manager.select_genomes([self.pf], all_genomes=True)
-        self.assertNotIn('aligned_markers', cursor.statements[-1])
+        genomes = {'GCA_000000001.1': 11, 'GCA_000000002.1': 12, 'GCA_000000003.1': 13}
+        with mock.patch.object(A, 'SELECTION_GENOME_IDS', 1), self.assertLogs('timestamp', level='INFO'):
+            missing = manager.genomes_missing_markers([self.pf, self.tigr], genomes)
+        # genome 99 holds both and is not an NCBI genome given; 11 holds both
+        self.assertEqual(missing, ['GCA_000000002.1', 'GCA_000000003.1'])
+        self.assertEqual(sum(1 for sql in cursor.statements if sql == A.MARKERS_HELD), 3)
+
+    def test_with_every_marker_held_nothing_is_planned(self):
+        genome_dirs, cursor = self.release()
+        cursor.held = {(g, m) for g in (11, 12, 13) for m in (101, 202)}
+        _, out_dir, finished, messages = self.run_release(genome_dirs, cursor)
+        self.assertTrue(finished)
+        self.assertIn('There are no genomes to align.', messages)
+        self.assertFalse(os.path.exists(os.path.join(out_dir, 'marker_sets_1_2_new')))
+
+    def test_a_run_finding_the_batches_planned_does_not_ask_again_and_each_batch_asks_its_own(self):
+        genome_dirs, cursor = self.release()
+        os.remove(A.tophit_file(os.path.join(self.dir, 'genomes', 'GCA_000000001.1_ASM1v1', 'prodigal'),
+                                'GCA_000000001.1', 'TIGR'))
+        self.run_release(genome_dirs, cursor)
+        # GCA_000000001.1 was passed over, its batch finished; the next run is given its table
+        self.genome('GCA_000000001.1', replace=True, proteins={'g1': 'MKALIE', 'g2': 'MPQS'},
+                    pfam=[('g1', 'PF00410.20,1e-5,20.0')], tigrfam=[('g2', 'TIGR00006,1e-9,30.0')])
+        for batch in ('batch_000001', 'batch_000002'):
+            os.remove(os.path.join(self.dir, 'out', 'marker_sets_1_2_new', batch, 'SUCCESS'))
+        cursor.statements, cursor.copied = [], []
+        _, _, finished, messages = self.run_release(genome_dirs, cursor)
+
+        self.assertTrue(finished)
+        self.assertNotIn(A.MARKERS_HELD, cursor.statements)
+        self.assertEqual(self.written(cursor), [('11', '101', 'MKALIE'), ('11', '202', 'MPQS')])
+        # GCA_000000002.1, aligned by the first run, shares the batch
+        self.assertTrue(any('batch_000001' in m and '1 with a row for every marker already' in m for m in messages))
+
+    def test_all_genomes_writes_every_marker_of_every_genome_again(self):
+        genome_dirs, cursor = self.release()
+        cursor.held = {(g, m) for g in (11, 12, 13) for m in (101, 202)}
+        manager = self.manager(cursor)
+        with mock.patch.object(A, 'check_dependencies'), \
+                mock.patch.object(A, 'record_program_version', return_value='HMMER 3.3 (Nov 2019)'), \
+                self.assertLogs('timestamp', level='INFO'):
+            self.assertTrue(manager.run([1, 2], True, genome_dirs, os.path.join(self.dir, 'out')))
+        self.assertEqual(len(self.written(cursor)), 4)
+        self.assertNotIn(A.MARKERS_HELD, cursor.statements)
 
 
 class TheCommandLine(TempDirCase):
