@@ -15,7 +15,7 @@
 #                                                                             #
 ###############################################################################
 
-"""Offline unit tests for seqcode_manager.py -- download_seqcode_data, which was
+"""Offline unit tests for seqcode_manager.py -- seqcode download, which was
 generate_seqcode_table of utils/tools.py.
 
 That printed every species' record as JSON, read every genome's assembly report
@@ -442,12 +442,12 @@ class DownloadingTheTable(SeqCodeCase):
 
 class TheCommandLine(SeqCodeCase):
     def argv(self, *extra):
-        return ['download_seqcode_data', '-g', 'genome_dirs.tsv', '-n', 'a.txt', 'b.txt',
+        return ['seqcode', 'download', '-g', 'genome_dirs.tsv', '-n', 'a.txt', 'b.txt',
                 '-o', os.path.join(self.dir, 'out')] + list(extra)
 
     def test_the_summaries_are_required_and_the_command_is_handed_its_options(self):
         with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
-            main_module.get_main_parser().parse_args(['download_seqcode_data', '-g', 'genome_dirs.tsv', '-o', 'out'])
+            main_module.get_main_parser().parse_args(['seqcode', 'download', '-g', 'genome_dirs.tsv', '-o', 'out'])
         self.assertEqual(ended.exception.code, 2)
         self.assertIsNone(main_module.get_main_parser().parse_args(self.argv()).log)
 
@@ -466,7 +466,7 @@ class TheCommandLine(SeqCodeCase):
         summary = os.path.join(self.dir, 'a.txt')
         for path in (genome_dirs, summary):
             open(path, 'w').close()
-        argv = ['gtdb_migration_tk', 'download_seqcode_data', '-g', genome_dirs, '-n', summary,
+        argv = ['gtdb_migration_tk', 'seqcode', 'download', '-g', genome_dirs, '-n', summary,
                 '-o', os.path.join(self.dir, 'out'), '--silent'] + list(extra)
         with mock.patch('sys.argv', argv), mock.patch.object(main_py, 'SeqCodeManager'), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -502,10 +502,17 @@ class TheCommandLine(SeqCodeCase):
             main_module.get_main_parser().parse_args(self.argv('-l', 'run.log', '-c', '8'))
         self.assertEqual(ended.exception.code, 2)
 
-    def test_generate_seqcode_table_is_no_longer_a_command(self):
+    def test_generate_seqcode_table_and_download_seqcode_data_are_no_longer_commands(self):
+        for old_name in ('generate_seqcode_table', 'download_seqcode_data'):
+            with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+                main_module.get_main_parser().parse_args([old_name, '-g', 'genome_dirs.tsv', '-n', 'a.txt',
+                                                          '-o', 'out', '-l', 'run.log'])
+            self.assertEqual(ended.exception.code, 2)
+
+    def test_seqcode_alone_is_refused_before_a_log_is_opened(self):
+        # lpsn, given no step, starts a log and ends in a TypeError
         with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
-            main_module.get_main_parser().parse_args(['generate_seqcode_table', '-g', 'genome_dirs.tsv', '-n', 'a.txt',
-                                                      '-o', 'out', '-l', 'run.log'])
+            main_module.get_main_parser().parse_args(['seqcode'])
         self.assertEqual(ended.exception.code, 2)
 
 

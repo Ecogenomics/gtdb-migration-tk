@@ -544,7 +544,7 @@ class OptionsParser():
         p = Tools()
         p.generate_ltp_db(options.csv, options.compressed_fasta, options.fasta,options.output_dir, options.output_prefix)
 
-    def download_seqcode_data(self, options):
+    def download_seqcode(self, options):
         check_file_exists(options.gtdb_genome_path_file)
         for assembly_summary in options.new_list_genomes:
             check_file_exists(assembly_summary)
@@ -598,8 +598,6 @@ class OptionsParser():
             self.generate_metadata(options)
         elif options.subparser_name == 'create_tables':
             self.create_metadata_tables(options)
-        elif options.subparser_name == 'download_seqcode_data':
-            self.download_seqcode_data(options)
         elif options.subparser_name == 'parse_ncbi_assemblies':
             self.parse_ncbi_assemblies(options)
         elif options.subparser_name == "parse_ncbi_dir":
@@ -666,6 +664,9 @@ class OptionsParser():
             else:
                 self.logger.error('Unknown command: ' +
                                   options.lpsn_subparser_name + '\n')
+        elif options.subparser_name == 'seqcode':
+            if options.seqcode_subparser_name == 'download':
+                self.download_seqcode(options)
         elif options.subparser_name == 'ncbi_strains':
             self.generate_ncbi_strains_summary(options)
         elif options.subparser_name == 'strains':

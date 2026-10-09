@@ -15,10 +15,11 @@
 #                                                                             #
 ###############################################################################
 
-"""download_seqcode_data: the SeqCode Registry's species, by their type genomes.
+"""seqcode download: the SeqCode Registry's species, by their type genomes.
 
-It was generate_seqcode_table, Tools.generate_seqcode_table() of utils/tools.py,
-until 0.1.72.
+It was download_seqcode_data until 0.1.74, a command of its own rather than a
+step of seqcode as lpsn's are of lpsn, and generate_seqcode_table,
+Tools.generate_seqcode_table() of utils/tools.py, until 0.1.72.
 
 THE REGISTRY
 The Registry's API lists every species with a type genome (type-genomes.json,

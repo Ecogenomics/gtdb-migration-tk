@@ -131,11 +131,12 @@ def print_help():
       update_propagate_tax    -> Push propagated taxonomy to new DB.
 
     Information from online resources:
-      lpsn                  -> Process steps for LPSN.
-      bacdive               -> Process steps for BacDive [In Dev].
-      strains               -> Set of tools to combined information from LPSN and DSMZ.
-      ncbi_strains          -> Strain IDs from each genome's assembly report, and NCBI type material status from the assembly summaries.
-      download_seqcode_data -> The SeqCode Registry's species and the release's genome typing each.
+      lpsn         -> Command to download and parse LPSN data.
+      seqcode      -> Command to download SeqCode data.
+      strains      -> Set of tools to combined information from LPSN and SeqCode.
+      ncbi_strains -> Strain IDs from each genome's assembly report, and NCBI type material status from the assembly summaries.
+      
+      bacdive      -> [Deprecated] Process steps for BacDive.
 
     Curation files
       curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names.
@@ -737,7 +738,7 @@ def __username(group, required):
 
 def __seqcode_table(group, required):
     group.add_argument('--seqcode_table',
-                       help="seqcode_table.tsv of the release, from 'gtdb_migration_tk download_seqcode_data'.",
+                       help="seqcode_table.tsv of the release, from 'gtdb_migration_tk seqcode download'.",
                        required=required)
 
 def __year_table_file(group, required):
@@ -1295,19 +1296,24 @@ def get_main_parser():
             __silent(grp)
             __cpus(grp)
 
-    # Download the SeqCode Registry's type genomes as a metadata table (generate_seqcode_table until 0.1.72)
-    with subparser(sub_parsers, 'download_seqcode_data',
-                   "Download the SeqCode Registry's species and their type genomes as a metadata table.") as parser:
-        with arg_group(parser, 'required named arguments') as grp:
-            __output_dir(grp, required=True)
-            __gtdb_genome_path_file(grp, required=True)
-            __new_list_genomes(grp, required=True)
-        with arg_group(parser, 'options arguments') as grp:
-            __log_file(grp, required=False, help='Log file; by default {} in --out_dir.'.format(FALLBACK_LOG))
-            grp.add_argument('--species_cache',
-                             help="The species' citations of earlier runs, kept while a species is unchanged; "
-                                  "by default seqcode_species_cache.json in --out_dir.")
-            __silent(grp)
+    # download_seqcode_data until 0.1.74, generate_seqcode_table until 0.1.72
+    with subparser(sub_parsers, 'seqcode', 'Steps to download SeqCode data.') as seqcode_parser:
+        # required: lpsn, given none, ends in a TypeError having started a log
+        seqcode_sub_parsers = seqcode_parser.add_subparsers(help="--", dest='seqcode_subparser_name',
+                                                            metavar='{download}', required=True)
+
+        with subparser(seqcode_sub_parsers, 'download',
+                       "Download the SeqCode Registry's species and their type genomes as a metadata table.") as parser:
+            with arg_group(parser, 'required named arguments') as grp:
+                __output_dir(grp, required=True)
+                __gtdb_genome_path_file(grp, required=True)
+                __new_list_genomes(grp, required=True)
+            with arg_group(parser, 'options arguments') as grp:
+                __log_file(grp, required=False, help='Log file; by default {} in --out_dir.'.format(FALLBACK_LOG))
+                grp.add_argument('--species_cache',
+                                 help="The species' citations of earlier runs, kept while a species is unchanged; "
+                                      "by default seqcode_species_cache.json in --out_dir.")
+                __silent(grp)
 
     with subparser(sub_parsers, 'lpsn', 'Steps to update LPSN Metadata.') as lpsn_parser:
         lpsn_sub_parsers = lpsn_parser.add_subparsers(help="--", dest='lpsn_subparser_name')
