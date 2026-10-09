@@ -103,6 +103,7 @@ class OptionsParser():
     def generate_type_table(self, options):
         for assembly_summary in options.new_list_genomes:
             check_file_exists(assembly_summary)
+        check_file_exists(options.seqcode_table)
         p = Strains(options.output_dir, options.cpus)
         p.generate_type_strain_table(options.gtdb_genome_path_file,
                                      options.new_list_genomes,
@@ -110,7 +111,8 @@ class OptionsParser():
                                      options.ncbi_nodes,
                                      options.lpsn_gss_file,
                                      options.lpsn_dir,
-                                     options.year_table)
+                                     options.year_table,
+                                     options.seqcode_table)
 
     def compare_metadata(self, options):
         p = Tools()
@@ -463,10 +465,6 @@ class OptionsParser():
         p = Propagate(database_keywords(options))
         p.add_taxonomy_to_database(options.taxonomy_file, options.metadata, options.truncate_taxonomy)
 
-    def update_type_designation(self, options):
-        p = MetadataDatabaseManager(database_keywords(options))
-        p.update_type_designation()
-
     def update_propagated_tax(self, options):
         p = Propagate(database_keywords(options))
         p.add_propagated_taxonomy(options.input_dir)
@@ -654,8 +652,6 @@ class OptionsParser():
             self.update_reps_db(options)
         elif options.subparser_name == 'update_ncbi_tax_db':
             self.update_ncbi_tax_db(options)
-        elif options.subparser_name == 'update_type_designation':
-            self.update_type_designation(options)
         elif options.subparser_name == 'update_genomes':
             self.update_genomes(options)
         elif options.subparser_name == 'lpsn':

@@ -923,28 +923,17 @@ class TheNCBITaxonomyCommandLine(unittest.TestCase):
         self.assertTrue(str(ended.exception.code).startswith('update_ncbi_tax_db:'))
 
 
-class DecidingTypeDesignations(unittest.TestCase):
-    def test_a_species_valid_under_the_seqcode_is_type_strain_with_seqcode_a_source(self):
-        designations, sources = M.type_designation_changes(
-            [(1, 'Valid', None, 'not type material', 'NCBI;LPSN'),
-             (2, 'Valid (Seqcode)', None, None, None)])
+class UpdateTypeDesignationIsGone(unittest.TestCase):
+    """strains type_table decides what update_type_designation rewrote in
+    metadata_type_material (tests/test_strains.TypeMaterialUnderTheSeqCode), so the
+    summary is loaded once and nothing is left for it to do."""
 
-        self.assertEqual(designations, {1: M.TYPE_STRAIN_OF_SPECIES, 2: M.TYPE_STRAIN_OF_SPECIES})
-        self.assertEqual(sources, {1: 'NCBI;LPSN;Seqcode', 2: 'Seqcode'})
-
-    def test_the_sources_keep_their_order_and_seqcode_is_not_added_twice(self):
-        # they went through a set, which ordered them afresh on every run
-        _, sources = M.type_designation_changes([(1, 'Valid', None, None, 'LPSN;Seqcode;NCBI')])
-        self.assertEqual(sources, {1: 'LPSN;Seqcode;NCBI'})
-
-    def test_a_metagenome_not_used_as_type_is_not_used_as_type_whatever_the_seqcode(self):
-        designations, sources = M.type_designation_changes(
-            [(1, 'Valid', 'derived from metagenome; not used as type', None, None),
-             (2, None, 'derived from metagenome', None, None),
-             (3, 'Invalid', None, None, None)])
-
-        self.assertEqual(designations, {1: M.NOT_USED_AS_TYPE})
-        self.assertEqual(sources, {1: 'Seqcode'})
+    def test_update_type_designation_is_no_longer_a_command(self):
+        from gtdb_migration_tk import __main__ as main_module
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+            main_module.get_main_parser().parse_args(['update_type_designation', '--db_service', 'gtdb', '-l', 'x.log'])
+        self.assertEqual(ended.exception.code, 2)
+        self.assertFalse(hasattr(M.MetadataDatabaseManager, 'update_type_designation'))
 
 
 if __name__ == '__main__':

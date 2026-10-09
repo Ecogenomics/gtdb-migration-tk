@@ -252,6 +252,17 @@ class FindingTheTypeGenome(SeqCodeCase):
         with self.assertRaisesRegex(BadInput, 'wgs_master'):
             S.wgs_index([path], {})
 
+    def test_the_columns_are_those_metadata_seqcode_desc_tsv_describes(self):
+        # update_metadata_db loads the table into metadata_seqcode by these names; it
+        # was written with seqcode_proposed_in, a column metadata_seqcode does not have
+        path = os.path.join(os.path.dirname(S.__file__), 'data_files', 'table_description',
+                            'metadata_seqcode.desc.tsv')
+        with open(path) as handle:
+            described = [line.split('\t')[0] for line in handle if line.strip()]
+        self.assertEqual(S.TABLE_HEADER[0], 'seqcode_type_material_accn')    # the genome
+        self.assertEqual(sorted(S.TABLE_HEADER[1:]), sorted(described))
+        self.assertIn('seqcode_proposed_by', S.TABLE_HEADER)
+
     def test_the_types_are_read_from_the_classification_and_a_missing_genus_is_none(self):
         taxonomy, statuses, types = S.classification(species(30, 'Examplus a', None)['classification'], 30)
         self.assertEqual(taxonomy, 'd__Bacteria;p__;c__;o__;f__Exampleaceae;g__Examplus;s__')
@@ -311,7 +322,7 @@ class DownloadingTheTable(SeqCodeCase):
         rows = self.table()
         self.assertEqual(rows[0], list(S.TABLE_HEADER))
         first = dict(zip(rows[0], rows[1]))
-        self.assertEqual((first['seqcode_type_material_accn'], first['seqcode_name'], first['seqcode_proposed_in'],
+        self.assertEqual((first['seqcode_type_material_accn'], first['seqcode_name'], first['seqcode_proposed_by'],
                           first['seqcode_type_species_of_genus'], first['seqcode_priority_date']),
                          ('GCA_000000001.1', 'Examplus a', 'Doe et al., 2025, Microbial Genomics', 'True', ''))
         self.assertEqual(dict(zip(rows[0], rows[2]))['seqcode_type_material_accn'], 'GCA_000000002.1')
@@ -367,7 +378,7 @@ class DownloadingTheTable(SeqCodeCase):
 
         self.run_command(genome_dirs, self.registry(records))
         self.assertNotIn(records[0]['url'], self.fetched)
-        self.assertEqual(dict(zip(*self.table()))['seqcode_proposed_in'], 'Doe et al., 2025, Microbial Genomics')
+        self.assertEqual(dict(zip(*self.table()))['seqcode_proposed_by'], 'Doe et al., 2025, Microbial Genomics')
 
         records[0]['updated_at'] = '2026-10-01'
         self.run_command(genome_dirs, self.registry(records))

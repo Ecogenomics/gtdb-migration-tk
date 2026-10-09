@@ -735,6 +735,11 @@ def __username(group, required):
     group.add_argument('-u', '--username', help='Username.', required=required)
 
 
+def __seqcode_table(group, required):
+    group.add_argument('--seqcode_table',
+                       help="seqcode_table.tsv of the release, from 'gtdb_migration_tk download_seqcode_data'.",
+                       required=required)
+
 def __year_table_file(group, required):
     group.add_argument('--year_table',
                        help="Year of priority of each species, from 'gtdb_migration_tk strains date_table'.",
@@ -1057,13 +1062,6 @@ def get_main_parser():
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 
-    with subparser(sub_parsers, 'update_type_designation', 'Update type_designation columns when all Seqcode,NCBI and LPSN infos are in the db.') as parser:
-        with arg_group(parser, 'required named arguments') as grp:
-            __database_setup(grp)
-            __log_file(grp, required=True)
-        with arg_group(parser, 'options arguments') as grp:
-            __silent(grp)
-
 
     with subparser(sub_parsers, 'update_ncbi_tax_db',
                    'Update the NCBI organism name and taxonomy of each genome in the database.') as parser:
@@ -1383,7 +1381,7 @@ def get_main_parser():
 
         with subparser(strains_sub_parsers, 'type_table',
                        'Decide which genomes of a release are assembled from type material, '
-                       'from LPSN and the NCBI assembly summaries and taxonomy.') as parser:
+                       'from LPSN, the SeqCode and the NCBI assembly summaries and taxonomy.') as parser:
             with arg_group(parser, 'required named arguments') as grp:
                 __gtdb_genome_path_file(grp, required=True)
                 __new_list_genomes(grp, required=True)
@@ -1392,6 +1390,7 @@ def get_main_parser():
                 __lpsn_gss_file(grp, required=True)
                 __lpsn_directory(grp, required=True)
                 __year_table_file(grp, required=True)
+                __seqcode_table(grp, required=True)
                 __output_dir(grp, required=True)
             with arg_group(parser, 'options arguments') as grp:
                 __silent(grp)

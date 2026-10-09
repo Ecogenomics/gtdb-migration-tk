@@ -24,7 +24,7 @@ __maintainer__ = 'Pierre Chaumeil'
 __email__ = 'p.chaumeil@uq.edu.au'
 __status__ = 'Development'
 
-"""Decide which genomes are assembled from type material, from LPSN and the NCBI taxonomy.
+"""Decide which genomes are assembled from type material, from LPSN, the SeqCode and NCBI.
 
 WHERE THE NCBI DATA COMES FROM
 
@@ -44,6 +44,29 @@ whose taxID nodes.dmp does not hold -- NCBI deleted 1,288 taxIDs of r237's
 genomes, nearly all of '<genus> sp.' placeholders, between the summaries and the
 taxonomy -- has no NCBI species, and so is not type material, as it is in the
 NCBI taxonomy of the release.
+
+TYPE MATERIAL UNDER THE SEQCODE
+
+A genome's gtdb_type_designation_ncbi_taxa is decided in three steps, the last
+having the final word. LPSN's designation first, from the strain matching. Then
+the SeqCode: a genome typing a species valid under it (download_seqcode_data's
+seqcode_table.tsv, --seqcode_table) is a type strain of species, and the type
+species of its genus where the SeqCode says so. Then NCBI: a genome whose
+excluded_from_refseq says it is derived from a metagenome and not used as type
+is 'not used as type', with no sources and not the type species of its genus,
+gtdb_type_designation_notes saying which designation the rule overrode. The
+sources are those agreeing with the designation, 'LPSN' then 'SeqCode', joined
+by SOURCE_SEPARATOR.
+
+The last two steps were update_type_designation, run once the summary and the
+SeqCode table were loaded, rewriting the two fields in metadata_type_material
+from metadata_seqcode and metadata_ncbi. Deciding them here loads them once. It
+appended 'Seqcode' to the sources LPSN had given, so a genome LPSN made the type
+strain of a heterotypic synonym was 'LPSN;Seqcode' as a type strain of species;
+and a genome the NCBI rule made 'not used as type' kept its sources and its
+gtdb_type_species_of_genus. Over r237 the rule makes 20 genomes not used as
+type, 16 of them LPSN's type strains of species, 5 of those type species of
+their genus.
 
 A FAILURE FAILS THE COMMAND
 
@@ -78,14 +101,14 @@ import io
 import logging
 import multiprocessing as mp
 import re
-from collections import OrderedDict, defaultdict, namedtuple
+from collections import Counter, OrderedDict, defaultdict, namedtuple
 from typing import NamedTuple
 
 from tqdm import tqdm
 
 from gtdb_migration_tk.batching import read_genome_dirs
-from gtdb_migration_tk.ncbi_utils import (NCBI_NA, REFSEQ_PREFIX, read_assembly_summary,
-                                          strain_identifiers, strip_nomenclatural_code)
+from gtdb_migration_tk.ncbi_utils import (NCBI_NA, REFSEQ_PREFIX, read_summary_rows,
+                                          strain_identifiers, strip_nomenclatural_code, summary_field)
 from gtdb_migration_tk.taxon_utils import canonical_strain_id, check_format_strain
 
 
@@ -118,9 +141,32 @@ LPSN_TYPE_DESIGNATIONS = {'Type strain': 'type strain of species',
                           'Nomenclatural type': 'nomenclatural type of species'}
 
 
-# The columns of an assembly summary type_table reads, in this order.
+# The columns of an assembly summary type_table reads, in this order; each is
+# required, so a summary that lacks excluded_from_refseq cannot pass over NCBI's
+# exclusion of a metagenome unsaid.
 SUMMARY_COLUMNS = ('assembly_accession', 'taxid', 'organism_name', 'infraspecific_name',
-                   'isolate', 'relation_to_type_material')
+                   'isolate', 'relation_to_type_material', 'excluded_from_refseq')
+
+# The columns of download_seqcode_data's seqcode_table.tsv type_table reads, by
+# name: the release's genome typing each species, the species' status, and
+# whether it is the type species of its genus. A species whose status holds
+# SEQCODE_VALID is valid under the SeqCode, and its genome a type strain of species.
+SEQCODE_GENOME = 'seqcode_type_material_accn'
+SEQCODE_STATUS = 'seqcode_species_status'
+SEQCODE_TYPE_SPECIES_OF_GENUS = 'seqcode_type_species_of_genus'
+SEQCODE_VALID = 'Valid'
+
+# The sources of a type designation, as gtdb_type_designation_ncbi_taxa_sources
+# names them, joined by SOURCE_SEPARATOR.
+LPSN_SOURCE = 'LPSN'
+SEQCODE_SOURCE = 'SeqCode'
+SOURCE_SEPARATOR = '; '
+
+# NCBI's exclusion of a genome derived from a metagenome and not used as type:
+# such a genome is not used as type, whatever LPSN and the SeqCode say.
+NOT_USED_AS_TYPE = 'not used as type'
+NCBI_METAGENOME_EXCLUSIONS = ('derived from metagenome', 'not used as type')
+NCBI_METAGENOME_RULE = "NCBI's 'derived from metagenome; not used as type' rule"
 
 
 # The kinds of warning type_table gathers, in the order they are reported: what
@@ -131,6 +177,7 @@ SUBSPECIES_WITHOUT_SUBSP = 'subspecies_without_subsp'
 MULTIPLE_TYPE_SPECIES = 'multiple_type_species'
 MULTIPLE_PRIORITY_YEARS = 'multiple_priority_years'
 LPSN_STRAIN_LINE_WITHOUT_IDS = 'lpsn_strain_line_without_ids'
+SEQCODE_TYPE_NOT_IN_RELEASE = 'seqcode_type_not_in_release'
 WARNING_KINDS = OrderedDict((
     (NOT_CONSIDERED_TYPE,
      ("strain IDs names.dmp lists as type material but marks '<not considered type>', "
@@ -162,6 +209,11 @@ WARNING_KINDS = OrderedDict((
      ('lines of lpsn_strains.tsv with no strain IDs, ignored',
       "A line of lpsn_strains.tsv names a species and no strain IDs; there is nothing of it "
       "to match a genome to.")),
+    (SEQCODE_TYPE_NOT_IN_RELEASE,
+     ('genomes of the SeqCode table not in the release, passed over',
+      "seqcode_table.tsv names the genome as the type of a species valid under the SeqCode, "
+      "and the release's genome_dirs.tsv does not hold it: the table was made for another "
+      "release. Nothing is written for it.")),
 ))
 WARNINGS_NAME = 'type_table_warnings.tsv'
 
@@ -450,6 +502,8 @@ class Strains(object):
         ------
         StrainsError
             A genome of the release is in none of the summaries.
+        ncbi_utils.BadInput
+            A summary without a column of SUMMARY_COLUMNS.
         """
 
         release = {accession for accession, _ in read_genome_dirs(genome_dirs_file)}
@@ -458,8 +512,10 @@ class Strains(object):
         taxids = set()
         found = set()
         for summary in assembly_summary_files:
-            for (accession, taxid, organism_name, infraspecific_name,
-                 isolate, type_material) in read_assembly_summary(summary, *SUMMARY_COLUMNS):
+            for _, fields, columns in read_summary_rows(summary, required=SUMMARY_COLUMNS):
+                (accession, taxid, organism_name, infraspecific_name,
+                 isolate, type_material, excluded) = (summary_field(fields, columns, name)
+                                                      for name in SUMMARY_COLUMNS)
                 if accession not in release:
                     continue
                 found.add(accession)
@@ -473,6 +529,7 @@ class Strains(object):
                     'ncbi_strain_ids': ';'.join(strain_ids) or 'none',
                     'ncbi_standardised_strain_ids': standard_strain_ids,
                     'ncbi_type_material_designation': type_material,
+                    'ncbi_excluded_from_refseq': excluded,
                     'ncbi_taxid': int(taxid)}
                 taxids.add(int(taxid))
 
@@ -1263,12 +1320,67 @@ class Strains(object):
 
         return strain_info
 
+    def read_seqcode_types(self, seqcode_table):
+        """The genomes of the release typing a species valid under the SeqCode.
+
+        See TYPE MATERIAL UNDER THE SEQCODE. A genome the release does not hold
+        is a warning (SEQCODE_TYPE_NOT_IN_RELEASE) and passed over.
+
+        Parameters
+        ----------
+        seqcode_table : str
+            seqcode_table.tsv, from download_seqcode_data.
+
+        @return: GTDB accession -> whether the SeqCode makes its species the type
+                 species of its genus.
+
+        Raises
+        ------
+        StrainsError
+            The table lacks a column type_table reads.
+        """
+
+        types = {}
+        with open(seqcode_table, encoding='utf-8') as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+            missing = [c for c in (SEQCODE_GENOME, SEQCODE_STATUS, SEQCODE_TYPE_SPECIES_OF_GENUS)
+                       if c not in header]
+            if missing:
+                raise StrainsError('{} has no {} column(s): it is not a table of download_seqcode_data.'.format(
+                    seqcode_table, ', '.join(missing)))
+            genome_index = header.index(SEQCODE_GENOME)
+            status_index = header.index(SEQCODE_STATUS)
+            type_species_index = header.index(SEQCODE_TYPE_SPECIES_OF_GENUS)
+
+            for line in handle:
+                fields = line.rstrip('\n').split('\t')
+                if len(fields) < len(header) or SEQCODE_VALID not in fields[status_index]:
+                    continue
+                gid = gtdb_accession(fields[genome_index])
+                if gid not in self.metadata:
+                    self.notice(SEQCODE_TYPE_NOT_IN_RELEASE,
+                                '{} types a species valid under the SeqCode and is not in the release.'.format(
+                                    fields[genome_index]),
+                                fields[genome_index], genome=fields[genome_index])
+                    continue
+                types[gid] = fields[type_species_index] == 'True'
+
+        self.logger.info('{:,} genomes of the release type a species valid under the SeqCode, {:,} the type '
+                         'species of its genus.'.format(len(types), sum(types.values())))
+        return types
+
     def type_summary_table(self,
                            ncbi_authority,
                            lpsn_summary_file,
                            lpsn_type_species_of_genus,
+                           seqcode_types,
                            summary_table_file):
-        """Generate type strain summary file across all strain repositories."""
+        """Generate type strain summary file across all strain repositories.
+
+        A genome's designation is LPSN's, then the SeqCode's, then NCBI's
+        exclusion of a metagenome not used as type: see TYPE MATERIAL UNDER THE
+        SEQCODE.
+        """
 
         # parse strain repository files
         lpsn = self._parse_strain_summary(lpsn_summary_file)
@@ -1286,13 +1398,16 @@ class Strains(object):
         fout.write("\tgtdb_type_designation_ncbi_taxa\tgtdb_type_designation_ncbi_taxa_sources")
         fout.write(
             "\tlpsn_type_designation\tlpsn_priority_year")
-        fout.write("\tgtdb_type_species_of_genus\n")
+        fout.write("\tgtdb_type_species_of_genus\tgtdb_type_designation_notes\n")
 
         missing_type_at_ncbi = 0
         missing_type_at_gtdb = 0
         agreed_type_of_species = 0
         agreed_type_of_subspecies = 0
         num_type_species_of_genus = 0
+        seqcode_only = 0
+        not_used_as_type = 0
+        overridden = Counter()
         for gid, metadata in self.metadata.items():
 
             fout.write(gid)
@@ -1313,27 +1428,49 @@ class Strains(object):
                     highest_priority_designation = sr[gid].type_designation
                 if highest_priority_designation == self.NOMENCLATURAL_TYPE or highest_priority_designation == self.HOLOTYPE:
                     highest_priority_designation = self.TYPE_SPECIES
-            fout.write('\t{}'.format(highest_priority_designation))
+            # a species valid under the SeqCode makes its genome a type strain of species
+            in_seqcode = gid in seqcode_types
+            if in_seqcode:
+                if highest_priority_designation != self.TYPE_SPECIES:
+                    seqcode_only += 1
+                highest_priority_designation = self.TYPE_SPECIES
 
             type_species_of_genus = False
             canonical_sp_name = ' '.join(species_name.split()[0:2])
             if (highest_priority_designation == 'type strain of species' and
-                    (species_name in lpsn_type_species_of_genus or canonical_sp_name in lpsn_type_species_of_genus )):
+                    (species_name in lpsn_type_species_of_genus or canonical_sp_name in lpsn_type_species_of_genus
+                     or seqcode_types.get(gid, False))):
                 type_species_of_genus = True
-                num_type_species_of_genus += 1
 
             gtdb_type_sources = []
-            for sr_id, sr in [('LPSN', lpsn)]:
+            for sr_id, sr in [(LPSN_SOURCE, lpsn)]:
                 if gid in sr and sr[gid].type_designation == highest_priority_designation:
                     gtdb_type_sources.append(sr_id)
                 elif (gid in sr and sr[gid].type_designation in (self.TYPE_SPECIES,self.NOMENCLATURAL_TYPE,self.HOLOTYPE) and
                     highest_priority_designation == self.TYPE_SPECIES):
                     gtdb_type_sources.append(sr_id)
-            fout.write('\t{}'.format('; '.join(gtdb_type_sources)))
+            if in_seqcode:
+                gtdb_type_sources.append(SEQCODE_SOURCE)
+
+            # NCBI's exclusion of a metagenome not used as type overrides them all
+            notes = ''
+            excluded = metadata['ncbi_excluded_from_refseq']
+            if all(exclusion in excluded for exclusion in NCBI_METAGENOME_EXCLUSIONS):
+                not_used_as_type += 1
+                overridden.update(gtdb_type_sources)
+                notes = '{} {}.'.format(NCBI_METAGENOME_RULE, 'overrides ' + ' and '.join(gtdb_type_sources)
+                                        if gtdb_type_sources else 'applies')
+                highest_priority_designation = NOT_USED_AS_TYPE
+                gtdb_type_sources = []
+                type_species_of_genus = False
+            num_type_species_of_genus += type_species_of_genus
+
+            fout.write('\t{}'.format(highest_priority_designation))
+            fout.write('\t{}'.format(SOURCE_SEPARATOR.join(gtdb_type_sources)))
 
             fout.write('\t{}'.format(lpsn[gid].type_designation if gid in lpsn else self.NOT_TYPE_MATERIAL))
             fout.write('\t{}'.format(lpsn[gid].priority_year if gid in lpsn else ''))
-            fout.write('\t{}\n'.format(type_species_of_genus))
+            fout.write('\t{}\t{}\n'.format(type_species_of_genus, notes))
 
             # NCBI's null, NCBI_NA, where it gives no type material status; these
             # counts compared with 'none', which it never holds, so counted nothing
@@ -1354,6 +1491,12 @@ class Strains(object):
 
         self.logger.info(
             'Identified {:,} genomes designated as the type species of genus.'.format(num_type_species_of_genus))
+        self.logger.info('The SeqCode makes {:,} genomes a type strain of species that LPSN does not.'.format(
+            seqcode_only))
+        self.logger.info('{} makes {:,} genomes not used as type, overriding {}.'.format(
+            NCBI_METAGENOME_RULE, not_used_as_type,
+            ', '.join('{} for {:,}'.format(source, overridden[source])
+                      for source in (LPSN_SOURCE, SEQCODE_SOURCE) if overridden[source]) or 'neither LPSN nor the SeqCode'))
         self.logger.info(
             'Genomes that appear to have missing type species information at NCBI: {:,}'.format(missing_type_at_ncbi))
         self.logger.info(
@@ -1404,13 +1547,20 @@ class Strains(object):
                                    ncbi_nodes_file,
                                    lpsn_gss_file,
                                    lpsn_dir,
-                                   year_table):
-        """Parse multiple sources to identify genomes assembled from type material."""
+                                   year_table,
+                                   seqcode_table):
+        """Parse multiple sources to identify genomes assembled from type material.
+
+        seqcode_table is download_seqcode_data's seqcode_table.tsv of the release.
+        """
 
         # initialize data being parsed from file
         self.logger.info('Reading the genomes of the release and their NCBI assembly data.')
         self.metadata, taxids_of_interest = self.load_genomes(genome_dirs_file,
                                                               assembly_summary_files)
+
+        self.logger.info('Reading the genomes typing species valid under the SeqCode.')
+        seqcode_types = self.read_seqcode_types(seqcode_table)
 
         self.logger.info('Parsing year table.')
         self.lpsn_year_table = self.load_year_dict(year_table)
@@ -1485,6 +1635,7 @@ class Strains(object):
         self.type_summary_table(ncbi_authority,
                                 lpsn_summary_file,
                                 lpsn_type_species_of_genus,
+                                seqcode_types,
                                 summary_table_file)
 
         self.report_notices(self.output_dir)

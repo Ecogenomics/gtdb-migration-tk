@@ -1,0 +1,20 @@
+seqcode_id	Id for the record in Seqcode	INTEGER	metadata_seqcode
+seqcode_name	Species name	TEXT	metadata_seqcode
+seqcode_rank	Rank of the seqcode record	TEXT	metadata_seqcode
+seqcode_species_status	Status of species name	TEXT	metadata_seqcode
+seqcode_genus_status	Status of the genus for this record	TEXT	metadata_seqcode
+seqcode_family_status	Status of the family for this record	TEXT	metadata_seqcode
+seqcode_order_status	Status of the order for this record	TEXT	metadata_seqcode
+seqcode_class_status	Status of the class for this record	TEXT	metadata_seqcode
+seqcode_phylum_status	Status of the phylum for this record	TEXT	metadata_seqcode
+seqcode_type_species_of_genus	determined by checking if the type_accession in the genus record matches the id field of the species	BOOLEAN	metadata_seqcode
+seqcode_type_genus_of_family	determined by checking if the type_accession in the family record matches the id field of the genus	BOOLEAN	metadata_seqcode
+seqcode_type_genus_of_order	determined by checking if the type_accession in the order record matches the id field of the genus	BOOLEAN	metadata_seqcode
+seqcode_type_genus_of_class	determined by checking if the type_accession in the class record matches the id field of the genus	BOOLEAN	metadata_seqcode
+seqcode_type_genus_of_phylum	determined by checking if the type_accession in the phylum record matches the id field of the genus	BOOLEAN	metadata_seqcode
+seqcode_classification	Standardised Seqcode Classification for the record	TEXT	metadata_seqcode
+seqcode_proposed_by	Name proposed by	TEXT	metadata_seqcode
+seqcode_created_at	When was the record created	TEXT	metadata_seqcode
+seqcode_updated_at	When was the record last updated	TEXT	metadata_seqcode
+seqcode_url	URL for the specific record	TEXT	metadata_seqcode
+seqcode_priority_date	Priority date	TEXT	metadata_seqcode
