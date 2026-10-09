@@ -45,13 +45,30 @@ batch's genomes are aligned to a marker by one hmmalign. Over 200 r237 genomes
 and 908 genes of five markers, every alignment is the one hmmalign gives the gene
 alone.
 
-WHICH GENOMES
---new_genomes are the NCBI genomes of the database with no row in aligned_markers
-for any marker of the sets: those update_db added, and those whose sequences
-changed, whose rows update_db removes. A genome with rows for some markers of
-the sets is not one of them. --all_genomes is every NCBI genome of the database,
-its rows of those markers written again. The gtdb package also required
-gtdb_representative to be set, which update_propagated_tax sets for every genome.
+WHICH GENOMES, AND WHICH OF THEIR MARKERS
+--new_genomes aligns, for each NCBI genome of the database, the markers of the
+sets it has no row in aligned_markers for. A marker is aligned for a genome once:
+the row is written whether or not a gene names it, a row of gaps where none does,
+so no row means never aligned, and a row of gaps is never aligned again. That is
+every marker of the genomes update_db added, and of those whose sequences
+changed, whose rows update_db removes; and the markers of a set not aligned
+before, for every genome -- r237's 1,346,116 had rows for bac120 and ar53 (sets 1
+and 19) and none for 24 of the 26 markers the ribosomal-protein sets 11, 12 and 13
+add to them. Sets sharing a marker share its row. Until 0.1.69 it took the
+genomes with no row for any marker of the sets, so a set added to a run aligned
+nothing. --all_genomes is every NCBI genome of the database, every marker of the
+sets written again. The gtdb package also required gtdb_representative to be
+set, which update_propagated_tax sets for every genome.
+
+Which genomes have a marker to align is asked once, when the batches are
+planned, by walking the genomes' rows in ranges of genome ids through
+aligned_markers' primary key (SELECTION_GENOME_IDS), with a bar of how far it is:
+over r237, about 12 minutes. One query took 15, a parallel scan of the table with
+nothing to say how far it was; one a genome did not end in 9. A run that finds
+the batches planned does not ask again. Which markers each genome of a batch
+lacks is asked as the batch starts, of its genomes alone (3 to 11 s for 1,000),
+so a batch run again, or finished by another machine, writes only what is still
+missing.
 
 MISSING FILES
 A genome without called proteins (prodigal/<gid>_protein.faa.gz) cannot be
@@ -80,6 +97,8 @@ it commits: a genome has all its rows or none, and a batch stopped between the
 two is done again, its rows written again as they were.
 """
 
+import bisect
+import contextlib
 import io
 import logging
 import multiprocessing as mp
@@ -87,12 +106,13 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from gtdb_migration_tk.batching import (CLAIM_LEASE_SECONDS, HEARTBEAT_SECONDS, RUNNING_CANARY,
-                                        STATE_SUCCESS, BatchLayout, Heartbeat, age_phrase, batch_log,
-                                        batch_state, claim_age, claim_batch, fail_batch, finish_batch,
+                                        STATE_SUCCESS, BatchLayout, Heartbeat, age_phrase, batch_dir_names,
+                                        batch_log, batch_state, claim_age, claim_batch, fail_batch, finish_batch,
                                         plan_batches, read_batchfile, read_canary, read_genome_dirs,
                                         release_claim, write_table)
 from gtdb_migration_tk.biolib_lite.common import make_sure_path_exists
@@ -100,6 +120,8 @@ from gtdb_migration_tk.biolib_lite.external.execute import check_dependencies
 from gtdb_migration_tk.config import MARKER_DIR_SUFFIX, PFAM_VERSION, TIGRFAM_VERSION
 from gtdb_migration_tk.database_configuration import GenomeDatabaseConnectionFTPUpdate
 from gtdb_migration_tk.utils.common import open_text, protein_fasta, record_program_version, write_version_file
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 BATCHFILE_NAME = 'align_marker_genes_batchfile.tsv.gz'
 BATCH_LOG_NAME = 'align_marker_genes.log'
@@ -132,6 +154,13 @@ GAP = '-'
 RF_LINE = '#=GC RF'
 MATCH_STATE = 'x'
 
+# how many rows of the markers each genome of a range of genome ids has
+MARKERS_HELD = ('SELECT genome_id, count(*) FROM aligned_markers WHERE genome_id >= %s AND genome_id < %s '
+                'AND marker_id = ANY(%s) GROUP BY genome_id')
+
+# the rows of the markers the genomes of a batch have
+ROWS_HELD = 'SELECT genome_id, marker_id FROM aligned_markers WHERE genome_id = ANY(%s) AND marker_id = ANY(%s)'
+
 # the batch's rows, copied into this temporary table and written in one statement
 NEW_ROWS_TABLE = 'gtdb_new_aligned_markers'
 ALIGNED_COLUMNS = ('genome_id', 'marker_id', 'sequence', 'multiple_hits', 'evalue', 'bitscore',
@@ -139,6 +168,10 @@ ALIGNED_COLUMNS = ('genome_id', 'marker_id', 'sequence', 'multiple_hits', 'evalu
 
 # how many genomes or problems an error names
 EXAMPLES = 10
+
+# genomes.id per query when finding the genomes with a marker to align: a range
+# of the primary key (genome_id, marker_id), read in order
+SELECTION_GENOME_IDS = 10000
 
 
 class AlignmentError(ValueError):
@@ -262,7 +295,7 @@ def read_genome(job: Tuple[str, str, Tuple[Tuple[str, Tuple[str, ...]], ...]]):
         A top-hit table names a gene the proteins do not hold.
     """
 
-    accession, proteins_path, by_database = job
+    accession, proteins_path, databases = job
     if not os.path.isfile(proteins_path):
         return accession, None, ()
 
@@ -271,7 +304,7 @@ def read_genome(job: Tuple[str, str, Tuple[Tuple[str, Tuple[str, ...]], ...]]):
     prodigal_dir = os.path.dirname(proteins_path)
     tables: List[Tuple[str, Dict[str, List[Tuple[str, str, float]]]]] = []
     missing: List[str] = []
-    for database, markers in by_database:
+    for database, markers in databases:
         path = tophit_file(prodigal_dir, accession, database)
         try:
             tables.append((path, read_tophits(path, set(markers))))
@@ -370,6 +403,17 @@ def copy_text(value) -> str:
     if isinstance(value, bool):
         return 't' if value else 'f'
     return str(value).replace('\\', '\\\\').replace('\t', '\\t').replace('\n', '\\n').replace('\r', '\\r')
+
+
+def by_database(markers: Sequence[Marker]) -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
+    """Markers grouped by the marker database whose top-hit table names them.
+
+    @return: ((database, (marker accession, ...)), ...), only the databases with
+             a marker, so a genome is not asked for a table it needs nothing from.
+    """
+
+    return tuple((database, tuple(m.accession for m in markers if m.database == database))
+                 for database in MARKER_DATABASES if any(m.database == database for m in markers))
 
 
 class MarkerAlignmentManager(object):
@@ -474,23 +518,64 @@ class MarkerAlignmentManager(object):
             len(markers), ', '.join('{:,} {}'.format(n, MARKER_DATABASES[d][0]) for d, n in counts.items())))
         return markers
 
-    def select_genomes(self, markers: Sequence[Marker], all_genomes: bool) -> Dict[str, int]:
-        """The NCBI genomes to align, by accession.
+    def ncbi_genomes(self) -> Dict[str, int]:
+        """Every NCBI genome of the database, by accession.
 
         @return: genomes.id_at_source -> genomes.id.
         """
 
-        if all_genomes:
-            self.temp_cur.execute('SELECT g.id_at_source, g.id FROM genomes g WHERE g.genome_source_id <> %s',
-                                  (USER_GENOME_SOURCE,))
-        else:
-            self.temp_cur.execute(
-                'SELECT g.id_at_source, g.id FROM genomes g WHERE g.genome_source_id <> %s AND NOT EXISTS '
-                '(SELECT 1 FROM aligned_markers am WHERE am.genome_id = g.id AND am.marker_id = ANY(%s))',
-                (USER_GENOME_SOURCE, [m.db_id for m in markers]))
+        self.temp_cur.execute('SELECT g.id_at_source, g.id FROM genomes g WHERE g.genome_source_id <> %s',
+                              (USER_GENOME_SOURCE,))
         genomes = dict(self.temp_cur.fetchall())
         self.temp_con.rollback()
         return genomes
+
+    def genomes_missing_markers(self, markers: Sequence[Marker], genomes: Dict[str, int]) -> List[str]:
+        """The genomes with no row in aligned_markers for at least one of the markers.
+
+        The rows are counted a range of SELECTION_GENOME_IDS genome ids at a time,
+        read in order from aligned_markers' primary key, with a bar of how far it
+        is and a line of the log each tenth: PostgreSQL says nothing of a query's
+        progress.
+
+        Parameters
+        ----------
+        markers : sequence of Marker
+            The markers to align.
+        genomes : dict
+            genomes.id_at_source -> genomes.id, of the genomes to consider.
+
+        @return: the accessions, sorted.
+        """
+
+        accession_of = {genome_id: accession for accession, genome_id in genomes.items()}
+        ids = sorted(accession_of)
+        marker_ids = [m.db_id for m in markers]
+        missing: List[str] = []
+        if not ids:
+            return missing
+
+        starts = list(range(ids[0], ids[-1] + 1, SELECTION_GENOME_IDS))
+        self.logger.info('Finding the genomes with a marker to align: {:,} genomes, {:,} markers, read in {:,} '
+                         'ranges of genome ids.'.format(len(ids), len(marker_ids), len(starts)))
+        started = time.time()
+        silent = getattr(self.logger, 'is_silent', False)
+        with tqdm(total=len(ids), ncols=100, leave=False, unit=' genomes', desc='Finding missing markers',
+                  disable=True if silent else None) as progress, \
+                (contextlib.nullcontext() if progress.disable else logging_redirect_tqdm([self.logger])):
+            for part, low in enumerate(starts):
+                high = low + SELECTION_GENOME_IDS
+                self.temp_cur.execute(MARKERS_HELD, (low, high, marker_ids))
+                held = dict(self.temp_cur.fetchall())
+                in_range = ids[bisect.bisect_left(ids, low):bisect.bisect_left(ids, high)]
+                missing.extend(accession_of[g] for g in in_range if held.get(g, 0) < len(marker_ids))
+                progress.update(len(in_range))
+                if (part + 1) * 10 // len(starts) > part * 10 // len(starts) and part + 1 < len(starts):
+                    self.logger.info('Read the rows of {}% of the genomes in {:.1f} min.'.format(
+                        (part + 1) * 100 // len(starts), (time.time() - started) / 60))
+        self.temp_con.rollback()
+        self.logger.info('Read the rows of every genome in {:.1f} min.'.format((time.time() - started) / 60))
+        return sorted(missing)
 
     def run(self, marker_set_ids: Sequence[int], all_genomes: bool, gtdb_genome_path_file: str,
             out_dir: str) -> bool:
@@ -501,8 +586,8 @@ class MarkerAlignmentManager(object):
         marker_set_ids : sequence of int
             The marker sets whose markers are aligned (marker_sets.id).
         all_genomes : bool
-            Every NCBI genome of the database (--all_genomes), else only those
-            with no row for any of the markers (--new_genomes).
+            Every marker of every NCBI genome of the database (--all_genomes),
+            else each genome's markers it has no row for (--new_genomes).
         gtdb_genome_path_file : str
             genome_dirs file of the release, which says where each genome is.
         out_dir : str
@@ -523,30 +608,37 @@ class MarkerAlignmentManager(object):
         make_sure_path_exists(out_dir)
         markers = self.read_markers(marker_set_ids)
         self.hmmalign_version = record_program_version(HMMALIGN)
-
-        genomes = self.select_genomes(markers, all_genomes)
-        self.logger.info('{:,} NCBI genome(s) of the database to align ({}).'.format(
-            len(genomes), '--all_genomes' if all_genomes else 'with no row for any of the markers'))
-
-        located = {accession for accession, _ in read_genome_dirs(gtdb_genome_path_file)}
-        unlocated = sorted(set(genomes) - located)
-        if unlocated:
-            path = os.path.join(out_dir, 'not_in_genome_dirs.tsv')
-            write_table([(g,) for g in unlocated], path, ('genome_id',))
-            raise AlignmentError('{:,} genome(s) to align are not in {}, e.g. {}; it is not the genome_dirs '
-                                 'file of the database\'s release. Every one is in {}.'.format(
-                                     len(unlocated), gtdb_genome_path_file, ', '.join(unlocated[:EXAMPLES]),
-                                     path))
-        if not genomes:
-            self.logger.info('There are no genomes to align.')
-            return True
+        genomes = self.ncbi_genomes()
 
         # one set of batches for each choice of sets and genomes: the SUCCESS of a
         # batch of other markers, or of new genomes only, says nothing of this run's
         state_dir = os.path.join(out_dir, 'marker_sets_{}_{}'.format(
             '_'.join(str(i) for i in sorted(set(marker_set_ids))), 'all' if all_genomes else 'new'))
+
+        # which genomes have a marker to align is asked only to plan the batches;
+        # a run that finds them planned takes the plan, and each batch asks of its
+        # own genomes as it starts
+        to_align: Optional[List[str]] = None
+        if not batch_dir_names(state_dir, LAYOUT):
+            to_align = sorted(genomes) if all_genomes else self.genomes_missing_markers(markers, genomes)
+            self.logger.info('{:,} of the {:,} NCBI genome(s) of the database have a marker to align ({}).'.format(
+                len(to_align), len(genomes), '--all_genomes' if all_genomes else 'with no row for it'))
+
+            located = {accession for accession, _ in read_genome_dirs(gtdb_genome_path_file)}
+            unlocated = sorted(set(to_align) - located)
+            if unlocated:
+                path = os.path.join(out_dir, 'not_in_genome_dirs.tsv')
+                write_table([(g,) for g in unlocated], path, ('genome_id',))
+                raise AlignmentError('{:,} genome(s) to align are not in {}, e.g. {}; it is not the genome_dirs '
+                                     'file of the database\'s release. Every one is in {}.'.format(
+                                         len(unlocated), gtdb_genome_path_file, ', '.join(unlocated[:EXAMPLES]),
+                                         path))
+            if not to_align:
+                self.logger.info('There are no genomes to align.')
+                return True
+
         batches = plan_batches(gtdb_genome_path_file, state_dir, self.batch_size, LAYOUT, self.logger,
-                               genome_file=protein_fasta, accessions=genomes)
+                               genome_file=protein_fasta, accessions=to_align)
 
         done, held, failed = 0, 0, 0
         for index, batch_dir in enumerate(batches, start=1):
@@ -566,7 +658,8 @@ class MarkerAlignmentManager(object):
                 self.logger.info('{}: starting.'.format(label))
                 try:
                     with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY), self.heartbeat):
-                        aligned, no_proteins, no_tophits = self.align_batch(batch_dir, markers, genomes)
+                        aligned, held_all, no_proteins, no_tophits = self.align_batch(
+                            batch_dir, markers, genomes, all_genomes)
                 except KeyboardInterrupt:
                     self.temp_con.rollback()
                     release_claim(batch_dir)
@@ -580,11 +673,12 @@ class MarkerAlignmentManager(object):
                     self.logger.error('{}: failed, nothing of it written, and will be retried by a later run: '
                                       '{}'.format(label, exc))
                     continue
-                finish_batch(batch_dir, aligned=aligned, missing_protein_file=no_proteins,
-                             missing_tophit_file=no_tophits)
+                finish_batch(batch_dir, aligned=aligned, already_aligned=held_all,
+                             missing_protein_file=no_proteins, missing_tophit_file=no_tophits)
                 done += 1
-                self.logger.info('{}: done, {:,} genome(s) aligned, {:,} without a protein file, {:,} without '
-                                 'a top-hit table.'.format(label, aligned, no_proteins, no_tophits))
+                self.logger.info('{}: done, {:,} genome(s) aligned, {:,} with a row for every marker already, '
+                                 '{:,} without a protein file, {:,} without a top-hit table.'.format(
+                                     label, aligned, held_all, no_proteins, no_tophits))
 
         self.logger.info('{:,} batch(es) finished here, {:,} held by another machine, {:,} failed.'.format(
             done, held, failed))
@@ -597,18 +691,47 @@ class MarkerAlignmentManager(object):
             return False
         return True
 
-    def align_batch(self, batch_dir: str, markers: Sequence[Marker],
-                    genomes: Dict[str, int]) -> Tuple[int, int, int]:
+    def batch_markers(self, accessions: Sequence[str], markers: Sequence[Marker], genomes: Dict[str, int],
+                      all_genomes: bool) -> Dict[str, List[Marker]]:
+        """The markers to align for each genome of a batch.
+
+        Asked in the batch's transaction, of its genomes alone: a batch run again,
+        or whose genomes another run has aligned since it was planned, aligns only
+        the markers still without a row.
+
+        @return: accession -> markers, for each genome with a marker to align.
+        """
+
+        if all_genomes:
+            return {accession: list(markers) for accession in accessions}
+        self.temp_cur.execute(ROWS_HELD, ([genomes[a] for a in accessions], [m.db_id for m in markers]))
+        held = set(self.temp_cur.fetchall())
+        wanted = {}
+        for accession in accessions:
+            lacking = [m for m in markers if (genomes[accession], m.db_id) not in held]
+            if lacking:
+                wanted[accession] = lacking
+        return wanted
+
+    def align_batch(self, batch_dir: str, markers: Sequence[Marker], genomes: Dict[str, int],
+                    all_genomes: bool = False) -> Tuple[int, int, int, int]:
         """Align one batch's genomes and write their rows, in one transaction.
 
-        @return: (genomes aligned, genomes without a protein file, genomes with
-                 proteins and without a top-hit table).
+        @return: (genomes aligned, genomes with a row for every marker already,
+                 genomes without a protein file, genomes with proteins and without
+                 a top-hit table).
         """
 
         rows = read_batchfile(os.path.join(batch_dir, BATCHFILE_NAME))
-        by_database = tuple((database, tuple(m.accession for m in markers if m.database == database))
-                            for database in MARKER_DATABASES if any(m.database == database for m in markers))
-        jobs = [(accession, proteins, by_database) for proteins, accession in rows]
+        not_held = sorted(accession for _, accession in rows if accession not in genomes)
+        if not_held:
+            self.logger.warning('{:,} genome(s) of the batch are no longer NCBI genomes of the database and are '
+                                'passed over: {}.'.format(len(not_held), ', '.join(not_held[:EXAMPLES])))
+        rows = [(proteins, accession) for proteins, accession in rows if accession in genomes]
+        wanted = self.batch_markers([accession for _, accession in rows], markers, genomes, all_genomes)
+        held_all = len(rows) - len(wanted)
+        jobs = [(accession, proteins, by_database(wanted[accession])) for proteins, accession in rows
+                if accession in wanted]
 
         chosen: Dict[str, Dict[str, ChosenGene]] = {}
         missing: List[str] = []
@@ -650,25 +773,28 @@ class MarkerAlignmentManager(object):
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
-        written = self.write_rows(markers, genomes, order, chosen, alignments)
+        written = self.write_rows(markers, genomes, order, chosen, alignments, wanted)
         self.temp_con.commit()
-        write_version_file(batch_dir, HMMALIGN, self.hmmalign_version)
+        if any(alignments.values()):
+            # not where hmmalign was not run: every marker held, or no gene for one
+            write_version_file(batch_dir, HMMALIGN, self.hmmalign_version)
         self.logger.info('Wrote {:,} rows of aligned_markers for {:,} genome(s).'.format(written, len(order)))
-        return len(order), len(missing), len(no_tophits)
+        return len(order), held_all, len(missing), len(no_tophits)
 
     def write_rows(self, markers: Sequence[Marker], genomes: Dict[str, int], order: Sequence[str],
-                   chosen: Dict[str, Dict[str, ChosenGene]], alignments: Dict[str, Dict[str, str]]) -> int:
+                   chosen: Dict[str, Dict[str, ChosenGene]], alignments: Dict[str, Dict[str, str]],
+                   wanted: Optional[Dict[str, List[Marker]]] = None) -> int:
         """Write a batch's rows of aligned_markers, in the caller's transaction.
 
-        Every marker of every genome is given a row, a marker the genome has no
-        gene for a row of gaps.
+        Every marker each genome was to have aligned (wanted, else every marker)
+        is given a row, a marker the genome has no gene for a row of gaps.
 
         @return: the number of rows written.
         """
 
         def lines():
             for i, accession in enumerate(order):
-                for marker in markers:
+                for marker in (markers if wanted is None else wanted[accession]):
                     gene = chosen[accession].get(marker.accession)
                     if gene is None:
                         values = (genomes[accession], marker.db_id, GAP * marker.size, False,

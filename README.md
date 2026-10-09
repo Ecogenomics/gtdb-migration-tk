@@ -661,13 +661,20 @@ marker table, and the run met that one call later as a `FileNotFoundError` on th
 table in a worker.
 
 `align_marker_genes` aligns the markers of the marker sets it is given
-(`--marker_set_ids`, `marker_sets.id`: 1 = bac120, 2 = ar122, 19 = ar53) for the NCBI
-genomes of the database and writes them to `aligned_markers`, which GTDB's MSAs and
-trees are built from. It was `gtdb -r power realign_updated_genomes` of the gtdb
-package until 0.1.66. `--new_genomes` aligns the genomes with no row for any of the
-markers -- those `update_db` added, and those whose sequences changed, whose rows
-it removes; `--all_genomes` aligns every NCBI genome again, rewriting its rows,
-which is rarely wanted. One of the two is required. HMMER's `hmmalign` must be on
+(`--marker_set_ids`, `marker_sets.id`: 1 = bac120, 2 = ar122, 19 = ar53, 11 = rp2,
+12 = rp1_bac, 13 = rp1_ar) for the NCBI genomes of the database and writes them to
+`aligned_markers`, which GTDB's MSAs and trees are built from. It was
+`gtdb -r power realign_updated_genomes` of the gtdb package until 0.1.66.
+`--new_genomes` aligns, for each genome, the markers of the sets it has no row
+for: every marker of the genomes `update_db` added, and of those whose sequences
+changed, whose rows it removes; and a set's markers for every genome they were
+never aligned for. A marker is aligned for a genome once, its row written whether
+or not a gene names it (a row of gaps where none does), so no row means never
+aligned and a row of gaps is not aligned again; sets sharing a marker share its
+row. Until 0.1.69 it took the genomes with no row for any marker of the sets, so
+a set added to a run aligned nothing. `--all_genomes` aligns every marker of every
+NCBI genome again, rewriting its rows, which is rarely wanted. One of the two is
+required. HMMER's `hmmalign` must be on
 `PATH`, 3.2 or later: over 4,400 genomes added from 2015 to 2025, hmmalign 3.2.1, 3.3,
 3.3.2 and 3.4 each rebuild all 520,859 rows of `aligned_markers` compared, and
 3.1b1 and 3.1b2 differ in about 250 (TIGRFAM markers alone, 5% of genomes). The
@@ -677,6 +684,16 @@ which is rarely wanted. One of the two is required. HMMER's `hmmalign` must be o
 gtdb_migration_tk align_marker_genes --db_service gtdb_r237 --marker_set_ids 1 2 --new_genomes \
     -g genome_dirs.tsv -o align_marker_genes -l align_marker_genes/align.log -c 16
 ```
+
+Which genomes have a marker to align is asked once, when the batches are planned:
+their rows are counted 10,000 genome ids at a time through `aligned_markers`'
+primary key, with a bar and a line of the log each tenth. A run that finds the
+batches planned takes the plan; each batch asks which markers its own genomes
+lack as it starts, so a batch run again aligns only what is still missing. Over
+`gtdb_r237_dev` with sets 1, 11, 12, 13 and 19 (194 markers), finding the
+genomes takes 12 minutes -- every one of the 1,346,116 lacks the 24 or 26
+ribosomal-protein markers bac120 and ar53 do not hold -- and a batch's check 3 to
+5 seconds.
 
 For each marker the gene of the genome's top-hit table
 (`prodigal/<marker dir>/<gid>_<marker dir>_tophit.tsv.gz`) naming it with the
