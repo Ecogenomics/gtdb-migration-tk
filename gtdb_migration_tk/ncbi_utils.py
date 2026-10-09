@@ -581,6 +581,34 @@ def table_header(*columns: str) -> str:
     return '#' + '\t'.join(columns)
 
 
+# Values of excluded_from_refseq marking an assembly as one of the thousands of
+# near-identical isolates NCBI sequences for outbreak and pathogen surveillance.
+#
+# NCBI renamed this annotation: summary files written before the change carry
+# 'derived from surveillance project', and those written after it carry 'large
+# multi-isolate project', for the same genomes. Both are matched, so a selection
+# made from an archived set of summary files excludes what a selection made from
+# a current set excludes. The column holds several such annotations separated by
+# semicolons, hence the substring test. select_genomes leaves these genomes out of
+# a release, and add_surveillance_genomes lists them in the database's
+# survey_genomes; one rule, so the two cannot disagree.
+MULTI_ISOLATE_TAGS = ('large multi-isolate project', 'surveillance')
+
+
+def is_multi_isolate(excluded_from_refseq: str) -> bool:
+    """Report whether an assembly belongs to a large multi-isolate project.
+
+    Parameters
+    ----------
+    excluded_from_refseq : str
+        Value of the excluded_from_refseq column of an assembly summary file.
+
+    @return: True if the assembly is annotated as part of such a project.
+    """
+
+    return any(tag in excluded_from_refseq for tag in MULTI_ISOLATE_TAGS)
+
+
 def has_ftp_path(ftp_path: str) -> bool:
     """Report whether NCBI serves a directory for an assembly.
 

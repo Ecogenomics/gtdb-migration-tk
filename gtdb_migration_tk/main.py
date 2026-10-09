@@ -34,6 +34,7 @@ from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager,
 from gtdb_migration_tk.metadata_manager import EmptyGenomeDirs, MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeCategoryError, GenomeType
+from gtdb_migration_tk.ncbi_utils import BadInput
 from gtdb_migration_tk.ncbi_strain_summary import NCBIStrainParser
 from gtdb_migration_tk.ncbi_genome_sync import NCBIGenomeSync
 from gtdb_migration_tk.ncbi_metadata_sync import NCBIMetadataSync
@@ -425,8 +426,15 @@ class OptionsParser():
             sys.exit(1)
 
     def add_surveillance_genomes(self, options):
+        for assembly_summary in options.new_list_genomes:
+            check_file_exists(assembly_summary)
         p = MetadataDatabaseManager(database_keywords(options))
-        p.add_surveillance_genomes(options.genome_list)
+        try:
+            p.add_surveillance_genomes(options.new_list_genomes)
+        except (MetadataTableError, BadInput) as exc:
+            # the files to put right, said in one line; nothing was written
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def add_names_dmp(self, options):
         p = TaxonomyNCBI()

@@ -700,10 +700,6 @@ def __ssu_version(group, required):
     group.add_argument('-v', '--ssu_version', help='SSU version to use.', required=required)
 
 
-def __surveillance_list(group, required):
-    group.add_argument('--genome_list', required=required, help='Surveillance genomes.')
-
-
 def __taxonomy_directory(group, required):
     group.add_argument('-t', '--taxonomy_dir', required=required,
                        help='Directory containing NCBI taxonomy files (dmp files).')
@@ -1229,10 +1225,13 @@ def get_main_parser():
 
 
     # # Update surveillance genome list
-    with subparser(sub_parsers, 'add_surveillance_genomes', 'Add surveillance genome to a table in GTDB.') as parser:
+    with subparser(sub_parsers, 'add_surveillance_genomes',
+                   "Replace the database's surveillance genomes with those NCBI's assembly summaries "
+                   "mark as of a large multi-isolate or surveillance project.") as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __database_setup(grp)
-            __surveillance_list(grp, required=True)
+            __new_list_genomes(grp, required=True)
+            __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 
