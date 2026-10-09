@@ -56,21 +56,10 @@ from gtdb_migration_tk.biolib_lite.common import canonical_gid
 from gtdb_migration_tk.ncbi_utils import (
     GENBANK, GENBANK_PREFIX, GENOME_COLUMNS, NCBI_DATABASES, NCBI_NA, REFSEQ,
     REFSEQ_PREFIX, assembly_summary_database, count_summary_rows, has_ftp_path,
-    read_assembly_summary, table_header)
+    is_multi_isolate, read_assembly_summary, table_header)
 from gtdb_migration_tk.utils.common import (DEFAULT_MAX_GENOME_SIZE,
                                             DEFAULT_MIN_GENOME_SIZE, KBP, MBP)
 
-
-# Values of excluded_from_refseq marking an assembly as one of the thousands of
-# near-identical isolates NCBI sequences for outbreak and pathogen surveillance.
-#
-# NCBI renamed this annotation: summary files written before the change carry
-# 'derived from surveillance project', and those written after it carry 'large
-# multi-isolate project', for the same genomes. Both are matched, so a selection
-# made from an archived set of summary files excludes what a selection made from
-# a current set excludes. The column holds several such annotations separated by
-# semicolons, hence the substring test.
-MULTI_ISOLATE_TAGS = ('large multi-isolate project', 'surveillance')
 
 # Placeholder for the notes column of the selected genome table: NCBI's own
 # null, so the table reads like the summary files it was made from.
@@ -107,20 +96,6 @@ SIZE_FILTERED_FILE = 'genomes_filtered_by_size.tsv'
 SIZE_FILTERED_HEADER = ('genome_id', GENOME_SIZE_COLUMN, 'reason')
 REASON_GENOME_TOO_SMALL = 'genome_too_small'
 REASON_GENOME_TOO_LARGE = 'genome_too_large'
-
-
-def is_multi_isolate(excluded_from_refseq: str) -> bool:
-    """Report whether an assembly belongs to a large multi-isolate project.
-
-    Parameters
-    ----------
-    excluded_from_refseq : str
-        Value of the excluded_from_refseq column of an assembly summary file.
-
-    @return: True if the assembly is annotated as part of such a project.
-    """
-
-    return any(tag in excluded_from_refseq for tag in MULTI_ISOLATE_TAGS)
 
 
 def write_selected_genomes(selected: List[SelectedRow], output_file: str) -> None:

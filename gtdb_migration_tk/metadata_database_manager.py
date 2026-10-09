@@ -34,6 +34,7 @@ from gtdb_migration_tk.database_configuration.GenomeDatabaseConnectionFTPUpdate 
     RESET_UNWRITTEN, WRITTEN_TABLE, one_transaction, reset_unwritten)
 from gtdb_migration_tk.gtdb_lite.gtdb_importer import (SKIP, UNKNOWN_EXAMPLES, GTDBImporter,
                                                        UnknownGenomesError, id_at_source)
+from gtdb_migration_tk.ncbi_utils import is_multi_isolate, read_summary_rows, summary_field
 from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_text
 
 # rows a statement of update_type_designation hands the server at a time
@@ -107,6 +108,45 @@ def taxonomy_string(value: str) -> str:
 
 class MetadataTableError(ValueError):
     """A metadata table, or its description, that update_metadata_db will not load."""
+
+
+def surveillance_accessions(assembly_summaries: Sequence[str]) -> Tuple[List[str], Dict[str, Tuple[int, int]]]:
+    """The genomes NCBI marks as of a large multi-isolate or surveillance project.
+
+    A genome is one where its excluded_from_refseq, read by column name, says so
+    (ncbi_utils.is_multi_isolate()): the rule select_genomes leaves them out of a
+    release by. The SOP took every line holding 'surveillance' (grep), which NCBI's
+    renaming of the annotation left matching the submitter's name: over r237's
+    four summaries, 643 genomes of submitters named for surveillance, none of them
+    annotated, where 1,998,109 GenBank genomes are 'from large multi-isolate
+    project'.
+
+    Parameters
+    ----------
+    assembly_summaries : sequence of str
+        NCBI assembly summary files, gzipped or not.
+
+    @return: (the accessions, versioned and sorted, each once; file -> (genomes
+             read, genomes of such a project)).
+
+    Raises
+    ------
+    ncbi_utils.BadInput
+        A file without the assembly_accession or excluded_from_refseq column.
+    """
+
+    accessions = set()
+    per_file = {}
+    for summary in assembly_summaries:
+        read, found = 0, 0
+        for _, fields, columns in read_summary_rows(summary, required=('assembly_accession',
+                                                                        'excluded_from_refseq')):
+            read += 1
+            if is_multi_isolate(summary_field(fields, columns, 'excluded_from_refseq')):
+                found += 1
+                accessions.add(summary_field(fields, columns, 'assembly_accession'))
+        per_file[summary] = (read, found)
+    return sorted(accessions), per_file
 
 
 def read_descriptions(paths: Sequence[str]) -> Dict[str, Tuple[str, str]]:
@@ -638,32 +678,47 @@ class MetadataDatabaseManager(object):
         gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', is_rep_data)
 
     @one_transaction
-    def add_surveillance_genomes(self, genome_list):
-        """Replace the surveillance genomes with those of a list.
+    def add_surveillance_genomes(self, assembly_summaries):
+        """Replace the surveillance genomes with those of NCBI's assembly summaries.
 
-        The table is emptied and filled in one transaction, so a list that cannot
-        be inserted leaves the genomes it held. It was emptied and committed
-        first, after a question that was answered 'y' in the code rather than
-        asked. Blank lines are not genomes, and a genome listed twice is inserted
-        once.
+        survey_genomes is emptied and filled in one transaction, so a run that
+        cannot write leaves the genomes it held, and one whose summaries name none
+        is refused before anything is written: a table of r237 holds 631,157, and
+        none means the files are not the release's. Each genome is written by its
+        versioned accession, as the table has held them, though the column is
+        named canonical_gid. A list made by hand (--genome_list) was read until
+        0.1.71, from a grep of the summaries the SOP gave.
+
+        Parameters
+        ----------
+        assembly_summaries : sequence of str
+            The release's NCBI assembly summary files (-n).
+
+        @return: None
+
+        Raises
+        ------
+        MetadataTableError
+            The summaries name no such genome; nothing is written.
         """
 
-        genomes = []
-        with open(genome_list) as glf:
-            for line in glf:
-                gid = line.strip()
-                if gid:
-                    genomes.append(gid)
-        unique = list(dict.fromkeys(genomes))
+        accessions, per_file = surveillance_accessions(assembly_summaries)
+        for summary, (read, found) in per_file.items():
+            self.logger.info('{}: {:,} of {:,} genome(s) are of a large multi-isolate or surveillance '
+                             'project.'.format(os.path.basename(summary), found, read))
+        if not accessions:
+            raise MetadataTableError('The assembly summaries name no genome of a large multi-isolate or '
+                                     'surveillance project; survey_genomes is left as it is. They are not '
+                                     'the summaries of a release.')
 
-        self.logger.info('Replacing the surveillance genomes with the {:,} of {}{}.'.format(
-            len(unique), genome_list,
-            ' ({:,} listed more than once)'.format(len(genomes) - len(unique))
-            if len(unique) < len(genomes) else ''))
+        self.temp_cur.execute('SELECT count(*) FROM survey_genomes')
+        held = self.temp_cur.fetchone()[0]
         self.temp_cur.execute('TRUNCATE survey_genomes')
-
-        q_add = "INSERT INTO survey_genomes(canonical_gid) VALUES (%s) "
-        self.temp_cur.executemany(q_add, [(gid,) for gid in unique])
+        execute_values(self.temp_cur, 'INSERT INTO survey_genomes (canonical_gid) VALUES %s',
+                       [(accession,) for accession in accessions], page_size=PAGE_SIZE)
+        self.logger.info('Replaced the {:,} surveillance genome(s) of survey_genomes with {:,}: {}.'.format(
+            held, len(accessions), ', '.join('{:,} {}'.format(n, prefix) for prefix, n in sorted(
+                Counter(accession[:3] for accession in accessions).items()))))
 
     @one_transaction
     def update_type_designation(self):

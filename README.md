@@ -1304,7 +1304,7 @@ other, and leave 594 to NCBI's.
 | `update_ncbi_tax_db` | Update NCBI organism names and taxonomy (`update_ncbitax_db` until 0.1.57) |
 | `update_taxid_to_db` | Add the NCBI taxid for each rank of each genome |
 | `update_type_designation` | Update `type_designation` once SeqCode, NCBI and LPSN data are loaded |
-| `add_surveillance_genomes` | Add surveillance genomes to a GTDB table |
+| `add_surveillance_genomes` | Replace `survey_genomes` with the genomes the assembly summaries mark as of a large multi-isolate or surveillance project |
 
 Every command here, and `add_taxonomy_to_database`, `update_propagated_tax`,
 `set_gtdb_domain` and `lpsn add_metadata`, is told which database to use by a
@@ -1332,6 +1332,27 @@ so a command names the release it is working on. `--hostname`, `-u`, `-d` and
 password is read from `~/.pgpass`. A password on the command line is shown by
 `ps` to every user of the machine for as long as the run lasts.
 `PGSERVICE=gtdb_r237` in the environment does what `--db_service gtdb_r237` does.
+
+`add_surveillance_genomes` replaces the database's `survey_genomes` with the
+genomes of the release's NCBI assembly summaries (`-n`, gzipped or not) whose
+`excluded_from_refseq`, read by column name, marks them as of a large
+multi-isolate or surveillance project -- the rule `select_genomes` leaves them
+out of the release by (`ncbi_utils.is_multi_isolate()`). Each is written by its
+versioned accession, as the table has held them, though its column is named
+`canonical_gid`. A run whose summaries name none is refused, the table left as it
+was.
+
+```bash
+gtdb_migration_tk add_surveillance_genomes --db_service gtdb_r237 \
+    -n assembly_summary_{archaea,bacteria}_{genbank,refseq}.txt.gz -l add_surveillance_genomes.log
+```
+
+It took a list made by hand (`--genome_list`) until 0.1.71, from a `grep
+surveillance` of the summaries, which NCBI's renaming of the annotation to
+'from large multi-isolate project' left matching the submitter's name: over
+r237's four summaries, 643 genomes of submitters named for surveillance, none
+annotated, where 1,998,109 GenBank genomes are of such a project. Reading them
+takes 18 seconds.
 
 Each of these commands is one transaction, committed when it is done: a run that
 fails leaves the database as it was, and exits non-zero. Once a field is

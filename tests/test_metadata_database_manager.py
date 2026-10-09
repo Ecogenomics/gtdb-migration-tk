@@ -661,23 +661,105 @@ class UpdatingRepresentatives(OneTransaction):
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
 
 
+SUMMARY_HEADER = ('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_summary.txt\n'
+                  '#assembly_accession\tbioproject\tasm_submitter\texcluded_from_refseq\n')
+
+
 class ReplacingTheSurveillanceGenomes(OneTransaction):
-    def test_the_list_replaces_the_table_in_one_commit_blanks_and_repeats_dropped(self):
-        manager = self.manager()
-        listed = self.write('surveillance.txt', 'G000000001\n\nG000000002\nG000000001\n')
-        manager.add_surveillance_genomes(listed)
+    """add_surveillance_genomes reads the release's assembly summaries (-n).
 
-        self.assertEqual(manager.temp_cur.statements[0], 'TRUNCATE survey_genomes')
-        self.assertEqual(manager.temp_cur.rows, [('G000000001',), ('G000000002',)])
+    The SOP grepped them for 'surveillance', which NCBI's renaming of the
+    annotation left matching the submitter's name: over r237, 643 genomes, none
+    annotated, where 1,998,109 are 'from large multi-isolate project'.
+    """
+
+    def summaries(self):
+        genbank = self.write('assembly_summary_bacteria_genbank.txt', SUMMARY_HEADER + (
+            'GCA_000000001.1\tPRJNA1\tCDC\tfrom large multi-isolate project\n'
+            'GCA_000000002.2\tPRJNA2\tCDC\tderived from surveillance project; partial\n'
+            'GCA_000000003.1\tPRJNA3\tPublic Health Surveillance Lab\tna\n'
+            'GCA_000000004.1\tPRJNA4\tUQ\tderived from metagenome\n'))
+        refseq = self.write('assembly_summary_bacteria_refseq.txt', SUMMARY_HEADER + (
+            'GCF_000000005.1\tPRJNA5\tState Surveillance Program\tna\n'
+            'GCA_000000001.1\tPRJNA1\tCDC\tfrom large multi-isolate project\n'))
+        return [genbank, refseq]
+
+    def replace(self, summaries, held=631157):
+        manager = self.manager()
+        manager.temp_cur.fetchone = mock.Mock(return_value=(held,))
+        with mock.patch.object(M, 'execute_values') as insert, self.assertLogs('timestamp', level='INFO') as logged:
+            manager.add_surveillance_genomes(summaries)
+        return manager, insert, [r.getMessage() for r in logged.records]
+
+    def test_the_genomes_are_those_excluded_from_refseq_says_are_of_such_a_project_by_versioned_accession(self):
+        # not a submitter named for surveillance, and each genome once
+        manager, insert, messages = self.replace(self.summaries())
+
+        self.assertEqual(manager.temp_cur.statements, ['SELECT count(*) FROM survey_genomes',
+                                                       'TRUNCATE survey_genomes'])
+        sql, rows = insert.call_args.args[1:3]
+        self.assertEqual(sql, 'INSERT INTO survey_genomes (canonical_gid) VALUES %s')
+        self.assertEqual(rows, [('GCA_000000001.1',), ('GCA_000000002.2',)])
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+        self.assertIn('assembly_summary_bacteria_genbank.txt: 2 of 4 genome(s) are of a large multi-isolate or '
+                      'surveillance project.', messages)
+        self.assertIn('Replaced the 631,157 surveillance genome(s) of survey_genomes with 2: 2 GCA.', messages)
 
-    def test_a_list_that_cannot_be_inserted_leaves_the_table_as_it_was(self):
+    def test_the_rule_is_the_one_select_genomes_leaves_them_out_of_a_release_by(self):
+        from gtdb_migration_tk import select_genomes
+        self.assertIs(select_genomes.is_multi_isolate, M.is_multi_isolate)
+
+    def test_summaries_naming_none_are_refused_and_the_table_left_as_it_was(self):
         manager = self.manager()
-        manager.temp_cur.executemany = mock.Mock(side_effect=RuntimeError('refused'))
-        with self.assertRaises(RuntimeError):
-            manager.add_surveillance_genomes(self.write('surveillance.txt', 'G000000001\n'))
-
+        with mock.patch.object(M, 'execute_values') as insert, self.assertLogs('timestamp', level='INFO'), \
+                self.assertRaisesRegex(M.MetadataTableError, 'name no genome'):
+            manager.add_surveillance_genomes([self.write('none.txt', SUMMARY_HEADER +
+                                                         'GCF_000000005.1\tPRJNA5\tX\tna\n')])
+        insert.assert_not_called()
+        self.assertNotIn('TRUNCATE survey_genomes', manager.temp_cur.statements)
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+    def test_a_summary_without_excluded_from_refseq_is_refused(self):
+        old = self.write('old.txt', '#assembly_accession\tbioproject\nGCA_000000001.1\tPRJNA1\n')
+        from gtdb_migration_tk.ncbi_utils import BadInput
+        with self.assertRaisesRegex(BadInput, 'excluded_from_refseq'):
+            M.surveillance_accessions([old])
+
+    def test_an_insert_that_fails_leaves_the_table_as_it_was(self):
+        manager = self.manager()
+        manager.temp_cur.fetchone = mock.Mock(return_value=(0,))
+        with mock.patch.object(M, 'execute_values', side_effect=RuntimeError('refused')), \
+                self.assertLogs('timestamp', level='INFO'), self.assertRaises(RuntimeError):
+            manager.add_surveillance_genomes(self.summaries())
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+
+    def test_the_command_takes_the_summaries_as_n_and_requires_a_log(self):
+        from gtdb_migration_tk import __main__ as main_module
+        from gtdb_migration_tk import main as main_py
+        parser = main_module.get_main_parser()
+        for argv in (['-n', 'a.txt', 'b.txt'], ['-n', 'a.txt', '-l', 'run.log', '--genome_list', 'g.lst']):
+            with self.subTest(argv=argv), mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+                parser.parse_args(['add_surveillance_genomes', '--db_service', 'gtdb_r237'] + argv)
+            self.assertEqual(ended.exception.code, 2)
+
+        options = parser.parse_args(['add_surveillance_genomes', '--db_service', 'gtdb_r237',
+                                     '-n', 'a.txt', 'b.txt', '-l', 'run.log'])
+        with mock.patch.object(main_py, 'check_file_exists'), \
+                mock.patch.object(main_py, 'MetadataDatabaseManager') as manager:
+            main_py.OptionsParser().parse_options(options)
+        manager.return_value.add_surveillance_genomes.assert_called_once_with(['a.txt', 'b.txt'])
+
+    def test_files_naming_none_end_the_run_exiting_1(self):
+        from gtdb_migration_tk import __main__ as main_module
+        from gtdb_migration_tk import main as main_py
+        options = main_module.get_main_parser().parse_args(['add_surveillance_genomes', '--db_service', 'x',
+                                                            '-n', 'a.txt', '-l', 'run.log'])
+        with mock.patch.object(main_py, 'check_file_exists'), \
+                mock.patch.object(main_py, 'MetadataDatabaseManager') as manager, \
+                self.assertLogs('timestamp', level='ERROR'), self.assertRaises(SystemExit) as ended:
+            manager.return_value.add_surveillance_genomes.side_effect = M.MetadataTableError('none')
+            main_py.OptionsParser().parse_options(options)
+        self.assertEqual(ended.exception.code, 1)
 
 
 class UpdatingNCBITaxonomy(OneTransaction):
