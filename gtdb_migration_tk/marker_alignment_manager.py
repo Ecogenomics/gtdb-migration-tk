@@ -56,9 +56,20 @@ gtdb_representative to be set, which update_propagated_tax sets for every genome
 MISSING FILES
 A genome without called proteins (prodigal/<gid>_protein.faa.gz) cannot be
 aligned: it is passed over, counted, and listed in MISSING_PROTEINS_NAME in
---out_dir. One with proteins and no top-hit table, or whose top-hit table names a
-gene its proteins do not hold, fails its batch: hmmsearch or top_hit has not been
-run for it, or was run on other proteins.
+--out_dir. So is one with proteins and no top-hit table of a database of the
+markers, listed in MISSING_TOPHITS_NAME with each table it lacks, and named in a
+WARNING of its batch. It failed its batch until 0.1.67, but a genome hmmsearch
+could make nothing of is not a reason to leave a thousand others unaligned: r237
+holds two of NCBI's 'UC_feces' assemblies, GCA_964261755.1 and GCA_965643355.1,
+the MAGs or contigs of a study's fecal metagenomes submitted as one genome
+(the first 9.5 Gbp, its proteins 1.9 GB of gzip), with TIGRFAM top hits and no
+Pfam ones,
+and each failed its batch. Such a genome is given no rows, not rows of gaps for
+the database it lacks, which would say its markers were looked for and are
+absent: it has all its rows or none, and is new to --new_genomes until it has
+them. A top-hit table naming a gene its proteins do not hold still fails its
+batch: it was made from other proteins, and its genes cannot be trusted to be
+the ones named.
 
 BATCHES AND TRANSACTIONS
 The genomes are cut into batches under --out_dir as batching.py cuts them for
@@ -101,6 +112,11 @@ DEFAULT_BATCH_SIZE = 1000
 # the genomes without called proteins, of a batch and, gathered, of the run
 MISSING_PROTEINS_NAME = 'missing_protein_file.tsv'
 MISSING_PROTEINS_HEADER = ('genome_id',)
+
+# the genomes with called proteins and no top-hit table of a marker database, a
+# row a missing table, of a batch and, gathered, of the run
+MISSING_TOPHITS_NAME = 'missing_tophit_file.tsv'
+MISSING_TOPHITS_HEADER = ('genome_id', 'tophit_file')
 
 # what the database calls the two marker databases (marker_databases.external_id_prefix),
 # the directory of a genome's prodigal/ their top hits are in, and the version
@@ -236,36 +252,43 @@ def read_genome(job: Tuple[str, str, Tuple[Tuple[str, Tuple[str, ...]], ...]]):
     ----------
     job : (accession, protein FASTA, ((database, (marker accession, ...)), ...))
 
-    @return: (accession, marker accession -> ChosenGene), or (accession, None)
-             where the genome has no protein file.
+    @return: (accession, marker accession -> ChosenGene, ()), or
+             (accession, None, missing top-hit tables) where the genome is passed
+             over: the tables are empty where it has no protein file.
 
     Raises
     ------
     AlignmentError
-        A top-hit table is missing, or names a gene the proteins do not hold.
+        A top-hit table names a gene the proteins do not hold.
     """
 
     accession, proteins_path, by_database = job
-    try:
-        proteins = read_fasta_gz(proteins_path)
-    except FileNotFoundError:
-        return accession, None
+    if not os.path.isfile(proteins_path):
+        return accession, None, ()
 
-    chosen: Dict[str, ChosenGene] = {}
+    # the top-hit tables before the proteins, which are not read for a genome
+    # passed over: r237's were 0.3 and 1.9 GB of gzip
     prodigal_dir = os.path.dirname(proteins_path)
+    tables: List[Tuple[str, Dict[str, List[Tuple[str, str, float]]]]] = []
+    missing: List[str] = []
     for database, markers in by_database:
         path = tophit_file(prodigal_dir, accession, database)
         try:
-            hits = read_tophits(path, set(markers))
+            tables.append((path, read_tophits(path, set(markers))))
         except FileNotFoundError:
-            raise AlignmentError('{} has called proteins and no top-hit table {}; run hmmsearch and top_hit '
-                                 'for it.'.format(accession, path))
+            missing.append(path)
+    if missing:
+        return accession, None, tuple(missing)
+
+    proteins = read_fasta_gz(proteins_path)
+    chosen: Dict[str, ChosenGene] = {}
+    for path, hits in tables:
         try:
             chosen.update(choose_genes(hits, proteins))
         except KeyError as exc:
             raise AlignmentError('{} names gene {} in {}, which is not among its proteins {}; the top hits '
                                  'are of other proteins.'.format(accession, exc.args[0], path, proteins_path))
-    return accession, chosen
+    return accession, chosen, ()
 
 
 def aligned_match_states(lines: Sequence[str], names: Set[str]) -> Dict[str, str]:
@@ -485,7 +508,8 @@ class MarkerAlignmentManager(object):
         out_dir : str
             Directory the batches and the run's files are written to.
 
-        @return: True where every batch this machine took finished.
+        @return: True where every batch this machine took finished, genomes
+                 passed over for a missing file included.
 
         Raises
         ------
@@ -542,7 +566,7 @@ class MarkerAlignmentManager(object):
                 self.logger.info('{}: starting.'.format(label))
                 try:
                     with Heartbeat(os.path.join(batch_dir, RUNNING_CANARY), self.heartbeat):
-                        aligned, missing = self.align_batch(batch_dir, markers, genomes)
+                        aligned, no_proteins, no_tophits = self.align_batch(batch_dir, markers, genomes)
                 except KeyboardInterrupt:
                     self.temp_con.rollback()
                     release_claim(batch_dir)
@@ -556,14 +580,16 @@ class MarkerAlignmentManager(object):
                     self.logger.error('{}: failed, nothing of it written, and will be retried by a later run: '
                                       '{}'.format(label, exc))
                     continue
-                finish_batch(batch_dir, aligned=aligned, missing_protein_file=missing)
+                finish_batch(batch_dir, aligned=aligned, missing_protein_file=no_proteins,
+                             missing_tophit_file=no_tophits)
                 done += 1
-                self.logger.info('{}: done, {:,} genome(s) aligned, {:,} without a protein file.'.format(
-                    label, aligned, missing))
+                self.logger.info('{}: done, {:,} genome(s) aligned, {:,} without a protein file, {:,} without '
+                                 'a top-hit table.'.format(label, aligned, no_proteins, no_tophits))
 
         self.logger.info('{:,} batch(es) finished here, {:,} held by another machine, {:,} failed.'.format(
             done, held, failed))
         self.gather_missing(batches, out_dir)
+        self.gather_missing_tophits(batches, out_dir)
 
         if failed:
             self.logger.error('{:,} batch(es) failed; they are the directories holding a FAILED file and are '
@@ -571,10 +597,12 @@ class MarkerAlignmentManager(object):
             return False
         return True
 
-    def align_batch(self, batch_dir: str, markers: Sequence[Marker], genomes: Dict[str, int]) -> Tuple[int, int]:
+    def align_batch(self, batch_dir: str, markers: Sequence[Marker],
+                    genomes: Dict[str, int]) -> Tuple[int, int, int]:
         """Align one batch's genomes and write their rows, in one transaction.
 
-        @return: (genomes aligned, genomes without a protein file).
+        @return: (genomes aligned, genomes without a protein file, genomes with
+                 proteins and without a top-hit table).
         """
 
         rows = read_batchfile(os.path.join(batch_dir, BATCHFILE_NAME))
@@ -584,15 +612,26 @@ class MarkerAlignmentManager(object):
 
         chosen: Dict[str, Dict[str, ChosenGene]] = {}
         missing: List[str] = []
+        no_tophits: Dict[str, Tuple[str, ...]] = {}
         with mp.Pool(processes=self.cpus) as pool:
-            for accession, genes in pool.imap_unordered(read_genome, jobs, chunksize=8):
-                if genes is None:
+            for accession, genes, tables in pool.imap_unordered(read_genome, jobs, chunksize=8):
+                if tables:
+                    no_tophits[accession] = tables
+                elif genes is None:
                     missing.append(accession)
                 else:
                     chosen[accession] = genes
         missing.sort()
         write_table([(g,) for g in missing], os.path.join(batch_dir, MISSING_PROTEINS_NAME),
                     MISSING_PROTEINS_HEADER)
+        write_table([(g, path) for g in sorted(no_tophits) for path in no_tophits[g]],
+                    os.path.join(batch_dir, MISSING_TOPHITS_NAME), MISSING_TOPHITS_HEADER)
+        if no_tophits:
+            named = sorted(no_tophits)[:EXAMPLES]
+            self.logger.warning('{:,} genome(s) have called proteins and no top-hit table, and are passed over: '
+                                '{}{}.'.format(len(no_tophits), ', '.join(
+                                    '{} ({})'.format(g, ', '.join(os.path.basename(p) for p in no_tophits[g]))
+                                    for g in named), ', ...' if len(no_tophits) > len(named) else ''))
 
         # one hmmalign for each marker, of every gene of the batch chosen for it,
         # each named by its genome's place in the batch
@@ -615,7 +654,7 @@ class MarkerAlignmentManager(object):
         self.temp_con.commit()
         write_version_file(batch_dir, HMMALIGN, self.hmmalign_version)
         self.logger.info('Wrote {:,} rows of aligned_markers for {:,} genome(s).'.format(written, len(order)))
-        return len(order), len(missing)
+        return len(order), len(missing), len(no_tophits)
 
     def write_rows(self, markers: Sequence[Marker], genomes: Dict[str, int], order: Sequence[str],
                    chosen: Dict[str, Dict[str, ChosenGene]], alignments: Dict[str, Dict[str, str]]) -> int:
@@ -674,3 +713,27 @@ class MarkerAlignmentManager(object):
                                 '{}.'.format(len(missing), path))
         else:
             self.logger.info('Every genome of the batches had a protein file.')
+
+    def gather_missing_tophits(self, batches: Sequence[str], out_dir: str) -> None:
+        """Gather every batch's genomes without a top-hit table into MISSING_TOPHITS_NAME.
+
+        @return: None
+        """
+
+        rows: List[Tuple[str, str]] = []
+        for batch_dir in batches:
+            path = os.path.join(batch_dir, MISSING_TOPHITS_NAME)
+            if os.path.exists(path):
+                with open(path) as handle:
+                    handle.readline()
+                    rows.extend(tuple(line.rstrip('\n').split('\t')) for line in handle if line.strip())
+        rows.sort()
+        path = os.path.join(out_dir, MISSING_TOPHITS_NAME)
+        write_table(rows, path, MISSING_TOPHITS_HEADER)
+        passed_over = sorted({genome for genome, _ in rows})
+        if passed_over:
+            self.logger.warning('{:,} genome(s) have called proteins and no top-hit table and could not be aligned, '
+                                'e.g. {}; each is listed in {} with the tables it lacks.'.format(
+                                    len(passed_over), ', '.join(passed_over[:EXAMPLES]), path))
+        else:
+            self.logger.info('Every genome of the batches with a protein file had its top-hit tables.')

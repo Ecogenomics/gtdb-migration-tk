@@ -695,9 +695,16 @@ missing, of another length than `markers.size`, or of another Pfam or TIGRFAM
 version than `config.py`, refuses the run. So does a genome to align that the
 genome_dirs file does not locate, every one listed in `not_in_genome_dirs.tsv`. A
 genome without called proteins (`prodigal/<gid>_protein.faa.gz`) is passed over: the
-log counts them and `missing_protein_file.tsv` in `--out_dir` lists them. One with
-proteins and no top-hit table, or whose table names a gene its proteins do not hold,
-fails its batch.
+log counts them and `missing_protein_file.tsv` in `--out_dir` lists them. So is one
+with proteins and no top-hit table of a marker database, given no rows at all: its
+batch's log names it in a WARNING, the run's closing WARNING counts them, and
+`missing_tophit_file.tsv` in `--out_dir` lists each with the table it lacks. r237's
+two `UC_feces` assemblies, GCA_964261755.1 and GCA_965643355.1 (the MAGs or contigs
+of fecal metagenomes submitted as one genome), have TIGRFAM top hits and no Pfam
+ones. A genome passed over has no row in `aligned_markers`, so `--new_genomes` takes
+it again once its files are made, in a new `--out_dir` or after removing the
+batches' SUCCESS. One whose table names a gene its proteins do not hold fails its
+batch: the table was made from other proteins.
 
 The genomes are cut into batches of `--batch_size` (1,000) under
 `<out_dir>/marker_sets_<ids>_<new|all>/`, claimed as the other batched commands
