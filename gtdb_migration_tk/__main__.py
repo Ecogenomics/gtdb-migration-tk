@@ -131,10 +131,11 @@ def print_help():
       update_propagate_tax    -> Push propagated taxonomy to new DB.
 
     Information from online resources:
-      lpsn         -> Process steps for LPSN.
-      bacdive      -> Process steps for BacDive [In Dev].
-      strains      -> Set of tools to combined information from LPSN and DSMZ.
-      ncbi_strains -> Strain IDs from each genome's assembly report, and NCBI type material status from the assembly summaries.
+      lpsn                  -> Process steps for LPSN.
+      bacdive               -> Process steps for BacDive [In Dev].
+      strains               -> Set of tools to combined information from LPSN and DSMZ.
+      ncbi_strains          -> Strain IDs from each genome's assembly report, and NCBI type material status from the assembly summaries.
+      download_seqcode_data -> The SeqCode Registry's species and the release's genome typing each.
 
     Curation files
       curation_lists -> Lists and pseudo-trees for new representatives, polyphyletic taxa, rogue genomes, and genomes with modified NCBI names.
@@ -387,8 +388,8 @@ def __input_file(group, required):
     group.add_argument('--input_file', '--in_file', help='Input file.', required=required)
 
 
-def __log_file(group, required):
-    group.add_argument('-l', '--log', required=required, help='Log file.')
+def __log_file(group, required, help='Log file.'):
+    group.add_argument('-l', '--log', required=required, help=help)
 
 def __csv_file(grp, required):
     grp.add_argument('--csv', required=required, help='CSV file.')
@@ -1296,14 +1297,19 @@ def get_main_parser():
             __silent(grp)
             __cpus(grp)
 
-    # Generate metadata table for genomes in Seqcode
-    with subparser(sub_parsers, 'generate_seqcode_table', 'Generate metadata table for genomes in Seqcode.') as parser:
+    # Download the SeqCode Registry's type genomes as a metadata table (generate_seqcode_table until 0.1.72)
+    with subparser(sub_parsers, 'download_seqcode_data',
+                   "Download the SeqCode Registry's species and their type genomes as a metadata table.") as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __output_dir(grp, required=True)
             __gtdb_genome_path_file(grp, required=True)
+            __new_list_genomes(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __log_file(grp, required=False, help='Log file; by default {} in --out_dir.'.format(FALLBACK_LOG))
+            grp.add_argument('--species_cache',
+                             help="The species' citations of earlier runs, kept while a species is unchanged; "
+                                  "by default seqcode_species_cache.json in --out_dir.")
             __silent(grp)
-            __cpus(grp)
 
     with subparser(sub_parsers, 'lpsn', 'Steps to update LPSN Metadata.') as lpsn_parser:
         lpsn_sub_parsers = lpsn_parser.add_subparsers(help="--", dest='lpsn_subparser_name')

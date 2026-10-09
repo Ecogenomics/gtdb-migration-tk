@@ -44,6 +44,7 @@ from gtdb_migration_tk.propagate_taxonomy import Propagate, PropagationError
 from gtdb_migration_tk.rna_manager_ltp import RnaManagerLTP
 from gtdb_migration_tk.rna_manager_silva import RnaManagerSILVA
 from gtdb_migration_tk.select_genomes import SelectGenomes
+from gtdb_migration_tk.seqcode_manager import SeqCodeError, SeqCodeManager
 from gtdb_migration_tk.strains import Strains
 from gtdb_migration_tk.trnascan_manager import tRNAScan
 from gtdb_migration_tk.update_genomes import UpdateGenomes
@@ -545,9 +546,20 @@ class OptionsParser():
         p = Tools()
         p.generate_ltp_db(options.csv, options.compressed_fasta, options.fasta,options.output_dir, options.output_prefix)
 
-    def generate_seqcode_table(self,options):
-        p = Tools()
-        p.generate_seqcode_table(options.gtdb_genome_path_file,options.output_dir,options.cpus)
+    def download_seqcode_data(self, options):
+        check_file_exists(options.gtdb_genome_path_file)
+        for assembly_summary in options.new_list_genomes:
+            check_file_exists(assembly_summary)
+        make_sure_path_exists(options.output_dir)
+        p = SeqCodeManager()
+        try:
+            p.run(options.gtdb_genome_path_file, options.output_dir, options.new_list_genomes,
+                  options.species_cache)
+        except (SeqCodeError, BadInput) as exc:
+            # the Registry or NCBI did not answer, or a summary lacks a column,
+            # said in one line; no table was written
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def check_db_population(self, options):
         p = Tools()
@@ -588,8 +600,8 @@ class OptionsParser():
             self.generate_metadata(options)
         elif options.subparser_name == 'create_tables':
             self.create_metadata_tables(options)
-        elif options.subparser_name == 'generate_seqcode_table':
-            self.generate_seqcode_table(options)
+        elif options.subparser_name == 'download_seqcode_data':
+            self.download_seqcode_data(options)
         elif options.subparser_name == 'parse_ncbi_assemblies':
             self.parse_ncbi_assemblies(options)
         elif options.subparser_name == "parse_ncbi_dir":
