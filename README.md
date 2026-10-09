@@ -942,7 +942,6 @@ the LTP classification of a gene already extracted does not depend on it.
 | --- | --- |
 | `checkm` | Run CheckM on new and modified genomes |
 | `checkm2` | Run CheckM2 on new and modified genomes |
-| `join_checkm` | Join CheckM output across GTDB versions |
 | `busco` | Estimate quality of new fungal genomes |
 
 `checkm` and `checkm2` estimate the completeness and contamination of the
