@@ -1277,9 +1277,10 @@ def get_main_parser():
             __silent(grp)
 
     with subparser(sub_parsers, 'set_gtdb_domain',
-                   'Set missing GTDB domain information to reflect NCBI domain.') as parser:
+                   'Set missing GTDB domains from the marker genes, else the NCBI domain.') as parser:
         with arg_group(parser, 'required named arguments') as grp:
             __database_setup(grp)
+            __output_dir(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
