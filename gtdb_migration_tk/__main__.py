@@ -92,33 +92,31 @@ def print_help():
       select_genomes     -> Select NCBI genomes which will comprise the new GTDB release.
       ncbi_genome_sync   -> Sync NCBI data to local directory.
 
-    NCBI folder to GTDB folder:
+    NCBI directory to GTDB directory:
       list_genomes   -> Produce file indicating the directory of each genome.
       update_genomes -> Update RefSeq and GenBank genomes from the NCBI FTP mirror.
 
-    Call genes:
-      call_genes_wf      -> Full call genes workflow (prodigal -> hmmsearch -> top_hit).
+    Generate derived data from genome assemblies:
       trans_table        -> Predict translation table for each genome using gTranslate.
       prodigal           -> Call genes using Prodigal.
       hmmsearch          -> Search Tigrfam/Pfam markers genes and generate tophit files.
-      top_hit            -> Generate tophit files.
-      align_marker_genes -> Align the marker genes of the database's genomes into aligned_markers.
+      top_hit            -> [Optional] Generate tophit files.
       genomic_metadata   -> Generate metadata derived from nucleotide (e.g., GC) and protein (e.g., gene count) files.
+      trnascan           -> Identifies tRNAs in genomes.
       rna_silva          -> Identify, extract, and taxonomically classify 16S, 23S, and 5S rRNA genes in genomes against SILVA.
       rna_ltp            -> Classify the 16S rRNA genes rna_silva extracted against the LTP DB.
-      trnascan           -> Identifies tRNAs in genomes.
-      join_checkm        -> Join CheckM output files for different releases.
       checkm             -> Estimates the quality of the new genomes.
       checkm2            -> Estimates the quality of the new genomes with CheckM2.
       busco              -> Estimate quality of new fungal genomes.
+      align_marker_genes -> Align the marker genes of the database's genomes into aligned_markers.
       
-    Access to Database:
+    Update tables in GTDB database:
      update_db          -> Update the NCBI genomes of the GTDB database to a new release.
      update_checkm_db   -> Import CheckM estimates.
      update_checkm2_db  -> Import CheckM2 estimates.
-     update_metadata_db -> Update metadata in database.
      update_ncbi_tax_db -> Update NCBI organism names and taxonomy.
      update_reps_db     -> Update species cluter representatives in database.
+     update_metadata_db -> Update metadata in database.
 
     Metadata:
       create_tables              -> Gather the metadata in each genome directory into tables.
@@ -135,7 +133,6 @@ def print_help():
       seqcode      -> Command to download SeqCode data.
       strains      -> Set of tools to combined information from LPSN and SeqCode.
       ncbi_strains -> Strain IDs from each genome's assembly report, and NCBI type material status from the assembly summaries.
-      
       bacdive      -> [Deprecated] Process steps for BacDive.
 
     Curation files
@@ -191,12 +188,6 @@ def __all_genomes(group):
     group.add_argument('--all', dest='all_genomes', help="Re-run all genomes.", action='store_true')
 
 
-
-
-def __checkm_files(group, required):
-    group.add_argument('-f',
-                       '--checkm_files', help='Output CheckM files from different releases.', nargs="+",
-                       required=required)
 
 
 def __checkm_profile(group, required):
@@ -946,16 +937,6 @@ def get_main_parser():
             __lease(grp)
             __all_genomes(grp)
             __max_genome_size(grp)
-            __silent(grp)
-
-    with subparser(sub_parsers, 'join_checkm',
-                   'Join checkm output file for different versions of GTDB.') as parser:
-        with arg_group(parser, 'required named arguments') as grp:
-            __checkm_files(grp, required=True)
-            __output_file(grp, required=True)
-            __log_file(grp, required=True)
-        with arg_group(parser, 'options arguments') as grp:
-            __cpus(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'checkm',

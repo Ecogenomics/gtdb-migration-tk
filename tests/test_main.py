@@ -107,7 +107,7 @@ class TheCpusDefault(unittest.TestCase):
                 if '--cpus' in action.option_strings:
                     taking[' '.join(path)] = action.default
 
-        self.assertGreater(len(taking), 20)
+        self.assertGreater(len(taking), 15)
         for command in ('create_tables', 'list_genomes', 'update_genomes'):
             self.assertIn(command, taking)
         self.assertEqual({command: default for command, default in taking.items() if default != 1}, {})

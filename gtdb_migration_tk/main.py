@@ -21,7 +21,7 @@ import logging
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists
 from gtdb_migration_tk.busco_manager import BuscoManager
 from gtdb_migration_tk.checkm_database_manager import CheckM2DatabaseManager, CheckMDatabaseManager
-from gtdb_migration_tk.checkm_manager import CheckM, CheckM2, CheckMManager
+from gtdb_migration_tk.checkm_manager import CheckM, CheckM2
 from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk import config
 from gtdb_migration_tk.database_manager import DatabaseManager
@@ -359,11 +359,6 @@ class OptionsParser():
     def generate_checkm2_data(self, options):
         self.generate_checkm_data(options, program=CheckM2)
 
-
-    def join_checkm_files(self, options):
-        p = CheckMManager()
-        p.join_checkm_files_releases(options.checkm_files, options.output_file)
-
     def generate_busco_data(self, options):
         """Estimate quality of fungal genomes using BUSCO."""
 
@@ -612,8 +607,6 @@ class OptionsParser():
             self.generate_rna_ltp(options)
         elif options.subparser_name == 'trnascan':
             self.generate_trnascan_data(options)
-        elif options.subparser_name == 'join_checkm':
-            self.join_checkm_files(options)
         elif options.subparser_name == 'checkm':
             self.generate_checkm_data(options)
         elif options.subparser_name == 'checkm2':

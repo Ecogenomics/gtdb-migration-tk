@@ -626,9 +626,10 @@ class TheCheckM2CommandLine(CheckM2Case):
                 parser.parse_args(argv + common)
             self.assertEqual(ended.exception.code, 2)
 
-    def test_join_checkm2_and_prepare_checkm2_are_gone(self):
-        # checkm2 batches, runs and gathers CheckM2 itself; update_checkm2_db loads it
-        for command in ('join_checkm2', 'prepare_checkm2'):
+    def test_join_checkm_join_checkm2_and_prepare_checkm2_are_gone(self):
+        # checkm and checkm2 batch, run and gather CheckM and CheckM2 themselves, and
+        # the update_*_db commands load what they write
+        for command in ('join_checkm', 'join_checkm2', 'prepare_checkm2'):
             with mock.patch('sys.stdout'), mock.patch('sys.stderr') as stderr, \
                     self.assertRaises(SystemExit) as ended:
                 main_module.get_main_parser().parse_args([command, '-h'])
