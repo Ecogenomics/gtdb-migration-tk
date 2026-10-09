@@ -133,10 +133,12 @@ class TempDirCase(unittest.TestCase):
             handle.write('HMMER3/f [3.3 | Nov 2019]\nNAME  x\nLENG  {}\n//\n'.format(length))
         return path
 
-    def genome(self, accession, proteins=None, pfam=None, tigrfam=None):
+    def genome(self, accession, proteins=None, pfam=None, tigrfam=None, replace=False):
         """A genome directory: proteins {gene: seq}, and top-hit tables of rows (gene, hits)."""
         gdir = os.path.join(self.dir, 'genomes', accession + '_ASM1v1')
         prodigal = os.path.join(gdir, 'prodigal')
+        if replace:
+            shutil.rmtree(gdir)
         os.makedirs(prodigal)
         if proteins is not None:
             with gzip.open(os.path.join(prodigal, accession + '_protein.faa.gz'), 'wt') as handle:
@@ -193,17 +195,22 @@ class ReadingAGenome(TempDirCase):
     def test_prodigals_asterisk_is_taken_off_and_each_database_read(self):
         gdir = self.genome('GCA_000000001.1', {'g1': 'MKAL', 'g2': 'MPQ'},
                            pfam=[('g1', 'PF00410.20,1e-5,20.0')], tigrfam=[('g2', 'TIGR00006,1e-9,30.0')])
-        accession, genes = self.read('GCA_000000001.1', gdir)
+        accession, genes, missing = self.read('GCA_000000001.1', gdir)
         self.assertEqual((genes['PF00410.20'].sequence, genes['TIGR00006'].sequence), ('MKAL', 'MPQ'))
+        self.assertEqual(missing, ())
 
-    def test_a_genome_without_a_protein_file_is_none(self):
-        gdir = self.genome('GCA_000000001.1', pfam=[], tigrfam=[])
-        self.assertEqual(self.read('GCA_000000001.1', gdir), ('GCA_000000001.1', None))
+    def test_a_genome_without_a_protein_file_is_none_and_lacks_no_tophit_table(self):
+        gdir = self.genome('GCA_000000001.1')
+        self.assertEqual(self.read('GCA_000000001.1', gdir), ('GCA_000000001.1', None, ()))
 
-    def test_proteins_without_a_tophit_table_is_an_error_naming_the_genome(self):
-        gdir = self.genome('GCA_000000001.1', {'g1': 'MKAL'}, pfam=[])
-        with self.assertRaisesRegex(A.AlignmentError, 'GCA_000000001.1 has called proteins and no top-hit table'):
-            self.read('GCA_000000001.1', gdir)
+    def test_proteins_without_a_tophit_table_pass_the_genome_over_naming_the_table_unread(self):
+        # r237's UC_feces genomes: TIGRFAM top hits and no Pfam ones, which failed their batches
+        gdir = self.genome('GCA_000000001.1', {'g1': 'MKAL'}, tigrfam=[('g1', 'TIGR00006,1e-9,30.0')])
+        with mock.patch.object(A, 'read_fasta_gz') as read_proteins:
+            accession, genes, missing = self.read('GCA_000000001.1', gdir)
+        self.assertIsNone(genes)
+        self.assertEqual(missing, (A.tophit_file(os.path.join(gdir, 'prodigal'), 'GCA_000000001.1', 'PFAM'),))
+        read_proteins.assert_not_called()
 
     def test_a_tophit_naming_a_gene_the_proteins_do_not_hold_is_an_error(self):
         gdir = self.genome('GCA_000000001.1', {'g1': 'MKAL'}, pfam=[('g9', 'PF00410.20,1e-5,20.0')], tigrfam=[])
@@ -326,17 +333,40 @@ class AligningARelease(TempDirCase):
         self.assertTrue(finished)
         self.assertEqual((again.copied, manager.temp_con.commits), ([], 0))
 
+    def test_a_genome_without_a_tophit_table_is_passed_over_with_a_warning_and_listed_and_its_batch_finishes(self):
+        # it failed its batch, and the 999 other genomes of the batch with it
+        genome_dirs, cursor = self.release()
+        table = A.tophit_file(os.path.join(self.dir, 'genomes', 'GCA_000000001.1_ASM1v1', 'prodigal'),
+                              'GCA_000000001.1', 'TIGR')
+        os.remove(table)
+        manager, out_dir, finished, messages = self.run_release(genome_dirs, cursor)
+
+        self.assertTrue(finished)
+        self.assertEqual(manager.temp_con.commits, 2)
+        # no row at all, not gaps for the database it lacks, so --new_genomes takes it again
+        rows = [row for copied in cursor.copied for row in copied]
+        self.assertEqual(sorted(row[0] for row in rows), ['12', '12'])
+        with open(os.path.join(out_dir, 'missing_tophit_file.tsv')) as handle:
+            self.assertEqual(handle.read().splitlines(), ['genome_id\ttophit_file', 'GCA_000000001.1\t' + table])
+        self.assertTrue(any(m.startswith('1 genome(s) have called proteins and no top-hit table, and are passed '
+                                         'over: GCA_000000001.1 (GCA_000000001.1_tigrfam_15.0_lite_tophit.tsv.gz)')
+                            for m in messages))
+        self.assertTrue(any(m.startswith('1 genome(s) have called proteins and no top-hit table and could not be '
+                                         'aligned, e.g. GCA_000000001.1;') for m in messages))
+        with open(os.path.join(out_dir, 'marker_sets_1_2_new', 'batch_000001', 'SUCCESS')) as handle:
+            self.assertIn('missing_tophit_file\t1', handle.read())
+
     def test_a_batch_that_fails_is_rolled_back_and_the_run_says_so(self):
         # a worker that died was passed over, its genomes never aligned and nothing said
         genome_dirs, cursor = self.release()
-        os.remove(A.tophit_file(os.path.join(self.dir, 'genomes', 'GCA_000000001.1_ASM1v1', 'prodigal'),
-                                'GCA_000000001.1', 'TIGR'))
+        self.genome('GCA_000000001.1', replace=True, proteins={'g1': 'MKALIE'},
+                    pfam=[('g9', 'PF00410.20,1e-5,20.0')], tigrfam=[])
         manager, out_dir, finished, messages = self.run_release(genome_dirs, cursor)
 
         self.assertFalse(finished)
         # one rollback ends reading the genomes, one undoes the failed batch
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 2))
-        self.assertTrue(any('failed, nothing of it written' in m and 'GCA_000000001.1 has called proteins' in m
+        self.assertTrue(any('failed, nothing of it written' in m and 'GCA_000000001.1 names gene g9' in m
                             for m in messages))
         failed = [d for d in os.listdir(os.path.join(out_dir, 'marker_sets_1_2_new'))
                   if os.path.exists(os.path.join(out_dir, 'marker_sets_1_2_new', d, 'FAILED'))]
