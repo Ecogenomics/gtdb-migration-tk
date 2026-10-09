@@ -1286,7 +1286,7 @@ class Strains(object):
         fout.write("\tgtdb_type_designation_ncbi_taxa\tgtdb_type_designation_ncbi_taxa_sources")
         fout.write(
             "\tlpsn_type_designation\tlpsn_priority_year")
-        fout.write("\tgtdb_type_species_of_genus\tis_from_standard\n")
+        fout.write("\tgtdb_type_species_of_genus\n")
 
         missing_type_at_ncbi = 0
         missing_type_at_gtdb = 0

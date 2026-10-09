@@ -1,5 +1,5 @@
-gtdb_type_designation	Type material desingation based on literature	TEXT	metadata_type_material
-gtdb_type_designation_sources	Website(s) used to select gtdb_type_designation	TEXT	metadata_type_material
+gtdb_type_designation_ncbi_taxa	Indicates if genome is assembled from the type strain of a species or subspecies according to its NCBI classification	TEXT	metadata_type_material
+gtdb_type_designation_ncbi_taxa_sources	Authoritative nomenclatural sources supporting type designation in gtdb_type_designation_ncbi_taxa	TEXT	metadata_type_material
 lpsn_type_designation	Type material designation based on LPSN website	TEXT	metadata_type_material
 dsmz_type_designation	Type material designation based on DSMZ website	TEXT	metadata_type_material
 straininfo_type_designation	Type material designation based on Straininfo website	TEXT	metadata_type_material
