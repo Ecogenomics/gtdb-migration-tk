@@ -38,7 +38,11 @@ TYPE_GENOME, OTHER_GENOME = 'RS_' + TYPE_ACCESSION, 'GB_' + OTHER_ACCESSION
 
 SUMMARY_HEADER = ('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_summary.txt\n'
                   '#assembly_accession\tbioproject\ttaxid\tspecies_taxid\torganism_name\t'
-                  'infraspecific_name\tisolate\trelation_to_type_material\n')
+                  'infraspecific_name\tisolate\trelation_to_type_material\texcluded_from_refseq\n')
+
+# the columns of download_seqcode_data's table type_table reads, and one it does not
+SEQCODE_HEADER = 'seqcode_type_material_accn\tseqcode_id\tseqcode_species_status\tseqcode_type_species_of_genus\n'
+METAGENOME_NOT_TYPE = 'derived from metagenome; not used as type'
 
 GSS_HEADER = ('genus_name,sp_epithet,subsp_epithet,reference,status,authors,address,'
               'risk_grp,nomenclatural_type,record_no,record_lnk\n')
@@ -55,7 +59,7 @@ class StrainsCase(unittest.TestCase):
         logging.getLogger('timestamp').addHandler(logging.NullHandler())
 
         # accession -> (summary, taxid, organism name, infraspecific name,
-        # isolate, relation to type material)
+        # isolate, relation to type material[, excluded from RefSeq])
         self.genomes = {
             TYPE_ACCESSION: ('rb', '562', 'Escherichia coli ATCC 11775', 'strain=ATCC 11775',
                              'na', 'assembly from type material'),
@@ -80,6 +84,8 @@ class StrainsCase(unittest.TestCase):
                    's__Escherichia coli\tg__Escherichia\tCastellani and Chalmers 1919\tGSS\n')
         self.gss = self.write('lpsn_gss.csv', GSS_HEADER + GSS_ROW)
         self.years = self.write('years.tsv', 'Escherichia coli\t1919\n')
+        # (accession, status, type species of genus) of seqcode_table.tsv
+        self.seqcode_rows = []
 
     def write(self, name, text):
         path = os.path.join(self.dir, name)
@@ -97,19 +103,27 @@ class StrainsCase(unittest.TestCase):
             path = os.path.join(self.dir, 'assembly_summary_{}.txt.gz'.format(name))
             with gzip.open(path, 'wt') as handle:
                 handle.write(SUMMARY_HEADER)
-                for acc, (summary, taxid, organism, infraspecific, isolate, type_material) in self.genomes.items():
+                for acc, genome in self.genomes.items():
+                    summary, taxid, organism, infraspecific, isolate, type_material = genome[:6]
+                    excluded = genome[6] if len(genome) > 6 else 'na'
                     if summary == name:
                         handle.write('\t'.join((acc, 'PRJNA1', taxid, taxid, organism, infraspecific,
-                                                isolate, type_material)) + '\n')
+                                                isolate, type_material, excluded)) + '\n')
             summaries.append(path)
         names = self.write('names.dmp', '\n'.join(self.names_rows) + '\n')
         nodes = self.write('nodes.dmp', '\n'.join(self.nodes_rows) + '\n')
         return genome_dirs, summaries, names, nodes
 
+    def seqcode_table(self):
+        """download_seqcode_data's seqcode_table.tsv, of self.seqcode_rows."""
+        return self.write('seqcode_table.tsv', SEQCODE_HEADER + ''.join(
+            '{}\t{}\t{}\t{}\n'.format(acc, number, status, type_species)
+            for number, (acc, status, type_species) in enumerate(self.seqcode_rows, start=100)))
+
     def run_type_table(self, cpus=1):
         genome_dirs, summaries, names, nodes = self.release_files()
         S.Strains(self.out, cpus).generate_type_strain_table(
-            genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years)
+            genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years, self.seqcode_table())
 
     def summary(self):
         with gzip.open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rt') as handle:
@@ -151,7 +165,7 @@ class DecidingTypeMaterial(StrainsCase):
         genome_dirs, summaries, names, nodes = self.release_files(
             release=[TYPE_ACCESSION, OTHER_ACCESSION])
         S.Strains(self.out, 2).generate_type_strain_table(
-            genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years)
+            genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years, self.seqcode_table())
 
         self.assertEqual(sorted(self.summary()), sorted([TYPE_GENOME, OTHER_GENOME]))
 
@@ -181,6 +195,118 @@ class DecidingTypeMaterial(StrainsCase):
             self.run_type_table(cpus=2)
 
         self.assertEqual(stdout.getvalue(), '')
+
+
+class TypeMaterialUnderTheSeqCode(StrainsCase):
+    """LPSN, then the SeqCode, then NCBI's exclusion of a metagenome not used as
+    type: what update_type_designation did to metadata_type_material once the
+    summary was loaded, decided where the summary is written."""
+
+    def test_a_genome_typing_a_species_valid_under_the_seqcode_is_a_type_strain_of_species(self):
+        self.seqcode_rows = [(OTHER_ACCESSION, 'Valid (SeqCode)', 'True')]
+        self.run_type_table()
+        other = self.summary()[OTHER_GENOME]
+        self.assertEqual((other['gtdb_type_designation_ncbi_taxa'], other['gtdb_type_designation_ncbi_taxa_sources'],
+                          other['gtdb_type_species_of_genus'], other['lpsn_type_designation']),
+                         ('type strain of species', 'SeqCode', 'True', 'not type material'))
+
+    def test_lpsn_and_the_seqcode_agreeing_are_both_sources_joined_by_one_separator(self):
+        # update_type_designation appended ';Seqcode' to type_table's '; '-joined sources
+        self.seqcode_rows = [(TYPE_ACCESSION, 'Valid (SeqCode)', 'False')]
+        self.run_type_table()
+        typed = self.summary()[TYPE_GENOME]
+        self.assertEqual(typed['gtdb_type_designation_ncbi_taxa_sources'], 'LPSN; SeqCode')
+        # LPSN's type species of genus stands where the SeqCode does not say so
+        self.assertEqual(typed['gtdb_type_species_of_genus'], 'True')
+
+    def test_a_species_not_valid_under_the_seqcode_types_nothing(self):
+        self.seqcode_rows = [(OTHER_ACCESSION, '', 'True')]
+        self.run_type_table()
+        other = self.summary()[OTHER_GENOME]
+        self.assertEqual((other['gtdb_type_designation_ncbi_taxa'], other['gtdb_type_species_of_genus']),
+                         ('not type material', 'False'))
+
+    def test_ncbis_metagenome_not_used_as_type_overrides_lpsn_and_the_seqcode_and_says_so(self):
+        # update_type_designation left the sources and the type species of genus as they were
+        self.genomes[TYPE_ACCESSION] += (METAGENOME_NOT_TYPE,)
+        self.seqcode_rows = [(TYPE_ACCESSION, 'Valid (SeqCode)', 'True')]
+        self.run_type_table()
+        typed = self.summary()[TYPE_GENOME]
+        self.assertEqual((typed['gtdb_type_designation_ncbi_taxa'], typed['gtdb_type_designation_ncbi_taxa_sources'],
+                          typed['gtdb_type_species_of_genus'], typed['lpsn_type_designation']),
+                         ('not used as type', '', 'False', 'type strain of species'))
+        self.assertEqual(typed['gtdb_type_designation_notes'],
+                         "NCBI's 'derived from metagenome; not used as type' rule overrides LPSN and SeqCode.")
+
+    def test_the_ncbi_rule_needs_both_and_applies_to_a_genome_neither_types(self):
+        self.genomes[OTHER_ACCESSION] += ('contaminated; ' + METAGENOME_NOT_TYPE,)
+        self.genomes[TYPE_ACCESSION] += ('derived from metagenome',)
+        self.run_type_table()
+        summary = self.summary()
+        self.assertEqual((summary[OTHER_GENOME]['gtdb_type_designation_ncbi_taxa'],
+                          summary[OTHER_GENOME]['gtdb_type_designation_notes']),
+                         ('not used as type', "NCBI's 'derived from metagenome; not used as type' rule applies."))
+        self.assertEqual((summary[TYPE_GENOME]['gtdb_type_designation_ncbi_taxa'],
+                          summary[TYPE_GENOME]['gtdb_type_designation_notes']), ('type strain of species', ''))
+
+    def test_the_notes_are_the_last_column_and_every_row_has_one(self):
+        # columns are appended, never reordered
+        self.run_type_table()
+        with gzip.open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rt') as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+            rows = [line.rstrip('\n').split('\t') for line in handle]
+        self.assertEqual(header[-2:], ['gtdb_type_species_of_genus', 'gtdb_type_designation_notes'])
+        self.assertTrue(all(len(row) == len(header) for row in rows))
+
+    def test_a_seqcode_genome_the_release_does_not_hold_is_warned_of_and_passed_over(self):
+        self.seqcode_rows = [('GCA_000000099.1', 'Valid (SeqCode)', 'True')]
+        with self.assertLogs('timestamp', level='WARNING') as logged:
+            self.run_type_table()
+        self.assertNotIn('GB_GCA_000000099.1', self.summary())
+        self.assertTrue(any('1 genomes of the SeqCode table not in the release' in m for m in logged.output))
+
+    def test_a_seqcode_table_without_its_columns_is_refused(self):
+        genome_dirs, summaries, names, nodes = self.release_files()
+        table = self.write('not_seqcode.tsv', 'genome\tstatus\n{}\tValid\n'.format(OTHER_ACCESSION))
+        with self.assertRaisesRegex(S.StrainsError, 'seqcode_type_material_accn'):
+            S.Strains(self.out).generate_type_strain_table(
+                genome_dirs, summaries, names, nodes, self.gss, self.lpsn_dir, self.years, table)
+
+    def test_a_summary_without_excluded_from_refseq_is_refused(self):
+        # read as empty, it would pass over NCBI's exclusion of every genome unsaid
+        from gtdb_migration_tk.ncbi_utils import BadInput
+        genome_dirs, summaries, _, _ = self.release_files()
+        with gzip.open(summaries[0], 'rt') as handle:
+            text = handle.read().replace('\texcluded_from_refseq', '')
+        with gzip.open(summaries[0], 'wt') as handle:
+            handle.write(text)
+        with self.assertRaisesRegex(BadInput, 'excluded_from_refseq'):
+            S.Strains(self.out).load_genomes(genome_dirs, summaries)
+
+    def test_the_columns_read_are_those_download_seqcode_data_writes(self):
+        from gtdb_migration_tk import seqcode_manager
+        for column in (S.SEQCODE_GENOME, S.SEQCODE_STATUS, S.SEQCODE_TYPE_SPECIES_OF_GENUS):
+            self.assertIn(column, seqcode_manager.TABLE_HEADER)
+
+
+class TheTypeTableCommandLine(StrainsCase):
+    ARGV = ['strains', 'type_table', '-g', 'genome_dirs.tsv', '-n', 'a.txt', '--ncbi_names', 'names.dmp',
+            '--ncbi_nodes', 'nodes.dmp', '--lpsn_gss_file', 'gss.csv', '--lpsn_dir', 'lpsn',
+            '--year_table', 'years.tsv', '-o', 'out']
+
+    def test_the_seqcode_table_is_required_and_handed_to_the_command(self):
+        from gtdb_migration_tk import __main__ as main_module
+        from gtdb_migration_tk import main as main_py
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+            main_module.get_main_parser().parse_args(self.ARGV)
+        self.assertEqual(ended.exception.code, 2)
+
+        options = main_module.get_main_parser().parse_args(self.ARGV + ['--seqcode_table', 'seqcode_table.tsv'])
+        with mock.patch.object(main_py, 'Strains') as strains, mock.patch.object(main_py, 'check_file_exists'):
+            main_py.OptionsParser().parse_options(options)
+        strains.return_value.generate_type_strain_table.assert_called_once_with(
+            'genome_dirs.tsv', ['a.txt'], 'names.dmp', 'nodes.dmp', 'gss.csv', 'lpsn', 'years.tsv',
+            'seqcode_table.tsv')
 
 
 class ReadingNcbisFiles(StrainsCase):

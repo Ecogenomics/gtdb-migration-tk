@@ -21,7 +21,7 @@ import sys
 import glob
 import logging
 from collections import Counter, defaultdict
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from psycopg2.extras import execute_values
 
@@ -37,7 +37,7 @@ from gtdb_migration_tk.gtdb_lite.gtdb_importer import (SKIP, UNKNOWN_EXAMPLES, G
 from gtdb_migration_tk.ncbi_utils import is_multi_isolate, read_summary_rows, summary_field
 from gtdb_migration_tk.utils.common import GZIP_SUFFIX, open_text
 
-# rows a statement of update_type_designation hands the server at a time
+# rows a statement of add_surveillance_genomes hands the server at a time
 PAGE_SIZE = 10000
 
 # How many genomes of a metadata table update_metadata_db holds at once. A table
@@ -270,47 +270,6 @@ def confirm_partial_load(genome_list: str, command: str = 'update_metadata_db') 
     if answer.strip().lower() not in ('y', 'yes'):
         sys.exit('{}: not proceeding; nothing was changed.'.format(command))
 
-# what update_type_designation writes
-TYPE_STRAIN_OF_SPECIES = 'type strain of species'
-NOT_USED_AS_TYPE = 'not used as type'
-SEQCODE_SOURCE = 'Seqcode'
-
-
-def type_designation_changes(rows: Iterable[Tuple]) -> Tuple[Dict[int, str], Dict[int, str]]:
-    """What update_type_designation changes, decided without the database.
-
-    A genome whose species is valid under the SeqCode is the type strain of its
-    species, and 'Seqcode' is added to the sources of that designation. A genome
-    NCBI excludes from RefSeq as derived from a metagenome and not used as type
-    is not used as type, whatever the SeqCode says.
-
-    Parameters
-    ----------
-    rows : iterable of tuple
-        (id, seqcode_species_status, ncbi_excluded_from_refseq,
-        gtdb_type_designation_ncbi_taxa, gtdb_type_designation_ncbi_taxa_sources)
-        of each genome, as update_type_designation selects them.
-
-    @return: the new gtdb_type_designation_ncbi_taxa of each genome it changes,
-             and the new gtdb_type_designation_ncbi_taxa_sources, each by id. The
-             sources keep their order, 'Seqcode' added last where it is not
-             already there: they went through a set, and came out in an order
-             that differed between runs.
-    """
-
-    designations: Dict[int, str] = {}
-    sources: Dict[int, str] = {}
-    for genome_id, seqcode_status, excluded, _designation, typed_sources in rows:
-        if seqcode_status is not None and 'Valid' in seqcode_status:
-            designations[genome_id] = TYPE_STRAIN_OF_SPECIES
-            parts = [part for part in (typed_sources or '').split(';') if part]
-            sources[genome_id] = ';'.join(dict.fromkeys(parts + [SEQCODE_SOURCE]))
-
-        if (excluded is not None and 'not used as type' in excluded
-                and 'derived from metagenome' in excluded):
-            designations[genome_id] = NOT_USED_AS_TYPE
-
-    return designations, sources
 
 class MetadataDatabaseManager(object):
 
@@ -719,43 +678,6 @@ class MetadataDatabaseManager(object):
         self.logger.info('Replaced the {:,} surveillance genome(s) of survey_genomes with {:,}: {}.'.format(
             held, len(accessions), ', '.join('{:,} {}'.format(n, prefix) for prefix, n in sorted(
                 Counter(accession[:3] for accession in accessions).items()))))
-
-    @one_transaction
-    def update_type_designation(self):
-        """Set the type designation of genomes from SeqCode and NCBI's exclusions.
-
-        What changes is decided first (type_designation_changes()) and written in
-        two statements. Each genome was updated, and committed, on its own, with
-        its values written into the SQL; a sources value holding a quote broke the
-        statement.
-        """
-
-        self.temp_cur.execute("SELECT mn.id,seq.seqcode_species_status,mn.ncbi_excluded_from_refseq,"
-                              "mtm.gtdb_type_designation_ncbi_taxa,mtm.gtdb_type_designation_ncbi_taxa_sources "
-                              "from metadata_ncbi mn "
-                              "LEFT JOIN metadata_seqcode seq USING (id) "
-                              "LEFT JOIN metadata_type_material mtm USING (id)")
-        rows = self.temp_cur.fetchall()
-        self.logger.info('Loaded {:,} genomes.'.format(len(rows)))
-
-        designations, sources = type_designation_changes(rows)
-
-        execute_values(
-            self.temp_cur,
-            'UPDATE metadata_type_material AS m SET gtdb_type_designation_ncbi_taxa = v.designation '
-            'FROM (VALUES %s) AS v(id, designation) WHERE m.id = v.id',
-            list(designations.items()), template='(%s::integer, %s::text)', page_size=PAGE_SIZE)
-        execute_values(
-            self.temp_cur,
-            'UPDATE metadata_type_material AS m SET gtdb_type_designation_ncbi_taxa_sources = v.sources '
-            'FROM (VALUES %s) AS v(id, sources) WHERE m.id = v.id',
-            list(sources.items()), template='(%s::integer, %s::text)', page_size=PAGE_SIZE)
-
-        for designation, count in sorted(Counter(designations.values()).items()):
-            self.logger.info("Set gtdb_type_designation_ncbi_taxa to '{}' for {:,} genomes.".format(
-                designation, count))
-        self.logger.info("Added '{}' to gtdb_type_designation_ncbi_taxa_sources of {:,} genomes "
-                         "valid under the SeqCode.".format(SEQCODE_SOURCE, len(sources)))
 
 
 class NCBITaxDatabaseManager(object):

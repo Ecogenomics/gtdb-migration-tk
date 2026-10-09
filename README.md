@@ -1303,7 +1303,6 @@ other, and leave 594 to NCBI's.
 | `update_reps_db` | Update species cluster representatives |
 | `update_ncbi_tax_db` | Update NCBI organism names and taxonomy (`update_ncbitax_db` until 0.1.57) |
 | `update_taxid_to_db` | Add the NCBI taxid for each rank of each genome |
-| `update_type_designation` | Update `type_designation` once SeqCode, NCBI and LPSN data are loaded |
 | `add_surveillance_genomes` | Replace `survey_genomes` with the genomes the assembly summaries mark as of a large multi-isolate or surveillance project |
 
 Every command here, and `add_taxonomy_to_database`, `update_propagated_tax`,
@@ -1614,6 +1613,14 @@ the folder, so `ncbi_strains` may write into the folder it loads.
 material, matching each genome's NCBI species and strain IDs against LPSN's type
 strains, and writes `gtdb_type_strain_summary.tsv.gz` for `metadata_type_material`,
 which `update_metadata_db` loads gzipped as it is.
+A genome typing a species valid under the SeqCode (`--seqcode_table`, the
+`seqcode_table.tsv` of `download_seqcode_data`) is then a type strain of species,
+`SeqCode` among its `gtdb_type_designation_ncbi_taxa_sources` and the type species
+of its genus where the SeqCode says so. Last, a genome NCBI excludes from RefSeq as
+`derived from metagenome` and `not used as type` is `not used as type`, with no
+sources and not the type species of its genus, `gtdb_type_designation_notes`
+saying which designation it overrode. These were `update_type_designation`, run on
+the database once the summary was loaded, until 0.1.73.
 It reads the genomes from the release's files rather than the database, so it can
 run once `ncbi_metadata_sync` and `update_genomes` are done: which genomes from
 `genome_dirs.tsv` (`-g`); their organism name, taxid, strain IDs and NCBI type
@@ -1629,7 +1636,24 @@ gtdb_migration_tk strains type_table -g release237/genome_dirs.tsv \
     -n ncbi/assembly_summary_*.txt.gz \
     --ncbi_names taxdump/names.dmp --ncbi_nodes taxdump/nodes.dmp \
     --lpsn_gss_file lpsn_gss_<date>.csv --lpsn_dir lpsn/parse_html/all_ranks \
-    --year_table year_table.tsv -o strain_table -c 16
+    --year_table year_table.tsv --seqcode_table seqcode/seqcode_table.tsv \
+    -o strain_table -c 16
+```
+
+The type material of a release is made and loaded in this order:
+
+```bash
+gtdb_migration_tk download_seqcode_data -g release237/genome_dirs.tsv \
+    -n ncbi/assembly_summary_*.txt.gz -o seqcode
+gtdb_migration_tk strains type_table ... --seqcode_table seqcode/seqcode_table.tsv -o strain_table
+gtdb_migration_tk update_metadata_db --db_service gtdb_r237_dev \
+    --metadata_table strain_table/gtdb_type_strain_summary.tsv.gz \
+    --metadata_table_desc gtdb_migration_tk/data_files/table_description/metadata_type_material.desc.tsv \
+    -l logs/update_metadata_db-type_material.log
+gtdb_migration_tk update_metadata_db --db_service gtdb_r237_dev \
+    --metadata_table seqcode/seqcode_table.tsv \
+    --metadata_table_desc gtdb_migration_tk/data_files/table_description/metadata_seqcode.desc.tsv \
+    -l logs/update_metadata_db-seqcode.log
 ```
 
 ### Validation

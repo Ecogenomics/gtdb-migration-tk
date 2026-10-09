@@ -122,7 +122,9 @@ RANK_ORDER = ('domain', 'phylum', 'class', 'order', 'family', 'genus', 'species'
 RANK_PREFIXES = ('d__', 'p__', 'c__', 'o__', 'f__', 'g__', 's__')
 
 # the table's columns, each seqcode_<label>, and the field of the species' list
-# entry it is from; the ones derived from it are named for what they say
+# entry it is from; the ones derived from it are named for what they say. The
+# columns after the first are metadata_seqcode's, as metadata_seqcode.desc.tsv
+# describes them, so the Registry's proposed_in is written as seqcode_proposed_by
 SEQCODE_FIELDS = (('type_material_accn', 'nomenclatural_type'),
                   ('id', 'id'),
                   ('name', 'name'),
@@ -140,7 +142,7 @@ SEQCODE_FIELDS = (('type_material_accn', 'nomenclatural_type'),
                   ('type_genus_of_class', 'type_genus_of_class'),
                   ('type_genus_of_phylum', 'type_genus_of_phylum'),
                   ('classification', 'classification'),
-                  ('proposed_in', 'proposed_in'),
+                  ('proposed_by', 'proposed_in'),
                   ('created_at', 'created_at'),
                   ('updated_at', 'updated_at'),
                   ('url', 'url'))
