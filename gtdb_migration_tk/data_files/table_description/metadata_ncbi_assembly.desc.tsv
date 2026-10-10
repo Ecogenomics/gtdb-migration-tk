@@ -36,3 +36,5 @@ ncbi_lat_lon	Latitude and longitude of the place the sample was collected, from 
 ncbi_taxonomy	NCBI taxonomy string.	TEXT	metadata_taxonomy
 ncbi_type_strain	NCBI type material.	TEXT	metadata_taxonomy
 ncbi_strain_identifiers	NCBI strain information for the assembly report	TEXT	metadata_ncbi
+ncbi_country	Country or ocean, and locality, where the sample was collected (/geo_loc_name, formerly /country), from the source feature of the GenBank file.	TEXT	metadata_ncbi
+ncbi_protein_count	Number of CDS features with a protein, from the GFF file; NCBI's CDSs (with protein).	INT	metadata_ncbi
