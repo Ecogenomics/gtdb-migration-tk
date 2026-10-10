@@ -1028,33 +1028,52 @@ characters fails every batch with `OSError: AF_UNIX path too long`.
 `create_tables` calculates nothing. It walks the genomes of the genome_dirs file
 it is given (`--gtdb_genome_path_file`), which may be any release's and not only
 NCBI's, and gathers what earlier commands wrote into each genome directory into
-nine tables in `--out_dir`, each gzipped (`metadata_nt.tsv.gz` and so on):
+ten tables in `--out_dir`, each gzipped (`metadata_nt.tsv.gz` and so on):
 
 | Read from the genome directory | Written by | Table |
 | --- | --- | --- |
 | `metadata.genome_nt.tsv` | `genomic_metadata` | `metadata_nt.tsv` |
 | `metadata.genome_gene.tsv` | `genomic_metadata` | `metadata_gene.tsv` |
 | `rna_silva_<ver>/ssu.*` | `rna_silva -r ssu` | `metadata_ssu_silva.tsv`, `metadata_ssu_silva_count.tsv` |
+| `rna_ltp_<ver>/ssu.taxonomy.tsv` | `rna_ltp` | `metadata_ssu_ltp.tsv` |
 | `rna_silva_<ver>/lsu_23S.*` | `rna_silva -r lsu_23S` | `metadata_lsu_silva_23s.tsv`, `metadata_lsu_silva_23s_count.tsv` |
 | `rna_silva_<ver>/lsu_5S.*` | `rna_silva -r lsu_5S` | `metadata_lsu_5S.tsv`, `metadata_lsu_5S_count.tsv` |
 | `trna/<gid>_trna_stats.tsv` | `trnascan` | `metadata_trna_count.tsv` |
 
 `--silva_version` only names the `rna_silva_<ver>` directory, and must match
-`config.SILVA_VERSION`. `metadata_ssu_gg.tsv`, the Greengenes classification of
-the 16S rRNA genes from `ssu_gg/`, is no longer written: nothing has written
-`ssu_gg/` since `rna_silva` took over, and r237 had none. A run removes one an
-earlier run left in `--out_dir`, which `update_metadata_db --input_folder` would
-otherwise refuse as a table it does not know. The eight `ssu_gg_*` fields were
-dropped from `metadata_rna` and `metadata_view` of `gtdb_r237_dev` on
-2026-10-08, the view recreated without them; the values of the 86,077 genomes
-that held them (nearly all added from 2015 to 2018), and the view's definition
-before and after, are in `release237/processing/drop_ssu_gg/`. A genome without a file is given no row in that table;
-the three `*_count.tsv` tables are the exception, giving every genome a row, 0
-where nothing was found. The run ends by logging, for every other table, how many
-genomes have a row, how many had no file to read it from, and how many had one
-with nothing to report (an rRNA table of no hits). A genome with no
-`metadata.genome_nt.tsv` is a WARNING, since every genome has a genomic FASTA to
-calculate it from; the rest are INFO, being rightly missing for some genomes:
+`config.SILVA_VERSION`; `--ltp_version` names the `rna_ltp_<ver>` directory, and
+is `config.LTP_VERSION` unless given. `metadata_ssu_ltp.tsv` is the LTP
+classification of the 16S rRNA gene of the genome's `metadata_ssu_silva.tsv`
+row, its `ssu_query_id`, the longest SILVA reported: the row of rna_ltp's
+`ssu.taxonomy.tsv` with that `query_id`, so that a genome's row of `metadata_rna`
+is one gene. Its six fields, `ssu_ltp_taxonomy`, `ssu_ltp_blast_subject_id`,
+`ssu_ltp_blast_evalue`, `ssu_ltp_blast_bitscore`, `ssu_ltp_blast_align_len` and
+`ssu_ltp_blast_perc_identity`, are loaded into `metadata_rna`
+(`metadata_rna.table.desc.tsv`). `rna_ltp`'s results were loaded nowhere until
+0.1.80, and a database older than that has no columns for them: they are added
+to `metadata_rna`, and to the end of `metadata_view`, before the table is loaded.
+They were added to `gtdb_r237_dev` on 2026-10-11, the view recreated with them;
+the script, its log and the view's definition before and after are in
+`release237/processing/add_ssu_ltp/`. r237 loaded 695,512 genomes of the 696,190
+with a SILVA row. Of the other 678, `rna_ltp` classified some other 16S gene of
+149 or none of 524, and skipped 5 as larger than its 100 Mbp maximum genome size.
+
+`metadata_ssu_gg.tsv`, the Greengenes classification of the 16S rRNA genes from
+`ssu_gg/`, is no longer written: nothing has written `ssu_gg/` since `rna_silva`
+took over, and r237 had none. A run removes one an earlier run left in
+`--out_dir`, which `update_metadata_db --input_folder` would otherwise refuse as
+a table it does not know. The eight `ssu_gg_*` fields were dropped from
+`metadata_rna` and `metadata_view` of `gtdb_r237_dev` on 2026-10-08, the view
+recreated without them; the values of the 86,077 genomes that held them (nearly
+all added from 2015 to 2018), and the view's definition before and after, are in
+`release237/processing/drop_ssu_gg/`. A genome without a file is given no row in
+that table; the three `*_count.tsv` tables are the exception, giving every
+genome a row, 0 where nothing was found. The run ends by logging, for every
+other table, how many genomes have a row, how many had no file to read it from,
+and how many had one with nothing to report (an rRNA table of no hits). A genome
+with no `metadata.genome_nt.tsv` is a WARNING, since every genome has a genomic
+FASTA to calculate it from; the rest are INFO, being rightly missing for some
+genomes:
 
 ```
 Rows written for 2 genomes:
@@ -1064,12 +1083,12 @@ Rows written for 2 genomes:
   metadata_trna_count.tsv: 1 with a row; 1 had no trna/<gid>_trna_stats.tsv.
 ```
 
-That is where a release finds that `genomic_metadata`, `rna_silva` or `trnascan`
-did not get to every genome. The log goes to `-l/--log`, which is required, so
-that the run's account of what is missing is where it was asked to be. A
+That is where a release finds that `genomic_metadata`, `rna_silva`, `rna_ltp` or
+`trnascan` did not get to every genome. The log goes to `-l/--log`, which is
+required, so that the run's account of what is missing is where it was asked to be. A
 genome_dirs file naming no genomes is
 refused, exiting 1, before anything is written, rather than replacing the tables
-in `--out_dir` with nine of no rows. The table names are the ones
+in `--out_dir` with ten of no rows. The table names are the ones
 `update_metadata_db --input_folder` knows, and it refuses any other `.tsv` there.
 
 `create_tables`, `parse_ncbi_assemblies`, `parse_ncbi_dir`,

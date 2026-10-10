@@ -678,6 +678,12 @@ def __silva_version(group, required):
     group.add_argument('-v', '--silva_version', help='Silva version to use.', required=required)
 
 
+def __ltp_version_of_results(group):
+    group.add_argument('--ltp_version',
+                       help='LTP version rna_ltp classified the 16S rRNA genes against, naming its directory in each '
+                            'genome directory; by default the one config.py declares.')
+
+
 def __skip_taxa_per_letter_dl(group):
     group.add_argument('--skip_taxa_per_letter_dl', action='store_true',
                        help='Skip downloading the set of taxa under each rank; '
@@ -1111,6 +1117,7 @@ def get_main_parser():
             __silva_version(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __ltp_version_of_results(grp)
             __cpus(grp)
             __silent(grp)
 

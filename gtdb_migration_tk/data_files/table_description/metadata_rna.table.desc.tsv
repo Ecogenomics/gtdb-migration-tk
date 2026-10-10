@@ -19,3 +19,9 @@ ssu_silva_blast_perc_identity	Percent identity of BLAST hit.	FLOAT	metadata_rna
 lsu_5s_query_id	Query id.	TEXT	metadata_rna
 lsu_5s_length	Length of query sequence.	INT	metadata_rna
 lsu_5s_contig_len	Length of contig containing 5S LSU sequence.	INT	metadata_rna
+ssu_ltp_taxonomy	LTP taxonomy string of the BLAST hit of the 16S rRNA gene of ssu_query_id.	TEXT	metadata_rna
+ssu_ltp_blast_subject_id	Sequence identifier of the LTP BLAST hit.	TEXT	metadata_rna
+ssu_ltp_blast_evalue	E-value of the LTP BLAST hit.	FLOAT	metadata_rna
+ssu_ltp_blast_bitscore	Bitscore of the LTP BLAST hit.	FLOAT	metadata_rna
+ssu_ltp_blast_align_len	Alignment length of the LTP BLAST hit.	INT	metadata_rna
+ssu_ltp_blast_perc_identity	Percent identity of the LTP BLAST hit.	FLOAT	metadata_rna
