@@ -84,6 +84,20 @@ GENE_TABLE = 'metadata_gene.tsv'
 LSU_5S_TABLE = 'metadata_lsu_5S.tsv'
 TRNA_TABLE = 'metadata_trna_count.tsv'
 
+# The LTP classification of each genome's 16S rRNA gene, which rna_ltp writes
+# beside rna_silva's and nothing loaded until 0.1.80. A genome's row in
+# metadata_rna is one 16S gene, ssu_query_id, the longest SILVA reported, so the
+# LTP fields are those of the same gene: the row of rna_ltp's ssu.taxonomy.tsv
+# with that query_id, none where rna_ltp has none for it. Read by column name:
+# the file's column, and the field of metadata_rna it is loaded into.
+LTP_TABLE = 'metadata_ssu_ltp.tsv'
+LTP_COLUMNS = (('taxonomy', 'ssu_ltp_taxonomy'),
+               ('blast_subject_id', 'ssu_ltp_blast_subject_id'),
+               ('blast_evalue', 'ssu_ltp_blast_evalue'),
+               ('blast_bitscore', 'ssu_ltp_blast_bitscore'),
+               ('blast_align_len', 'ssu_ltp_blast_align_len'),
+               ('blast_perc_identity', 'ssu_ltp_blast_perc_identity'))
+
 # The tables every genome of a release should have a row in. Each genome has a
 # genomic FASTA, so genomic_metadata gives each its nucleotide metadata, and one
 # without it is a genome that command did not get to; the summary warns of it.
@@ -212,13 +226,13 @@ def taxonomy_table(prefix: str) -> str:
 class MetadataTable(object):
     """Gather the metadata of every genome of a release into tables.
 
-    Calculates nothing: genomic_metadata, rna_silva and trnascan have written
-    their results into each genome directory, and this collects them into the
-    nine tables update_metadata_db loads. A genome missing a file is given no
-    row in that table.
+    Calculates nothing: genomic_metadata, rna_silva, rna_ltp and trnascan have
+    written their results into each genome directory, and this collects them
+    into the ten tables update_metadata_db loads. A genome missing a file is
+    given no row in that table.
     """
 
-    def __init__(self, silva_version: str) -> None:
+    def __init__(self, silva_version: str, ltp_version: str) -> None:
         """Initialization.
 
         Parameters
@@ -227,11 +241,15 @@ class MetadataTable(object):
             Version of SILVA the rRNA genes were classified against. It names
             the directory within each genome directory those results were
             written to, and must match config.SILVA_VERSION.
+        ltp_version : str
+            Version of LTP the 16S rRNA genes were classified against, naming
+            rna_ltp's directory as silva_version names rna_silva's.
 
         @return: None
         """
 
         silva_folder = f'rna_silva_{silva_version}'
+        ltp_folder = f'rna_ltp_{ltp_version}'
 
         # every path here is relative to one genome's directory
         self.metadata_nt_file: str = 'metadata.genome_nt.tsv'
@@ -248,6 +266,8 @@ class MetadataTable(object):
         self.lsu_silva_23s_summary_file: str = os.path.join(
             silva_folder, 'lsu_23S.hmm_summary.tsv')
 
+        self.ssu_ltp_taxonomy_file: str = os.path.join(ltp_folder, 'ssu.taxonomy.tsv')
+
         self.lsu_5S_fna_file: str = os.path.join(silva_folder, 'lsu_5S.fna')
         self.lsu_5S_summary_file: str = os.path.join(
             silva_folder, 'lsu_5S.hmm_summary.tsv')
@@ -258,6 +278,7 @@ class MetadataTable(object):
             NT_TABLE: self.metadata_nt_file,
             GENE_TABLE: self.metadata_gene_file,
             taxonomy_table('ssu_silva'): self.ssu_silva_taxonomy_file,
+            LTP_TABLE: self.ssu_ltp_taxonomy_file,
             taxonomy_table('lsu_silva_23s'): self.lsu_silva_23s_taxonomy_file,
             LSU_5S_TABLE: self.lsu_5S_fna_file,
             TRNA_TABLE: os.path.join('trna', '<gid>_trna_stats.tsv')}
@@ -407,6 +428,43 @@ class MetadataTable(object):
         return TableRow(header, ''.join(row)), identified_ssu_genes
 
     @staticmethod
+    def _read_ltp_file(genome_id: str, path: str, query_id: Optional[str]) -> Optional[TableRow]:
+        """Read the LTP classification of the 16S rRNA gene the SILVA table reports.
+
+        Parameters
+        ----------
+        genome_id : str
+            Unique identifier of genome.
+        path : str
+            Full path to rna_ltp's ssu.taxonomy.tsv of the genome.
+        query_id : str or None
+            The gene of the genome's ssu_silva row, or None where it has none.
+
+        @return: the header and the genome's row, its row None where rna_ltp has
+                 no classification of that gene, or None where the genome has
+                 no such file.
+        """
+
+        try:
+            handle = open(path)
+        except FileNotFoundError:
+            return None
+
+        header = '\t'.join(['genome_id'] + [field for _, field in LTP_COLUMNS]) + '\n'
+        with handle:
+            columns = handle.readline().rstrip('\n').split('\t')
+            if query_id is None:
+                return TableRow(header, None)
+            index = {column: n for n, column in enumerate(columns)}
+            for line in handle:
+                values = line.rstrip('\n').split('\t')
+                if values[index['query_id']] == query_id:
+                    row = [genome_id] + [values[index[column]] for column, _ in LTP_COLUMNS]
+                    return TableRow(header, '\t'.join(row) + '\n')
+
+        return TableRow(header, None)
+
+    @staticmethod
     def _read_lsu_5S_files(accession: str,
                            fna_file: str,
                            summary_file: str) -> Tuple[Optional[TableRow], int]:
@@ -542,6 +600,12 @@ class MetadataTable(object):
             gid, os.path.join(gpath, self.ssu_silva_taxonomy_file), 'ssu_silva',
             os.path.join(gpath, self.ssu_silva_fna_file),
             os.path.join(gpath, self.ssu_silva_summary_file))
+        # the 16S gene the ssu_silva row reports, which the LTP row is of
+        ssu_query_id = None
+        if ssu_silva is not None and ssu_silva.row is not None:
+            ssu_query_id = dict(zip(ssu_silva.header.rstrip('\n').split('\t'),
+                                    ssu_silva.row.rstrip('\n').split('\t')))['ssu_query_id']
+        ssu_ltp = self._read_ltp_file(gid, os.path.join(gpath, self.ssu_ltp_taxonomy_file), ssu_query_id)
         lsu_23s, lsu_23s_count = self._read_taxonomy_file(
             gid, os.path.join(gpath, self.lsu_silva_23s_taxonomy_file), 'lsu_silva_23s',
             os.path.join(gpath, self.lsu_silva_23s_fna_file),
@@ -554,6 +618,7 @@ class MetadataTable(object):
             NT_TABLE: self._read_field_table(gid, os.path.join(gpath, self.metadata_nt_file)),
             GENE_TABLE: self._read_field_table(gid, os.path.join(gpath, self.metadata_gene_file)),
             taxonomy_table('ssu_silva'): ssu_silva,
+            LTP_TABLE: ssu_ltp,
             taxonomy_table('lsu_silva_23s'): lsu_23s,
             LSU_5S_TABLE: lsu_5S,
             TRNA_TABLE: self._read_trna_file(gid, os.path.join(gpath, 'trna', gid + '_trna_stats.tsv'))}
@@ -565,7 +630,7 @@ class MetadataTable(object):
         """Create metadata tables.
 
         One pass over the release, gathering what every earlier command wrote
-        into each genome directory into the nine tables the database is loaded
+        into each genome directory into the ten tables the database is loaded
         from. The genomes are read cpus at a time on threads (_read_genome()),
         and written here in the order of the genome_dirs file, so the tables
         are the same whatever cpus is.

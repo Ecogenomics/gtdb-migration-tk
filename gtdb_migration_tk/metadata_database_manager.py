@@ -279,6 +279,7 @@ class MetadataDatabaseManager(object):
         self.description_table = {'metadata_gene.tsv':['metadata_gene.desc.tsv'],
                                   'metadata_nt.tsv':['metadata_nt.desc.tsv'],
                                   'metadata_ssu_silva.tsv':['metadata_rna.table.desc.tsv','metadata_sequence.desc.tsv'],
+                                  'metadata_ssu_ltp.tsv':['metadata_rna.table.desc.tsv'],
                                   'metadata_lsu_silva_23s.tsv':['metadata_rna.table.desc.tsv','metadata_sequence.desc.tsv'],
                                   'metadata_lsu_5S.tsv':['metadata_rna.table.desc.tsv','metadata_sequence.desc.tsv'],
                                   'metadata_ssu_silva_count.tsv':['metadata_ssu_count.desc.tsv'],

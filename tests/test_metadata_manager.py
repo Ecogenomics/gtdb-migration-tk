@@ -180,7 +180,7 @@ class AGenomeWhoseGenesHaveGone(TempDirCase):
 
     def test_create_tables_gives_it_no_gene_row(self):
         self.run_metadata([('GCA_000005.1', self.gpath)])
-        table = M.MetadataTable('138.2')
+        table = M.MetadataTable('138.2', '10_2024')
         # the file removed is the one create_tables reads
         self.assertEqual(table.metadata_gene_file, M.GENE_METADATA_FILES[0])
         self.assertIsNone(table._read_field_table(
@@ -373,7 +373,7 @@ class WhatCreateTablesLogs(TempDirCase):
         logger = logging.getLogger('timestamp')
         logger.setLevel(logging.INFO)
         with self.assertLogs('timestamp', level='INFO') as captured:
-            M.MetadataTable('138.2').create_metadata_tables(
+            M.MetadataTable('138.2', '10_2024').create_metadata_tables(
                 self.genome_dirs_file(genomes), out_dir)
         return out_dir, [record.getMessage() for record in captured.records]
 
@@ -409,7 +409,7 @@ class WhatCreateTablesLogs(TempDirCase):
         _, messages = self.create_tables([('GCA_000001.1', self.gathered_genome('GCA_000001.1'))])
 
         for table in (M.NT_TABLE, M.GENE_TABLE,
-                      M.taxonomy_table('ssu_silva'), M.taxonomy_table('lsu_silva_23s'),
+                      M.taxonomy_table('ssu_silva'), M.LTP_TABLE, M.taxonomy_table('lsu_silva_23s'),
                       M.LSU_5S_TABLE, M.TRNA_TABLE):
             self.line_for(messages, table)
 
@@ -427,7 +427,7 @@ class WhatCreateTablesLogs(TempDirCase):
         _, messages = self.create_tables([('GCA_000001.1', gpath)])
 
         self.assertNotIn('metadata_ssu_gg.tsv', os.listdir(out_dir))
-        self.assertEqual(len(os.listdir(out_dir)), 9)
+        self.assertEqual(len(os.listdir(out_dir)), 10)
         self.assertFalse([m for m in messages if m.strip().startswith('metadata_ssu_gg.tsv:')])
         self.assertTrue([m for m in messages if m.startswith('Removed ') and 'metadata_ssu_gg.tsv' in m])
 
@@ -439,7 +439,7 @@ class WhatCreateTablesLogs(TempDirCase):
         _, messages = self.create_tables([('GCA_000001.1', self.gathered_genome('GCA_000001.1'))])
 
         names = sorted(os.listdir(out_dir))
-        self.assertEqual(len(names), 9)
+        self.assertEqual(len(names), 10)
         for name in names:
             self.assertTrue(name.endswith('.tsv.gz'), name)
             with open(os.path.join(out_dir, name), 'rb') as handle:
@@ -466,7 +466,7 @@ class WhatCreateTablesLogs(TempDirCase):
         logger = logging.getLogger('timestamp')
         logger.setLevel(logging.INFO)
         with self.assertLogs('timestamp', level='INFO') as captured:
-            M.MetadataTable('138.2').create_metadata_tables(
+            M.MetadataTable('138.2', '10_2024').create_metadata_tables(
                 self.genome_dirs_file([('GCA_000001.1', whole), ('GCA_000002.1', no_nt)]), out_dir)
 
         warned = [record.getMessage().strip() for record in captured.records
@@ -479,10 +479,96 @@ class WhatCreateTablesLogs(TempDirCase):
         logger = logging.getLogger('timestamp')
         logger.setLevel(logging.INFO)
         with self.assertLogs('timestamp', level='INFO') as captured:
-            M.MetadataTable('138.2').create_metadata_tables(
+            M.MetadataTable('138.2', '10_2024').create_metadata_tables(
                 self.genome_dirs_file([('GCA_000003.1', gpath)]), os.path.join(self.dir, 'tables'))
 
         self.assertFalse([record for record in captured.records if record.levelno >= logging.WARNING])
+
+
+SILVA_SSU = ('query_id\ttaxonomy\tlength\tblast_subject_id\tblast_evalue\tblast_bitscore\t'
+             'blast_align_len\tblast_perc_identity\n'
+             'c1\tBacteria;Bacillota;Bacillus subtilis\t1500\tX1\t0.0\t2700\t1500\t99.9\n'
+             'c2\tBacteria;Bacillota;Bacillus subtilis\t1540\tX2\t0.0\t2780\t1540\t100.0\n')
+LTP_SSU = ('query_id\ttaxonomy\tlength\tblast_subject_id\tblast_evalue\tblast_bitscore\t'
+           'blast_align_len\tblast_perc_identity\n'
+           'c1\tBacteria;Bacillota;Bacilli;Bacillales;Bacillaceae;Bacillus;Bacillus spizizenii;|\t1500\tAB1\t0.0'
+           '\t2690\t1499\t99.5\n'
+           'c2\tBacteria;Bacillota;Bacilli;Bacillales;Bacillaceae;Bacillus;Bacillus subtilis;|\t1540\tAB2\t1e-300'
+           '\t2770\t1538\t99.8\n')
+
+
+class LoadingTheLtpClassification(WhatCreateTablesLogs):
+    """create_tables writes rna_ltp's classification of the 16S gene metadata_rna holds.
+
+    rna_ltp's results were written into every genome directory and loaded nowhere:
+    no table, description or field of metadata_rna named them, until 0.1.80.
+    """
+
+    def rrna_genome(self, gid, silva=SILVA_SSU, ltp=LTP_SSU):
+        gpath = self.gathered_genome(gid)
+        os.makedirs(os.path.join(gpath, 'rna_silva_138.2'))
+        with open(os.path.join(gpath, 'rna_silva_138.2', 'ssu.taxonomy.tsv'), 'w') as handle:
+            handle.write(silva)
+        with open(os.path.join(gpath, 'rna_silva_138.2', 'ssu.fna'), 'w') as handle:
+            handle.write('>c1\nACGT\n>c2\nACGTA\n')
+        if ltp is not None:
+            os.makedirs(os.path.join(gpath, 'rna_ltp_10_2024'))
+            with open(os.path.join(gpath, 'rna_ltp_10_2024', 'ssu.taxonomy.tsv'), 'w') as handle:
+                handle.write(ltp)
+        return gpath
+
+    def ltp_rows(self, out_dir):
+        with open_text(os.path.join(out_dir, M.LTP_TABLE + '.gz')) as handle:
+            lines = handle.read().splitlines()
+        header = lines[0].split('\t')
+        return [dict(zip(header, line.split('\t'))) for line in lines[1:]]
+
+    def test_the_ltp_row_is_of_the_gene_the_silva_row_reports(self):
+        out_dir, _ = self.create_tables([('GCA_000001.1', self.rrna_genome('GCA_000001.1'))])
+
+        # c2, the longest 16S gene, is the ssu_query_id of the genome's metadata_rna row
+        self.assertEqual(self.ltp_rows(out_dir), [{
+            'genome_id': 'GCA_000001.1',
+            'ssu_ltp_taxonomy': 'Bacteria;Bacillota;Bacilli;Bacillales;Bacillaceae;Bacillus;Bacillus subtilis;|',
+            'ssu_ltp_blast_subject_id': 'AB2', 'ssu_ltp_blast_evalue': '1e-300', 'ssu_ltp_blast_bitscore': '2770',
+            'ssu_ltp_blast_align_len': '1538', 'ssu_ltp_blast_perc_identity': '99.8'}])
+
+    def test_a_genome_rna_ltp_did_not_classify_that_gene_for_has_no_row(self):
+        only_c1 = LTP_SSU.split('\n')[0] + '\n' + LTP_SSU.split('\n')[1] + '\n'
+        out_dir, messages = self.create_tables([('GCA_000001.1', self.rrna_genome('GCA_000001.1', ltp=only_c1))])
+
+        self.assertEqual(self.ltp_rows(out_dir), [])
+        self.assertEqual(self.line_for(messages, M.LTP_TABLE).strip(),
+                         'metadata_ssu_ltp.tsv: 0 with a row; 1 had nothing to report.')
+
+    def test_a_genome_without_rna_ltps_file_is_counted_against_the_table(self):
+        _, messages = self.create_tables([('GCA_000001.1', self.rrna_genome('GCA_000001.1', ltp=None))])
+        self.assertIn('1 had no ' + os.path.join('rna_ltp_10_2024', 'ssu.taxonomy.tsv'),
+                      self.line_for(messages, M.LTP_TABLE))
+
+    def test_update_metadata_db_loads_the_table_into_metadata_rna_every_column_described(self):
+        from gtdb_migration_tk import metadata_database_manager as D
+        with mock.patch.object(D.GenomeDatabaseConnectionFTPUpdate, 'GenomeDatabaseConnectionFTPUpdate'):
+            manager = D.MetadataDatabaseManager({})
+        self.assertEqual(manager.description_table[M.LTP_TABLE], ['metadata_rna.table.desc.tsv'])
+
+        path = os.path.join(os.path.dirname(D.__file__), 'data_files', 'table_description',
+                            'metadata_rna.table.desc.tsv')
+        with open(path) as handle:
+            described = {line.split('\t')[0]: line.rstrip('\n').split('\t')[3] for line in handle}
+        for _, field in M.LTP_COLUMNS:
+            self.assertEqual(described[field], 'metadata_rna', field)
+
+    def test_create_tables_takes_the_ltp_version_or_config_s(self):
+        from gtdb_migration_tk import __main__ as main_module
+        from gtdb_migration_tk import config
+        from gtdb_migration_tk import main as main_py
+        argv = ['create_tables', '-g', 'genome_dirs.tsv', '-o', self.dir, '-v', '138.2', '-l', 'run.log']
+        for extra, version in (([], config.LTP_VERSION), (['--ltp_version', '08_2023'], '08_2023')):
+            options = main_module.get_main_parser().parse_args(argv + extra)
+            with mock.patch.object(main_py, 'MetadataTable') as table:
+                main_py.OptionsParser().create_metadata_tables(options)
+            table.assert_called_once_with('138.2', version)
 
 
 class AnEmptyGenomeDirsFile(TempDirCase):
@@ -495,7 +581,7 @@ class AnEmptyGenomeDirsFile(TempDirCase):
     def test_it_is_refused_and_no_tables_are_written(self):
         out_dir = os.path.join(self.dir, 'tables')
         with self.assertRaises(M.EmptyGenomeDirs):
-            M.MetadataTable('138.2').create_metadata_tables(self.genome_dirs_file([]), out_dir)
+            M.MetadataTable('138.2', '10_2024').create_metadata_tables(self.genome_dirs_file([]), out_dir)
         self.assertFalse(os.path.exists(out_dir))
 
     def test_an_earlier_releases_tables_are_left_as_they_were(self):
@@ -506,7 +592,7 @@ class AnEmptyGenomeDirsFile(TempDirCase):
             handle.write('genome_id\tgc_percentage\nGCA_000001.1\t50.0\n')
 
         with self.assertRaises(M.EmptyGenomeDirs):
-            M.MetadataTable('138.2').create_metadata_tables(self.genome_dirs_file([]), out_dir)
+            M.MetadataTable('138.2', '10_2024').create_metadata_tables(self.genome_dirs_file([]), out_dir)
         with open(table) as handle:
             self.assertEqual(handle.read(), 'genome_id\tgc_percentage\nGCA_000001.1\t50.0\n')
 
@@ -598,7 +684,7 @@ class ReadingOnThreads(TempDirCase):
     def tables(self, genome_dirs, cpus):
         out_dir = os.path.join(self.dir, 'tables_{}'.format(cpus))
         with self.assertLogs('timestamp', level='INFO'):
-            M.MetadataTable('138.2').create_metadata_tables(genome_dirs, out_dir, cpus)
+            M.MetadataTable('138.2', '10_2024').create_metadata_tables(genome_dirs, out_dir, cpus)
         written = {}
         for name in sorted(os.listdir(out_dir)):
             self.assertTrue(name.endswith('.tsv.gz'), name)

@@ -286,7 +286,7 @@ class OptionsParser():
         p.generate_metadata(options.gtdb_genome_path_file, options.output_dir)
 
     def create_metadata_tables(self, options):
-        p = MetadataTable(options.silva_version)
+        p = MetadataTable(options.silva_version, options.ltp_version or config.LTP_VERSION)
         try:
             p.create_metadata_tables(
                 options.gtdb_genome_path_file, options.output_dir, options.cpus)
