@@ -197,7 +197,11 @@ class NCBIMetaDir(object):
     """Create metadata file from the assembly stats file of each NCBI assembly."""
 
     def __init__(self,cpus=1):
-        self.fields = ['Assembly name', 'Organism name',
+        # no 'Organism name': ncbi_organism_name follows the NCBI taxonomy and is
+        # written by update_ncbi_tax_db alone. The assembly report's is the name
+        # the submitter gave; loaded from this table until 0.1.79 it replaced the
+        # taxonomy's for 13,538 genomes of r237, update_metadata_db having run last
+        self.fields = ['Assembly name',
                        'Taxid', 'Submitter', 'Date']
         self.fields.extend(['BioSample', 'Assembly type',
                             'Release type', 'Assembly level'])
@@ -259,13 +263,7 @@ class NCBIMetaDir(object):
                     field = line[2:line.find(':')]
                     value = line[line.find(':') + 1:].strip()
                     if field in self.fields:
-                        if field == 'Organism name' and '(' in value:
-                            metadata_index = self.fields.index(field)
-                            metadata_fields[metadata_index] = value[0:value.find(
-                                '(')].strip()
-                        else:
-                            metadata_index = self.fields.index(field)
-                            metadata_fields[metadata_index] = value
+                        metadata_fields[self.fields.index(field)] = value
                 elif file_section == 'ST':
                     line_split = line.split('\t')
                     if len(line_split) == 2:
