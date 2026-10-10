@@ -14,7 +14,6 @@ ncbi_total_length	Total sequence length including bases and gaps.	INT	metadata_n
 ncbi_ungapped_length	Total length excluding gaps.	INT	metadata_ncbi
 ncbi_unspanned_gaps	"Number of unspanned gaps (i.e., gaps between scaffolds)."	INT	metadata_ncbi
 ncbi_assembly_name	Name of assembly specified by submitter.	TEXT	metadata_ncbi
-ncbi_organism_name	Name of organism specified by submitter.	TEXT	metadata_ncbi
 ncbi_taxid	NCBI taxonomy identifier.	INT	metadata_ncbi
 ncbi_submitter	"Individual, institution, or consortium that submitted the assembly."	TEXT	metadata_ncbi
 ncbi_date	"Date assembly was released in the INSDC (DDBJ, ENA, or GenBank) databases."	TEXT	metadata_ncbi
@@ -33,7 +32,6 @@ ncbi_ssu_count	Number of 16S rRNA genes identified in genome.	INT	metadata_ncbi
 ncbi_translation_table	Specifies the genetic code used for translation.	INT	metadata_ncbi
 ncbi_isolation_source	Physical, environmental and/or local geographical source of the sample, from the source feature of the GenBank file.	TEXT	metadata_ncbi
 ncbi_lat_lon	Latitude and longitude of the place the sample was collected, from the source feature of the GenBank file.	TEXT	metadata_ncbi
-ncbi_taxonomy	NCBI taxonomy string.	TEXT	metadata_taxonomy
 ncbi_type_strain	NCBI type material.	TEXT	metadata_taxonomy
 ncbi_strain_identifiers	NCBI strain information for the assembly report	TEXT	metadata_ncbi
 ncbi_country	Country or ocean, and locality, where the sample was collected (/geo_loc_name, formerly /country), from the source feature of the GenBank file.	TEXT	metadata_ncbi

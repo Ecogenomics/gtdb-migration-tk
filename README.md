@@ -1456,6 +1456,21 @@ field. For r237 that is 1,486 genomes without a taxonomy, those whose taxid NCBI
 deleted. A file naming a genome twice refuses the run. Each file is written in
 chunks, as `update_metadata_db` writes a table.
 
+These three fields are `update_ncbi_tax_db`'s alone: they follow the NCBI
+taxonomy, and no table `update_metadata_db` loads describes them
+(`tests/test_metadata_ncbi_manager.py` holds every description file to that). The
+organism name is the `organism_name` of the assembly summaries, the scientific
+name of the assembly's taxid in the NCBI Taxonomy, with NCBI's ` (SeqCode)` taken
+off: over r237 it is the `names.dmp` name of the taxid for every genome whose
+taxid NCBI has neither deleted nor renamed since. Until 0.1.79 `parse_ncbi_dir`
+also wrote `ncbi_organism_name`, the assembly report's, the name the submitter
+gave, and `update_metadata_db` loaded it, so whichever ran last set the field: r237
+ran `update_metadata_db` last, which left 13,538 genomes with the assembly
+report's name where the taxonomy gives another (`Candidatus Fonsibacter lacus`
+for `Candidatus Allofontibacter lacus`, `Bacillus sp.` for `Bacillus sp. (in:
+firmicutes)`). `metadata_ncbi_assembly.desc.tsv` also described `ncbi_taxonomy`,
+which no table carries.
+
 `update_db` brings the NCBI genomes of the `genomes` table into line with a
 release, from the two files `update_genomes` wrote for it: `report.log` says what
 became of each genome and `genome_dirs.tsv` where the release keeps it. One run

@@ -348,7 +348,7 @@ class ParsingTheNcbiDirectories(TempDirCase):
         rows, summaries = self.parse([self.genome('GCA_000000001.1', proteins=True)])
 
         row = rows['GCA_000000001.1']
-        self.assertEqual(row['ncbi_organism_name'], 'Bacteroides fragilis 3_1_12')
+        self.assertEqual(row['ncbi_assembly_name'], 'ASM15701v1')
         self.assertEqual(row['ncbi_total_length'], '5530115')
         self.assertEqual((row['ncbi_cds_count'], row['ncbi_trna_count'], row['ncbi_ssu_count']), ('2', '1', '1'))
         self.assertEqual(row['ncbi_translation_table'], '11')
@@ -368,7 +368,7 @@ class ParsingTheNcbiDirectories(TempDirCase):
         rows, summaries = self.parse([self.genome('GCA_000000002.1', stats=False)])
 
         row = rows['GCA_000000002.1']
-        self.assertEqual((row['ncbi_organism_name'], row['ncbi_total_length']), ('', ''))
+        self.assertEqual((row['ncbi_assembly_name'], row['ncbi_total_length']), ('', ''))
         self.assertEqual(row['ncbi_cds_count'], '2')
         self.assertEqual(row['ncbi_translation_table'], '11')
         self.assertEqual([(r.levelname, r.getMessage().split(';')[0]) for r in summaries],
@@ -531,6 +531,19 @@ class TheNcbiDirCommandLine(TempDirCase):
                                                'ncbi_metagenome_source'})
         self.assertLessEqual({'ncbi_isolation_source', 'ncbi_lat_lon', 'ncbi_country', 'ncbi_protein_count'},
                              described)
+
+    def test_the_organism_name_is_neither_written_nor_described_update_ncbi_tax_db_alone_writes_it(self):
+        # the assembly report's name was loaded from this table, after update_ncbi_tax_db
+        # had written the taxonomy's, and replaced it for 13,538 genomes of r237
+        self.assertNotIn('ncbi_organism_name', N.NCBIMetaDir().header().rstrip('\n').split('\t'))
+
+        directory = os.path.join(os.path.dirname(metadata_database_manager.__file__),
+                                 'data_files', 'table_description')
+        owned = {field for _, field in metadata_database_manager.NCBI_TAX_FIELDS}
+        for name in sorted(os.listdir(directory)):
+            with open(os.path.join(directory, name)) as handle:
+                described = {line.split('\t')[0] for line in handle if line.strip()}
+            self.assertEqual(described & owned, set(), name)
 
 
 if __name__ == '__main__':
