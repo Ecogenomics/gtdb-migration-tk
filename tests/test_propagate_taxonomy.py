@@ -340,6 +340,43 @@ class SettingTheGTDBDomain(TaxonomyCase):
         importer.return_value.import_metadata_to_db.assert_not_called()
         self.assertEqual(self.table(P.DOMAIN_DISAGREEMENTS_NAME), [list(P.DOMAIN_DISAGREEMENTS_HEADER)])
 
+    def test_a_genome_without_an_ncbi_taxonomy_is_given_a_domain_by_its_markers_or_else_bacteria(self):
+        # passed over until 0.1.77: r237's 1,483 genomes whose NCBI taxids NCBI deleted
+        self.assertNotIn('ncbi_taxonomy IS NOT NULL', P.MISSING_DOMAIN)
+        propagate, importer, messages, _ = self.set_domain([
+            (1, 'RS_GCF_000000001.1', 'GCF_000000001.1', None),       # ar53 decides
+            (2, 'GB_GCA_000000002.1', 'GCA_000000002.1', None),       # too few: d__Bacteria
+            (3, 'GB_GCA_000000003.1', 'GCA_000000003.1', ''),         # too few: d__Bacteria
+            (4, 'GB_GCA_000000004.1', 'GCA_000000004.1', 'd__;p__'),  # NCBI names no domain
+            (5, 'GB_GCA_000000005.1', 'GCA_000000005.1', ARCHAEON)],  # too few: NCBI's
+            {0: [(1, 2, 40), (2, 11, 5)]})
+
+        importer.return_value.import_metadata_to_db.assert_called_once_with(
+            'metadata_taxonomy', 'gtdb_domain', 'TEXT',
+            [('GCF_000000001.1', 'd__Archaea'), ('GCA_000000002.1', 'd__Bacteria'),
+             ('GCA_000000003.1', 'd__Bacteria'), ('GCA_000000004.1', 'd__Bacteria'),
+             ('GCA_000000005.1', 'd__Archaea')])
+        self.assertEqual(self.table(P.DOMAIN_DEFAULT_NAME), [
+            list(P.DOMAIN_DEFAULT_HEADER),
+            ['GB_GCA_000000002.1', 'd__Bacteria', '9.17', '9.43'],
+            ['GB_GCA_000000003.1', 'd__Bacteria', '0.00', '0.00'],
+            ['GB_GCA_000000004.1', 'd__Bacteria', '0.00', '0.00']])
+        self.assertEqual(self.table(P.DOMAIN_FROM_NCBI_NAME), [
+            list(P.DOMAIN_FROM_NCBI_HEADER), ['GB_GCA_000000005.1', 'd__Archaea', '0.00', '0.00']])
+        # no NCBI domain is nothing for the markers to disagree with
+        self.assertEqual(self.table(P.DOMAIN_DISAGREEMENTS_NAME), [list(P.DOMAIN_DISAGREEMENTS_HEADER)])
+        self.assertIn('5 genome(s) have no GTDB domain, 4 of them no NCBI domain.', messages)
+        self.assertTrue(any(m.startswith('3 genome(s) have fewer than 10% of the bac120 and of the ar53 markers '
+                                         'aligned and no NCBI domain, and were given d__Bacteria') for m in messages))
+        self.assertEqual(propagate.temp_con.commits, 1)
+
+    def test_with_every_genome_given_a_domain_by_its_markers_or_ncbi_the_default_list_is_its_header(self):
+        _, _, messages, _ = self.set_domain([(1, 'RS_GCF_000000001.1', 'GCF_000000001.1', TAXONOMY)],
+                                            {0: [(1, 120, 0)]})
+        self.assertEqual(self.table(P.DOMAIN_DEFAULT_NAME), [list(P.DOMAIN_DEFAULT_HEADER)])
+        self.assertTrue(any(m.startswith('0 genome(s) have fewer than 10% of the bac120 and of the ar53 markers '
+                                         'aligned and no NCBI domain') for m in messages))
+
     def test_an_ncbi_domain_without_its_prefix_ends_the_run_non_zero_before_reading_and_each_is_listed(self):
         # sys.exit() with no code ended it with exit status 0, at the first
         propagate, importer, messages, stdout = self.set_domain([
