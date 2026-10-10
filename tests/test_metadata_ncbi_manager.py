@@ -267,8 +267,8 @@ all\tall\tall\tall\tcontig-count\t104
 all\tall\tall\tall\tscaffold-N50\t748878
 """
 
-GFF = ('contig1\tGenbank\tCDS\t1\t300\t.\t+\t0\tID=cds-1;transl_table=11\n'
-       'contig1\tGenbank\tCDS\t400\t900\t.\t+\t0\tID=cds-2;transl_table=11\n'
+GFF = ('contig1\tGenbank\tCDS\t1\t300\t.\t+\t0\tID=cds-1;protein_id=WP_1.1;transl_table=11\n'
+       'contig1\tGenbank\tCDS\t400\t900\t.\t+\t0\tID=cds-2;protein_id=WP_2.1;transl_table=11\n'
        'contig1\tGenbank\ttRNA\t1000\t1075\t.\t+\t.\tID=rna-1\n'
        'contig1\tGenbank\trRNA\t2000\t3500\t.\t+\t.\tID=rna-2;product=16S ribosomal RNA\n')
 
@@ -277,6 +277,7 @@ FEATURES             Location/Qualifiers
      source          1..5000
                      /organism="Bacteroides fragilis"
                      /isolation_source="human gut"
+                     /geo_loc_name="Australia: Brisbane"
                      /lat_lon="27.47 S 153.02 E"
      CDS             1..300
                      /transl_table=11
@@ -352,6 +353,7 @@ class ParsingTheNcbiDirectories(TempDirCase):
         self.assertEqual((row['ncbi_cds_count'], row['ncbi_trna_count'], row['ncbi_ssu_count']), ('2', '1', '1'))
         self.assertEqual(row['ncbi_translation_table'], '11')
         self.assertEqual(row['ncbi_isolation_source'], 'human gut')
+        self.assertEqual((row['ncbi_country'], row['ncbi_protein_count']), ('Australia: Brisbane', '2'))
         self.assertEqual(summaries, [])
 
     def test_a_genome_without_proteins_is_given_its_row(self):
@@ -447,6 +449,32 @@ class ReadingAsLittleAsItCan(TempDirCase):
                          b'not gzip at all' * 1000)
         self.assertEqual(set(N.NCBIMetaDir()._parse_gbff(path)), {''})
 
+    def test_the_country_is_the_geo_loc_name_or_the_older_country_qualifier(self):
+        # read as geo_loc_name, a column no description named, so ncbi_country held
+        # only values from before the toolkit: 0.0% of r237's new genomes
+        fields = dict(zip(N.NCBIMetaDir().gbff_fields, N.NCBIMetaDir()._parse_gbff(self.gbff(GBFF))))
+        self.assertEqual(fields['country'], 'Australia: Brisbane')
+
+        older = GBFF.replace('/geo_loc_name="Australia: Brisbane"', '/country="USA: Los Angeles"')
+        fields = dict(zip(N.NCBIMetaDir().gbff_fields, N.NCBIMetaDir()._parse_gbff(self.gbff(older))))
+        self.assertEqual(fields['country'], 'USA: Los Angeles')
+
+    def test_the_protein_count_is_the_cds_features_with_a_protein_a_split_one_once(self):
+        # NCBI's 'CDSs (with protein)': over four r237 genomes it is what the
+        # GenBank file's annotation summary says, where the CDS lines are more
+        path = os.path.join(self.dir, 'genome_genomic.gff.gz')
+        with gzip.open(path, 'wt') as handle:
+            handle.write('##gff-version 3\n'
+                         'c1\tRefSeq\tCDS\t1\t300\t.\t+\t0\tID=cds-A;protein_id=WP_1.1\n'
+                         'c1\tRefSeq\tCDS\t400\t600\t.\t+\t0\tID=cds-B;protein_id=WP_2.1\n'
+                         'c1\tRefSeq\tCDS\t600\t900\t.\t+\t0\tID=cds-B;protein_id=WP_2.1\n'
+                         'c1\tRefSeq\tCDS\t1000\t1300\t.\t+\t0\tID=cds-C;pseudo=true\n'
+                         'c1\tRefSeq\tCDS\t1400\t1700\t.\t+\t0\tID=cds-D;protein_id=WP_1.1\n')
+        counts = dict(zip(N.NCBIMetaDir().gff_fields, N.NCBIMetaDir()._parse_gff(path)[0]))
+
+        # a protein two CDSs share is two; the pseudogene none; the split CDS one
+        self.assertEqual((counts['protein_count'], counts['cds_count']), (3, 5))
+
     def test_the_gff_gives_its_first_translation_table_and_builds_no_coding_mask_unasked(self):
         path = os.path.join(self.dir, 'genome_genomic.gff.gz')
         with gzip.open(path, 'wt') as handle:
@@ -488,10 +516,11 @@ class TheNcbiDirCommandLine(TempDirCase):
         self.assertEqual(manager.description_table[N.NCBI_DIR_TABLE], ['metadata_ncbi_assembly.desc.tsv'])
         self.assertNotEqual(N.NCBI_DIR_TABLE, NCBI_ASSEMBLY_TABLE)
 
-    def test_every_column_is_loaded_but_the_four_the_database_has_no_field_for(self):
+    def test_every_column_is_loaded_but_the_three_the_database_has_no_field_for(self):
         # ncbi_isolation_source and ncbi_lat_lon were read from the GenBank file
-        # and never loaded, the description not naming them; the database has
-        # no column for these four (checked against gtdb_r237_dev)
+        # and never loaded, the description not naming them, and the country was
+        # read as ncbi_geo_loc_name until 0.1.78; the database has no column for
+        # these three (checked against gtdb_r237_dev)
         path = os.path.join(os.path.dirname(metadata_database_manager.__file__),
                             'data_files', 'table_description', 'metadata_ncbi_assembly.desc.tsv')
         with open(path) as handle:
@@ -499,8 +528,9 @@ class TheNcbiDirCommandLine(TempDirCase):
         written = set(N.NCBIMetaDir().header().rstrip('\n').split('\t')[1:])
 
         self.assertEqual(written - described, {'ncbi_contig_l50', 'ncbi_component_count',
-                                               'ncbi_geo_loc_name', 'ncbi_metagenome_source'})
-        self.assertLessEqual({'ncbi_isolation_source', 'ncbi_lat_lon'}, described)
+                                               'ncbi_metagenome_source'})
+        self.assertLessEqual({'ncbi_isolation_source', 'ncbi_lat_lon', 'ncbi_country', 'ncbi_protein_count'},
+                             described)
 
 
 if __name__ == '__main__':

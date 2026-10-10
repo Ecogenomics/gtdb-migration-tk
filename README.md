@@ -1155,12 +1155,24 @@ it, which `update_metadata_db` loads as NULL, and the log ends with a line for
 each file, `Identified <n> genomes with a missing <file> file, e.g.: ...`: a
 WARNING for the statistics and the GenBank file, which every assembly has, and
 INFO for the GFF, which NCBI publishes only for the assemblies it annotated (121
-of 300 r237 genomes drawn at random had none). Four of its columns are not
+of 300 r237 genomes drawn at random had none). Three of its columns are not
 loaded, the database having no field for them: `ncbi_contig_l50`,
-`ncbi_component_count`, `ncbi_geo_loc_name` and `ncbi_metagenome_source`.
-`ncbi_isolation_source` and `ncbi_lat_lon` are, since 0.1.55; loading the table
-sets them, as every field it loads, to NULL for every genome it gives no value,
-unless `--do_not_null_field` is given.
+`ncbi_component_count` and `ncbi_metagenome_source`.
+`ncbi_isolation_source` and `ncbi_lat_lon` are, since 0.1.55, and since 0.1.78
+`ncbi_country` and `ncbi_protein_count`; loading the table sets them, as every
+field it loads, to NULL for every genome it gives no value, unless
+`--do_not_null_field` is given.
+
+`ncbi_country` is the source feature's `/geo_loc_name`, or `/country` in a
+GenBank file older than NCBI's renaming of it, as in `China: Jiangsu; Nanjing`.
+`ncbi_protein_count` is the number of the GFF's CDS features with a `protein_id`,
+a CDS split over several lines counted once and a pseudogene's not at all: NCBI's
+`CDSs (with protein)`, which the GenBank file's annotation summary gives only for
+NCBI's own annotation. `ncbi_cds_count` counts the GFF's CDS lines. Until 0.1.78
+neither field was written: the country was read as `ncbi_geo_loc_name`, a column
+no description named, and the protein count not at all, so each held only
+values no version of this toolkit wrote, for 37% and 13% of r237's carried
+genomes and almost none of its new ones.
 
 `parse_ncbi_genome_category` (named `ncbi_genome_category` until 0.1.62) writes
 the genomes of a genome_dirs file (`-g`) that NCBI

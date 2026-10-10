@@ -52,6 +52,12 @@ class GenericFeatureParser():
 
     def __init__(self, filename):
         self.cds_count = 0
+        # the CDS features carrying a protein_id, by their ID: a CDS split across
+        # lines (a join, a ribosomal slippage) is one feature of one ID, and a
+        # pseudogene's CDS has no protein. Their count is NCBI's 'CDSs (with
+        # protein)' of the GenBank file's annotation summary, which only NCBI's
+        # own annotation writes; cds_count counts lines
+        self.protein_cds = set()
         self.tRNA_count = 0
         self.rRNA_count = 0
         self.rRNA_16S_count = 0
@@ -97,6 +103,12 @@ class GenericFeatureParser():
                     self.ncRNA_count += 1
                 elif line_split[2] == 'CDS':
                     self.cds_count += 1
+                    attributes = line_split[8]
+                    if 'protein_id=' in attributes:
+                        for attribute in attributes.rstrip('\n').split(';'):
+                            if attribute.startswith('ID='):
+                                self.protein_cds.add(attribute[3:])
+                                break
 
                     seq_id = line_split[0]
                     if seq_id not in self.genes:
@@ -200,9 +212,13 @@ class NCBIMetaDir(object):
                            'scaffold-L50', 'scaffold-N75', 'scaffold-N90'])
 
         self.gff_fields = ['cds_count', 'tRNA_count',
-                           'ncRNA_count', 'rRNA_count', 'ssu_count']
+                           'ncRNA_count', 'rRNA_count', 'ssu_count', 'protein_count']
 
-        self.gbff_fields = ['translation_table', 'isolation_source', 'geo_loc_name', 'lat_lon','metagenome_source']
+        # country is the source feature's /geo_loc_name, which NCBI's GenBank files
+        # give where they gave /country until 2024. metadata_ncbi holds it as
+        # ncbi_country, which nothing in this toolkit wrote until 0.1.78: it was
+        # read as geo_loc_name, a column update_metadata_db had no field for
+        self.gbff_fields = ['translation_table', 'isolation_source', 'country', 'lat_lon', 'metagenome_source']
         self.stats_info = {}
 
         self.cpus = cpus
@@ -293,6 +309,7 @@ class NCBIMetaDir(object):
             'rRNA_count')] = gff_parser.rRNA_count
         metadata_gff[self.gff_fields.index(
             'ssu_count')] = gff_parser.rRNA_16S_count
+        metadata_gff[self.gff_fields.index('protein_count')] = len(gff_parser.protein_cds)
 
         return metadata_gff, gff_parser.translation_table
 
@@ -349,8 +366,12 @@ class NCBIMetaDir(object):
                     except Exception as e:
                         print(info)
 
+            # the older /country where a file has no /geo_loc_name
+            if 'geo_loc_name' in source_info_dict:
+                source_info_dict['country'] = source_info_dict['geo_loc_name']
+
             # Map the extracted dictionary back to the tracked gbff_fields
-            for field in ['isolation_source', 'geo_loc_name', 'lat_lon','metagenome_source']:
+            for field in ['isolation_source', 'country', 'lat_lon', 'metagenome_source']:
                 if field in source_info_dict:
                     # Replace special characters and restore the masked '/' strings
                     clean_val = source_info_dict[field].replace('"', '').replace(',', ';').replace("'", " ").replace(
