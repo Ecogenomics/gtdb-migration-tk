@@ -95,14 +95,19 @@ EXAMPLES = 10
 
 # set_gtdb_domain: the marker sets a genome's domain is read from (marker_sets.id),
 # and the genomes it is given one -- its id, as GTDB names it, as the database
-# does, and its NCBI taxonomy
+# does, and its NCBI taxonomy, which may be NULL. Every genome without a domain
+# is given one: a genome with no NCBI taxonomy was passed over until 0.1.77, and
+# r237 has 1,483, their NCBI taxids deleted from the taxdump (delnodes.dmp) though
+# the assembly summaries still name them. Where the markers cannot decide and NCBI
+# gives no domain either, the genome is given DEFAULT_DOMAIN.
 BACTERIAL_MARKER_SET = 1
 ARCHAEAL_MARKER_SET = 19
+DEFAULT_DOMAIN = 'd__Bacteria'
 MISSING_DOMAIN = (
     "SELECT mt.id, gs.external_id_prefix || '_' || g.id_at_source, g.id_at_source, mt.ncbi_taxonomy "
     'FROM metadata_taxonomy mt JOIN genomes g ON g.id = mt.id '
     'JOIN genome_sources gs ON gs.id = g.genome_source_id '
-    "WHERE (mt.gtdb_domain IS NULL OR mt.gtdb_domain IN ('none', 'd__')) AND mt.ncbi_taxonomy IS NOT NULL")
+    "WHERE mt.gtdb_domain IS NULL OR mt.gtdb_domain IN ('none', 'd__')")
 
 # How many markers of each set each genome of a range of aligned_markers' blocks
 # has a gene aligned for (a row with an e-value; a row of gaps is a marker not
@@ -135,6 +140,8 @@ DOMAIN_DISAGREEMENTS_NAME = 'gtdb_domain_disagreements.tsv'
 DOMAIN_DISAGREEMENTS_HEADER = ('genome_id', 'ncbi_domain', 'gtdb_domain', 'bac120_percent', 'ar53_percent')
 DOMAIN_FROM_NCBI_NAME = 'gtdb_domain_from_ncbi.tsv'
 DOMAIN_FROM_NCBI_HEADER = ('genome_id', 'ncbi_domain', 'bac120_percent', 'ar53_percent')
+DOMAIN_DEFAULT_NAME = 'gtdb_domain_default.tsv'
+DOMAIN_DEFAULT_HEADER = ('genome_id', 'gtdb_domain', 'bac120_percent', 'ar53_percent')
 NCBI_DOMAIN_ERRORS_NAME = 'ncbi_domain_errors.tsv'
 NCBI_DOMAIN_ERRORS_HEADER = ('genome_id', 'ncbi_domain')
 
@@ -502,12 +509,14 @@ class Propagate(object):
 
         The domain is the marker set, bac120 or ar53, more of whose markers the
         genome has a gene aligned for, as a share of the set; where neither share
-        reaches DEFAULT_DOMAIN_THRESHOLD it is the genome's NCBI domain. Nothing
-        is printed but a bar of how much of aligned_markers has been read: each
-        genome whose markers give another domain than NCBI's is listed in
-        DOMAIN_DISAGREEMENTS_NAME and each given NCBI's domain in
-        DOMAIN_FROM_NCBI_NAME, both in output_dir, with a line of the log
-        counting each.
+        reaches DEFAULT_DOMAIN_THRESHOLD it is the genome's NCBI domain, and where
+        the genome has no NCBI domain either, DEFAULT_DOMAIN. Nothing is printed
+        but a bar of how much of aligned_markers has been read: each genome whose
+        markers give another domain than NCBI's is listed in
+        DOMAIN_DISAGREEMENTS_NAME, each given NCBI's domain in
+        DOMAIN_FROM_NCBI_NAME and each given DEFAULT_DOMAIN in
+        DOMAIN_DEFAULT_NAME, all in output_dir, with a line of the log counting
+        each.
 
         Parameters
         ----------
@@ -527,12 +536,17 @@ class Propagate(object):
 
         self.temp_cur.execute(MISSING_DOMAIN)
         genomes = self.temp_cur.fetchall()
-        self.logger.info('{:,} genome(s) have an NCBI taxonomy and no GTDB domain.'.format(len(genomes)))
+
+        # None where the genome has no NCBI taxonomy, or one naming no domain (d__)
+        ncbi_domains = {db_id: (ncbi_taxonomy or '').split(';')[0].strip() or None
+                        for db_id, _, _, ncbi_taxonomy in genomes}
+        ncbi_domains = {db_id: None if domain == 'd__' else domain for db_id, domain in ncbi_domains.items()}
+        self.logger.info('{:,} genome(s) have no GTDB domain, {:,} of them no NCBI domain.'.format(
+            len(genomes), sum(1 for domain in ncbi_domains.values() if domain is None)))
 
         # refused before aligned_markers is read, which takes minutes
-        ncbi_domains = {db_id: ncbi_taxonomy.split(';')[0].strip() for db_id, _, _, ncbi_taxonomy in genomes}
         bad_prefix = sorted((genome_id, ncbi_domains[db_id]) for db_id, genome_id, _, _ in genomes
-                            if not ncbi_domains[db_id].startswith('d__'))
+                            if ncbi_domains[db_id] is not None and not ncbi_domains[db_id].startswith('d__'))
         if bad_prefix:
             path = write_tsv(os.path.join(output_dir, NCBI_DOMAIN_ERRORS_NAME), NCBI_DOMAIN_ERRORS_HEADER, bad_prefix)
             self.logger.error('{:,} genome(s) have an NCBI domain without its d__ prefix, e.g. {}; nothing was '
@@ -543,7 +557,7 @@ class Propagate(object):
 
         found = self.markers_found({db_id for db_id, _, _, _ in genomes}) if genomes else {}
 
-        domains, from_ncbi, disagreements = [], [], []
+        domains, from_ncbi, by_default, disagreements = [], [], [], []
         for db_id, genome_id, source_id, _ in genomes:
             ncbi_domain = ncbi_domains[db_id]
             bac_count, arc_count = found.get(db_id, (0, 0))
@@ -551,11 +565,16 @@ class Propagate(object):
             arc_percent = arc_count * 100.0 / set_size[ARCHAEAL_MARKER_SET]
             row = ['{:.2f}'.format(bac_percent), '{:.2f}'.format(arc_percent)]
             if bac_percent < self.DEFAULT_DOMAIN_THRESHOLD and arc_percent < self.DEFAULT_DOMAIN_THRESHOLD:
-                gtdb_domain = ncbi_domain
-                from_ncbi.append([genome_id, ncbi_domain] + row)
+                if ncbi_domain is None:
+                    gtdb_domain = DEFAULT_DOMAIN
+                    by_default.append([genome_id, gtdb_domain] + row)
+                else:
+                    gtdb_domain = ncbi_domain
+                    from_ncbi.append([genome_id, ncbi_domain] + row)
             else:
                 gtdb_domain = 'd__Bacteria' if bac_percent >= arc_percent else 'd__Archaea'
-                if gtdb_domain != ncbi_domain:
+                # a genome NCBI gives no domain has none for the markers to disagree with
+                if ncbi_domain is not None and gtdb_domain != ncbi_domain:
                     disagreements.append([genome_id, ncbi_domain, gtdb_domain] + row)
             domains.append((source_id, gtdb_domain))
 
@@ -571,6 +590,12 @@ class Propagate(object):
                   'given their NCBI domain; each is listed in {}.'.format(
                       len(from_ncbi), self.DEFAULT_DOMAIN_THRESHOLD, path)
         (self.logger.warning if from_ncbi else self.logger.info)(message)
+
+        path = write_tsv(os.path.join(output_dir, DOMAIN_DEFAULT_NAME), DOMAIN_DEFAULT_HEADER, sorted(by_default))
+        message = '{:,} genome(s) have fewer than {:.0f}% of the bac120 and of the ar53 markers aligned and no ' \
+                  'NCBI domain, and were given {}; each is listed in {}.'.format(
+                      len(by_default), self.DEFAULT_DOMAIN_THRESHOLD, DEFAULT_DOMAIN, path)
+        (self.logger.warning if by_default else self.logger.info)(message)
 
         path = write_tsv(os.path.join(output_dir, DOMAIN_DISAGREEMENTS_NAME), DOMAIN_DISAGREEMENTS_HEADER,
                          sorted(disagreements))

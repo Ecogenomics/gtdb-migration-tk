@@ -1210,7 +1210,7 @@ WARNING.
 | `propagate_curated_taxonomy` | Propagate curated taxonomy from representatives to their clusters |
 | `update_propagated_tax` | Push propagated taxonomy to the new database |
 | `add_taxonomy_to_database` | Update the taxonomy in the database |
-| `set_gtdb_domain` | Set missing GTDB domains from the marker genes, else the NCBI domain |
+| `set_gtdb_domain` | Set missing GTDB domains from the marker genes, else the NCBI domain, else `d__Bacteria` |
 | `curation_lists` | Lists and pseudo-trees for curation review |
 
 `propagate_gtdb_taxonomy` carries the previous release's GTDB taxonomy and
@@ -1262,16 +1262,21 @@ the run exits 1. Against `gtdb_r237_dev` with r232's two files it takes about a
 minute: 900,882 genomes inherit a taxonomy, none differs, and both tables are the
 ones 0.1.62 wrote from an export of the same database.
 
-`set_gtdb_domain` gives each genome with an NCBI taxonomy and no GTDB domain
-one, in one transaction. The domain is the marker set, bac120 or ar53, more of
-whose markers the genome has a gene aligned for in `aligned_markers`, as a share
-of the set; where neither share reaches 10% it is the genome's NCBI domain. It
-reads `aligned_markers`, so it is run once `align_marker_genes` has finished: a
-genome not yet aligned is given its NCBI domain. It takes `-o/--output_dir` and
-writes there `gtdb_domain_disagreements.tsv`, each genome given a domain by its
-markers other than NCBI's, and `gtdb_domain_from_ncbi.tsv`, each given NCBI's
-because its markers were too few to say, each with both shares; the log counts
-each in one line, and nothing is printed but a bar of how much of
+`set_gtdb_domain` gives each genome with no GTDB domain one, in one
+transaction. The domain is the marker set, bac120 or ar53, more of whose markers
+the genome has a gene aligned for in `aligned_markers`, as a share of the set;
+where neither share reaches 10% it is the genome's NCBI domain, and where the
+genome has no NCBI domain either, `d__Bacteria`. Until 0.1.77 a genome with no
+NCBI taxonomy was passed over: r237 has 1,483, whose NCBI taxids NCBI deleted
+from the taxdump though the assembly summaries still name them, and the markers
+decide all but one. It reads `aligned_markers`, so it is run once
+`align_marker_genes` has finished: a genome not yet aligned is given its NCBI
+domain. It takes `-o/--output_dir` and writes there
+`gtdb_domain_disagreements.tsv`, each genome given a domain by its markers other
+than NCBI's, `gtdb_domain_from_ncbi.tsv`, each given NCBI's because its markers
+were too few to say, and `gtdb_domain_default.tsv`, each given `d__Bacteria`
+because neither its markers nor NCBI could say, each with both shares; the log
+counts each in one line, and nothing is printed but a bar of how much of
 `aligned_markers` has been read (on a terminal, and not with `--silent`). An NCBI
 domain without its `d__` refuses the run before anything is read, every one
 listed in `ncbi_domain_errors.tsv`, nothing written.
