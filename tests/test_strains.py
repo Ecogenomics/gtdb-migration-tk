@@ -41,7 +41,9 @@ SUMMARY_HEADER = ('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_su
                   'infraspecific_name\tisolate\trelation_to_type_material\texcluded_from_refseq\n')
 
 # the columns of seqcode download's table type_table reads, and one it does not
-SEQCODE_HEADER = 'seqcode_type_material_accn\tseqcode_id\tseqcode_species_status\tseqcode_type_species_of_genus\n'
+SEQCODE_HEADER = ('seqcode_type_material_accn\tseqcode_id\tseqcode_name\tseqcode_species_status\t'
+                  'seqcode_priority_date\tseqcode_type_species_of_genus\n')
+SEQCODE_SPECIES, SEQCODE_PRIORITY_DATE = 'Escherichia fergusonii', '2023-09-11T01:47:14.714Z'
 METAGENOME_NOT_TYPE = 'derived from metagenome; not used as type'
 
 GSS_HEADER = ('genus_name,sp_epithet,subsp_epithet,reference,status,authors,address,'
@@ -84,7 +86,8 @@ class StrainsCase(unittest.TestCase):
                    's__Escherichia coli\tg__Escherichia\tCastellani and Chalmers 1919\tGSS\n')
         self.gss = self.write('lpsn_gss.csv', GSS_HEADER + GSS_ROW)
         self.years = self.write('years.tsv', 'Escherichia coli\t1919\n')
-        # (accession, status, type species of genus) of seqcode_table.tsv
+        # (accession, status, type species of genus[, name, priority date]) of
+        # seqcode_table.tsv, the name and date SEQCODE_SPECIES' unless given
         self.seqcode_rows = []
 
     def write(self, name, text):
@@ -116,9 +119,10 @@ class StrainsCase(unittest.TestCase):
 
     def seqcode_table(self):
         """seqcode download's seqcode_table.tsv, of self.seqcode_rows."""
+        rows = [row + (SEQCODE_SPECIES, SEQCODE_PRIORITY_DATE)[len(row) - 3:] for row in self.seqcode_rows]
         return self.write('seqcode_table.tsv', SEQCODE_HEADER + ''.join(
-            '{}\t{}\t{}\t{}\n'.format(acc, number, status, type_species)
-            for number, (acc, status, type_species) in enumerate(self.seqcode_rows, start=100)))
+            '{}\t{}\t{}\t{}\t{}\t{}\n'.format(acc, number, name, status, priority_date, type_species)
+            for number, (acc, status, type_species, name, priority_date) in enumerate(rows, start=100)))
 
     def run_type_table(self, cpus=1):
         genome_dirs, summaries, names, nodes = self.release_files()
@@ -258,6 +262,60 @@ class TypeMaterialUnderTheSeqCode(StrainsCase):
         self.assertEqual(header[-2:], ['gtdb_type_species_of_genus', 'gtdb_type_designation_notes'])
         self.assertTrue(all(len(row) == len(header) for row in rows))
 
+    def test_a_genome_typing_a_seqcode_species_is_given_its_name_and_the_year_of_its_priority_date(self):
+        self.seqcode_rows = [(OTHER_ACCESSION, 'Valid (SeqCode)', 'False')]
+        self.run_type_table()
+        summary = self.summary()
+        self.assertEqual((summary[OTHER_GENOME]['seqcode_species'], summary[OTHER_GENOME]['seqcode_priority_year']),
+                         (SEQCODE_SPECIES, '2023'))
+        # a genome the SeqCode does not type has neither
+        self.assertEqual((summary[TYPE_GENOME]['seqcode_species'], summary[TYPE_GENOME]['seqcode_priority_year']),
+                         ('', ''))
+
+    def test_lpsns_year_and_the_seqcodes_are_each_kept_where_both_type_the_genome(self):
+        # LPSN's year is the authority it cites, which for a SeqCode name is
+        # often the year it was proposed rather than validly published
+        self.seqcode_rows = [(TYPE_ACCESSION, 'Valid (SeqCode)', 'False', 'Escherichia coli',
+                              '2024-01-02T00:00:00.000Z')]
+        self.run_type_table()
+        typed = self.summary()[TYPE_GENOME]
+        self.assertEqual((typed['lpsn_priority_year'], typed['seqcode_species'], typed['seqcode_priority_year']),
+                         ('1919', 'Escherichia coli', '2024'))
+
+    def test_the_seqcodes_name_and_year_stand_where_ncbis_rule_makes_the_genome_not_used_as_type(self):
+        # as the lpsn_ columns do: they say what the SeqCode says, not what GTDB decided
+        self.genomes[OTHER_ACCESSION] += (METAGENOME_NOT_TYPE,)
+        self.seqcode_rows = [(OTHER_ACCESSION, 'Valid (SeqCode)', 'False')]
+        self.run_type_table()
+        other = self.summary()[OTHER_GENOME]
+        self.assertEqual((other['gtdb_type_designation_ncbi_taxa'], other['seqcode_species'],
+                          other['seqcode_priority_year']), ('not used as type', SEQCODE_SPECIES, '2023'))
+
+    def test_a_species_not_valid_under_the_seqcode_gives_no_name_or_year(self):
+        self.seqcode_rows = [(OTHER_ACCESSION, '', 'False')]
+        self.run_type_table()
+        other = self.summary()[OTHER_GENOME]
+        self.assertEqual((other['seqcode_species'], other['seqcode_priority_year']), ('', ''))
+
+    def test_a_species_without_a_priority_date_is_named_with_no_year(self):
+        self.seqcode_rows = [(OTHER_ACCESSION, 'Valid (SeqCode)', 'False', SEQCODE_SPECIES, '')]
+        self.run_type_table()
+        other = self.summary()[OTHER_GENOME]
+        self.assertEqual((other['seqcode_species'], other['seqcode_priority_year']), (SEQCODE_SPECIES, ''))
+
+    def test_the_seqcode_columns_sit_after_lpsns_and_are_not_loaded(self):
+        # metadata_type_material has no columns for them and metadata_seqcode
+        # holds both: described, they would fail every load of the summary
+        from gtdb_migration_tk.metadata_database_manager import read_descriptions
+        self.run_type_table()
+        with gzip.open(os.path.join(self.out, S.TYPE_STRAIN_SUMMARY_NAME), 'rt') as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+        at = header.index('lpsn_priority_year')
+        self.assertEqual(header[at + 1:at + 3], ['seqcode_species', 'seqcode_priority_year'])
+        description = os.path.join(os.path.dirname(S.__file__), 'data_files', 'table_description',
+                                   'metadata_type_material.desc.tsv')
+        self.assertFalse({'seqcode_species', 'seqcode_priority_year'} & set(read_descriptions([description])))
+
     def test_a_seqcode_genome_the_release_does_not_hold_is_warned_of_and_passed_over(self):
         self.seqcode_rows = [('GCA_000000099.1', 'Valid (SeqCode)', 'True')]
         with self.assertLogs('timestamp', level='WARNING') as logged:
@@ -285,7 +343,7 @@ class TypeMaterialUnderTheSeqCode(StrainsCase):
 
     def test_the_columns_read_are_those_seqcode_download_writes(self):
         from gtdb_migration_tk import seqcode_manager
-        for column in (S.SEQCODE_GENOME, S.SEQCODE_STATUS, S.SEQCODE_TYPE_SPECIES_OF_GENUS):
+        for column in S.SEQCODE_COLUMNS:
             self.assertIn(column, seqcode_manager.TABLE_HEADER)
 
 

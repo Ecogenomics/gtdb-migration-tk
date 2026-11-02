@@ -1666,7 +1666,13 @@ which `update_metadata_db` loads gzipped as it is.
 A genome typing a species valid under the SeqCode (`--seqcode_table`, the
 `seqcode_table.tsv` of `seqcode download`) is then a type strain of species,
 `SeqCode` among its `gtdb_type_designation_ncbi_taxa_sources` and the type species
-of its genus where the SeqCode says so. Last, a genome NCBI excludes from RefSeq as
+of its genus where the SeqCode says so. That genome is also given `seqcode_species`
+and `seqcode_priority_year`, the year of the Registry's `seqcode_priority_date`,
+beside `lpsn_priority_year`, LPSN's year being the authority it cites, which for a
+SeqCode name is often the year it was proposed rather than validly published. The
+two are not loaded: `metadata_type_material` has no columns for them, and
+`metadata_seqcode` holds the same genome's `seqcode_name` and
+`seqcode_priority_date`. Last, a genome NCBI excludes from RefSeq as
 `derived from metagenome` and `not used as type` is `not used as type`, with no
 sources and not the type species of its genus, `gtdb_type_designation_notes`
 saying which designation it overrode. These were `update_type_designation`, run on
