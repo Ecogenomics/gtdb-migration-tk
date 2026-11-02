@@ -441,6 +441,13 @@ class LPSN(object):
             headers.insert(originalpub_index, 'Priority')
 
             nomenclature_index = headers.index('Nomenclatural status')
+            pro_status_index = headers.index('Nomenclatural pro-status') if 'Nomenclatural pro-status' in headers else None
+            taxonomic_status_index = headers.index('Taxonomic status') if 'Taxonomic status' in headers else None
+
+            def standing(row):
+                return self.page_standing(row[nomenclature_index],
+                                          row[pro_status_index] if pro_status_index is not None else 'n/a',
+                                          row[taxonomic_status_index] if taxonomic_status_index is not None else 'n/a')
 
             name_pattern = re.compile(r'\[([^,]*),.*\]')
 
@@ -566,9 +573,10 @@ class LPSN(object):
                         infos[name_index] = name_result.group(1)
                     infos.insert(originalpub_index, 'n/a')
 
+                # one page per name: the one whose name has the most standing (see page_standing)
                 if infos[rank_index] + '_' + infos[name_index] in all_infos_dict:
                     previous_infos = all_infos_dict.get(infos[rank_index] + '_' + infos[name_index])
-                    if self.check_illegimate(previous_infos[nomenclature_index]):
+                    if standing(infos) < standing(previous_infos):
                         all_infos_dict[infos[rank_index] + '_' + infos[name_index]] = infos
                 else:
                     all_infos_dict[infos[rank_index] + '_' + infos[name_index]] = infos
@@ -680,14 +688,75 @@ class LPSN(object):
                                 short_name != '' and short_name in full_list_type_species,
                                 subspe_name, ref_type_combined, "=".join(raw_list_strain)))
 
-    def check_illegimate(self, status_raw):
+    def status_tokens(self, status_raw):
+        """Split an LPSN status ('validly published under the ICNP, illegitimate name') into its parts."""
         status = status_raw.strip().replace('"', '')
         status_tokens = [t.strip() for t in status.split(';')]
-        status_tokens = [tt.strip() for t in status_tokens for tt in t.split(',')]
+        return [tt.strip() for t in status_tokens for tt in t.split(',')]
 
-        if 'illegitimate name' in status_tokens:
+    def check_illegimate(self, status_raw):
+        if 'illegitimate name' in self.status_tokens(status_raw):
             return True
         return False
+
+    def page_standing(self, nomenclatural_status, pro_status, taxonomic_status):
+        """Rank an LPSN page by the standing LPSN gives its name, for choosing among a name's pages.
+
+        LPSN gives one name several pages where it was proposed more than
+        once: as a Candidatus name and again when validly published, or as a
+        quoted name and a later Candidatus one. Only one page per name is
+        kept, and it is that page's authority that becomes the name's year of
+        priority, so the page kept is the one whose name has standing, never
+        the one that happens to be read first. The page numbering (-1, -2)
+        is LPSN's and changes between downloads, so it says nothing.
+
+        Standing is LPSN's own, in this order: validly published, then
+        pro-validly published (a Candidatus name meeting the ICNP's rules for
+        one), then neither, and last an illegitimate or rejected name or a
+        later homonym, which any other page with a status replaces, as one
+        always did. A page with no status at all is below every page that has
+        one. Pages of equal standing are ranked by LPSN's taxonomic status:
+        the correct or pro-correct name, then a preferred name, a synonym, a
+        misspelling.
+
+        Parameters
+        ----------
+        nomenclatural_status : str
+            The page's 'Nomenclatural status'.
+        pro_status : str
+            The page's 'Nomenclatural pro-status'.
+        taxonomic_status : str
+            The page's 'Taxonomic status'.
+
+        @return: a tuple, lower for the page whose name has more standing.
+        """
+
+        nomenclatural = self.status_tokens(nomenclatural_status)
+        pro = self.status_tokens(pro_status)
+
+        if ('illegitimate name' in nomenclatural or 'rejected name' in nomenclatural
+                or 'pro-illegitimate name' in pro or 'later homonym' in pro):
+            standing = 3
+        elif any(t.startswith('validly published') for t in nomenclatural):
+            standing = 0
+        elif any(t.startswith('pro-validly published') for t in pro):
+            standing = 1
+        elif nomenclatural_status.strip() in ('', 'n/a'):
+            standing = 4
+        else:
+            standing = 2
+
+        taxonomic_status = taxonomic_status.strip()
+        for rank, prefixes in enumerate((('correct name', 'pro-correct name'),
+                                         ('preferred name', 'orphaned species'),
+                                         ('synonym',),
+                                         ('misspelling', 'in need of a replacement'))):
+            if taxonomic_status.startswith(prefixes):
+                break
+        else:
+            rank = 4
+
+        return standing, rank
 
     def parse_gss(self, gss_file):
         gss_species = {}
