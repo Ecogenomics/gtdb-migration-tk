@@ -9,8 +9,12 @@ What is tested here is the bookkeeping of pull_html: a page whose name
 duplicates a validly published one is skipped, recorded in <rank>_skipped.lst
 rather than the failed list, and that file exists only when there is something
 in it. Nothing is downloaded: the skip is decided before any request is made.
+
+Also tested is which of a name's several LPSN pages parse_all_ranks_tsv keeps,
+since that page's authority becomes the name's year of priority.
 """
 
+import csv
 import io
 import os
 import shutil
@@ -94,6 +98,102 @@ class DuplicateNames(TempDirCase):
         self.assertEqual(n, 1)
         self.assertEqual(skipped, [])
         self.assertEqual(failed.getvalue(), '')
+
+
+RAW_HEADER = ['Rank', 'Name', 'Category', 'Type genus', 'Nomenclatural status',
+              'Taxonomic status', 'Parent taxon', 'Synonyms', 'Child taxa',
+              'Nomenclatural pro-status', 'Original publication', 'Type class',
+              'Type order', 'Type species', 'Correct name']
+
+
+class OnePagePerName(TempDirCase):
+    """parse_all_ranks_tsv keeps one page of a name LPSN gives several, and its
+    authority is the name's year of priority: the page kept must be the one whose
+    name has standing, whichever order the pages are read in."""
+
+    def kept_authority(self, pages):
+        """The 'Priority' parse_all_ranks_tsv keeps for one species name given its pages.
+
+        Each page is (name with authority, nomenclatural status, pro-status, taxonomic status).
+        """
+        raw = os.path.join(self.dir, 'full_parsing_raw.tsv')
+        with open(raw, 'w') as handle:
+            handle.write('\t'.join(RAW_HEADER) + '\n')
+            for name, status, pro_status, taxonomic_status in pages:
+                row = dict.fromkeys(RAW_HEADER, 'n/a')
+                row.update({'Rank': 'species', 'Name': name, 'Nomenclatural status': status,
+                            'Nomenclatural pro-status': pro_status,
+                            'Taxonomic status': taxonomic_status})
+                handle.write('\t'.join(row[h] for h in RAW_HEADER) + '\n')
+
+        self.lpsn.parse_all_ranks_tsv(raw)
+
+        with open(os.path.join(self.dir, 'full_parsing_parsed.tsv')) as handle:
+            rows = list(csv.DictReader(handle, delimiter='\t'))
+        self.assertEqual(len(rows), 1)
+        return rows[0]['Priority']
+
+    def assertKeptEitherWay(self, pages, authority):
+        self.assertEqual(self.kept_authority(pages), authority)
+        self.assertEqual(self.kept_authority(pages[::-1]), authority)
+
+    def test_a_validly_published_page_is_kept_over_a_quoted_one(self):
+        self.assertKeptEitherWay(
+            [('"Acinetobacter pecorum" Gilroy et al. 2021', 'not validly published', 'n/a',
+              'synonym (and no standing)'),
+             ('Acinetobacter pecorum Gilroy et al. 2024', 'validly published under the ICNP', 'n/a',
+              'correct name')],
+            'Gilroy et al. 2024')
+
+    def test_a_validly_published_page_is_kept_over_a_candidatus_one(self):
+        # D. audaxviator once LPSN had validated it: the Candidatus page, read first, gave 2008
+        self.assertKeptEitherWay(
+            [('"Candidatus Desulforudis audaxviator" Chivian et al. 2008', 'not validly published',
+              'pro-validly published under the ICNP', 'pro-correct name'),
+             ('Desulforudis audaxviator (ex Chivian et al. 2008) Karnachuk et al. 2026',
+              'validly published under the ICNP', 'n/a', 'correct name')],
+            '(ex Chivian et al. 2008) Karnachuk et al. 2026')
+
+    def test_a_pro_validly_published_candidatus_page_is_kept_over_its_later_synonym(self):
+        # the Candidatus names of Chuvochina et al. 2023 are synonyms of earlier pro-valid ones
+        self.assertKeptEitherWay(
+            [('"Candidatus Binatus soli" Chuvochina et al. 2023', 'not validly published',
+              'not pro-validly published', 'synonym (and no pro-standing)'),
+             ('"Candidatus Binatus soli" Chuvochina et al. 2019', 'not validly published',
+              'pro-validly published under the ICNP', 'pro-correct name')],
+            'Chuvochina et al. 2019')
+
+    def test_among_pages_without_standing_lpsns_taxonomic_status_decides(self):
+        self.assertKeptEitherWay(
+            [('"Candidatus Bartonella massiliensis" Mediannikov et al. 2014', 'not validly published',
+              'not pro-validly published', 'synonym (and no pro-standing)'),
+             ('"Bartonella massiliensis" Medkour et al. 2019', 'not validly published', 'n/a',
+              'preferred name (not correct name)')],
+            'Medkour et al. 2019')
+
+    def test_an_illegitimate_page_is_replaced_even_by_one_not_validly_published(self):
+        self.assertKeptEitherWay(
+            [('Cyanospira capsulata Florenzano et al. 2015',
+              'validly published under the ICN (Botanical Code), illegitimate name, later homonym',
+              'n/a', 'in need of a replacement'),
+             ('"Cyanospira capsulata" Florenzano et al. 1985', 'not validly published', 'n/a',
+              'synonym (and no standing)')],
+            'Florenzano et al. 1985')
+
+    def test_a_page_with_no_status_is_below_one_with_any(self):
+        self.assertKeptEitherWay(
+            [('"Xenia rubra" Smith 2001', 'n/a', 'n/a', 'n/a'),
+             ('"Xenia rubra" Jones 2005', 'not validly published', 'n/a', 'synonym (and no standing)')],
+            'Jones 2005')
+
+    def test_pages_of_equal_standing_keep_the_first_read(self):
+        pages = [('"Methylopila turkiensis" Agafonova et al. 2015', 'inaccurate spelling', 'n/a',
+                  'misspelling (and no standing)'),
+                 ('Methylopila turkiensis Shmareva et al. 2017', 'inaccurate spelling', 'n/a',
+                  'misspelling')]
+
+        self.assertEqual(self.kept_authority(pages), 'Agafonova et al. 2015')
+        self.assertEqual(self.kept_authority(pages[::-1]), 'Shmareva et al. 2017')
 
 
 if __name__ == '__main__':
