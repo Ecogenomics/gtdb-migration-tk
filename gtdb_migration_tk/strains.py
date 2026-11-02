@@ -58,6 +58,22 @@ gtdb_type_designation_notes saying which designation the rule overrode. The
 sources are those agreeing with the designation, 'LPSN' then 'SeqCode', joined
 by SOURCE_SEPARATOR.
 
+A name valid under the SeqCode has its own year of priority, the year of the
+Registry's priority date, which LPSN does not give: lpsn_priority_year is the
+year of the authority LPSN cites, and for most SeqCode names that is the year
+the name was proposed as a Candidatus name or effectively published, not the
+year it was validly published. Over r237, 244 of the 1,783 SeqCode species
+typed by a genome of the release have an earlier year in LPSN's year table
+than their priority date (Desulforudis audaxviator 2008, validly published
+under the SeqCode in 2023), and 1,290 are not in it at all. So the genome
+typing a SeqCode species is given seqcode_species and seqcode_priority_year
+beside the lpsn_ columns, and like them they say what the SeqCode says of the
+genome whatever designation it is given, NCBI's rule included. They are for
+reading beside LPSN's, and are not loaded: metadata_type_material has no
+columns for them, and metadata_seqcode, loaded from seqcode_table.tsv, holds
+the same genome's seqcode_name and seqcode_priority_date, so
+metadata_type_material.desc.tsv does not describe them.
+
 The last two steps were update_type_designation, run once the summary and the
 SeqCode table were loaded, rewriting the two fields in metadata_type_material
 from metadata_seqcode and metadata_ncbi. Deciding them here loads them once. It
@@ -148,13 +164,23 @@ SUMMARY_COLUMNS = ('assembly_accession', 'taxid', 'organism_name', 'infraspecifi
                    'isolate', 'relation_to_type_material', 'excluded_from_refseq')
 
 # The columns of seqcode download's seqcode_table.tsv type_table reads, by
-# name: the release's genome typing each species, the species' status, and
-# whether it is the type species of its genus. A species whose status holds
-# SEQCODE_VALID is valid under the SeqCode, and its genome a type strain of species.
+# name: the release's genome typing each species, the species' name, status and
+# priority date, and whether it is the type species of its genus. A species
+# whose status holds SEQCODE_VALID is valid under the SeqCode, and its genome a
+# type strain of species.
 SEQCODE_GENOME = 'seqcode_type_material_accn'
+SEQCODE_NAME = 'seqcode_name'
 SEQCODE_STATUS = 'seqcode_species_status'
+SEQCODE_PRIORITY_DATE = 'seqcode_priority_date'
 SEQCODE_TYPE_SPECIES_OF_GENUS = 'seqcode_type_species_of_genus'
 SEQCODE_VALID = 'Valid'
+SEQCODE_COLUMNS = (SEQCODE_GENOME, SEQCODE_NAME, SEQCODE_STATUS, SEQCODE_PRIORITY_DATE,
+                   SEQCODE_TYPE_SPECIES_OF_GENUS)
+
+# A genome typing a species valid under the SeqCode: the species as the SeqCode
+# names it, the year of its priority date, and whether the SeqCode makes it the
+# type species of its genus.
+SeqCodeType = namedtuple('SeqCodeType', 'species priority_year type_species_of_genus')
 
 # The sources of a type designation, as gtdb_type_designation_ncbi_taxa_sources
 # names them, joined by SOURCE_SEPARATOR.
@@ -1331,8 +1357,9 @@ class Strains(object):
         seqcode_table : str
             seqcode_table.tsv, from seqcode download.
 
-        @return: GTDB accession -> whether the SeqCode makes its species the type
-                 species of its genus.
+        @return: GTDB accession -> SeqCodeType: the species, the year of its
+                 priority date ('' where it has none), and whether the SeqCode
+                 makes it the type species of its genus.
 
         Raises
         ------
@@ -1343,13 +1370,14 @@ class Strains(object):
         types = {}
         with open(seqcode_table, encoding='utf-8') as handle:
             header = handle.readline().rstrip('\n').split('\t')
-            missing = [c for c in (SEQCODE_GENOME, SEQCODE_STATUS, SEQCODE_TYPE_SPECIES_OF_GENUS)
-                       if c not in header]
+            missing = [c for c in SEQCODE_COLUMNS if c not in header]
             if missing:
                 raise StrainsError('{} has no {} column(s): it is not a table of seqcode download.'.format(
                     seqcode_table, ', '.join(missing)))
             genome_index = header.index(SEQCODE_GENOME)
+            name_index = header.index(SEQCODE_NAME)
             status_index = header.index(SEQCODE_STATUS)
+            priority_date_index = header.index(SEQCODE_PRIORITY_DATE)
             type_species_index = header.index(SEQCODE_TYPE_SPECIES_OF_GENUS)
 
             for line in handle:
@@ -1363,10 +1391,15 @@ class Strains(object):
                                     fields[genome_index]),
                                 fields[genome_index], genome=fields[genome_index])
                     continue
-                types[gid] = fields[type_species_index] == 'True'
+                # the Registry's priority date, 2023-09-11T01:47:14.714Z
+                priority_date = re.match(r'(\d{4})-', fields[priority_date_index].strip())
+                types[gid] = SeqCodeType(fields[name_index].strip(),
+                                         priority_date.group(1) if priority_date else '',
+                                         fields[type_species_index] == 'True')
 
         self.logger.info('{:,} genomes of the release type a species valid under the SeqCode, {:,} the type '
-                         'species of its genus.'.format(len(types), sum(types.values())))
+                         'species of its genus.'.format(
+                             len(types), sum(t.type_species_of_genus for t in types.values())))
         return types
 
     def type_summary_table(self,
@@ -1398,6 +1431,7 @@ class Strains(object):
         fout.write("\tgtdb_type_designation_ncbi_taxa\tgtdb_type_designation_ncbi_taxa_sources")
         fout.write(
             "\tlpsn_type_designation\tlpsn_priority_year")
+        fout.write("\tseqcode_species\tseqcode_priority_year")
         fout.write("\tgtdb_type_species_of_genus\tgtdb_type_designation_notes\n")
 
         missing_type_at_ncbi = 0
@@ -1439,7 +1473,7 @@ class Strains(object):
             canonical_sp_name = ' '.join(species_name.split()[0:2])
             if (highest_priority_designation == 'type strain of species' and
                     (species_name in lpsn_type_species_of_genus or canonical_sp_name in lpsn_type_species_of_genus
-                     or seqcode_types.get(gid, False))):
+                     or (in_seqcode and seqcode_types[gid].type_species_of_genus))):
                 type_species_of_genus = True
 
             gtdb_type_sources = []
@@ -1470,6 +1504,10 @@ class Strains(object):
 
             fout.write('\t{}'.format(lpsn[gid].type_designation if gid in lpsn else self.NOT_TYPE_MATERIAL))
             fout.write('\t{}'.format(lpsn[gid].priority_year if gid in lpsn else ''))
+            # the SeqCode's species and year, as the lpsn_ columns are LPSN's,
+            # whatever designation the genome was given
+            fout.write('\t{}\t{}'.format(seqcode_types[gid].species if in_seqcode else '',
+                                         seqcode_types[gid].priority_year if in_seqcode else ''))
             fout.write('\t{}\t{}\n'.format(type_species_of_genus, notes))
 
             # NCBI's null, NCBI_NA, where it gives no type material status; these
