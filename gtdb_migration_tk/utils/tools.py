@@ -353,7 +353,7 @@ class Tools(object):
             gpertaxid = [item for sublist in gpertaxid for item in sublist]
             print("{}: {} Taxids ( {} genomes ) ".format(k, len(v), len(gpertaxid)))
 
-        # parse auxillary names associated with a NCBI taxID and
+        # parse auxiliary names associated with a NCBI taxID and
         # type material strain IDs for species
         category_names = {}
         type_material = defaultdict(set)
@@ -380,7 +380,7 @@ class Tools(object):
                         category_names[cur_taxid][tokens[3]].append(tokens[1])
 
         print(
-            'Read auxillary species name information for %d NCBI taxIDs.' % len(category_names))
+            'Read auxiliary species name information for %d NCBI taxIDs.' % len(category_names))
         print(
             'Read type material information for %d NCBI taxIDs.' % len(type_material))
 
@@ -604,7 +604,7 @@ class Tools(object):
 
     def generate_ltp_db(self, csv_file,compressed_fasta, ltp_fasta_file,output_directory, output_prefix):
         """Create Living Tree Project (LTP) FASTA and taxonomy file.
-        This is a mofiied version of the original script to generate the LTP database ( in /srv/db/silva ).
+        This is a modified version of the original script to generate the LTP database ( in /srv/db/silva ).
         Because we want to automate the creation of the LTP metadata file, we do not use the original
         Arb file to export the metadata. Instead, we use the blastdb.fasta and CSV data file downloaded
          from `LTP Website`_.
@@ -661,7 +661,7 @@ class Tools(object):
 
             for seq_id in seq_ids.split():
                 # LTP uses a single entry for identical 16S sequences with
-                # the different sequence IDs seperated by a space, e.g.:
+                # the different sequence IDs separated by a space, e.g.:
                 #   SSMG01000000 SSMG01000241
                 metadata[seq_id] = (
                     fullname_ltp, tax_ltp, type_ltp, strain)
