@@ -405,10 +405,11 @@ class OptionsParser():
         self.logger.info('Update metadata Done.')
 
     def update_reps_db(self, options):
-        check_file_exists(options.final_cluster_file)
+        for path in (options.final_cluster_file, options.qc_failed):
+            check_file_exists(path)
         p = MetadataDatabaseManager(database_keywords(options))
         try:
-            p.update_reps(options.final_cluster_file)
+            p.update_reps(options.final_cluster_file, options.qc_failed)
         except (MetadataTableError, UnknownGenomesError) as exc:
             # a cluster file to put right, or of another release, said in one line; nothing was written
             self.logger.error(str(exc))

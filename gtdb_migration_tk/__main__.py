@@ -125,6 +125,9 @@ def print_help():
       update_metadata_db       -> Update metadata table(s) in database.
       add_surveillance_genomes -> Create DB tables for surveillance genomes, which are not part of the GTDB release but are used for classification.
 
+    Export tables from GTDB database:
+      export_metadata -> Export metadata table from database.
+      
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release.
       update_propagate_tax    -> Push propagated taxonomy to new DB.
@@ -788,6 +791,12 @@ def __final_cluster_file(grp, required):
                           "(G005435135).")
 
 
+def __qc_failed(grp, required):
+    grp.add_argument('--qc_failed', required=required,
+                     help="Genomes of the release failing QC, which no species cluster holds (gtdb_species_clusters' "
+                          "qc_failed.tsv, gzipped or not): column 'Accession', genomes by canonical ID.")
+
+
 def get_main_parser():
     # Setup the main, and sub parsers.
     main_parser = argparse.ArgumentParser(prog='gtdb_migration_tk', add_help=False, conflict_handler='resolve')
@@ -1049,6 +1058,7 @@ def get_main_parser():
         with arg_group(parser, 'required named arguments') as grp:
             __database_setup(grp)
             __final_cluster_file(grp, required=True)
+            __qc_failed(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __silent(grp)
 
