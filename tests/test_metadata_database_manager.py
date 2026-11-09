@@ -632,7 +632,9 @@ class UpdatingRepresentatives(OneTransaction):
 
     It set both fields to NULL for every genome first and wrote each through
     upsert(), three rewrites of metadata_taxonomy; printed its counts rather than
-    logging them; and named ten unknown genomes in a traceback, listing none."""
+    logging them; and named ten unknown genomes in a traceback, listing none.
+    The genomes in no cluster are expected to be those failing QC (--qc_failed):
+    without it, r237's 213,520 were a WARNING that said nothing."""
 
     DATABASE = ['RS_GCF_000000001.1', 'GB_GCA_000000002.1', 'GB_GCA_000000003.1']
 
@@ -646,20 +648,25 @@ class UpdatingRepresentatives(OneTransaction):
     def clusters(self, *rows, name='clusters.tsv', header='Representative\tGTDB species\tClustered genomes\n'):
         return self.write(name, header + ''.join('\t'.join(row) + '\n' for row in rows))
 
-    def update(self, clusters, database=None):
-        """Run update_reps over the database's genomes; (manager, log messages)."""
+    def qc_failed(self, *gids, name='qc_failed.tsv', header='Accession\tNCBI species\tGenome size (bp)\n'):
+        return self.write(name, header + ''.join('{}\ts__x\t1000\n'.format(gid) for gid in gids))
+
+    def update(self, clusters, database=None, qc_failed=None):
+        """Run update_reps over the database's genomes; (manager, log messages, log records)."""
         database = self.DATABASE if database is None else database
+        qc_failed = qc_failed or self.qc_failed()
         cursor = FakeCursor(database, genomes=[I.id_at_source(g) for g in database])
         manager = self.manager(cursor=cursor)
         with self.assertLogs('timestamp', level='INFO') as logged:
-            manager.update_reps(clusters)
+            manager.update_reps(clusters, qc_failed)
         return manager, [record.getMessage() for record in logged.records], logged.records
 
-    def refused(self, clusters, error, database=None):
+    def refused(self, clusters, error, database=None, qc_failed=None):
         database = self.DATABASE if database is None else database
+        qc_failed = qc_failed or self.qc_failed()
         manager = self.manager(cursor=FakeCursor(database, genomes=[I.id_at_source(g) for g in database]))
         with self.assertRaises(error) as raised:
-            manager.update_reps(clusters)
+            manager.update_reps(clusters, qc_failed)
         self.assertFalse([sql for sql in manager.temp_cur.statements if sql.startswith(('UPDATE', 'INSERT'))])
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
         return str(raised.exception)
@@ -688,7 +695,7 @@ class UpdatingRepresentatives(OneTransaction):
         self.assertIn(M.GENOME_ACCESSIONS, manager.temp_cur.statements)
         self.assertFalse([sql for sql in manager.temp_cur.statements if 'metadata_view' in sql])
 
-    def test_a_genome_in_no_cluster_is_no_representative_its_representative_set_to_null_and_warned(self):
+    def test_a_genome_in_no_cluster_not_failing_qc_is_no_representative_its_representative_null_and_warned(self):
         # as the run left it before 0.1.83, which said nothing of it
         database = self.DATABASE + ['GB_GCA_000000004.1']
         manager, messages, records = self.update(
@@ -704,7 +711,8 @@ class UpdatingRepresentatives(OneTransaction):
 
         warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
         self.assertEqual(len(warnings), 1)
-        self.assertIn('1 of the 4 genomes of the database are in no cluster', warnings[0])
+        self.assertIn('1 of the 4 genomes of the database are in no cluster of', warnings[0])
+        self.assertIn('and do not fail QC', warnings[0])
         self.assertIn('GB_GCA_000000004.1', warnings[0])
         with open(os.path.join(self.dir, M.NOT_IN_CLUSTERS_NAME)) as handle:
             self.assertEqual(handle.read(), 'genome_id\nGB_GCA_000000004.1\n')
@@ -712,8 +720,71 @@ class UpdatingRepresentatives(OneTransaction):
     def test_every_genome_in_a_cluster_is_said_in_the_log_with_no_warning(self):
         _, messages, records = self.update(self.clusters(('G000000001', 's__A', 'G000000002,G000000003')))
         self.assertFalse([r for r in records if r.levelno >= logging.WARNING])
-        self.assertIn('Every one of the 3 genomes of the database is in a cluster.', messages)
+        self.assertIn('Every other genome of the database is in a cluster.', messages)
         self.assertFalse(os.path.exists(os.path.join(self.dir, M.NOT_IN_CLUSTERS_NAME)))
+
+    def test_a_genome_failing_qc_in_no_cluster_is_counted_with_no_warning_and_written_as_one_not_clustered(self):
+        # r237's 213,520 genomes in no cluster are exactly those of qc_failed.tsv
+        database = self.DATABASE + ['GB_GCA_000000004.1', 'RS_GCF_000000005.1']
+        manager, messages, records = self.update(
+            self.clusters(('G000000001', 's__A', 'G000000002'), ('G000000003', 's__B', '')), database,
+            self.qc_failed('G000000004', 'G000000005'))
+
+        self.assertFalse([r for r in records if r.levelno >= logging.WARNING])
+        self.assertIn('2 of the 5 genomes of the database fail QC and are in no cluster: each is written as no '
+                      'representative, its gtdb_genome_representative set to NULL.', messages)
+        self.assertIn('Every other genome of the database is in a cluster.', messages)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, M.NOT_IN_CLUSTERS_NAME)))
+        written = manager.temp_cur.written()
+        self.assertIn(('GCA_000000004.1', 'False'), written[('metadata_taxonomy', 'gtdb_representative')])
+        self.assertIn(('GCF_000000005.1', 'False'), written[('metadata_taxonomy', 'gtdb_representative')])
+        (_, reset_for), = manager.temp_cur.resets()
+        self.assertEqual(reset_for, ['GCA_000000002.1', 'GCA_000000003.1', 'GCF_000000001.1'])
+
+    def test_only_the_genomes_in_no_cluster_not_failing_qc_are_warned_of_and_listed(self):
+        database = self.DATABASE + ['GB_GCA_000000004.1', 'RS_GCF_000000005.1']
+        _, messages, records = self.update(
+            self.clusters(('G000000001', 's__A', 'G000000002'), ('G000000003', 's__B', '')), database,
+            self.qc_failed('G000000004'))
+
+        self.assertIn('1 of the 5 genomes of the database fail QC and are in no cluster: each is written as no '
+                      'representative, its gtdb_genome_representative set to NULL.', messages)
+        warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('1 of the 5 genomes of the database are in no cluster', warnings[0])
+        with open(os.path.join(self.dir, M.NOT_IN_CLUSTERS_NAME)) as handle:
+            self.assertEqual(handle.read(), 'genome_id\nRS_GCF_000000005.1\n')
+
+    def test_a_genome_failing_qc_in_a_cluster_is_refused_and_listed_beside_the_log(self):
+        # the two files are of different runs of the clustering
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000002,G000000003')), M.MetadataTableError,
+                               qc_failed=self.qc_failed('G000000002'))
+        self.assertIn('1 genome(s) of', message)
+        self.assertIn('G000000002', message)
+        with open(os.path.join(self.dir, M.QC_FAILED_CLUSTERED_NAME)) as handle:
+            self.assertEqual(handle.read(), 'genome_id\trepresentative\nG000000002\tG000000001\n')
+
+    def test_a_genome_failing_qc_not_in_the_database_is_refused_and_listed_beside_the_log(self):
+        qc_failed = self.qc_failed('G000000098')
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000002,G000000099')), UnknownGenomesError,
+                               qc_failed=qc_failed)
+        self.assertIn('1 genome(s) of {}'.format(qc_failed), message)
+        listed = os.path.join(self.dir, 'unknown_genomes.metadata_taxonomy.gtdb_genome_representative.tsv')
+        with open(listed) as handle:
+            self.assertEqual(handle.read().split()[1:], ['G000000098', 'G000000099'])
+
+    def test_a_qc_file_without_its_accession_column_is_refused(self):
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000002,G000000003')), M.MetadataTableError,
+                               qc_failed=self.qc_failed('G000000004', header='Genome\tNCBI species\tsize\n'))
+        self.assertIn("no column 'Accession'", message)
+
+    def test_a_gzipped_qc_file_is_read_as_a_plain_one_is(self):
+        plain = self.qc_failed('G000000004', 'G000000005')
+        gzipped = plain + '.gz'
+        with open(plain) as source, gzip.open(gzipped, 'wt') as handle:
+            handle.write(source.read())
+        self.assertEqual(M.read_qc_failed(gzipped), M.read_qc_failed(plain))
+        self.assertEqual(M.read_qc_failed(plain), {'G000000004', 'G000000005'})
 
     def test_the_counts_are_logged_not_printed(self):
         with mock.patch('builtins.print') as printed:
@@ -721,6 +792,7 @@ class UpdatingRepresentatives(OneTransaction):
                                                        ('G000000003', 's__B', '')))
         printed.assert_not_called()
         self.assertTrue([m for m in messages if m.startswith('Read 2 species clusters of 3 genomes')], messages)
+        self.assertTrue([m for m in messages if m.startswith('Read 0 genomes failing QC')], messages)
         self.assertTrue([m for m in messages if 'gtdb_genome_representative for 3 genomes' in m
                          and '2 of them representatives' in m], messages)
 
@@ -787,7 +859,8 @@ class UpdatingRepresentatives(OneTransaction):
         from gtdb_migration_tk import main as main_py
         clusters = self.clusters(('G000000001', 's__A', ''))
         options = main_module.get_main_parser().parse_args(
-            ['update_reps_db', '--db_service', 'gtdb_r237', '--final_cluster_file', clusters])
+            ['update_reps_db', '--db_service', 'gtdb_r237', '--final_cluster_file', clusters,
+             '--qc_failed', self.qc_failed()])
         for error in (M.MetadataTableError('a file to put right'), UnknownGenomesError('genomes not held')):
             with mock.patch.object(main_py, 'MetadataDatabaseManager') as manager, \
                     self.assertLogs('timestamp', level='ERROR') as logged, self.assertRaises(SystemExit) as ended:
@@ -795,6 +868,14 @@ class UpdatingRepresentatives(OneTransaction):
                 main_py.OptionsParser().parse_options(options)
             self.assertEqual(ended.exception.code, 1)
             self.assertEqual([r.getMessage() for r in logged.records], [str(error)])
+
+    def test_the_command_requires_the_qc_failed_file(self):
+        from gtdb_migration_tk import __main__ as main_module
+        clusters = self.clusters(('G000000001', 's__A', ''))
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as ended:
+            main_module.get_main_parser().parse_args(
+                ['update_reps_db', '--db_service', 'gtdb_r237', '--final_cluster_file', clusters])
+        self.assertEqual(ended.exception.code, 2)
 
 
 SUMMARY_HEADER = ('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_summary.txt\n'

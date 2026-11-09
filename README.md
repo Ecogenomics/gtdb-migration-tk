@@ -1393,18 +1393,24 @@ each genome by canonical ID) to `metadata_taxonomy`: `gtdb_representative`, True
 for each representative and False for every other genome of the database, and
 `gtdb_genome_representative`, the representative of the genome's cluster, as
 GTDB names it. A genome in no cluster is not a representative, and its
-`gtdb_genome_representative` is set to NULL; every genome is expected to be in a
-cluster, so those that are not are counted in a WARNING and listed in
-`genomes_not_in_clusters.tsv` beside the log. A file putting a genome in two
-clusters is refused, each such genome listed in `cluster_conflicts.tsv` beside
-the log, as is one whose canonical ID names two genomes of the database. Run it
+`gtdb_genome_representative` is set to NULL. The genomes in no cluster are
+expected to be those failing QC, which the clustering leaves out: `--qc_failed`,
+`gtdb_species_clusters`' `qc_failed.tsv` (read by its `Accession` column), names
+them, and they are counted in a line of the log. Any other genome in no cluster
+is counted in a WARNING and listed in `genomes_not_in_clusters.tsv` beside the
+log. Over r237 the 213,520 genomes in no cluster are exactly those of
+`qc_failed.tsv`. A file putting a genome in two clusters is refused, each such
+genome listed in `cluster_conflicts.tsv` beside the log, as is a genome both
+failing QC and in a cluster (`qc_failed_but_clustered.tsv`), the two files then
+being of different runs, and a canonical ID naming two genomes of the database. Run it
 after `update_propagated_tax`, which writes `gtdb_representative` for every genome
 from the previous release's representatives and leaves
 `gtdb_genome_representative` alone; run after it, the two would disagree.
 
 ```bash
 gtdb_migration_tk update_reps_db --db_service gtdb_r237 \
-    --final_cluster_file gtdb_clusters_final.tsv -l update_reps_db.log
+    --final_cluster_file gtdb_clusters_final.tsv --qc_failed 2_u_qc_genomes/qc_failed.tsv \
+    -l update_reps_db.log
 ```
 
 Both fields are written in one UPDATE, `gtdb_genome_representative` then set to

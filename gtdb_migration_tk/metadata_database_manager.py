@@ -93,14 +93,18 @@ MISSING = 'missing'
 GENOME_ACCESSIONS = ("SELECT g.id_at_source, gs.external_id_prefix || '_' || g.id_at_source "
                      'FROM genomes g JOIN genome_sources gs ON gs.id = g.genome_source_id')
 
-# update_reps_db: the columns read from --final_cluster_file, by name
+# update_reps_db: the columns read from --final_cluster_file, and from --qc_failed
+# (gtdb_species_clusters' qc_failed.tsv), by name
 CLUSTER_REPRESENTATIVE = 'Representative'
 CLUSTER_GENOMES = 'Clustered genomes'
+QC_FAILED_ACCESSION = 'Accession'
 
-# update_reps_db, beside the log: the genomes of the database in no cluster of
-# --final_cluster_file, and the genomes the file puts in two clusters
+# update_reps_db, beside the log: the genomes of the database neither in a
+# cluster of --final_cluster_file nor failing QC, the genomes the file puts in
+# two clusters, and the genomes said both to fail QC and to be in a cluster
 NOT_IN_CLUSTERS_NAME = 'genomes_not_in_clusters.tsv'
 CLUSTER_CONFLICTS_NAME = 'cluster_conflicts.tsv'
+QC_FAILED_CLUSTERED_NAME = 'qc_failed_but_clustered.tsv'
 
 
 def taxonomy_string(value: str) -> str:
@@ -317,6 +321,42 @@ def read_clusters(path: str) -> Tuple[Dict[str, str], Set[str]]:
                 report))
 
     return representative_of, representatives
+
+
+def read_qc_failed(path: str) -> Set[str]:
+    """The genomes of update_reps_db's --qc_failed, which the species clusters leave out.
+
+    gtdb_species_clusters' qc_failed.tsv, read by its Accession column, gzipped
+    or not, each genome by its canonical ID (G005435135). Over r237 it names
+    213,520 genomes, exactly those of the database in no cluster: without it a
+    WARNING counting them was given every release, and a genome left out of the
+    clusters by mistake could not be told from one failing QC.
+
+    Parameters
+    ----------
+    path : str
+        The QC-failed table, e.g. 2_u_qc_genomes/qc_failed.tsv.
+
+    @return: e.g. {'G001091545', ...}.
+
+    Raises
+    ------
+    MetadataTableError
+        The file has no Accession column.
+    """
+
+    failed: Set[str] = set()
+    with open_text(path) as handle:
+        headers = handle.readline().rstrip('\r\n').split('\t')
+        if QC_FAILED_ACCESSION not in headers:
+            raise MetadataTableError('{} has no column {!r}; it is not a table of the genomes failing '
+                                     'QC.'.format(path, QC_FAILED_ACCESSION))
+        index = headers.index(QC_FAILED_ACCESSION)
+        for line in handle:
+            fields = line.rstrip('\r\n').split('\t')
+            if len(fields) > index and fields[index].strip():
+                failed.add(fields[index].strip())
+    return failed
 
 
 def confirm_partial_load(genome_list: str, command: str = 'update_metadata_db') -> None:
@@ -645,7 +685,7 @@ class MetadataDatabaseManager(object):
                                  'not give them.'.format(descriptions[field][1], field, cleared))
 
     @one_transaction
-    def update_reps(self, final_cluster_file):
+    def update_reps(self, final_cluster_file, qc_failed_file):
         """Write the species clusters of the release: each genome's representative, and which are.
 
         Every genome of the database is written: gtdb_representative True for
@@ -654,10 +694,14 @@ class MetadataDatabaseManager(object):
         it (RS_GCF_000011705.1). A genome in no cluster has no representative:
         its gtdb_genome_representative is set to NULL, as is every field this
         run does not know for the release, rather than left saying the previous
-        release's. Every genome of the release is expected to be in a cluster,
-        so those that are not are counted in a WARNING and listed beside the log
-        (NOT_IN_CLUSTERS_NAME). They end as they did before 0.1.83, which said
-        nothing of them: gtdb_representative False, gtdb_genome_representative NULL.
+        release's, and its gtdb_representative is False.
+
+        The genomes in no cluster are expected to be those failing QC, which the
+        clustering leaves out, named by --qc_failed (read_qc_failed()); they are
+        counted in a line of the log. Any other genome in no cluster is counted
+        in a WARNING and listed beside the log (NOT_IN_CLUSTERS_NAME). Until
+        0.1.84 every genome in no cluster was, 213,520 over r237, each failing
+        QC, so the WARNING was given every release and said nothing.
 
         Both fields are written in one UPDATE (GTDBImporter.import_fields_to_db()),
         and gtdb_genome_representative then set to NULL only for the genomes in
@@ -665,33 +709,55 @@ class MetadataDatabaseManager(object):
         set to NULL for every genome first and then written by an upsert() each,
         rewriting each row of metadata_taxonomy, 3.9 GB over r237, three times.
 
-        Nothing is written unless every genome the file names is in the database,
-        each by one genome: a genome the database does not hold is refused and
-        listed beside the log, as the importer lists one; a canonical ID naming
-        two genomes of the database, its GenBank and RefSeq accessions, is
-        refused, as propagate_gtdb_taxonomy refuses it, rather than one of them
-        taken.
+        Nothing is written unless the two files agree with each other and with
+        the database. A genome said both to fail QC and to be in a cluster is
+        refused and listed beside the log (QC_FAILED_CLUSTERED_NAME): the files
+        are of two runs of the clustering. A genome of either file the database
+        does not hold is refused and listed beside the log, as the importer lists
+        one. A canonical ID of the cluster file naming two genomes of the
+        database, its GenBank and RefSeq accessions, is refused, as
+        propagate_gtdb_taxonomy refuses it, rather than one of them taken.
 
         Parameters
         ----------
         final_cluster_file : str
             The species clusters of the release (read_clusters()), each genome by
             its canonical ID.
+        qc_failed_file : str
+            The genomes of the release failing QC (read_qc_failed()), each by its
+            canonical ID.
 
         @return: None
 
         Raises
         ------
         MetadataTableError
-            The file is not a cluster file, puts a genome in two clusters, or
-            names a canonical ID of two genomes of the database; nothing is written.
+            The cluster file is not one or puts a genome in two clusters, the
+            QC file has no Accession column, a genome is in both, or the cluster
+            file names a canonical ID of two genomes of the database; nothing is
+            written.
         UnknownGenomesError
-            The file names a genome the database does not hold; nothing is written.
+            A file names a genome the database does not hold; nothing is written.
         """
 
         representative_of, representatives = read_clusters(final_cluster_file)
         self.logger.info('Read {:,} species clusters of {:,} genomes from {}.'.format(
             len(representatives), len(representative_of), final_cluster_file))
+        qc_failed = read_qc_failed(qc_failed_file)
+        self.logger.info('Read {:,} genomes failing QC from {}.'.format(len(qc_failed), qc_failed_file))
+
+        failed_but_clustered = sorted(qc_failed.intersection(representative_of))
+        if failed_but_clustered:
+            report = os.path.join(log_directory(), QC_FAILED_CLUSTERED_NAME)
+            with open(report, 'w') as handle:
+                handle.write('genome_id\trepresentative\n')
+                for gid in failed_but_clustered:
+                    handle.write('{}\t{}\n'.format(gid, representative_of[gid]))
+            raise MetadataTableError(
+                '{:,} genome(s) of {} are in a cluster of {}, e.g. {}; a genome failing QC is in no '
+                'cluster, so the two files are of different runs. Nothing was written. Every one is '
+                'in {}.'.format(len(failed_but_clustered), qc_failed_file, final_cluster_file,
+                                ', '.join(failed_but_clustered[:EXAMPLES]), report))
 
         # each genome of the database by canonical ID: (id_at_source, accession)
         self.temp_cur.execute(GENOME_ACCESSIONS)
@@ -700,13 +766,17 @@ class MetadataDatabaseManager(object):
             by_canonical[canonical_gid(accession)].append((source_id, accession))
         num_genomes = sum(len(genomes) for genomes in by_canonical.values())
 
-        not_held = sorted(gid for gid in representative_of if gid not in by_canonical)
-        if not_held:
-            written = GTDBImporter.write_unknown_genomes('metadata_taxonomy', 'gtdb_genome_representative', not_held)
+        not_held = {path: sorted(gid for gid in genomes if gid not in by_canonical)
+                    for path, genomes in ((final_cluster_file, representative_of), (qc_failed_file, qc_failed))}
+        if any(not_held.values()):
+            every = sorted(set().union(*not_held.values()))
+            written = GTDBImporter.write_unknown_genomes('metadata_taxonomy', 'gtdb_genome_representative', every)
             raise UnknownGenomesError(
-                '{:,} genome(s) of {} are not in the database, e.g. {}; the database holds another '
-                'release, or update_db has not been run. Nothing was written. Every one is in {}.'.format(
-                    len(not_held), final_cluster_file, ', '.join(not_held[:UNKNOWN_EXAMPLES]), written))
+                '{} are not in the database, e.g. {}; the database holds another release, or update_db '
+                'has not been run. Nothing was written. Every one is in {}.'.format(
+                    ' and '.join('{:,} genome(s) of {}'.format(len(gids), path)
+                                 for path, gids in not_held.items() if gids),
+                    ', '.join(every[:UNKNOWN_EXAMPLES]), written))
         ambiguous = sorted(gid for gid in representative_of if len(by_canonical[gid]) > 1)
         if ambiguous:
             raise MetadataTableError(
@@ -719,30 +789,38 @@ class MetadataDatabaseManager(object):
         # each genome of the database: its representative, or None, and whether it is one
         rows = []
         clustered = []
-        not_clustered = []
+        failed_qc = 0
+        unexplained = []
         for gid, genomes in by_canonical.items():
             rep = representative_of.get(gid)
             for source_id, accession in genomes:
-                if rep is None:
-                    not_clustered.append(accession)
-                    rows.append((source_id, (None, 'False')))
-                else:
+                if rep is not None:
                     clustered.append(source_id)
                     rows.append((source_id, (by_canonical[rep][0][1], str(gid in representatives))))
+                    continue
+                rows.append((source_id, (None, 'False')))
+                if gid in qc_failed:
+                    failed_qc += 1
+                else:
+                    unexplained.append(accession)
 
-        if not_clustered:
+        self.logger.info('{:,} of the {:,} genomes of the database fail QC and are in no cluster: each is written '
+                         'as no representative, its gtdb_genome_representative set to NULL.'.format(
+                             failed_qc, num_genomes))
+        if unexplained:
+            unexplained.sort()
             report = os.path.join(log_directory(), NOT_IN_CLUSTERS_NAME)
             with open(report, 'w') as handle:
                 handle.write('genome_id\n')
-                for accession in sorted(not_clustered):
+                for accession in unexplained:
                     handle.write(accession + '\n')
             self.logger.warning(
-                '{:,} of the {:,} genomes of the database are in no cluster of {}, e.g. {}: each is written '
-                'as no representative, its gtdb_genome_representative set to NULL. Every one is in {}.'.format(
-                    len(not_clustered), num_genomes, final_cluster_file,
-                    ', '.join(sorted(not_clustered)[:EXAMPLES]), report))
+                '{:,} of the {:,} genomes of the database are in no cluster of {} and do not fail QC, e.g. {}: '
+                'each is written as no representative, its gtdb_genome_representative set to NULL. Every one '
+                'is in {}.'.format(len(unexplained), num_genomes, final_cluster_file,
+                                   ', '.join(unexplained[:EXAMPLES]), report))
         else:
-            self.logger.info('Every one of the {:,} genomes of the database is in a cluster.'.format(num_genomes))
+            self.logger.info('Every other genome of the database is in a cluster.')
 
         started = time.time()
         GTDBImporter(self.temp_cur).import_fields_to_db(
