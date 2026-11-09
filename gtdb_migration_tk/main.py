@@ -26,6 +26,7 @@ from gtdb_migration_tk.curation_lists import CurationLists
 from gtdb_migration_tk import config
 from gtdb_migration_tk.database_manager import DatabaseManager
 from gtdb_migration_tk.directory_manager import DirectoryManager
+from gtdb_migration_tk.gtdb_lite.gtdb_importer import UnknownGenomesError
 from gtdb_migration_tk.trans_table import GTranslate
 from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_alignment_manager import AlignmentError, MarkerAlignmentManager
@@ -404,8 +405,14 @@ class OptionsParser():
         self.logger.info('Update metadata Done.')
 
     def update_reps_db(self, options):
+        check_file_exists(options.final_cluster_file)
         p = MetadataDatabaseManager(database_keywords(options))
-        p.update_reps(options.final_cluster_file)
+        try:
+            p.update_reps(options.final_cluster_file)
+        except (MetadataTableError, UnknownGenomesError) as exc:
+            # a cluster file to put right, or of another release, said in one line; nothing was written
+            self.logger.error(str(exc))
+            sys.exit(1)
 
     def update_ncbi_tax_db(self, options):
         for path in (options.organism_names, options.filtered, options.unfiltered):

@@ -340,7 +340,8 @@ genome's metadata and writes back only the list's; with no terminal the run ends
 there, changing nothing.
 Every metadata write goes through `gtdb_lite/gtdb_importer.py`'s `GTDBImporter`:
 `import_metadata_to_db()` writes one field through the database's `upsert()`
-stored procedure, and `import_fields_to_db()`, which `update_metadata_db` uses,
+stored procedure, and `import_fields_to_db()`, which `update_metadata_db` and
+`update_reps_db` use,
 writes every field a table gives one database table in one UPDATE per chunk, so
 each row is rewritten once rather than once a field (PostgreSQL writes a new
 version of every row an UPDATE touches). Both raise on any error: it printed them until 0.1.47, and

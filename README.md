@@ -1387,6 +1387,32 @@ r237's four summaries, 643 genomes of submitters named for surveillance, none
 annotated, where 1,998,109 GenBank genomes are of such a project. Reading them
 takes 18 seconds.
 
+`update_reps_db` writes the release's species clusters (`--final_cluster_file`,
+gzipped or not, read by its `Representative` and `Clustered genomes` columns,
+each genome by canonical ID) to `metadata_taxonomy`: `gtdb_representative`, True
+for each representative and False for every other genome of the database, and
+`gtdb_genome_representative`, the representative of the genome's cluster, as
+GTDB names it. A genome in no cluster is not a representative, and its
+`gtdb_genome_representative` is set to NULL; every genome is expected to be in a
+cluster, so those that are not are counted in a WARNING and listed in
+`genomes_not_in_clusters.tsv` beside the log. A file putting a genome in two
+clusters is refused, each such genome listed in `cluster_conflicts.tsv` beside
+the log, as is one whose canonical ID names two genomes of the database. Run it
+after `update_propagated_tax`, which writes `gtdb_representative` for every genome
+from the previous release's representatives and leaves
+`gtdb_genome_representative` alone; run after it, the two would disagree.
+
+```bash
+gtdb_migration_tk update_reps_db --db_service gtdb_r237 \
+    --final_cluster_file gtdb_clusters_final.tsv -l update_reps_db.log
+```
+
+Both fields are written in one UPDATE, `gtdb_genome_representative` then set to
+NULL only for the genomes in no cluster holding a value. Until 0.1.83 both were
+set to NULL for every genome first and each written by `upsert()`, three
+rewrites of every row of `metadata_taxonomy` (3.9 GB over r237), and the
+genomes were read from `metadata_view`, 69 seconds where `genomes` takes 2.
+
 Each of these commands is one transaction, committed when it is done: a run that
 fails leaves the database as it was, and exits non-zero. Once a field is
 written, it is set to NULL for every genome holding a value the run did not give
