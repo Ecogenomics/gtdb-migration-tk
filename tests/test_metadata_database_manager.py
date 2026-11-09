@@ -93,7 +93,11 @@ class LoadingATable(unittest.TestCase):
 
 
 class FakeCursor(object):
-    """A cursor recording each statement, over the rows of metadata_view.
+    """A cursor recording each statement, over the genomes of the database.
+
+    accessions are the genomes as GTDB names them (RS_GCF_000000001.1), which
+    update_reps_db reads with their id_at_source; genomes are what the importer
+    reads of genomes.id_at_source.
 
     upserts holds each write: upsert()'s parameters (table, field, type, genomes,
     values) for a field written alone, or (table, fields, rows) for the fields
@@ -147,8 +151,8 @@ class FakeCursor(object):
         self.statements.append(sql)
         if self.fail_on and self.fail_on in sql:
             raise RuntimeError('the server refused ' + self.fail_on)
-        if 'FROM metadata_view' in sql:
-            self.result = [(accession,) for accession in self.accessions]
+        if sql == M.GENOME_ACCESSIONS:
+            self.result = [(I.id_at_source(accession), accession) for accession in self.accessions]
         elif sql == 'SELECT id_at_source FROM genomes':
             self.result = [(genome,) for genome in self.genomes]
         elif sql.startswith('SELECT upsert('):
@@ -623,42 +627,174 @@ class AskingBeforeAPartialLoad(unittest.TestCase):
 
 
 class UpdatingRepresentatives(OneTransaction):
-    VIEW = ['RS_GCF_000000001.1', 'GB_GCA_000000002.1', 'GB_GCA_000000003.1']
+    """update_reps_db writes both fields of every genome in one UPDATE, and refuses
+    a cluster file it cannot read one way only, before anything is written.
 
-    def clusters(self, *rows):
-        return self.write('clusters.tsv', 'Representative\tClustered genomes\n'
-                          + ''.join('\t'.join(row) + '\n' for row in rows))
+    It set both fields to NULL for every genome first and wrote each through
+    upsert(), three rewrites of metadata_taxonomy; printed its counts rather than
+    logging them; and named ten unknown genomes in a traceback, listing none."""
 
-    def test_a_genome_of_the_cluster_file_not_in_the_database_is_refused_before_any_null(self):
-        # the NULLs were committed before a KeyError on such a genome, leaving
-        # the database with no representatives at all
-        manager = self.manager(cursor=FakeCursor(self.VIEW))
-        clusters = self.clusters(('G000000001', 'G000000002,G000000099'))
-        with mock.patch.object(M, 'GTDBImporter') as importer:
-            with self.assertRaises(UnknownGenomesError) as raised:
-                manager.update_reps(clusters)
+    DATABASE = ['RS_GCF_000000001.1', 'GB_GCA_000000002.1', 'GB_GCA_000000003.1']
 
-        self.assertIn('G000000099', str(raised.exception))
-        self.assertFalse([sql for sql in manager.temp_cur.statements if 'NULL' in sql])
-        importer.return_value.import_metadata_to_db.assert_not_called()
-        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+    def setUp(self):
+        super().setUp()
+        for module in (M, I):
+            patcher = mock.patch.object(module, 'log_directory', return_value=self.dir)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
-    def test_the_representatives_are_written_in_one_commit(self):
-        manager = self.manager(cursor=FakeCursor(self.VIEW))
-        clusters = self.clusters(('G000000001', 'G000000002'), ('G000000003',))
-        with mock.patch.object(M, 'GTDBImporter') as importer:
+    def clusters(self, *rows, name='clusters.tsv', header='Representative\tGTDB species\tClustered genomes\n'):
+        return self.write(name, header + ''.join('\t'.join(row) + '\n' for row in rows))
+
+    def update(self, clusters, database=None):
+        """Run update_reps over the database's genomes; (manager, log messages)."""
+        database = self.DATABASE if database is None else database
+        cursor = FakeCursor(database, genomes=[I.id_at_source(g) for g in database])
+        manager = self.manager(cursor=cursor)
+        with self.assertLogs('timestamp', level='INFO') as logged:
             manager.update_reps(clusters)
+        return manager, [record.getMessage() for record in logged.records], logged.records
 
-        written = {call.args[1]: sorted(call.args[3])
-                   for call in importer.return_value.import_metadata_to_db.call_args_list}
-        self.assertEqual(written['gtdb_genome_representative'],
-                         [('GB_GCA_000000002.1', 'RS_GCF_000000001.1'),
-                          ('GB_GCA_000000003.1', 'GB_GCA_000000003.1'),
-                          ('RS_GCF_000000001.1', 'RS_GCF_000000001.1')])
-        self.assertEqual(written['gtdb_representative'],
-                         [('GB_GCA_000000002.1', 'False'), ('GB_GCA_000000003.1', 'True'),
-                          ('RS_GCF_000000001.1', 'True')])
+    def refused(self, clusters, error, database=None):
+        database = self.DATABASE if database is None else database
+        manager = self.manager(cursor=FakeCursor(database, genomes=[I.id_at_source(g) for g in database]))
+        with self.assertRaises(error) as raised:
+            manager.update_reps(clusters)
+        self.assertFalse([sql for sql in manager.temp_cur.statements if sql.startswith(('UPDATE', 'INSERT'))])
+        self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (0, 1))
+        return str(raised.exception)
+
+    def test_both_fields_are_written_in_one_update_with_nothing_set_to_null_first(self):
+        manager, _, _ = self.update(self.clusters(('G000000001', 's__A', 'G000000001,G000000002'),
+                                                  ('G000000003', 's__B', '')))
+        cursor = manager.temp_cur
+
+        self.assertEqual(cursor.written(), {
+            ('metadata_taxonomy', 'gtdb_genome_representative'): [
+                ('GCA_000000002.1', 'RS_GCF_000000001.1'), ('GCA_000000003.1', 'GB_GCA_000000003.1'),
+                ('GCF_000000001.1', 'RS_GCF_000000001.1')],
+            ('metadata_taxonomy', 'gtdb_representative'): [
+                ('GCA_000000002.1', 'False'), ('GCA_000000003.1', 'True'), ('GCF_000000001.1', 'True')]})
+        updates = [sql for sql in cursor.statements if sql.startswith('UPDATE')]
+        self.assertEqual(len(updates), 2, updates)
+        self.assertIn(I.NEW_VALUES_TABLE, updates[0])
+        # the second is reset_unwritten(), of gtdb_genome_representative alone and every genome written
+        self.assertEqual([(sql.split(' SET ')[1].split(' = ')[0], written) for sql, written in cursor.resets()],
+                         [('gtdb_genome_representative', ['GCA_000000002.1', 'GCA_000000003.1', 'GCF_000000001.1'])])
         self.assertEqual((manager.temp_con.commits, manager.temp_con.rollbacks), (1, 0))
+
+    def test_the_genomes_are_read_from_genomes_not_metadata_view(self):
+        manager, _, _ = self.update(self.clusters(('G000000001', 's__A', 'G000000002,G000000003')))
+        self.assertIn(M.GENOME_ACCESSIONS, manager.temp_cur.statements)
+        self.assertFalse([sql for sql in manager.temp_cur.statements if 'metadata_view' in sql])
+
+    def test_a_genome_in_no_cluster_is_no_representative_its_representative_set_to_null_and_warned(self):
+        # as the run left it before 0.1.83, which said nothing of it
+        database = self.DATABASE + ['GB_GCA_000000004.1']
+        manager, messages, records = self.update(
+            self.clusters(('G000000001', 's__A', 'G000000002'), ('G000000003', 's__B', '')), database)
+        cursor = manager.temp_cur
+
+        written = cursor.written()
+        self.assertIn(('GCA_000000004.1', 'False'), written[('metadata_taxonomy', 'gtdb_representative')])
+        self.assertNotIn('GCA_000000004.1',
+                         [g for g, _ in written[('metadata_taxonomy', 'gtdb_genome_representative')]])
+        (_, reset_for), = cursor.resets()
+        self.assertNotIn('GCA_000000004.1', reset_for)
+
+        warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('1 of the 4 genomes of the database are in no cluster', warnings[0])
+        self.assertIn('GB_GCA_000000004.1', warnings[0])
+        with open(os.path.join(self.dir, M.NOT_IN_CLUSTERS_NAME)) as handle:
+            self.assertEqual(handle.read(), 'genome_id\nGB_GCA_000000004.1\n')
+
+    def test_every_genome_in_a_cluster_is_said_in_the_log_with_no_warning(self):
+        _, messages, records = self.update(self.clusters(('G000000001', 's__A', 'G000000002,G000000003')))
+        self.assertFalse([r for r in records if r.levelno >= logging.WARNING])
+        self.assertIn('Every one of the 3 genomes of the database is in a cluster.', messages)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, M.NOT_IN_CLUSTERS_NAME)))
+
+    def test_the_counts_are_logged_not_printed(self):
+        with mock.patch('builtins.print') as printed:
+            _, messages, _ = self.update(self.clusters(('G000000001', 's__A', 'G000000002'),
+                                                       ('G000000003', 's__B', '')))
+        printed.assert_not_called()
+        self.assertTrue([m for m in messages if m.startswith('Read 2 species clusters of 3 genomes')], messages)
+        self.assertTrue([m for m in messages if 'gtdb_genome_representative for 3 genomes' in m
+                         and '2 of them representatives' in m], messages)
+
+    def test_a_genome_of_the_cluster_file_not_in_the_database_is_refused_and_listed_beside_the_log(self):
+        # the NULLs were committed before a KeyError on such a genome, leaving
+        # the database with no representatives at all; then ten were named, none listed
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000002,G000000099')), UnknownGenomesError)
+
+        self.assertIn('G000000099', message)
+        listed = os.path.join(self.dir, 'unknown_genomes.metadata_taxonomy.gtdb_genome_representative.tsv')
+        self.assertIn(listed, message)
+        with open(listed) as handle:
+            self.assertIn('G000000099', handle.read())
+
+    def test_a_genome_in_two_clusters_is_refused_and_listed_beside_the_log(self):
+        # it was given whichever cluster was read last
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000002'),
+                                             ('G000000003', 's__B', 'G000000002')), M.MetadataTableError)
+
+        self.assertIn('G000000002 (G000000001 and G000000003)', message)
+        with open(os.path.join(self.dir, M.CLUSTER_CONFLICTS_NAME)) as handle:
+            self.assertEqual(handle.read(), 'genome_id\trepresentative\tother_representative\n'
+                                            'G000000002\tG000000001\tG000000003\n')
+
+    def test_a_representative_clustered_with_another_is_in_two_clusters(self):
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000003'),
+                                             ('G000000003', 's__B', '')), M.MetadataTableError)
+        self.assertIn('G000000003 (G000000001 and G000000003)', message)
+
+    def test_a_representative_named_in_its_own_cluster_is_in_one(self):
+        manager, _, _ = self.update(self.clusters(('G000000001', 's__A', 'G000000001,G000000002,G000000003')))
+        self.assertEqual(manager.temp_cur.written()[('metadata_taxonomy', 'gtdb_representative')],
+                         [('GCA_000000002.1', 'False'), ('GCA_000000003.1', 'False'), ('GCF_000000001.1', 'True')])
+
+    def test_a_canonical_id_naming_two_genomes_of_the_database_is_refused(self):
+        # rather than either taken, as propagate_gtdb_taxonomy refuses it
+        database = self.DATABASE + ['GB_GCA_000000001.1']
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000002,G000000003')),
+                               M.MetadataTableError, database)
+        self.assertIn('G000000001 (RS_GCF_000000001.1, GB_GCA_000000001.1)', message)
+
+    def test_a_file_without_the_columns_read_is_refused(self):
+        message = self.refused(self.clusters(('G000000001', 'G000000002'), header='Representative\tMembers\n'),
+                               M.MetadataTableError)
+        self.assertIn("no column 'Clustered genomes'", message)
+
+    def test_a_line_naming_no_representative_is_refused(self):
+        message = self.refused(self.clusters(('G000000001', 's__A', 'G000000002'), ('', 's__B', 'G000000003')),
+                               M.MetadataTableError)
+        self.assertIn('Line 3', message)
+
+    def test_a_gzipped_cluster_file_is_read_as_a_plain_one_is(self):
+        plain = self.clusters(('G000000001', 's__A', 'G000000002'), ('G000000003', 's__B', ''))
+        gzipped = os.path.join(self.dir, 'clusters.tsv.gz')
+        with open(plain) as source, gzip.open(gzipped, 'wt') as handle:
+            handle.write(source.read())
+
+        self.assertEqual(M.read_clusters(gzipped), M.read_clusters(plain))
+        self.assertEqual(M.read_clusters(plain), ({'G000000001': 'G000000001', 'G000000002': 'G000000001',
+                                                  'G000000003': 'G000000003'}, {'G000000001', 'G000000003'}))
+
+    def test_a_refused_cluster_file_ends_the_run_in_one_line_exiting_1(self):
+        from gtdb_migration_tk import __main__ as main_module
+        from gtdb_migration_tk import main as main_py
+        clusters = self.clusters(('G000000001', 's__A', ''))
+        options = main_module.get_main_parser().parse_args(
+            ['update_reps_db', '--db_service', 'gtdb_r237', '--final_cluster_file', clusters])
+        for error in (M.MetadataTableError('a file to put right'), UnknownGenomesError('genomes not held')):
+            with mock.patch.object(main_py, 'MetadataDatabaseManager') as manager, \
+                    self.assertLogs('timestamp', level='ERROR') as logged, self.assertRaises(SystemExit) as ended:
+                manager.return_value.update_reps.side_effect = error
+                main_py.OptionsParser().parse_options(options)
+            self.assertEqual(ended.exception.code, 1)
+            self.assertEqual([r.getMessage() for r in logged.records], [str(error)])
 
 
 SUMMARY_HEADER = ('#   See ftp://ftp.ncbi.nlm.nih.gov/genomes/README_assembly_summary.txt\n'

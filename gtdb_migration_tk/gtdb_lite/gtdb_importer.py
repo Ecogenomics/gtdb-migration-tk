@@ -19,9 +19,10 @@
 or every field of a table at once.
 
 The metadata commands write through import_metadata_to_db(), one field at a
-time: update_checkm_db, update_reps_db, update_ncbi_tax_db, update_propagated_tax
-and add_taxonomy_to_database. update_metadata_db writes through
-import_fields_to_db(), every field a table of its gives one table at once.
+time: update_checkm_db, update_ncbi_tax_db, update_propagated_tax and
+add_taxonomy_to_database. update_metadata_db writes through import_fields_to_db(),
+every field a table of its gives one table at once, as update_reps_db does its two
+fields of metadata_taxonomy.
 
 ONE TABLE AT ONCE
 

@@ -20,6 +20,7 @@ import re
 import sys
 import glob
 import logging
+import time
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -84,6 +85,22 @@ NCBI_TAX_FIELDS = (('metadata_ncbi', 'ncbi_organism_name'),
 # what a missing value is marked with there
 NCBI_TAX_MISSING_NAME = 'ncbi_tax_missing.tsv'
 MISSING = 'missing'
+
+# update_reps_db: each genome of the database, as genomes.id_at_source names it
+# and as GTDB does (RS_GCF_000011705.1), the form gtdb_genome_representative
+# holds. It was read from metadata_view, which joins 14 tables and views to give
+# the same column: over gtdb_r237_dev, 69 s where this takes 2.
+GENOME_ACCESSIONS = ("SELECT g.id_at_source, gs.external_id_prefix || '_' || g.id_at_source "
+                     'FROM genomes g JOIN genome_sources gs ON gs.id = g.genome_source_id')
+
+# update_reps_db: the columns read from --final_cluster_file, by name
+CLUSTER_REPRESENTATIVE = 'Representative'
+CLUSTER_GENOMES = 'Clustered genomes'
+
+# update_reps_db, beside the log: the genomes of the database in no cluster of
+# --final_cluster_file, and the genomes the file puts in two clusters
+NOT_IN_CLUSTERS_NAME = 'genomes_not_in_clusters.tsv'
+CLUSTER_CONFLICTS_NAME = 'cluster_conflicts.tsv'
 
 
 def taxonomy_string(value: str) -> str:
@@ -233,6 +250,73 @@ def read_genome_list(path: str) -> Set[str]:
             genomes.add(id_at_source(line.rstrip().split(separator)[0].strip()))
     genomes.discard(None)
     return genomes
+
+
+def read_clusters(path: str) -> Tuple[Dict[str, str], Set[str]]:
+    """The species cluster of each genome of update_reps_db's --final_cluster_file.
+
+    The file is read by column name, Representative and Clustered genomes (a
+    comma-separated list, empty for a cluster of one), gzipped or not. Each
+    genome is named by its canonical ID (G005435135). A representative is in its
+    own cluster whether or not its list names it. A genome put in two clusters
+    is refused rather than given whichever was read last, as it was: the file
+    does not say which of the two is meant. Every such genome is listed in
+    CLUSTER_CONFLICTS_NAME beside the log.
+
+    Parameters
+    ----------
+    path : str
+        The cluster file, e.g. gtdb_clusters_final.tsv.
+
+    @return: (the representative of each genome, every representative), by canonical ID.
+
+    Raises
+    ------
+    MetadataTableError
+        The file lacks one of the two columns, or puts a genome in two clusters.
+    """
+
+    representative_of: Dict[str, str] = {}
+    representatives: Set[str] = set()
+    conflicts: List[Tuple[str, str, str]] = []
+    with open_text(path) as handle:
+        headers = handle.readline().rstrip('\r\n').split('\t')
+        missing = [column for column in (CLUSTER_REPRESENTATIVE, CLUSTER_GENOMES) if column not in headers]
+        if missing:
+            raise MetadataTableError('{} has no column {}; it is not a species cluster file.'.format(
+                path, ' or '.join(repr(column) for column in missing)))
+        rep_index = headers.index(CLUSTER_REPRESENTATIVE)
+        genomes_index = headers.index(CLUSTER_GENOMES)
+
+        for line_number, line in enumerate(handle, start=2):
+            if not line.strip():
+                continue
+            fields = line.rstrip('\r\n').split('\t')
+            rep = fields[rep_index].strip() if len(fields) > rep_index else ''
+            if not rep:
+                raise MetadataTableError('Line {} of {} names no representative; nothing was written.'.format(
+                    line_number, path))
+            members = fields[genomes_index].split(',') if len(fields) > genomes_index else []
+            representatives.add(rep)
+            for genome in [rep] + [member.strip() for member in members]:
+                if not genome:
+                    continue
+                held = representative_of.setdefault(genome, rep)
+                if held != rep:
+                    conflicts.append((genome, held, rep))
+
+    if conflicts:
+        report = os.path.join(log_directory(), CLUSTER_CONFLICTS_NAME)
+        with open(report, 'w') as handle:
+            handle.write('genome_id\trepresentative\tother_representative\n')
+            for row in conflicts:
+                handle.write('\t'.join(row) + '\n')
+        raise MetadataTableError(
+            '{} puts {:,} genome(s) in two clusters, e.g. {}; nothing was written. Every one is in {}.'.format(
+                path, len(conflicts), ', '.join('{} ({} and {})'.format(*row) for row in conflicts[:EXAMPLES]),
+                report))
+
+    return representative_of, representatives
 
 
 def confirm_partial_load(genome_list: str, command: str = 'update_metadata_db') -> None:
@@ -562,80 +646,115 @@ class MetadataDatabaseManager(object):
 
     @one_transaction
     def update_reps(self, final_cluster_file):
-        """Update representative genomes of species clusters.
+        """Write the species clusters of the release: each genome's representative, and which are.
 
-        The cluster file is read whole, and every genome it names found in the
-        database, before the fields are set to NULL. The NULLs were committed
-        first, and a genome of the file the database did not hold then raised a
-        KeyError, which left the database with no representatives at all.
+        Every genome of the database is written: gtdb_representative True for
+        a representative of --final_cluster_file and False for every other, and
+        gtdb_genome_representative its cluster's representative, as GTDB names
+        it (RS_GCF_000011705.1). A genome in no cluster has no representative:
+        its gtdb_genome_representative is set to NULL, as is every field this
+        run does not know for the release, rather than left saying the previous
+        release's. Every genome of the release is expected to be in a cluster,
+        so those that are not are counted in a WARNING and listed beside the log
+        (NOT_IN_CLUSTERS_NAME). They end as they did before 0.1.83, which said
+        nothing of them: gtdb_representative False, gtdb_genome_representative NULL.
+
+        Both fields are written in one UPDATE (GTDBImporter.import_fields_to_db()),
+        and gtdb_genome_representative then set to NULL only for the genomes in
+        no cluster that hold a value (reset_unwritten()). Until 0.1.83 both were
+        set to NULL for every genome first and then written by an upsert() each,
+        rewriting each row of metadata_taxonomy, 3.9 GB over r237, three times.
+
+        Nothing is written unless every genome the file names is in the database,
+        each by one genome: a genome the database does not hold is refused and
+        listed beside the log, as the importer lists one; a canonical ID naming
+        two genomes of the database, its GenBank and RefSeq accessions, is
+        refused, as propagate_gtdb_taxonomy refuses it, rather than one of them
+        taken.
+
+        Parameters
+        ----------
+        final_cluster_file : str
+            The species clusters of the release (read_clusters()), each genome by
+            its canonical ID.
+
+        @return: None
+
+        Raises
+        ------
+        MetadataTableError
+            The file is not a cluster file, puts a genome in two clusters, or
+            names a canonical ID of two genomes of the database; nothing is written.
+        UnknownGenomesError
+            The file names a genome the database does not hold; nothing is written.
         """
 
-        # mark all genomes as not being representatives and get translation
-        # between canonical genome IDs and NCBI accessions
-        q = ("SELECT accession FROM metadata_view")
-        self.temp_cur.execute(q)
+        representative_of, representatives = read_clusters(final_cluster_file)
+        self.logger.info('Read {:,} species clusters of {:,} genomes from {}.'.format(
+            len(representatives), len(representative_of), final_cluster_file))
 
-        gid_to_ncbi_accn = {}
-        is_rep = {}
-        for r in self.temp_cur:
-            ncbi_accn = r[0]
-            gid_to_ncbi_accn[canonical_gid(ncbi_accn)] = ncbi_accn
-            is_rep[ncbi_accn] = False
+        # each genome of the database by canonical ID: (id_at_source, accession)
+        self.temp_cur.execute(GENOME_ACCESSIONS)
+        by_canonical: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+        for source_id, accession in self.temp_cur.fetchall():
+            by_canonical[canonical_gid(accession)].append((source_id, accession))
+        num_genomes = sum(len(genomes) for genomes in by_canonical.values())
 
-        # determine representative assignment of genomes
-        genome_rep_data = []
-        not_held = []
-        num_sp_reps = 0
-        with open(final_cluster_file) as f:
-            headers = f.readline().strip().split('\t')
-
-            rep_index = headers.index('Representative')
-            clustered_genomes_index = headers.index('Clustered genomes')
-
-            for line in f:
-                line_split = line.strip().split('\t')
-
-                rep_gid = line_split[rep_index]
-                if rep_gid not in gid_to_ncbi_accn:
-                    not_held.append(rep_gid)
-                    continue
-                rep_accn = gid_to_ncbi_accn[rep_gid]
-                if len(line_split) > clustered_genomes_index:
-                    gids = [gid.strip() for gid in line_split[clustered_genomes_index].split(',')]
-                    for gid in gids:
-                        if gid not in gid_to_ncbi_accn:
-                            not_held.append(gid)
-                            continue
-                        ncbi_accn = gid_to_ncbi_accn[gid]
-                        genome_rep_data.append((ncbi_accn, rep_accn))
-
-                genome_rep_data.append((rep_accn, rep_accn))
-
-                is_rep[rep_accn] = True
-                num_sp_reps += 1
-
+        not_held = sorted(gid for gid in representative_of if gid not in by_canonical)
         if not_held:
+            written = GTDBImporter.write_unknown_genomes('metadata_taxonomy', 'gtdb_genome_representative', not_held)
             raise UnknownGenomesError(
-                '{:,} genome(s) of {} are not in the database, e.g. {}; the database '
-                'holds another release, or update_db has not been run.'.format(
-                    len(not_held), final_cluster_file, ', '.join(not_held[:UNKNOWN_EXAMPLES])))
+                '{:,} genome(s) of {} are not in the database, e.g. {}; the database holds another '
+                'release, or update_db has not been run. Nothing was written. Every one is in {}.'.format(
+                    len(not_held), final_cluster_file, ', '.join(not_held[:UNKNOWN_EXAMPLES]), written))
+        ambiguous = sorted(gid for gid in representative_of if len(by_canonical[gid]) > 1)
+        if ambiguous:
+            raise MetadataTableError(
+                '{:,} canonical ID(s) of {} each name two or more genomes of the database, e.g. {}; '
+                'which is meant cannot be told. Nothing was written.'.format(
+                    len(ambiguous), final_cluster_file, ', '.join(
+                        '{} ({})'.format(gid, ', '.join(accession for _, accession in by_canonical[gid]))
+                        for gid in ambiguous[:EXAMPLES])))
 
-        # clear representative fields
-        self.logger.info('Setting GTDB representative fields to NULL.')
-        q = ("UPDATE metadata_taxonomy SET gtdb_representative = NULL, gtdb_genome_representative = NULL")
-        self.temp_cur.execute(q)
+        # each genome of the database: its representative, or None, and whether it is one
+        rows = []
+        clustered = []
+        not_clustered = []
+        for gid, genomes in by_canonical.items():
+            rep = representative_of.get(gid)
+            for source_id, accession in genomes:
+                if rep is None:
+                    not_clustered.append(accession)
+                    rows.append((source_id, (None, 'False')))
+                else:
+                    clustered.append(source_id)
+                    rows.append((source_id, (by_canonical[rep][0][1], str(gid in representatives))))
 
-        print(f'Identified {num_sp_reps:,} species clusters.')
-        print('Identified {:,} genomes marked as representatives.'.format(sum([1 for rid in is_rep if is_rep[rid]])))
-        gtdbimporter = GTDBImporter(self.temp_cur)
-        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_genome_representative', 'TEXT', genome_rep_data)
+        if not_clustered:
+            report = os.path.join(log_directory(), NOT_IN_CLUSTERS_NAME)
+            with open(report, 'w') as handle:
+                handle.write('genome_id\n')
+                for accession in sorted(not_clustered):
+                    handle.write(accession + '\n')
+            self.logger.warning(
+                '{:,} of the {:,} genomes of the database are in no cluster of {}, e.g. {}: each is written '
+                'as no representative, its gtdb_genome_representative set to NULL. Every one is in {}.'.format(
+                    len(not_clustered), num_genomes, final_cluster_file,
+                    ', '.join(sorted(not_clustered)[:EXAMPLES]), report))
+        else:
+            self.logger.info('Every one of the {:,} genomes of the database is in a cluster.'.format(num_genomes))
 
-        # mark representative genomes
-        is_rep_data = []
-        for rep_accn, rep_status in is_rep.items():
-            is_rep_data.append((rep_accn, str(rep_status)))
+        started = time.time()
+        GTDBImporter(self.temp_cur).import_fields_to_db(
+            'metadata_taxonomy', (('gtdb_genome_representative', 'TEXT'), ('gtdb_representative', 'BOOLEAN')), rows)
+        self.logger.info('Wrote gtdb_genome_representative for {:,} genomes, and gtdb_representative for {:,}, '
+                         '{:,} of them representatives, in {:.0f} s.'.format(
+                             len(clustered), len(rows), len(representatives), time.time() - started))
 
-        gtdbimporter.import_metadata_to_db('metadata_taxonomy', 'gtdb_representative', 'BOOLEAN', is_rep_data)
+        started = time.time()
+        cleared = reset_unwritten(self.temp_cur, 'metadata_taxonomy', 'gtdb_genome_representative', clustered)
+        self.logger.info('Set gtdb_genome_representative to NULL for {:,} genome(s) in no cluster holding a '
+                         'value, in {:.0f} s.'.format(cleared, time.time() - started))
 
     @one_transaction
     def add_surveillance_genomes(self, assembly_summaries):

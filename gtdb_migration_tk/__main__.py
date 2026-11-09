@@ -783,7 +783,9 @@ def __id_last_genome(grp, required):
     
 def __final_cluster_file(grp, required):
     grp.add_argument('--final_cluster_file', required=required,
-                     help="Clusters for named species.")
+                     help="Species clusters of the release (e.g. gtdb_clusters_final.tsv, gzipped or not): "
+                          "columns 'Representative' and 'Clustered genomes', genomes by canonical ID "
+                          "(G005435135).")
 
 
 def get_main_parser():
