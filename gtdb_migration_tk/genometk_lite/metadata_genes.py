@@ -133,7 +133,7 @@ class MetadataGenes():
         self.logger = logging.getLogger('timestamp')
 
     def generate(self, genome_file, gff_file):
-        """Derive metdata from gene sequences.
+        """Derive metadata from gene sequences.
 
         Parameters
         ----------

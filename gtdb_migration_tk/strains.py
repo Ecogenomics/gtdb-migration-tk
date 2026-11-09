@@ -378,7 +378,7 @@ class Strains(object):
         return standardized_id
 
     def fix_common_strain_id_errors(self, strain_ids):
-        """Fix common erros associated with NCBI strain IDs."""
+        """Fix common errors associated with NCBI strain IDs."""
 
         # NCBI strain IDs sometimes contain a 'T' at the end that
         # actually designates the ID is for type material. To
@@ -438,7 +438,7 @@ class Strains(object):
         self.logger.info(
             'Associated {:,} NCBI taxon nodes with their parent species node.'.format(len(species_of_taxid)))
 
-        # parse auxillary names associated with a NCBI taxID and
+        # parse auxiliary names associated with a NCBI taxID and
         # type material strain IDs for species
         category_names = {}
         type_material = defaultdict(set)
@@ -475,7 +475,7 @@ class Strains(object):
                         category_names[cur_taxid][tokens[3]].append(tokens[1])
 
         self.logger.info(
-            'Read auxillary species name information for {:,} NCBI taxIDs.'.format(len(category_names)))
+            'Read auxiliary species name information for {:,} NCBI taxIDs.'.format(len(category_names)))
         self.logger.info(
             'Read type material information for {:,} NCBI taxIDs.'.format(len(type_material)))
 
@@ -1224,7 +1224,7 @@ class Strains(object):
         year_date = list_year_tables[0] if len(list_year_tables) > 0 else ''
 
         if not match:
-            # check if any of the auxillary names have a species name
+            # check if any of the auxiliary names have a species name
             # and strain ID match with the type repository
             match = self.strain_match(gid,
                                       unofficial_standard_names,

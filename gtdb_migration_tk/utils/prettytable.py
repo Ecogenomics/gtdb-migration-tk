@@ -250,7 +250,7 @@ class PrettyTable(object):
     # It will call the appropriate validation method for that option.  The individual validation methods should
     # never need to be called directly (although nothing bad will happen if they *are*).
     # Validation happens in TWO places.
-    # Firstly, in the property setters defined in the ATTRIBUTE MANAGMENT section.
+    # Firstly, in the property setters defined in the ATTRIBUTE MANAGEMENT section.
     # Secondly, in the _get_options method, where keyword arguments are mixed with persistent settings
 
     def _validate_option(self, option, val):
@@ -511,7 +511,7 @@ class PrettyTable(object):
 
         Arguments:
 
-        reveresort - set to True to sort by descending order, or False to sort by ascending order"""
+        reversesort - set to True to sort by descending order, or False to sort by ascending order"""
         return self._reversesort
     def _set_reversesort(self, val):
         self._validate_option("reversesort", val)
@@ -651,7 +651,7 @@ class PrettyTable(object):
     right_padding_width = property(_get_right_padding_width, _set_right_padding_width)
 
     def _get_vertical_char(self):
-        """The charcter used when printing table borders to draw vertical lines
+        """The character used when printing table borders to draw vertical lines
 
         Arguments:
 
@@ -664,7 +664,7 @@ class PrettyTable(object):
     vertical_char = property(_get_vertical_char, _set_vertical_char)
 
     def _get_horizontal_char(self):
-        """The charcter used when printing table borders to draw horizontal lines
+        """The character used when printing table borders to draw horizontal lines
 
         Arguments:
 
@@ -677,7 +677,7 @@ class PrettyTable(object):
     horizontal_char = property(_get_horizontal_char, _set_horizontal_char)
 
     def _get_junction_char(self):
-        """The charcter used when printing table borders to draw line junctions
+        """The character used when printing table borders to draw line junctions
 
         Arguments:
 
@@ -829,7 +829,7 @@ class PrettyTable(object):
         row_index - The index of the row you want to delete.  Indexing starts at 0."""
 
         if row_index > len(self._rows)-1:
-            raise Exception("Cant delete row at index %d, table only has %d rows!" % (row_index, len(self._rows)))
+            raise Exception("Can't delete row at index %d, table only has %d rows!" % (row_index, len(self._rows)))
         del self._rows[row_index]
 
     def add_column(self, fieldname, column, align="c", valign="t"):

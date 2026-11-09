@@ -93,7 +93,7 @@ class LPSN(object):
                 # urllib.request.urlretrieve(
                 #     url, os.path.join(index_dir, '{}_{}.html'.format(rank_name, letter)))
 
-        # Parse html pages lising all classes
+        # Parse html pages listing all classes
         rank_sites_list = open(os.path.join(
             self.outdir, f'{rank_name}_list.lst'), 'w')
         link_pattern = re.compile(r'href="(/{}/[^"]+)"'.format(rank_name))

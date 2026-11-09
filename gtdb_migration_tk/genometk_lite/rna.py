@@ -66,7 +66,7 @@ class RNA(object):
         # E-value threshold for defining valid hits (taken from barrnap 0.9)
         self.evalue_threshold = 1e-6
 
-        # Minmum length of rRNA gene based on minimum proportion of gene length.
+        # Minimum length of rRNA gene based on minimum proportion of gene length.
         # (minimum proportion of 0.25 and gene lengths taken from barrnap 0.9)
         len_16S_rRNA = 1585
         len_18S_rRNA = 1869
@@ -272,7 +272,7 @@ class RNA(object):
         Returns
         -------
         str
-            Name of FASTA file containing extractracted sequences.
+            Name of FASTA file containing extracted sequences.
         """
 
         # write summary file and putative SSU rRNAs to file

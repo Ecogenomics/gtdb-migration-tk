@@ -1390,7 +1390,7 @@ def get_main_parser():
             __silent(grp)
             __cpus(grp)
 
-    # # Tools to combine Medata from different databases.
+    # # Tools to combine Metadata from different databases.
     with subparser(sub_parsers, 'strains', 'Tools to combine metadata from different databases.') as strains_parser:
         strains_sub_parsers = strains_parser.add_subparsers(help="--", dest='strains_subparser_name')
 
