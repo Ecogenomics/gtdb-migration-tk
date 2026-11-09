@@ -1338,6 +1338,7 @@ other, and leave 594 to NCBI's.
 | `update_ncbi_tax_db` | Update NCBI organism names and taxonomy (`update_ncbitax_db` until 0.1.57) |
 | `update_taxid_to_db` | Add the NCBI taxid for each rank of each genome |
 | `add_surveillance_genomes` | Replace `survey_genomes` with the genomes the assembly summaries mark as of a large multi-isolate or surveillance project |
+| `export_metadata` | Export the metadata of every genome in the database (`gtdb metadata export`) |
 
 Every command here, and `add_taxonomy_to_database`, `update_propagated_tax`,
 `set_gtdb_domain` and `lpsn add_metadata`, is told which database to use by a
@@ -1419,7 +1420,26 @@ set to NULL for every genome first and each written by `upsert()`, three
 rewrites of every row of `metadata_taxonomy` (3.9 GB over r237), and the
 genomes were read from `metadata_view`, 69 seconds where `genomes` takes 2.
 
-Each of these commands is one transaction, committed when it is done: a run that
+`export_metadata` writes the metadata of every genome in the database to
+`-o/--output_file`, gzipped where it ends in `.gz`: every column of
+`metadata_view` but its internal `id`, one row a genome, ordered by accession.
+`--format tab`, the default, is tab-separated with NULL as `none`, as the
+release's metadata files are; `--format csv` is comma-separated with NULL empty.
+It is what `gtdb metadata export` did, but it only reads, in one read-only
+transaction: `gtdb` first gave every genome without a `gtdb_representative` a
+representative by AAI and committed, where here such a genome is counted in a
+WARNING, listed in `export_no_gtdb_representative.tsv` beside the log, and
+exported as it is (`update_reps_db` gives every genome one). Ordered rows and a
+gzip header without a time make two exports of an unchanged database the same
+file. The export is written to `<output>.partial` and renamed once complete, so
+a run that fails leaves no truncated table under the output's name.
+
+```bash
+gtdb_migration_tk export_metadata --db_service gtdb_r237 \
+    -o gtdb_r237_metadata.tsv.gz -l export_metadata.log
+```
+
+Each of the commands writing to the database is one transaction, committed when it is done: a run that
 fails leaves the database as it was, and exits non-zero. Once a field is
 written, it is set to NULL for every genome holding a value the run did not give
 it, in that same transaction, unless `--do_not_null_field` is given: the same

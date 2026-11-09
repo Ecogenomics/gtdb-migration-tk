@@ -869,6 +869,14 @@ class UpdatingRepresentatives(OneTransaction):
             self.assertEqual(ended.exception.code, 1)
             self.assertEqual([r.getMessage() for r in logged.records], [str(error)])
 
+    def test_the_command_takes_a_log_as_the_readme_shows(self):
+        # the README's example gave -l, which the command did not take
+        from gtdb_migration_tk import __main__ as main_module
+        options = main_module.get_main_parser().parse_args(
+            ['update_reps_db', '--db_service', 'gtdb_r237', '--final_cluster_file', 'clusters.tsv',
+             '--qc_failed', 'qc_failed.tsv', '-l', 'update_reps_db.log'])
+        self.assertEqual(options.log, 'update_reps_db.log')
+
     def test_the_command_requires_the_qc_failed_file(self):
         from gtdb_migration_tk import __main__ as main_module
         clusters = self.clusters(('G000000001', 's__A', ''))

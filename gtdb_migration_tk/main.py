@@ -32,6 +32,7 @@ from gtdb_migration_tk.lpsn import LPSN
 from gtdb_migration_tk.marker_alignment_manager import AlignmentError, MarkerAlignmentManager
 from gtdb_migration_tk.marker_manager import BadHmmDatabase, MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager, MetadataTableError, confirm_partial_load
+from gtdb_migration_tk.metadata_export_manager import MetadataExportManager
 from gtdb_migration_tk.metadata_manager import EmptyGenomeDirs, MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeCategoryError, GenomeType
@@ -442,6 +443,10 @@ class OptionsParser():
             self.logger.error(str(exc))
             sys.exit(1)
 
+    def export_metadata(self, options):
+        p = MetadataExportManager(database_keywords(options))
+        p.export_metadata(options.output_file, options.out_format)
+
     def add_names_dmp(self, options):
         p = TaxonomyNCBI()
         p.populate_names_dmp_table(options.taxonomy_dir,
@@ -627,6 +632,8 @@ class OptionsParser():
             self.generate_busco_data(options)
         elif options.subparser_name == 'add_surveillance_genomes':
             self.add_surveillance_genomes(options)
+        elif options.subparser_name == 'export_metadata':
+            self.export_metadata(options)
         elif options.subparser_name == 'add_names_dmp':
             self.add_names_dmp(options)
         elif options.subparser_name == 'check_db_population':

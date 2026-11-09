@@ -126,8 +126,8 @@ def print_help():
       add_surveillance_genomes -> Create DB tables for surveillance genomes, which are not part of the GTDB release but are used for classification.
 
     Export tables from GTDB database:
-      export_metadata -> Export metadata table from database.
-      
+      export_metadata -> Export the metadata of every genome in the database (gtdb metadata export).
+
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release.
       update_propagate_tax    -> Push propagated taxonomy to new DB.
@@ -552,6 +552,12 @@ def __organism_names(group, required):
 
 def __output_dir(group, required):
     group.add_argument('-o', '--output_dir', '--out_dir', help='Output directory.', required=required)
+
+
+def __export_format(group):
+    group.add_argument('--format', dest='out_format', choices=['tab', 'csv'], default='tab',
+                       help="tab: tab-separated, NULL as 'none', as the release's metadata files are; "
+                            "csv: comma-separated, NULL empty.")
 
 
 def __output_file(group, required):
@@ -1060,6 +1066,7 @@ def get_main_parser():
             __final_cluster_file(grp, required=True)
             __qc_failed(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __log_file(grp, required=False)
             __silent(grp)
 
 
@@ -1233,6 +1240,17 @@ def get_main_parser():
             __new_list_genomes(grp, required=True)
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
+            __silent(grp)
+
+    with subparser(sub_parsers, 'export_metadata',
+                   'Export the metadata of every genome in the database, ordered by accession '
+                   '(gtdb metadata export); gzipped where the output ends in .gz.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __database_setup(grp)
+            __output_file(grp, required=True)
+            __log_file(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __export_format(grp)
             __silent(grp)
 
     with subparser(sub_parsers, 'add_names_dmp', 'Parse dmp file to a table.') as parser:
