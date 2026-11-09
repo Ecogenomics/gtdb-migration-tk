@@ -323,6 +323,10 @@ wrapper most `*_db` managers use; `update_db`'s own `connect()`
 (`database_manager.py`); and `utils.common.database_engine()`, the SQLAlchemy
 engine `lpsn.py` and `ncbi_tax_manager.py` write through with pandas.
 
+`export_metadata` (`metadata_export_manager.py`, what `gtdb metadata export`
+did) is the one database command that only reads: one read-only REPEATABLE READ
+transaction, so it never runs `gtdb`'s representative assignment.
+
 Each metadata command is ONE transaction: the manager method `main.py` calls is
 decorated `@one_transaction` (in `GenomeDatabaseConnectionFTPUpdate.py`), which
 commits when it returns and rolls back when it raises, `sys.exit()` included, and
