@@ -324,8 +324,11 @@ wrapper most `*_db` managers use; `update_db`'s own `connect()`
 engine `lpsn.py` and `ncbi_tax_manager.py` write through with pandas.
 
 `export_metadata` (`metadata_export_manager.py`, what `gtdb metadata export`
-did) is the one database command that only reads: one read-only REPEATABLE READ
-transaction, so it never runs `gtdb`'s representative assignment.
+did), `export_msa` and `list_marker_sets` (`msa_export_manager.py`: the full,
+unfiltered MSA `gtdb tree create` concatenated, and `gtdb marker_sets view`) are the database
+commands that only read: one read-only REPEATABLE READ transaction, so they never
+run `gtdb`'s representative assignment, nor align what `aligned_markers` lacks
+(`export_msa` refuses such genomes; that is `align_marker_genes`' to write).
 
 Each metadata command is ONE transaction: the manager method `main.py` calls is
 decorated `@one_transaction` (in `GenomeDatabaseConnectionFTPUpdate.py`), which
