@@ -1339,6 +1339,8 @@ other, and leave 594 to NCBI's.
 | `update_taxid_to_db` | Add the NCBI taxid for each rank of each genome |
 | `add_surveillance_genomes` | Replace `survey_genomes` with the genomes the assembly summaries mark as of a large multi-isolate or surveillance project |
 | `export_metadata` | Export the metadata of every genome in the database (`gtdb metadata export`) |
+| `export_msa` | Export the full concatenated MSA of the markers of marker sets for every genome of a batchfile, unfiltered and untrimmed, with ARB metadata |
+| `list_marker_sets` | List the marker sets in the database (`gtdb marker_sets view --all`) |
 
 Every command here, and `add_taxonomy_to_database`, `update_propagated_tax`,
 `set_gtdb_domain` and `lpsn add_metadata`, is told which database to use by a
@@ -1437,6 +1439,48 @@ a run that fails leaves no truncated table under the output's name.
 ```bash
 gtdb_migration_tk export_metadata --db_service gtdb_r237 \
     -o gtdb_r237_metadata.tsv.gz -l export_metadata.log
+```
+
+`export_msa` writes the full MSA of every genome of `--genome_batchfile`
+(`GB_GCA_...` or `GCA_...`, one a line) over the markers of `--marker_set_ids`
+(comma-separated, as `gtdb` took them), which `list_marker_sets` lists: each
+genome's aligned markers concatenated as `gtdb tree create` concatenated them, a
+marker found in no gene, or in several different ones, as gaps. Nothing is
+filtered or trimmed -- every genome asked for, and every column of every marker
+-- so that which genomes and columns a tree is made from is decided downstream,
+from the full MSA. In `--out_dir`, under `--prefix` (`gtdb`), are
+`_concatenated.faa.gz`, `_multi_hits.tsv`, `_markers_info.tsv`,
+`_arb_metadata.txt.gz` with `aligned_seq=` left blank, `_arb_filter.ift`, and
+with `--individual` a FASTA a marker (`_<marker>.faa.gz`), as `gtdb tree create
+--no_tree --no_alignment` wrote them but gzipped; `_metadata.tsv.gz`, the ARB
+metadata as a table, one row a genome, floats to three decimal places and NULL
+as `none`; and, whatever the prefix, `gene_partitions.txt`, the columns of each
+marker in RAxML's partition format (`AA, PFAM_PF00380.20 = 1-121`), for
+[locusmasker](https://github.com/roblanf/locusmasker) (`--partitions
+gene_partitions.txt --datatype aa`) or a partitioned tree. `msa_aa_count` and
+`msa_length` are of the sequence in `_concatenated.faa.gz`, where `gtdb
+--no_alignment` wrote 0. Every file lists the genomes by accession, and a gzip
+header records no time, so two exports of an unchanged database are the same
+files.
+
+It only reads, in one read-only transaction: `gtdb` first gave every genome
+without a representative one and aligned any marker `aligned_markers` lacked,
+and committed both. A genome without a row of `aligned_markers` for each marker
+is refused, listed in `export_msa_unaligned_genomes.tsv` beside the log, and
+nothing is written: run `align_marker_genes` for the sets first. A genome or
+marker set the database does not hold is refused the same way. Reading
+`metadata_view` takes about six minutes over r237 however few the genomes, the
+view aggregating every species cluster. The aligned markers are read on
+`-c/--cpus` connections at once, each joining the export's snapshot: their time
+is the storage's latency, a random read for each block of a genome's rows, so
+more connections read faster -- over r237, 80 genomes a second on 1, 478 on 8,
+629 on 16 and 1,247 on 32, so that the 229,307 bacterial representatives take
+about 6 minutes with `-c 16` where they took 50 with 1.
+
+```bash
+gtdb_migration_tk list_marker_sets --db_service gtdb_r237
+gtdb_migration_tk export_msa --db_service gtdb_r237 --genome_batchfile bac_genomes.tsv \
+    --marker_set_ids 1 -c 16 -o msa_bac120
 ```
 
 Each of the commands writing to the database is one transaction, committed when it is done: a run that

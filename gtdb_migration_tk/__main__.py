@@ -36,6 +36,7 @@ from gtdb_migration_tk import config
 from gtdb_migration_tk.biolib_lite.custom_help_formatter import CustomHelpFormatter
 from gtdb_migration_tk.biolib_lite.logger import logger_setup
 from gtdb_migration_tk.main import OptionsParser
+from gtdb_migration_tk.msa_export_manager import DEFAULT_PREFIX
 from gtdb_migration_tk.ncbi_metadata_sync import NCBI_GROUPS
 from gtdb_migration_tk.ncbi_genome_sync import add_sync_arguments
 from gtdb_migration_tk.utils.common import DatabaseOptionsError, database_keywords
@@ -126,7 +127,9 @@ def print_help():
       add_surveillance_genomes -> Create DB tables for surveillance genomes, which are not part of the GTDB release but are used for classification.
 
     Export tables from GTDB database:
-      export_metadata -> Export the metadata of every genome in the database (gtdb metadata export).
+      list_marker_sets -> List marker sets in GTDB DB.
+      export_metadata  -> Export the metadata of every genome in the database.
+      export_msa       -> Export a specific set of aligned marker genes for a specified set of genomes.
 
     GTDB Taxonomy:
       propagate_gtdb_taxonomy -> Propagating GTDB taxonomy to new release.
@@ -185,6 +188,14 @@ def valid_date(s):
     except ValueError:
         msg = "Not a valid date: '{0}'.".format(s)
         raise argparse.ArgumentTypeError(msg)
+
+
+def comma_separated_ints(text):
+    """IDs given as gtdb took them, comma-separated: '1,19'; main.py flattens repeated ones."""
+    try:
+        return [int(item) for item in text.split(',') if item.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError("not a comma-separated list of IDs: '{}'".format(text))
 
 
 def __all_genomes(group):
@@ -774,6 +785,26 @@ def __hmm_db_path(group, required):
                             "for tigrfam_15.0_lite : '/srv/db/gtdb/marker_genes/hmms_extended_pfam33.1_tigr15/tigrfam.hmm').",
                        required=required)
 
+def __msa_genome_batchfile(group, required):
+    group.add_argument('--genome_batchfile', required=required,
+                       help='File of genome IDs, one per line, to include in the MSA (GB_GCA_... or GCA_...; '
+                            "further tab-separated columns and '#' lines are ignored). Every one is exported.")
+
+
+def __msa_marker_set_ids(group, required):
+    group.add_argument('--marker_set_ids', required=required, nargs='+', type=comma_separated_ints,
+                       help='Marker set IDs (comma separated) whose markers make the MSA, '
+                            'e.g. 1 = bac120; list_marker_sets lists them.')
+
+
+def __msa_prefix(group):
+    group.add_argument('--prefix', default=DEFAULT_PREFIX, help='Desired prefix for output files.')
+
+
+def __individual(group):
+    group.add_argument('--individual', action='store_true', help='Create individual FASTA files for each marker.')
+
+
 def __remove(group, db_name):
     group.add_argument('--remove',
                        help=f'Remove all previous results in {db_name} directory (use with caution!).',
@@ -1251,6 +1282,29 @@ def get_main_parser():
             __log_file(grp, required=True)
         with arg_group(parser, 'options arguments') as grp:
             __export_format(grp)
+            __silent(grp)
+
+    with subparser(sub_parsers, 'export_msa',
+                   'Export the full concatenated MSA of the markers of marker sets for every genome of a '
+                   'batchfile, unfiltered and untrimmed, with ARB metadata; only reads the database.') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __database_setup(grp)
+            __msa_genome_batchfile(grp, required=True)
+            __msa_marker_set_ids(grp, required=True)
+            __output_dir(grp, required=True)
+        with arg_group(parser, 'options arguments') as grp:
+            __msa_prefix(grp)
+            __individual(grp)
+            __cpus(grp)
+            __log_file(grp, required=False, help='Log file (default: gtdb_migration_tk.log in --out_dir).')
+            __silent(grp)
+
+    with subparser(sub_parsers, 'list_marker_sets',
+                   'List the marker sets in the database (gtdb marker_sets view --all).') as parser:
+        with arg_group(parser, 'required named arguments') as grp:
+            __database_setup(grp)
+        with arg_group(parser, 'options arguments') as grp:
+            __log_file(grp, required=False)
             __silent(grp)
 
     with subparser(sub_parsers, 'add_names_dmp', 'Parse dmp file to a table.') as parser:

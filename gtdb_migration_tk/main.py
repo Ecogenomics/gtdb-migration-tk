@@ -15,8 +15,9 @@
 #                                                                             #
 ###############################################################################
 
-import sys
 import logging
+import os
+import sys
 
 from gtdb_migration_tk.biolib_lite.common import check_file_exists, make_sure_path_exists
 from gtdb_migration_tk.busco_manager import BuscoManager
@@ -33,6 +34,7 @@ from gtdb_migration_tk.marker_alignment_manager import AlignmentError, MarkerAli
 from gtdb_migration_tk.marker_manager import BadHmmDatabase, MarkerManager
 from gtdb_migration_tk.metadata_database_manager import MetadataDatabaseManager, NCBITaxDatabaseManager, MetadataTableError, confirm_partial_load
 from gtdb_migration_tk.metadata_export_manager import MetadataExportManager
+from gtdb_migration_tk.msa_export_manager import MSAExportError, MSAExportManager, flatten, read_genome_file
 from gtdb_migration_tk.metadata_manager import EmptyGenomeDirs, MetadataManager, MetadataTable
 from gtdb_migration_tk.metadata_ncbi_manager import NCBIMeta, NCBIMetaDir
 from gtdb_migration_tk.ncbi_genome_category import GenomeCategoryError, GenomeType
@@ -447,6 +449,25 @@ class OptionsParser():
         p = MetadataExportManager(database_keywords(options))
         p.export_metadata(options.output_file, options.out_format)
 
+    def export_msa(self, options):
+        if not os.path.isfile(options.genome_batchfile):
+            # check_file_exists() exits 0, which a pipeline takes for success
+            self.logger.error('Input file does not exist: {}'.format(options.genome_batchfile))
+            sys.exit(1)
+        p = MSAExportManager(database_keywords(options), options.cpus)
+        try:
+            p.export_msa(read_genome_file(options.genome_batchfile), flatten(options.marker_set_ids),
+                         options.output_dir, options.prefix, options.individual)
+        except MSAExportError as exc:
+            # the genomes or markers to put right, said in one line; nothing but
+            # a list of what was refused has been written
+            self.logger.error(str(exc))
+            sys.exit(1)
+
+    def list_marker_sets(self, options):
+        p = MSAExportManager(database_keywords(options))
+        p.list_marker_sets()
+
     def add_names_dmp(self, options):
         p = TaxonomyNCBI()
         p.populate_names_dmp_table(options.taxonomy_dir,
@@ -634,6 +655,10 @@ class OptionsParser():
             self.add_surveillance_genomes(options)
         elif options.subparser_name == 'export_metadata':
             self.export_metadata(options)
+        elif options.subparser_name == 'export_msa':
+            self.export_msa(options)
+        elif options.subparser_name == 'list_marker_sets':
+            self.list_marker_sets(options)
         elif options.subparser_name == 'add_names_dmp':
             self.add_names_dmp(options)
         elif options.subparser_name == 'check_db_population':

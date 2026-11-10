@@ -240,7 +240,8 @@ class TheCommandLine(unittest.TestCase):
         with mock.patch('builtins.print') as printed:
             main_module.print_help()
         text = '\n'.join(str(call.args[0]) for call in printed.call_args_list if call.args)
-        self.assertIn('export_metadata -> Export the metadata of every genome in the database', text)
+        # the arrows of a section are aligned, so the padding changes as commands are added
+        self.assertRegex(text, r'export_metadata +-> Export the metadata of every genome in the database')
 
 
 if __name__ == '__main__':
